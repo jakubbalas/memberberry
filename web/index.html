@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Memberberry</title>
+    <link rel="stylesheet" href="/src/shell/app.css" />
+  </head>
+  <body>
+    <main class="workspace">
+      <header class="workspace-header">
+        <p class="eyebrow">Memberberry</p>
+        <h1>Scratch note</h1>
+        <p class="lede">Local-first editing. Changes are persisted in this browser.</p>
+      </header>
+      <section class="editor-panel" aria-label="Note editor">
+        <div id="editor" class="editor-surface"></div>
+      </section>
+      <p class="offline-status" role="status">Local replica ready. Server sync is not connected yet.</p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

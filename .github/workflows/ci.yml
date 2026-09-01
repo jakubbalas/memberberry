@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      # The per-crate floors in AGENTS.md §2.1, enforced separately per crate so a crate
+      # below its floor cannot hide behind one above it.
+      - name: Coverage gate
+        run: cargo llvm-cov --workspace --json --quiet | python3 scripts/coverage-gate.py
+
+      # mb-core compiles to wasm32 on every commit so the browser build can never
+      # silently break on an accidental std::fs or SystemTime (AGENTS.md §4.2).
+      - name: wasm32 build
+        run: cargo check -p mb-core --target wasm32-unknown-unknown
+
+  # The frontend, and with it the WebAssembly bridge. The boundary tests in
+  # `web/src/notes.test.ts` run against a real wasm build, so this job is what proves the
+  # Rust↔TypeScript contract on every commit rather than only when someone runs it locally.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@wasm-pack
+
+      - name: Build the WebAssembly bindings
+        run: wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb
+
+      - run: npm ci
+        working-directory: web
+      - name: Types
+        run: npm run typecheck
+        working-directory: web
+      - name: Tests and coverage floor
+        run: npm run coverage
+        working-directory: web
+      - name: Production build
+        run: npm run build
+        working-directory: web
+
+  # The fuzz targets are built, not run: a useful run takes minutes and one known upstream
+  # panic is still open (SPEC.md §22.1). Building them stops the targets rotting against
+  # changes to mb-core, which is what silently happens to fuzzers nobody compiles.
+  fuzz-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Build fuzz targets
+        run: cargo +nightly fuzz build
+        working-directory: fuzz

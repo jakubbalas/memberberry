@@ -1,0 +1,26 @@
+[package]
+name = "mb-core"
+description = "Block model, canonical Markdown, tasks, and extraction. Pure: no I/O, no async, wasm32-clean."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false }
+# why: CommonMark's flanking rules are defined over Unicode general categories, and `std`
+# exposes none. Approximating with `is_ascii_punctuation` — or with "not alphanumeric" —
+# makes this crate and `pulldown-cmark` disagree about whether emphasis can close, which
+# shows up as a file that rewrites itself on every save. Data-only, `no_std`, wasm-clean.
+unicode-general-category = "1"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+proptest = "1"
+# why: reads schema.json in tests/schema.rs only. mb-core itself stays on a single
+# dependency, so nothing here reaches the wasm build (`cargo check` without --all-targets).
+serde_json = "1"
+unicode-general-category = "1"
+
+[lints]
+workspace = true

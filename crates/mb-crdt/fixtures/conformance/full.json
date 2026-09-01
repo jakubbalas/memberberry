@@ -1,0 +1,572 @@
+{
+  "frontmatter": {
+    "aliases": [
+      "MB Architecture"
+    ],
+    "created": "2026-08-28T21:14:03Z",
+    "custom": "value",
+    "description": {
+      "$memberberry": "raw",
+      "lines": [
+        "description: |",
+        "  first line",
+        "  second line"
+      ]
+    },
+    "icon": "🧠",
+    "id": "018f2c4e-7b3a-7000-9c1e-4d5f6a7b8c9d",
+    "people": [
+      "Ada",
+      "Grace"
+    ],
+    "tags": [
+      "architecture",
+      "project/memberberry"
+    ],
+    "updated": "2026-08-28T23:02:41Z"
+  },
+  "prosemirror": {
+    "content": [
+      {
+        "attrs": {
+          "anchor": "heading-anchor",
+          "level": 1.0
+        },
+        "content": [
+          {
+            "text": "Heading",
+            "type": "text"
+          }
+        ],
+        "type": "heading"
+      },
+      {
+        "attrs": {
+          "anchor": null
+        },
+        "content": [
+          {
+            "text": "Plain ",
+            "type": "text"
+          },
+          {
+            "marks": [
+              {
+                "type": "strong"
+              }
+            ],
+            "text": "strong",
+            "type": "text"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "marks": [
+              {
+                "type": "em"
+              }
+            ],
+            "text": "em",
+            "type": "text"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "marks": [
+              {
+                "type": "strikethrough"
+              }
+            ],
+            "text": "strike",
+            "type": "text"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "marks": [
+              {
+                "type": "highlight"
+              }
+            ],
+            "text": "highlight",
+            "type": "text"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "marks": [
+              {
+                "type": "code"
+              }
+            ],
+            "text": "code",
+            "type": "text"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "marks": [
+              {
+                "attrs": {
+                  "href": "https://example.com",
+                  "title": "title"
+                },
+                "type": "link"
+              }
+            ],
+            "text": "link",
+            "type": "text"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "attrs": {
+              "value": "x+y"
+            },
+            "type": "inline_math"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "attrs": {
+              "alt": "alt",
+              "dest": "media/a.png"
+            },
+            "type": "image"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "attrs": {
+              "alias": "alias",
+              "anchor_kind": "heading",
+              "anchor_text": "Heading",
+              "embed": false,
+              "target": "Target"
+            },
+            "type": "wikilink"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "attrs": {
+              "alias": null,
+              "anchor_kind": "block",
+              "anchor_text": "block",
+              "embed": true,
+              "target": "Target"
+            },
+            "type": "wikilink"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "attrs": {
+              "name": "nested/tag"
+            },
+            "type": "tag"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "attrs": {
+              "shortcode": "berry"
+            },
+            "type": "emoji"
+          },
+          {
+            "text": " ",
+            "type": "text"
+          },
+          {
+            "attrs": {
+              "label": "note"
+            },
+            "type": "footnote_ref"
+          },
+          {
+            "type": "soft_break"
+          },
+          {
+            "text": "soft break",
+            "type": "text"
+          },
+          {
+            "type": "hard_break"
+          },
+          {
+            "text": "hard break",
+            "type": "text"
+          }
+        ],
+        "type": "paragraph"
+      },
+      {
+        "attrs": {
+          "anchor": null
+        },
+        "content": [
+          {
+            "content": [
+              {
+                "attrs": {
+                  "anchor": null
+                },
+                "content": [
+                  {
+                    "text": "bullet",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "list_item"
+          },
+          {
+            "attrs": {
+              "cancelled": null,
+              "created": null,
+              "done": null,
+              "due": "2026-09-05",
+              "priority": "high",
+              "scheduled": null,
+              "start": null,
+              "status": "todo",
+              "unknown": [
+                "🔁 weekly"
+              ]
+            },
+            "content": [
+              {
+                "attrs": {
+                  "anchor": null
+                },
+                "content": [
+                  {
+                    "text": "todo",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "task_item"
+          },
+          {
+            "attrs": {
+              "cancelled": null,
+              "created": null,
+              "done": null,
+              "due": null,
+              "priority": "highest",
+              "scheduled": null,
+              "start": null,
+              "status": "done",
+              "unknown": []
+            },
+            "content": [
+              {
+                "attrs": {
+                  "anchor": null
+                },
+                "content": [
+                  {
+                    "text": "done",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "task_item"
+          },
+          {
+            "attrs": {
+              "cancelled": null,
+              "created": null,
+              "done": null,
+              "due": null,
+              "priority": "lowest",
+              "scheduled": null,
+              "start": null,
+              "status": "cancelled",
+              "unknown": []
+            },
+            "content": [
+              {
+                "attrs": {
+                  "anchor": null
+                },
+                "content": [
+                  {
+                    "text": "cancelled",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "task_item"
+          },
+          {
+            "attrs": {
+              "cancelled": null,
+              "created": null,
+              "done": null,
+              "due": null,
+              "priority": "medium",
+              "scheduled": null,
+              "start": null,
+              "status": "todo",
+              "unknown": []
+            },
+            "content": [
+              {
+                "attrs": {
+                  "anchor": null
+                },
+                "content": [
+                  {
+                    "text": "medium",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "task_item"
+          },
+          {
+            "attrs": {
+              "cancelled": null,
+              "created": null,
+              "done": null,
+              "due": null,
+              "priority": "low",
+              "scheduled": null,
+              "start": null,
+              "status": "todo",
+              "unknown": []
+            },
+            "content": [
+              {
+                "attrs": {
+                  "anchor": null
+                },
+                "content": [
+                  {
+                    "text": "low",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "task_item"
+          }
+        ],
+        "type": "bullet_list"
+      },
+      {
+        "attrs": {
+          "anchor": null,
+          "start": 3.0
+        },
+        "content": [
+          {
+            "content": [
+              {
+                "attrs": {
+                  "anchor": null
+                },
+                "content": [
+                  {
+                    "text": "ordered",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "list_item"
+          }
+        ],
+        "type": "ordered_list"
+      },
+      {
+        "attrs": {
+          "anchor": null
+        },
+        "content": [
+          {
+            "attrs": {
+              "anchor": null
+            },
+            "content": [
+              {
+                "text": "quoted",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "blockquote"
+      },
+      {
+        "attrs": {
+          "anchor": null,
+          "fold": "collapsed",
+          "kind": "warning"
+        },
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Styled ",
+                "type": "text"
+              },
+              {
+                "marks": [
+                  {
+                    "type": "em"
+                  }
+                ],
+                "text": "title",
+                "type": "text"
+              }
+            ],
+            "type": "callout_title"
+          },
+          {
+            "attrs": {
+              "anchor": null
+            },
+            "content": [
+              {
+                "text": "body",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "callout"
+      },
+      {
+        "attrs": {
+          "anchor": null,
+          "lang": "rust"
+        },
+        "content": [
+          {
+            "text": "fn main() {}",
+            "type": "text"
+          }
+        ],
+        "type": "code_block"
+      },
+      {
+        "attrs": {
+          "anchor": null
+        },
+        "content": [
+          {
+            "text": "x + y",
+            "type": "text"
+          }
+        ],
+        "type": "math_block"
+      },
+      {
+        "attrs": {
+          "anchor": null
+        },
+        "type": "divider"
+      },
+      {
+        "attrs": {
+          "alignments": [
+            "left",
+            "right"
+          ],
+          "anchor": null
+        },
+        "content": [
+          {
+            "content": [
+              {
+                "content": [
+                  {
+                    "text": "Left",
+                    "type": "text"
+                  }
+                ],
+                "type": "table_cell"
+              },
+              {
+                "content": [
+                  {
+                    "text": "Right",
+                    "type": "text"
+                  }
+                ],
+                "type": "table_cell"
+              }
+            ],
+            "type": "table_row"
+          },
+          {
+            "content": [
+              {
+                "content": [
+                  {
+                    "text": "a",
+                    "type": "text"
+                  }
+                ],
+                "type": "table_cell"
+              },
+              {
+                "content": [
+                  {
+                    "text": "b",
+                    "type": "text"
+                  }
+                ],
+                "type": "table_cell"
+              }
+            ],
+            "type": "table_row"
+          }
+        ],
+        "type": "table"
+      }
+    ],
+    "type": "doc"
+  },
+  "version": 1
+}

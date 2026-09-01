@@ -1,0 +1,265 @@
+{
+  "$comment": [
+    "The ProseMirror schema for a Memberberry note. This file is the cross-language",
+    "contract required by SPEC.md §5.6: the Tiptap schema (M3, TypeScript) is generated",
+    "from it, and the `yrs` walker (M2, Rust) is validated against it by",
+    "crates/mb-core/tests/schema.rs. Editing one side without the other is a test failure,",
+    "not a runtime surprise.",
+    "",
+    "Every node here has exactly one canonical Markdown rendering (SPEC.md §4.4), because",
+    "under C2 the schema *is* the contract with the file format. A node that cannot be",
+    "written as Markdown does not belong in this file.",
+    "",
+    "Frontmatter is deliberately absent. It is a map of scalars and string lists, not",
+    "prose, so it lives in the sibling `frontmatter` Y.Map rather than this ProseMirror",
+    "document (A25). That gives each key independent merge semantics.",
+    "",
+    "Attribute types use a small vocabulary understood by both generators:",
+    "  string | boolean | integer | enum | date | string[] | enum[]",
+    "`optional: true` means the attribute's default is null."
+  ],
+  "version": 1,
+  "topNode": "doc",
+
+  "nodes": {
+    "doc": {
+      "content": "block+",
+      "$comment": "A note with no blocks is `doc(paragraph)`; canonicalization drops the empty paragraph, so it serializes to an empty file."
+    },
+
+    "paragraph": {
+      "group": "block",
+      "content": "inline*",
+      "attrs": { "anchor": { "type": "string", "optional": true } },
+      "markdown": "text"
+    },
+
+    "heading": {
+      "group": "block",
+      "content": "inline*",
+      "attrs": {
+        "level": { "type": "integer", "min": 1, "max": 6, "default": 1 },
+        "anchor": { "type": "string", "optional": true }
+      },
+      "markdown": "# … ###### (ATX only, no closing hashes)",
+      "$comment": "Setext headings parse but never serialize; ATX is the canonical form."
+    },
+
+    "bullet_list": {
+      "group": "block",
+      "content": "(list_item | task_item)+",
+      "attrs": { "anchor": { "type": "string", "optional": true } },
+      "markdown": "- "
+    },
+
+    "ordered_list": {
+      "group": "block",
+      "content": "(list_item | task_item)+",
+      "attrs": {
+        "start": { "type": "integer", "min": 1, "max": 9007199254740991, "default": 1 },
+        "anchor": { "type": "string", "optional": true }
+      },
+      "markdown": "1. (lazy numbering — every item writes the start value or `1.`, the renderer counts)",
+      "$comment": "Orderedness is a property of the list, not the item: `1. [ ] x` is a task in an ordered list, so task_item appears under both list types."
+    },
+
+    "list_item": {
+      "content": "block*",
+      "$comment": "Not in the block group: a list item is only ever a child of a list. `block*`, not `block+`: a bare `- ` line parses to an item with no content, so the model must hold one."
+    },
+
+    "task_item": {
+      "content": "block*",
+      "attrs": {
+        "status": { "type": "enum", "values": ["todo", "done", "cancelled"], "default": "todo" },
+        "priority": {
+          "type": "enum",
+          "values": ["lowest", "low", "medium", "high", "highest"],
+          "optional": true
+        },
+        "created": { "type": "date", "optional": true },
+        "start": { "type": "date", "optional": true },
+        "scheduled": { "type": "date", "optional": true },
+        "due": { "type": "date", "optional": true },
+        "done": { "type": "date", "optional": true },
+        "cancelled": { "type": "date", "optional": true },
+        "unknown": { "type": "string[]", "default": [] }
+      },
+      "markdown": "- [ ] / - [x] / - [-] plus Obsidian Tasks metadata (SPEC.md §10.1)",
+      "$comment": "`unknown` holds metadata markers this version does not model — recurrence (🔁) above all — verbatim and in source order. Dropping it would destroy user data on the first edit, so generators must round-trip it untouched, never normalize it."
+    },
+
+    "blockquote": {
+      "group": "block",
+      "content": "block*",
+      "attrs": { "anchor": { "type": "string", "optional": true } },
+      "markdown": "> ",
+      "$comment": "`block*`, not `block+`: a bare `>` line is valid Markdown and parses to an empty blockquote, so the model must be able to hold one."
+    },
+
+    "callout": {
+      "group": "block",
+      "content": "callout_title block*",
+      "attrs": {
+        "kind": { "type": "string", "default": "note" },
+        "fold": { "type": "enum", "values": ["none", "expanded", "collapsed"], "default": "none" },
+        "anchor": { "type": "string", "optional": true }
+      },
+      "markdown": "> [!note] Title / > [!warning]- (collapsed) / > [!conflict] (SPEC.md §3.5)",
+      "$comment": "`kind` is a free string, not an enum: Obsidian accepts any identifier and unknown kinds must round-trip rather than be coerced to `note`."
+    },
+
+    "callout_title": {
+      "content": "inline*",
+      "$comment": "A node rather than an attribute because the title is inline content — it can hold links, emoji and emphasis, which an attribute cannot represent."
+    },
+
+    "code_block": {
+      "group": "block",
+      "content": "text*",
+      "marks": "",
+      "code": true,
+      "defining": true,
+      "attrs": {
+        "lang": { "type": "string", "optional": true },
+        "anchor": { "type": "string", "optional": true }
+      },
+      "markdown": "backtick fence, minimum 3, extended to exceed any inner run"
+    },
+
+    "math_block": {
+      "group": "block",
+      "content": "text*",
+      "marks": "",
+      "code": true,
+      "defining": true,
+      "attrs": { "anchor": { "type": "string", "optional": true } },
+      "markdown": "$$ … $$"
+    },
+
+    "divider": {
+      "group": "block",
+      "atom": true,
+      "attrs": { "anchor": { "type": "string", "optional": true } },
+      "markdown": "***",
+      "$comment": "`***` rather than `---`, which would be ambiguous with a frontmatter fence at the top of a file."
+    },
+
+    "table": {
+      "group": "block",
+      "content": "table_row+",
+      "attrs": {
+        "alignments": {
+          "type": "enum[]",
+          "values": ["none", "left", "center", "right"],
+          "default": []
+        },
+        "anchor": { "type": "string", "optional": true }
+      },
+      "markdown": "GFM pipe table",
+      "$comment": "The first table_row is the header; GFM has no headerless table, and `table_row+` is what makes its presence structural. `alignments` is per column and its length is the column count."
+    },
+
+    "table_row": { "content": "table_cell+" },
+    "table_cell": { "content": "inline*" },
+
+    "text": { "group": "inline" },
+
+    "soft_break": {
+      "group": "inline",
+      "inline": true,
+      "atom": true,
+      "markdown": "a single newline inside a paragraph",
+      "$comment": "A node rather than a newline inside a text node so that the soft/hard distinction survives a round trip; ProseMirror text nodes conventionally hold no newlines."
+    },
+
+    "hard_break": {
+      "group": "inline",
+      "inline": true,
+      "atom": true,
+      "markdown": "a backslash at end of line"
+    },
+
+    "image": {
+      "group": "inline",
+      "inline": true,
+      "atom": true,
+      "attrs": {
+        "dest": { "type": "string", "default": "" },
+        "alt": { "type": "string", "default": "" }
+      },
+      "markdown": "![alt](media/…)"
+    },
+
+    "wikilink": {
+      "group": "inline",
+      "inline": true,
+      "atom": true,
+      "attrs": {
+        "target": { "type": "string", "default": "" },
+        "anchor_kind": { "type": "enum", "values": ["none", "heading", "block"], "default": "none" },
+        "anchor_text": { "type": "string", "optional": true },
+        "alias": { "type": "string", "optional": true },
+        "embed": { "type": "boolean", "default": false }
+      },
+      "markdown": "[[Target#anchor|alias]], or ![[…]] when embed is set",
+      "$comment": "`anchor_kind`/`anchor_text` flatten the Rust `Option<Anchor>` enum, which ProseMirror attributes cannot hold directly. `anchor_kind: none` requires `anchor_text: null` and vice versa — enforced by the validator, not the schema."
+    },
+
+    "tag": {
+      "group": "inline",
+      "inline": true,
+      "atom": true,
+      "attrs": { "name": { "type": "string", "default": "" } },
+      "markdown": "#tag or #nested/tag"
+    },
+
+    "emoji": {
+      "group": "inline",
+      "inline": true,
+      "atom": true,
+      "attrs": { "shortcode": { "type": "string", "default": "" } },
+      "markdown": ":name:",
+      "$comment": "Custom emoji only. Unicode emoji are stored as their literal glyph in a text node, because a glyph still renders in a plain text editor (SPEC.md §11.3)."
+    },
+
+    "inline_math": {
+      "group": "inline",
+      "inline": true,
+      "atom": true,
+      "attrs": { "value": { "type": "string", "default": "" } },
+      "markdown": "$x$"
+    },
+
+    "footnote_ref": {
+      "group": "inline",
+      "inline": true,
+      "atom": true,
+      "attrs": { "label": { "type": "string", "default": "" } },
+      "markdown": "[^label]"
+    }
+  },
+
+  "marks": {
+    "strong": { "markdown": "**x**" },
+    "em": {
+      "markdown": "*x*",
+      "$comment": "`*` is canonical; `_` is emitted only where `*` would not reparse (see serialize::emphasis_delimiter)."
+    },
+    "strikethrough": { "markdown": "~~x~~" },
+    "highlight": { "markdown": "==x==" },
+    "code": {
+      "excludes": "_",
+      "code": true,
+      "markdown": "`x`",
+      "$comment": "Excludes every other mark: a code span's content is literal, so emphasis inside it has no Markdown rendering."
+    },
+    "link": {
+      "attrs": {
+        "href": { "type": "string", "default": "" },
+        "title": { "type": "string", "optional": true }
+      },
+      "markdown": "[text](href) or [text](href \"title\")"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+/target
+/node_modules
+/web/node_modules/
+/web/dist
+/web/coverage/
+/web/src/wasm/
+/crates/mb-wasm/pkg
+*.profraw
+.DS_Store
+# Server-local credentials, session state, and deployment configuration.
+/auth.db
+/audit.log
+/audit.log.1
+/server.toml
+# Vault runtime state is disposable (SPEC 3.1, layer 2 and 3).
+.memberberry/
+/tmp-vault/
+/tmp-corpus/
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/

@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // `node` is for the test that loads the wasm bytes off disk; nothing shipped to a
+    // browser imports from `node:`.
+    "types": ["vite/client", "node"],
+
+    // AGENTS.md §4.3. `strict` alone is not enough: `noUncheckedIndexedAccess` is what makes
+    // `arr[i]` admit it can be undefined, and `exactOptionalPropertyTypes` is what stops
+    // `{ a?: string }` quietly accepting an explicit `undefined`.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "verbatimModuleSyntax": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src", "vite.config.ts"]
+}

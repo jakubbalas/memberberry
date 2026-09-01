@@ -1,0 +1,25 @@
+[package]
+name = "mb-cli"
+description = "memberberry command line: normalize, gen-vault, doctor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "mb_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "memberberry"
+path = "src/main.rs"
+
+[dependencies]
+mb-core.workspace = true
+mb-auth.workspace = true
+mb-server.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread"] }
+rpassword = "7"
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 23be9c62806dff5a98af8012d5709926999c01745e8631d2bdef402aa3e1998e # shrinks to doc = Document { frontmatter: Frontmatter { id: None, created: None, updated: None, tags: [], aliases: [], icon: None, extra: {} }, blocks: [Block { kind: List(List { ordered: false, start: 1, items: [ListItem { task: None, content: [Block { kind: List(List { ordered: false, start: 1, items: [ListItem { task: None, content: [Block { kind: CodeBlock { lang: None, code: " \na" }, anchor: None }] }] }), anchor: None }] }] }), anchor: None }] }
+cc 303b2815ab03fc7c493838022cf9b016a36e52d74d9ebbb079fa3e4b425939bf # shrinks to input = "¡ ~¡AAAAA\u{b}AA¡~*À*¡"
+cc 79866ce6f1a108ee0533b6a32f33d383c28d6096e54c1719e997d56e297e1bc9 # shrinks to doc = Document { frontmatter: Frontmatter { id: None, created: None, updated: None, tags: [], aliases: [], icon: None, extra: {} }, blocks: [Block { kind: List(List { ordered: false, start: 1, items: [ListItem { task: Some(Task { status: Todo, meta: TaskMeta { created: None, start: None, scheduled: None, due: None, done: None, cancelled: None, priority: Some(Highest), unknown: [] } }), content: [Block { kind: Paragraph([Strong([Text("<")]), Emphasis([Text("! ^")])]), anchor: None }] }] }), anchor: None }] }
+cc ce554f11b7f3b00ca957353ee07749899d601a5dc6d46c87ea8fc48df25e3b25 # shrinks to input = "~¡!~*\u{e000}*a"
+cc 4cd60958ce5562812bc0b0ece14169670416278f8a77ddea921893daea57566e # shrinks to input = "`¡`*¡AA\\A\u{b}*$_$*$¡_$A¡* "
+cc 1f2904c1bc55b44d6a564a946648881838372d47d3872aa3c54ce9b718a0acd6 # shrinks to doc = Document { frontmatter: Frontmatter { id: None, created: None, updated: None, tags: [], aliases: [], icon: None, extra: {} }, blocks: [Block { kind: List(List { ordered: false, start: 1, items: [ListItem { task: None, content: [Block { kind: Table(Table { alignments: [None], head: [[Emphasis([Text("'")]), Math("a")]], rows: [] }), anchor: None }] }] }), anchor: None }] }
+cc 2494813bfb1891d0eac027a08ff5aa38e164789bd825d180de6d3c5cc5e2a2f1 # shrinks to input = "\t\r ¡¡*¡:*$¡$"
+cc 64ac177b85a42080643ca316323ee1706683733afc5846f4466e8d7941dbea7a # shrinks to doc = Document { frontmatter: Frontmatter { id: None, created: None, updated: None, tags: [], aliases: [], icon: None, extra: {} }, blocks: [Block { kind: List(List { ordered: false, start: 1, items: [ListItem { task: None, content: [Block { kind: Table(Table { alignments: [None, None], head: [[Highlight([Strong([Text("$")])])], [Highlight([Text("$")])]], rows: [] }), anchor: None }] }] }), anchor: None }] }
+cc 04652ad8fd9eb8c56b313327d8b7ae1ef75bccdbdf239ddab2edc3a9f8b5c9ae # shrinks to input = "¡$|$!`\r\0$`"
+cc 5e4c1aab32c313d57fc2cb1e912200325868c6953c88d2fe517e2fff795c0162 # shrinks to input = "`A``0`$A~$"
+cc 0ea9ce9da214e973de4148de22b75be83c08e3928235e98764ca93458bdb4a62 # shrinks to input = "\t!```$!¡$"
+cc fd33478b8782e2e08bbbe411028a7e9eaa1d8dd83ac66c0ee65e386af6fa64ad # shrinks to input = "$¡|$0¡¡a $$\u{e}$"
+cc 4502fd55bce68f0a9789b858cd07f3d036c8b28746fe4e7119365d9a3554087e # shrinks to input = "A\r*\t\t¡\u{b} \0¡¡0¡ `\r$!!$`"
+cc 77c83cd4ba48e24c15d56f361c4d93698a328fb07d6c0f7bb67fe1758f2f39eb # shrinks to doc = Document { frontmatter: Frontmatter { id: None, created: None, updated: None, tags: [], aliases: [], icon: None, extra: {} }, blocks: [Block { kind: List(List { ordered: false, start: 1, items: [ListItem { task: None, content: [Block { kind: Table(Table { alignments: [None, None, None], head: [[Strong([Text("<")]), Emphasis([Tag("a-_a")])], [Text("!")], [Text("A")]], rows: [] }), anchor: None }] }] }), anchor: None }] }
+cc 67a852ad2728826eb7a5610e415a8de32cd90050a3fdaeb47bb9206515ff3f49 # shrinks to input = "$\r\t$|$¡$¡$"
+cc 0090d19b18ac8aca54d437440b3a32260f04c84dd1341bb979e27cceca82a391 # shrinks to input = "Aa$A`$``"
+cc 496cbf40992e02478d605f982e84c391218a1aedf332639df4d4179543059a1e # shrinks to input = "¡`a`$¡~`$``"

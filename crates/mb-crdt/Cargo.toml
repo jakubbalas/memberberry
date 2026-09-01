@@ -1,0 +1,21 @@
+[package]
+name = "mb-crdt"
+description = "Yjs-compatible CRDT representation of Memberberry block documents."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+crc32fast.workspace = true
+mb-core.workspace = true
+thiserror.workspace = true
+yrs.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

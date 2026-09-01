@@ -1,0 +1,696 @@
+//! The HTTP surface, driven over a real socket.
+//!
+//! Bound to an ephemeral port rather than 9010: AGENTS.md §5.1 reserves that range for a
+//! developer's own server, and a test that steals it fails for whoever has one running.
+//!
+//! Requests are made with a hand-written client rather than a dependency. This crate is a
+//! server; adding an HTTP client to test it would be a dependency carried forever for the
+//! sake of four lines.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic
+)]
+
+mod support;
+
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
+
+use mb_server::Vault;
+use mb_server::http::{AppState, router};
+use mb_server::vault::Slug;
+use support::TempDir;
+
+/// A server on an ephemeral port.
+///
+/// The runtime lives entirely inside the spawned thread and nothing is joined on drop —
+/// an earlier version joined the server thread in `Drop` and could wedge the whole test
+/// binary if shutdown raced. Signalling and walking away costs one short-lived thread per
+/// test and cannot hang.
+struct TestServer {
+    addr: SocketAddr,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    default_headers: String,
+}
+
+impl TestServer {
+    fn start(state: AppState) -> Self {
+        let app = router(Arc::new(state));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("building the server runtime");
+            rt.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("binding an ephemeral port");
+                let addr = listener.local_addr().expect("local addr");
+                addr_tx.send(addr).expect("reporting the address");
+                let served = axum::serve(listener, app).with_graceful_shutdown(async {
+                    drop(shutdown_rx.await);
+                });
+                drop(served.await);
+            });
+        });
+
+        let addr = addr_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the server should bind within ten seconds");
+        Self {
+            addr,
+            shutdown: Some(shutdown_tx),
+            default_headers: String::new(),
+        }
+    }
+
+    fn authenticated(vaults: Vec<Vault>) -> Self {
+        let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+        let alice = auth
+            .setup_first_user(mb_auth::NewUser {
+                username: "alice",
+                display_name: "Alice",
+                password: "correct horse battery staple",
+            })
+            .expect("setup");
+        let token = auth
+            .create_session(alice.id, 4_102_444_800)
+            .expect("session");
+        let cookie = auth.signed_session_cookie(&token).expect("sign cookie");
+        let state = AppState::authenticated(vaults, auth).expect("secure state");
+        let mut server = Self::start(state);
+        server.default_headers = format!("Cookie: mb_session={cookie}\r\n");
+        server
+    }
+
+    /// Issues a GET and returns `(status line, body)`.
+    fn get(&self, path: &str) -> (String, String) {
+        self.get_with_headers(path, "")
+    }
+
+    fn get_with_headers(&self, path: &str, headers: &str) -> (String, String) {
+        self.request(
+            "GET",
+            path,
+            &format!("{}{}", self.default_headers, headers),
+            "",
+        )
+    }
+
+    fn post_form(&self, path: &str, form: &str) -> (String, String) {
+        self.request(
+            "POST",
+            path,
+            &format!(
+                "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n",
+                form.len()
+            ),
+            form,
+        )
+    }
+
+    fn request(&self, method: &str, path: &str, headers: &str, body: &str) -> (String, String) {
+        let mut stream = TcpStream::connect(self.addr).expect("connecting");
+        // A read timeout means a server bug shows up as a failing test rather than a hang.
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("setting a read timeout");
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{headers}Connection: close\r\n\r\n{body}"
+        )
+        .expect("writing the request");
+        let mut raw = String::new();
+        stream
+            .read_to_string(&mut raw)
+            .expect("reading the response");
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw.as_str(), ""));
+        let status = head.lines().next().unwrap_or_default().to_string();
+        (status, body.to_string())
+    }
+
+    fn status(&self, path: &str) -> String {
+        self.get(path).0
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            // `Result<(), ()>` is Copy, so `drop` is a no-op — ignore it explicitly.
+            let _sent = tx.send(());
+        }
+    }
+}
+
+fn vault(dir: &TempDir, slug: &str, name: &str) -> Vault {
+    if !dir.path().join("access.toml").exists() {
+        dir.write(
+            "access.toml",
+            "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+        );
+    }
+    Vault::open(Slug::parse(slug).expect("slug"), name, dir.path()).expect("open")
+}
+
+fn is_ok(status: &str) -> bool {
+    status.contains("200")
+}
+
+fn is_not_found(status: &str) -> bool {
+    status.contains("404")
+}
+
+// ---------------------------------------------------------------- index
+
+#[test]
+fn the_index_lists_registered_vaults() {
+    let a = TempDir::new("http-a");
+    let b = TempDir::new("http-b");
+    let server = TestServer::authenticated(vec![
+        vault(&a, "personal", "Personal"),
+        vault(&b, "work", "Work Notes"),
+    ]);
+
+    let (status, body) = server.get("/");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("href=\"/v/personal\""), "{body}");
+    assert!(body.contains("Work Notes"), "{body}");
+}
+
+#[test]
+fn an_empty_server_says_so_rather_than_showing_a_blank_page() {
+    let server = TestServer::authenticated(vec![]);
+    let (status, body) = server.get("/");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("No vaults registered"), "{body}");
+    assert!(
+        body.contains("vault create"),
+        "it should say how to fix it: {body}"
+    );
+}
+
+// ---------------------------------------------------------------- vault index
+
+#[test]
+fn a_vault_lists_its_notes() {
+    let dir = TempDir::new("http-list");
+    dir.write("alpha.md", "# Alpha\n");
+    dir.write("folder/beta.md", "# Beta\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/v/v");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("2 notes"), "{body}");
+    assert!(body.contains("href=\"/v/v/alpha.md\""), "{body}");
+    assert!(body.contains("href=\"/v/v/folder/beta.md\""), "{body}");
+}
+
+#[test]
+fn an_authenticated_viewer_does_not_receive_notes_denied_by_access_toml() {
+    let dir = TempDir::new("http-acl");
+    dir.write("Public.md", "# Public\n");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&token).expect("sign cookie")
+    );
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+
+    let (status, body) = server.get_with_headers("/v/v", &header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Public"), "{body}");
+    assert!(!body.contains("Salary"), "{body}");
+    let (status, body) = server.get_with_headers("/v/v/Private/Salary.md", &header);
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Salary"), "{body}");
+}
+
+#[test]
+fn http_read_matrix_denies_anonymous_and_non_members_without_leaking_titles() {
+    let dir = TempDir::new("http-read-matrix");
+    dir.write("Public.md", "# Public\n");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let charlie = auth
+        .create_user(mb_auth::NewUser {
+            username: "charlie",
+            display_name: "Charlie",
+            password: "correct horse battery staple",
+        })
+        .expect("non-member");
+    let alice_token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let bob_token = auth.create_session(bob.id, 4_102_444_800).expect("session");
+    let charlie_token = auth
+        .create_session(charlie.id, 4_102_444_800)
+        .expect("session");
+    let alice_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&alice_token)
+            .expect("sign cookie")
+    );
+    let bob_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&bob_token).expect("sign cookie")
+    );
+    let charlie_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&charlie_token)
+            .expect("sign cookie")
+    );
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+
+    let (status, body) = server.get("/");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Sign in"), "{body}");
+    assert!(!body.contains("Salary"), "{body}");
+    let (status, body) = server.get("/v/v/Private/Salary.md");
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Salary"), "{body}");
+
+    let (status, body) = server.get_with_headers("/", &charlie_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(!body.contains("href=\"/v/v\""), "{body}");
+    let (status, body) = server.get_with_headers("/v/v/Private/Salary.md", &charlie_header);
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Salary"), "{body}");
+
+    let (status, body) = server.get_with_headers("/v/v", &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Public"), "{body}");
+    assert!(!body.contains("Salary"), "{body}");
+    let (status, body) = server.get_with_headers("/v/v/Private/Salary.md", &bob_header);
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Salary"), "{body}");
+
+    let (status, body) = server.get_with_headers("/v/v/Private/Salary.md", &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Salary Review"), "{body}");
+}
+
+#[test]
+fn a_successful_login_is_recorded_in_the_audit_log() {
+    let dir = TempDir::new("http-login-audit");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("setup");
+    let audit = mb_server::audit::AuditLog::new(dir.path(), 4_096).expect("audit log");
+    let state = AppState::authenticated_with_audit(vec![vault(&dir, "v", "V")], auth, Some(audit))
+        .expect("secure state");
+    let server = TestServer::start(state);
+
+    let (status, _) = server.post_form(
+        "/login",
+        "username=alice&password=correct+horse+battery+staple",
+    );
+    assert!(status.contains("303"), "{status}");
+    let log = std::fs::read_to_string(dir.path().join("audit.log")).expect("read audit log");
+    assert!(log.contains("\"action\":\"login\""), "{log}");
+    assert!(log.contains("\"result\":\"success\""), "{log}");
+}
+
+#[test]
+fn an_unsigned_session_token_cannot_authenticate_an_http_request() {
+    let dir = TempDir::new("http-unsigned-session");
+    dir.write("Note.md", "# Visible\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+    let unsigned = format!("Cookie: mb_session={}\r\n", token.expose_secret());
+
+    let (status, body) = server.get_with_headers("/v/v/Note.md", &unsigned);
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Visible"), "{body}");
+}
+
+#[test]
+fn scoped_api_token_is_limited_to_its_vault_and_current_acl() {
+    let dir = TempDir::new("http-api-token");
+    dir.write("Note.md", "# Visible\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_api_token(mb_auth::ApiTokenScope {
+            user_id: alice.id,
+            vault_slug: "v".to_string(),
+            role: mb_core::Role::Viewer,
+        })
+        .expect("token");
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+    let header = format!("Authorization: Bearer {}\r\n", token.expose_secret());
+
+    assert!(is_ok(&server.get_with_headers("/v/v", &header).0));
+    assert!(is_not_found(
+        &server.get_with_headers("/v/other", &header).0
+    ));
+}
+
+#[test]
+fn a_vault_index_works_with_and_without_a_trailing_slash() {
+    let dir = TempDir::new("http-slash");
+    dir.write("a.md", "# A\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    assert!(is_ok(&server.status("/v/v")));
+    assert!(is_ok(&server.status("/v/v/")));
+}
+
+#[test]
+fn an_unknown_vault_is_not_found() {
+    let server = TestServer::authenticated(vec![]);
+    assert!(is_not_found(&server.status("/v/nope")));
+}
+
+#[test]
+fn a_slug_that_is_not_even_a_valid_slug_is_not_found() {
+    // It must be refused before it can be used as a key or a path, not after.
+    let server = TestServer::authenticated(vec![]);
+    for bad in ["/v/UPPER", "/v/with%20space", "/v/..", "/v/a.b"] {
+        assert!(is_not_found(&server.status(bad)), "{bad}");
+    }
+}
+
+// ---------------------------------------------------------------- notes
+
+#[test]
+fn a_note_renders_as_html() {
+    let dir = TempDir::new("http-note");
+    dir.write("note.md", "# Title\n\nSome **bold** text.\n\n- [x] done\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/v/v/note.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("<h1>Title</h1>"), "{body}");
+    assert!(body.contains("<strong>bold</strong>"), "{body}");
+    assert!(
+        body.contains("type=\"checkbox\" disabled checked"),
+        "{body}"
+    );
+    assert!(
+        body.contains("<title>Title · Memberberry</title>"),
+        "{body}"
+    );
+}
+
+#[test]
+fn a_note_resolves_without_its_extension() {
+    // That is the shape a wikilink produces, so the links on the page have to work.
+    let dir = TempDir::new("http-ext");
+    dir.write("note.md", "# Title\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    assert!(
+        is_ok(&server.status("/v/v/note")),
+        "extensionless link should resolve"
+    );
+}
+
+#[test]
+fn a_wikilink_points_at_a_url_that_resolves() {
+    let dir = TempDir::new("http-wikilink");
+    dir.write("source.md", "See [[target]].\n");
+    dir.write("target.md", "# Target\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (_, body) = server.get("/v/v/source.md");
+    assert!(body.contains("href=\"/v/v/target\""), "{body}");
+    assert!(
+        is_ok(&server.status("/v/v/target")),
+        "the link must actually work"
+    );
+}
+
+#[test]
+fn a_missing_note_is_not_found() {
+    let dir = TempDir::new("http-missing");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    assert!(is_not_found(&server.status("/v/v/nope.md")));
+}
+
+#[test]
+fn an_unknown_route_is_not_found() {
+    let server = TestServer::authenticated(vec![]);
+    assert!(is_not_found(&server.status("/nonsense")));
+    assert!(is_not_found(&server.status("/api/v1/vaults")));
+}
+
+// ---------------------------------------------------------------- security
+
+#[test]
+fn a_traversal_request_cannot_read_outside_the_vault() {
+    // The end-to-end version of the unit test in `vault.rs`: a real request over a real
+    // socket, against a secret that exists and is readable.
+    let outer = TempDir::new("http-outer");
+    outer.write("secret.md", "# TOP SECRET\n");
+    let dir = TempDir::new("http-inner");
+    dir.write("ok.md", "# Fine\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for attempt in [
+        "/v/v/../secret.md",
+        "/v/v/..%2Fsecret.md",
+        "/v/v/%2e%2e/secret.md",
+        "/v/v/folder/../../secret.md",
+        "/v/v/../../etc/passwd",
+        "/v/v//etc/passwd",
+    ] {
+        let (status, body) = server.get(attempt);
+        assert!(
+            !body.contains("TOP SECRET"),
+            "{attempt} leaked the file: {status}"
+        );
+    }
+}
+
+#[test]
+fn note_content_cannot_inject_script_into_the_page() {
+    // Stored cross-site scripting is the failure mode that matters for a server rendering
+    // someone's notes. `mb_core::html` escapes; this proves it survives the whole pipeline.
+    let dir = TempDir::new("http-xss");
+    dir.write(
+        "evil.md",
+        "# <script>alert('title')</script>\n\n<img src=x onerror=alert(1)>\n\n\
+         [click](javascript:alert(2))\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (_, body) = server.get("/v/v/evil.md");
+    // The payload text is *expected* on the page — as escaped text. What must not appear is
+    // a real element, so these look for unescaped `<` openers rather than substrings.
+    assert!(
+        !body.contains("<script"),
+        "a script element survived: {body}"
+    );
+    assert!(
+        !body.contains("<img src=x"),
+        "an img element survived: {body}"
+    );
+    assert!(
+        !body.contains("href=\"javascript:"),
+        "a js url survived: {body}"
+    );
+
+    // ...and it must still be readable, because escaping is not deleting.
+    assert!(body.contains("&lt;script&gt;"), "{body}");
+    assert!(
+        body.contains("&lt;img src=x onerror=alert(1)&gt;"),
+        "{body}"
+    );
+    assert!(body.contains("href=\"#blocked\""), "{body}");
+}
+
+#[test]
+fn every_page_carries_a_content_security_policy() {
+    // Defence in depth behind the escaping: if an escaping bug ever lands, this is what
+    // stops it becoming script execution.
+    let dir = TempDir::new("http-csp");
+    dir.write("note.md", "# A\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for path in ["/", "/v/v", "/v/v/note.md", "/nonsense"] {
+        let (_, body) = server.get(path);
+        assert!(
+            body.contains("Content-Security-Policy") && body.contains("default-src 'none'"),
+            "{path} has no CSP: {body}"
+        );
+    }
+}
+
+#[test]
+fn a_filesystem_error_does_not_leak_a_path_to_the_page() {
+    // An I/O error names a path, and a path describes the shape of someone's private vault.
+    let dir = TempDir::new("http-error");
+    let vault = vault(&dir, "v", "V");
+    drop(std::fs::remove_dir_all(dir.path()));
+    let server = TestServer::authenticated(vec![vault]);
+
+    let (status, body) = server.get("/v/v");
+    assert!(status.contains("500") || status.contains("200"), "{status}");
+    assert!(
+        !body.contains("mb-server-http-error"),
+        "path leaked: {body}"
+    );
+    assert!(!body.contains("/tmp/"), "path leaked: {body}");
+}
+
+// ---------------------------------------------------------------- rendering detail
+
+#[test]
+fn a_note_without_a_heading_is_titled_by_its_path() {
+    let dir = TempDir::new("http-untitled");
+    dir.write("untitled.md", "***\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let (_, body) = server.get("/v/v/untitled.md");
+    assert!(body.contains("untitled.md"), "{body}");
+}
+
+#[test]
+fn a_note_name_with_spaces_is_linked_and_served() {
+    let dir = TempDir::new("http-spaces");
+    dir.write("My Note.md", "# My Note\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (_, index) = server.get("/v/v");
+    assert!(index.contains("My%20Note.md"), "{index}");
+    assert!(is_ok(&server.status("/v/v/My%20Note.md")));
+}
+
+#[test]
+fn a_note_page_links_back_to_its_vault() {
+    let dir = TempDir::new("http-crumb");
+    dir.write("a.md", "# A\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "Vault Name")]);
+    let (_, body) = server.get("/v/v/a.md");
+    assert!(body.contains("href=\"/v/v\""), "{body}");
+    assert!(body.contains("Vault Name"), "{body}");
+}
+
+#[test]
+fn a_wikilink_into_a_folder_resolves_by_name() {
+    // Found against a real vault: `[[Daily]]` rendered as `/v/x/Daily` and 404'd, because
+    // the note lives at `todos/Daily.md`. Every wikilink in a foldered vault was dead.
+    let dir = TempDir::new("http-by-name");
+    dir.write("index.md", "See [[Daily]] and [[Nested Note]].\n");
+    dir.write("todos/Daily.md", "# Daily\n");
+    dir.write("a/b/Nested Note.md", "# Nested\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (_, body) = server.get("/v/v/index.md");
+    assert!(body.contains("href=\"/v/v/Daily\""), "{body}");
+
+    let (status, note) = server.get("/v/v/Daily");
+    assert!(is_ok(&status), "the wikilink must resolve: {status}");
+    assert!(note.contains("<h1>Daily</h1>"), "{note}");
+    assert!(
+        is_ok(&server.status("/v/v/Nested%20Note")),
+        "spaces in a name"
+    );
+}
+
+#[test]
+fn a_dotted_path_is_not_served_over_http() {
+    // The end-to-end form of the leak found against a real vault: `.git/config` can hold a
+    // remote URL with credentials, and it was being served on request.
+    let dir = TempDir::new("http-dotfiles");
+    dir.write(
+        ".git/config",
+        "[core]\n\turl = https://user:SECRET@example.com\n",
+    );
+    dir.write(".obsidian/graph.json", "{}\n");
+    dir.write("visible.md", "# Visible\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for hidden in ["/v/v/.git/config", "/v/v/.obsidian/graph.json"] {
+        let (status, body) = server.get(hidden);
+        assert!(is_not_found(&status), "{hidden} was served: {status}");
+        assert!(!body.contains("SECRET"), "{hidden} leaked: {body}");
+    }
+    assert!(is_ok(&server.status("/v/v/visible.md")));
+}
+
+#[test]
+fn a_non_markdown_file_is_not_served_as_a_note() {
+    let dir = TempDir::new("http-ext-guard");
+    dir.write("data.json", "{\"secret\": true}\n");
+    dir.write("note.md", "# A\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    assert!(is_not_found(&server.status("/v/v/data.json")));
+}
