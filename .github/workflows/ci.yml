@@ -42,6 +42,13 @@ jobs:
       - name: wasm32 build
         run: cargo check -p mb-core --target wasm32-unknown-unknown
 
+      # SPEC.md §20.2 promises theme authors that the token names are a stable public API.
+      # This is what makes that a promise rather than a hope: it fails on an undeclared
+      # token, on a token nothing uses, and on a literal colour anywhere else (AGENTS.md
+      # §4.4). It lives in this job because it reads both the Rust and the web trees.
+      - name: Design-token contract
+        run: python3 scripts/token-check.py
+
   # The frontend, and with it the WebAssembly bridge. The boundary tests in
   # `web/src/notes.test.ts` run against a real wasm build, so this job is what proves the
   # Rust↔TypeScript contract on every commit rather than only when someone runs it locally.

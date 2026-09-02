@@ -905,7 +905,7 @@ fn page(title: &str, body: &str) -> Html<String> {
 }
 
 fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
-    let mut out = String::with_capacity(body.len() + STYLE.len() + 512);
+    let mut out = String::with_capacity(body.len() + TOKENS.len() + STYLE.len() + 512);
     out.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\" />\n");
     out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n");
     // why: the notes being rendered are untrusted content. A restrictive CSP is a second
@@ -920,6 +920,7 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
     out.push_str("<title>");
     push_escaped_text(&mut out, title);
     out.push_str(" · Memberberry</title>\n<style>");
+    out.push_str(TOKENS);
     out.push_str(STYLE);
     out.push_str(
         "</style>\n</head>\n<body>\n<header><a href=\"/\">Memberberry</a></header>\n<main>\n",
@@ -1017,36 +1018,45 @@ async fn shutdown() {
     println!("\nmemberberry: shutting down");
 }
 
+/// The design-token contract (SPEC §20.1), compiled into the binary.
+///
+/// why: `include_str!` rather than a second copy of the values. These pages are a separate
+/// *render* path from the app (§17.2) and carry no external assets on purpose, but they are
+/// not a separate *design system* — one file declares the tokens and both sides reference
+/// them, so the two cannot drift apart. The cost is a few KB of inline CSS per page, which
+/// is the right trade for a read-only fallback that must render with no network round trips.
+const TOKENS: &str = include_str!("../../../web/src/shell/tokens.css");
+
+/// Rules for the server-rendered pages. Colour, type, spacing and radii come from `TOKENS`;
+/// `scripts/token-check.py` fails the build on a literal colour or an undeclared token.
 const STYLE: &str = "\
-:root{color-scheme:light dark;--fg:#1a1a1a;--bg:#fdfdfc;--muted:#6b6b6b;--line:#e4e4e1;--accent:#3b5bdb}\
-@media(prefers-color-scheme:dark){:root{--fg:#e8e8e6;--bg:#16171a;--muted:#9a9a97;--line:#2c2e33;--accent:#8da2fb}}\
 *{box-sizing:border-box}\
-body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}\
-header{border-bottom:1px solid var(--line);padding:.75rem 1.5rem;font-weight:600}\
-header a{color:inherit;text-decoration:none}\
-main{max-width:46rem;margin:0 auto;padding:2rem 1.5rem 6rem}\
-h1,h2,h3,h4,h5,h6{line-height:1.25;margin:2rem 0 .75rem}\
-.mb-page-title{margin-top:0;font-size:1.75rem}\
-a{color:var(--accent)}\
-code{background:color-mix(in srgb,var(--fg) 8%,transparent);padding:.1em .35em;border-radius:3px;font-size:.9em}\
-pre{background:color-mix(in srgb,var(--fg) 6%,transparent);padding:1rem;border-radius:6px;overflow-x:auto}\
-pre code{background:none;padding:0}\
-blockquote{border-left:3px solid var(--line);margin:1rem 0;padding:.25rem 0 .25rem 1rem;color:var(--muted)}\
-table{border-collapse:collapse;width:100%;margin:1rem 0}\
-th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}\
-hr{border:0;border-top:1px solid var(--line);margin:2rem 0}\
+body{margin:0;background:var(--surface-canvas);color:var(--text-primary);font:var(--text-md)/var(--leading-body) var(--font-body)}\
+header{border-bottom:1px solid var(--border-subtle);padding:var(--space-5) var(--space-7);font:var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui);letter-spacing:var(--tracking-wide);text-transform:uppercase}\
+header a{color:var(--accent-primary);text-decoration:none}\
+main{max-width:var(--editor-measure);margin:0 auto;padding:var(--space-8) var(--space-7) var(--space-9)}\
+h1,h2,h3,h4,h5,h6{line-height:var(--leading-snug);margin:var(--space-8) 0 var(--space-5);letter-spacing:var(--tracking-display)}\
+.mb-page-title{margin-top:0;font-size:var(--text-2xl)}\
+a{color:var(--accent-primary)}\
+code{background:var(--surface-sunken);padding:.1em .35em;border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:.9em}\
+pre{background:var(--surface-sunken);padding:var(--space-6);border-radius:var(--radius-md);overflow-x:auto;font:var(--text-sm)/var(--leading-body) var(--font-mono)}\
+pre code{background:none;padding:0;font-size:inherit}\
+blockquote{border-left:3px solid var(--border-subtle);margin:var(--space-6) 0;padding:var(--space-2) 0 var(--space-2) var(--space-6);color:var(--text-muted)}\
+table{border-collapse:collapse;width:100%;margin:var(--space-6) 0}\
+th,td{border:1px solid var(--border-subtle);padding:var(--space-3) var(--space-4);text-align:left}\
+hr{border:0;border-top:1px solid var(--border-subtle);margin:var(--space-8) 0}\
 img{max-width:100%;height:auto}\
-ul,ol{padding-left:1.5rem}\
-.mb-task-list{list-style:none;padding-left:.25rem}\
-.mb-task-done{color:var(--muted);text-decoration:line-through}\
-.mb-task-cancelled{color:var(--muted);text-decoration:line-through;opacity:.7}\
+ul,ol{padding-left:var(--space-7)}\
+.mb-task-list{list-style:none;padding-left:var(--space-2)}\
+.mb-task-done{color:var(--text-muted);text-decoration:line-through}\
+.mb-task-cancelled{color:var(--text-muted);text-decoration:line-through;opacity:.7}\
 .mb-task p{display:inline}\
-.mb-tag{color:var(--accent);font-size:.9em}\
-.mb-callout{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:6px;padding:.75rem 1rem;margin:1rem 0}\
-.mb-callout-title{font-weight:600;text-transform:capitalize}\
-.mb-math,.mb-math-block{font-family:ui-monospace,monospace}\
-.mb-math-block{display:block;margin:1rem 0;text-align:center}\
+.mb-tag{color:var(--accent-primary);font-size:.9em}\
+.mb-callout{border:1px solid var(--border-subtle);border-left:3px solid var(--accent-primary);border-radius:var(--radius-md);padding:var(--space-5) var(--space-6);margin:var(--space-6) 0;background:var(--surface-note)}\
+.mb-callout-title{font-weight:var(--weight-bold);text-transform:capitalize}\
+.mb-math,.mb-math-block{font-family:var(--font-mono)}\
+.mb-math-block{display:block;margin:var(--space-6) 0;text-align:center}\
 .mb-note-list,.mb-vault-list{list-style:none;padding:0}\
-.mb-note-list li,.mb-vault-list li{border-bottom:1px solid var(--line);padding:.4rem 0}\
-.mb-count,.mb-breadcrumb,.mb-empty{color:var(--muted);font-size:.9rem}\
+.mb-note-list li,.mb-vault-list li{border-bottom:1px solid var(--border-subtle);padding:var(--space-3) 0}\
+.mb-count,.mb-breadcrumb,.mb-empty{color:var(--text-muted);font:var(--text-xs)/var(--leading-snug) var(--font-ui)}\
 ";

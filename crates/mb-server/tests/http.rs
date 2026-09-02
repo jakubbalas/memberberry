@@ -700,6 +700,33 @@ fn every_page_carries_a_content_security_policy() {
 }
 
 #[test]
+fn every_page_declares_the_design_token_contract_it_styles_itself_with() {
+    // SPEC.md §20.1: these pages reference contract tokens and nothing else, and they carry
+    // no external assets on purpose (§17.2, and so they still render when JavaScript fails).
+    // Those two facts only coexist if the contract is inlined — a page that references
+    // `--surface-canvas` without declaring it renders as unstyled black-on-white, which is
+    // exactly the failure mode a 200 from `curl` cannot see (AGENTS.md §2.3).
+    let dir = TempDir::new("http-tokens");
+    dir.write("note.md", "# A\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for path in ["/", "/v/v", "/v/v/note.md", "/nonsense"] {
+        let (_, body) = server.get(path);
+        for token in [
+            "--surface-canvas",
+            "--text-primary",
+            "--font-body",
+            "--space-6",
+        ] {
+            assert!(
+                body.contains(&format!("{token}:")),
+                "{path} styles itself with {token} but never declares it: {body}"
+            );
+        }
+    }
+}
+
+#[test]
 fn every_page_that_has_a_form_is_allowed_to_submit_it() {
     // A CSP that forbids what the page itself does is not defence, it is an outage. An
     // earlier revision stamped `form-action 'none'` on every page including sign-in, so the

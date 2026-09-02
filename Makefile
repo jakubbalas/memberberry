@@ -49,7 +49,7 @@ prod: ## Optimised release build of the memberberry binary
 	@echo "Binary: target/release/memberberry"
 
 .PHONY: check
-check: fmt-check lint test coverage-gate web-check ## THE GATE: fmt + clippy + tests + coverage
+check: fmt-check lint test coverage-gate token-check web-check ## THE GATE: fmt + clippy + tests + coverage + tokens
 
 # ---------------------------------------------------------------- quality
 
@@ -117,6 +117,10 @@ coverage-gate: ## Enforce the per-crate floors in AGENTS.md 2.1
 	@$(CARGO) llvm-cov clean --workspace
 	@echo "Coverage floors (AGENTS.md 2.1):"
 	@$(CARGO) llvm-cov --workspace --json --quiet | python3 scripts/coverage-gate.py
+
+.PHONY: token-check
+token-check: ## Enforce the design-token contract, both directions (SPEC 20.1, 20.2)
+	@python3 scripts/token-check.py
 
 # ---------------------------------------------------------------- web
 

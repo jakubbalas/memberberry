@@ -1,51 +1,15 @@
-:root {
-  color-scheme: light dark;
-  --surface-canvas: #f4f0e8;
-  --surface-note: #fffdf8;
-  --text-primary: #24332c;
-  --text-muted: #69756d;
-  --border-subtle: #d9d3c6;
-  --accent-primary: #ae4d28;
-  --focus-ring: #286d60;
-  --shadow-note: 0 1.5rem 4rem color-mix(in srgb, var(--text-primary) 14%, transparent);
-  --radius-note: 1.25rem;
+/*
+ * Component CSS for the workspace shell and editor.
+ *
+ * Every colour, font, radius and shadow here is a reference to `tokens.css` — SPEC.md §20.1
+ * and AGENTS.md §4.4. `scripts/token-check.py` fails the build on a literal colour or an
+ * undeclared token, so this file cannot drift from the contract by accident.
+ *
+ * One-off layout geometry (a `max-width` measure, a `vh` offset) stays local: the contract
+ * governs the design system, not every length in the document.
+ */
 
-  /* Collaboration palette (SPEC 7.5, 20.3). Six hues, each checked for >= 4.5:1 against
-     --surface-note in this theme and distinguishable from one another under the common
-     forms of colour blindness. A per-user colour is chosen from these by hashing the
-     username, so the same person is the same colour on every device. */
-  --presence-0: #b03a2e;
-  --presence-1: #0f6e7a;
-  --presence-2: #4a56a6;
-  --presence-3: #8a5107;
-  --presence-4: #2f6b39;
-  --presence-5: #8f3468;
-  --presence-label: #fffdf8;
-  /* SPEC 7.5 idle timings: labels fade after stillness, cursors after a longer silence. */
-  --presence-label-idle: 3s;
-  --presence-cursor-idle: 60s;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --surface-canvas: #18231f;
-    --surface-note: #22312a;
-    --text-primary: #f2efe6;
-    --text-muted: #b7c2b6;
-    --border-subtle: #405147;
-    --accent-primary: #f29a70;
-    --focus-ring: #7fc9b8;
-
-    /* Lightened for the dark surface: the light-theme hues fall below 4.5:1 here. */
-    --presence-0: #f08b7d;
-    --presence-1: #5fc7d4;
-    --presence-2: #9aa4ef;
-    --presence-3: #dfa54a;
-    --presence-4: #7cc98a;
-    --presence-5: #e58ab9;
-    --presence-label: #18231f;
-  }
-}
+@import "./tokens.css";
 
 * { box-sizing: border-box; }
 
@@ -53,23 +17,25 @@ body {
   min-width: 20rem;
   min-height: 100vh;
   margin: 0;
-  background: radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--accent-primary) 15%, transparent), transparent 28rem), var(--surface-canvas);
+  background:
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--accent-primary) 15%, transparent), transparent 28rem),
+    var(--surface-canvas);
   color: var(--text-primary);
-  font: 1rem/1.65 Georgia, "Times New Roman", serif;
+  font: var(--text-md)/var(--leading-body) var(--font-body);
 }
 
-.workspace { width: min(100% - 2rem, 52rem); margin: 0 auto; padding: 8vh 0 4rem; }
-.workspace-header { margin: 0 0 1.5rem; }
-.eyebrow { margin: 0 0 .5rem; color: var(--accent-primary); font: 700 .72rem/1 system-ui, sans-serif; letter-spacing: .14em; text-transform: uppercase; }
-h1 { margin: 0; font-size: clamp(2.3rem, 7vw, 4.75rem); line-height: .98; letter-spacing: -.055em; }
-.lede { max-width: 36rem; margin: .85rem 0 0; color: var(--text-muted); }
-.editor-panel { min-height: 32rem; padding: clamp(1.25rem, 5vw, 3.75rem); border: 1px solid var(--border-subtle); border-radius: var(--radius-note); background: var(--surface-note); box-shadow: var(--shadow-note); }
-.presence-header { display: flex; align-items: center; gap: .35rem; min-height: 2.25rem; margin: 0 0 .75rem; }
-.presence-people { display: flex; justify-content: flex-end; gap: .35rem; margin-left: auto; }
-.presence-avatar { display: grid; width: 2.25rem; height: 2.25rem; place-items: center; border: 2px solid var(--surface-note); border-radius: 50%; color: var(--presence-label); background: var(--presence-color); font: 700 .75rem/1 ui-rounded, "Avenir Next", system-ui, sans-serif; box-shadow: 0 .15rem .5rem color-mix(in srgb, var(--text-primary) 18%, transparent); }
+.workspace { width: min(100% - var(--space-8), var(--editor-measure)); margin: 0 auto; padding: 8vh 0 var(--space-9); }
+.workspace-header { margin: 0 0 var(--space-7); }
+.eyebrow { margin: 0 0 var(--space-4); color: var(--accent-primary); font: var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-display); letter-spacing: var(--tracking-display); }
+.lede { max-width: 36rem; margin: var(--space-5) 0 0; color: var(--text-muted); }
+.editor-panel { min-height: var(--editor-panel-min-height); padding: clamp(var(--space-7), 5vw, var(--space-9)); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--surface-note); box-shadow: var(--shadow-lg); }
+.presence-header { display: flex; align-items: center; gap: var(--space-3); min-height: var(--control-height); margin: 0 0 var(--space-5); }
+.presence-people { display: flex; justify-content: flex-end; gap: var(--space-3); margin-left: auto; }
+.presence-avatar { display: grid; width: var(--control-height); height: var(--control-height); place-items: center; border: 2px solid var(--surface-note); border-radius: var(--radius-round); color: var(--presence-label); background: var(--presence-color); font: var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui); box-shadow: var(--shadow-sm); }
 .presence-avatar.is-idle { opacity: .45; }
-.connection-status { margin-left: auto; align-self: center; color: var(--text-muted); font: 500 .75rem/1 ui-rounded, "Avenir Next", system-ui, sans-serif; }
-.connection-status[data-state="offline"]::before { content: ""; display: inline-block; width: .5rem; height: .5rem; margin-right: .4rem; border-radius: 50%; background: var(--accent-primary); }
+.connection-status { margin-left: auto; align-self: center; color: var(--text-muted); font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); }
+.connection-status[data-state="offline"]::before { content: ""; display: inline-block; width: var(--space-4); height: var(--space-4); margin-right: var(--space-3); border-radius: var(--radius-round); background: var(--state-warning); }
 
 /* SPEC 7.5: a remote caret's name label fades after ~3s of stillness and returns on
    movement; the caret itself fades after 60s. Both are opacity transitions on a
@@ -84,30 +50,30 @@ h1 { margin: 0; font-size: clamp(2.3rem, 7vw, 4.75rem); line-height: .98; letter
 @media (prefers-reduced-motion: reduce) {
   .ProseMirror-yjs-cursor, .ProseMirror-yjs-cursor > div { transition: none; }
 }
-.editor-controls { position: sticky; z-index: 2; top: .75rem; display: grid; gap: .55rem; margin: 0 0 1.25rem; font-family: ui-rounded, "Avenir Next", system-ui, sans-serif; }
-.editor-toolbar, .task-inspector { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
-.editor-toolbar { padding: .45rem; border: 1px solid var(--border-subtle); border-radius: .8rem; background: color-mix(in srgb, var(--surface-note) 92%, var(--surface-canvas)); box-shadow: 0 .4rem 1rem color-mix(in srgb, var(--text-primary) 8%, transparent); }
-.editor-control, .task-chip { min-height: 2.25rem; border: 1px solid var(--border-subtle); border-radius: .55rem; padding: .35rem .6rem; color: var(--text-primary); background: var(--surface-note); font: 700 .75rem/1 ui-rounded, "Avenir Next", system-ui, sans-serif; cursor: pointer; }
+.editor-controls { position: sticky; z-index: 2; top: var(--space-5); display: grid; gap: var(--space-4); margin: 0 0 var(--space-7); font-family: var(--font-ui); }
+.editor-toolbar, .task-inspector { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+.editor-toolbar { padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); box-shadow: var(--shadow-md); }
+.editor-control, .task-chip { min-height: var(--control-height); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: var(--space-3) var(--space-4); color: var(--text-primary); background: var(--surface-note); font: var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
 .editor-control:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
-.editor-control:focus-visible, .task-chip:focus-visible { outline: .16rem solid var(--focus-ring); outline-offset: .12rem; }
-.task-inspector { color: var(--text-muted); font-size: .75rem; }
-.task-inspector::before { content: "Task chips"; margin-right: .1rem; font-weight: 700; }
-.slash-menu { display: flex; flex-wrap: wrap; gap: .35rem; max-width: 34rem; padding: .5rem; border: 1px solid var(--border-subtle); border-radius: .75rem; background: var(--surface-canvas); }
-.source-view { width: 100%; min-height: 25rem; resize: vertical; border: 1px solid var(--border-subtle); border-radius: .75rem; padding: 1rem; color: var(--text-primary); background: color-mix(in srgb, var(--surface-note) 92%, var(--surface-canvas)); font: .9rem/1.6 ui-monospace, "SFMono-Regular", Consolas, monospace; }
+.editor-control:focus-visible, .task-chip:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.task-inspector { color: var(--text-muted); font-size: var(--text-xs); }
+.task-inspector::before { content: "Task chips"; margin-right: var(--space-1); font-weight: var(--weight-bold); }
+.slash-menu { display: flex; flex-wrap: wrap; gap: var(--space-3); max-width: 34rem; padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-canvas); }
+.source-view { width: 100%; min-height: var(--editor-min-height); resize: vertical; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-6); color: var(--text-primary); background: var(--surface-sunken); font: var(--text-sm)/var(--leading-body) var(--font-mono); }
 .editor-panel.is-long-note .tiptap > * { content-visibility: auto; contain-intrinsic-size: auto 3.5rem; }
-.editor-surface .tiptap { min-height: 25rem; outline: none; }
+.editor-surface .tiptap { min-height: var(--editor-min-height); outline: none; }
 .editor-surface .tiptap > :first-child { margin-top: 0; }
 .editor-surface .tiptap > :last-child { margin-bottom: 0; }
-.editor-surface .tiptap p { margin: .65rem 0; }
-.editor-surface .tiptap:focus-visible { outline: .16rem solid var(--focus-ring); outline-offset: .5rem; }
-.offline-status { margin: 1rem .5rem 0; color: var(--text-muted); font: .78rem/1.4 system-ui, sans-serif; }
+.editor-surface .tiptap p { margin: var(--editor-block-gap) 0; }
+.editor-surface .tiptap:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--space-4); }
+.offline-status { margin: var(--space-6) var(--space-4) 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
 
 @media (max-width: 40rem) {
-  .workspace { width: min(100% - 1rem, 52rem); padding-top: 2.5rem; }
-  .editor-panel { min-height: 60vh; padding: 1.5rem 1.25rem; border-radius: 1rem; }
-  .editor-controls { position: fixed; right: .5rem; bottom: calc(.5rem + var(--keyboard-offset, 0px)); left: .5rem; top: auto; margin: 0; }
-  .editor-toolbar { overflow-x: auto; flex-wrap: nowrap; padding: .4rem; }
-  .editor-control { flex: 0 0 auto; min-width: 2.75rem; min-height: 2.75rem; }
+  .workspace { width: min(100% - var(--space-6), var(--editor-measure)); padding-top: var(--space-8); }
+  .editor-panel { min-height: 60vh; padding: var(--space-7); border-radius: var(--radius-md); }
+  .editor-controls { position: fixed; right: var(--space-4); bottom: calc(var(--space-4) + var(--keyboard-offset)); left: var(--space-4); top: auto; margin: 0; }
+  .editor-toolbar { overflow-x: auto; flex-wrap: nowrap; padding: var(--space-3); }
+  .editor-control { flex: 0 0 auto; min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
   .task-inspector { display: none; }
   .editor-toolbar.is-block-tools-open + .slash-menu { display: flex; }
   .ProseMirror-yjs-cursor > div { display: none; }
