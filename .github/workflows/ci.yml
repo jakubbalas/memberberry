@@ -87,6 +87,51 @@ jobs:
         run: npm run build
         working-directory: web
 
+  # The only job that opens a browser, and therefore the only one able to say a page works.
+  #
+  # M5 shipped a bundle where every asset 404'd and a login form its own CSP blocked. Both
+  # passed the unit suite and a curl smoke test; both took one browser load to find. The user
+  # has stated they will not open the application until the final milestone, so this is not a
+  # belt-and-braces job — it is the only verification of anything user-visible.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@wasm-pack
+
+      - name: Build the WebAssembly bindings
+        run: wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb
+      - run: npm ci
+        working-directory: web
+      - name: Build the frontend
+        run: npm run build
+        working-directory: web
+      # The suite provisions a real server with the real binary, so it needs the real binary.
+      - name: Build the server
+        run: cargo build -p mb-cli
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: End-to-end, desktop and mobile
+        run: npm run e2e
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
+
   # The fuzz targets are built, not run: a useful run takes minutes and one known upstream
   # panic is still open (SPEC.md §22.1). Building them stops the targets rotting against
   # changes to mb-core, which is what silently happens to fuzzers nobody compiles.

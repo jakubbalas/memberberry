@@ -35,9 +35,40 @@ With no PATH, `normalize` and `inspect` read stdin and write stdout.
     --config    Path to server.toml. Defaults to $MEMBERBERRY_DATA_DIR/server.toml,
                 or ./server.toml.
     --name      Display name for a vault. Defaults to the slug.
+    --password-stdin
+                Read the password from stdin instead of prompting on the terminal, for
+                scripted provisioning. `reset-password` expects two lines: the
+                administrator's password, then the new one. The password is never taken
+                from an argument, where it would land in the process list.
 
 `serve` authenticates every content route and binds to 127.0.0.1:9010 by default.
 ";
+
+/// The flag that turns a terminal password prompt into a read from stdin.
+///
+/// why: no-echo prompting is the right default for a human, and wrong for everything else.
+/// The password still never appears in `argv` — it is read from the pipe, the same way
+/// `docker login --password-stdin` and `gh auth login --with-token` do it.
+pub const PASSWORD_STDIN_FLAG: &str = "--password-stdin";
+
+/// Whether this invocation needs a no-echo prompt on the controlling terminal.
+///
+/// Lives here rather than in `main.rs` so it can be tested: it decides whether a password is
+/// read from a human or from a pipe, and getting that backwards either wedges a script
+/// waiting on `/dev/tty` or silently prompts where no terminal exists.
+#[must_use]
+pub fn reads_password_from_terminal(args: &[String]) -> bool {
+    if args.iter().any(|arg| arg == PASSWORD_STDIN_FLAG) {
+        return false;
+    }
+    let command = args.first().map(String::as_str);
+    let subcommand = args.get(1).map(String::as_str);
+    matches!(
+        (command, subcommand),
+        (Some("user"), Some("setup" | "reset-password"))
+            | (Some("vault"), Some("create" | "remove"))
+    )
+}
 
 /// Runs one command.
 ///
@@ -684,6 +715,58 @@ mod tests {
     use super::expand_home_with;
     use std::ffi::OsStr;
     use std::path::PathBuf;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn every_password_taking_command_prompts_on_a_terminal_by_default() {
+        // Getting this wrong in either direction is a bad failure: a command that should
+        // prompt but reads stdin instead silently takes whatever is piped at it, and one
+        // that should read stdin but prompts blocks a script forever on /dev/tty.
+        for args in [
+            &["user", "setup", "--username", "alice"][..],
+            &[
+                "user",
+                "reset-password",
+                "--username",
+                "alice",
+                "--actor",
+                "root",
+            ][..],
+            &["vault", "create", "--slug", "personal", "--actor", "root"][..],
+            &["vault", "remove", "--slug", "personal", "--actor", "root"][..],
+        ] {
+            assert!(
+                super::reads_password_from_terminal(&argv(args)),
+                "{args:?} takes a password and must prompt for it"
+            );
+        }
+    }
+
+    #[test]
+    fn password_stdin_turns_off_the_terminal_prompt() {
+        for args in [
+            &["user", "setup", "--username", "alice", "--password-stdin"][..],
+            &["vault", "create", "--slug", "personal", "--password-stdin"][..],
+        ] {
+            assert!(!super::reads_password_from_terminal(&argv(args)));
+        }
+    }
+
+    #[test]
+    fn a_command_that_takes_no_password_never_prompts() {
+        for args in [
+            &["serve"][..],
+            &["vault", "list"][..],
+            &["user"][..],
+            &["normalize", "--check"][..],
+            &[][..],
+        ] {
+            assert!(!super::reads_password_from_terminal(&argv(args)));
+        }
+    }
 
     #[test]
     fn quoted_home_relative_path_expands() {

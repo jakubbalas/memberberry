@@ -159,6 +159,26 @@ impl TestServer {
     fn status(&self, path: &str) -> String {
         self.get(path).0
     }
+
+    /// The response headers, for the policies that travel as headers rather than markup.
+    fn headers(&self, path: &str) -> String {
+        let mut stream = TcpStream::connect(self.addr).expect("connecting");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("setting a read timeout");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\n{}Connection: close\r\n\r\n",
+            self.default_headers
+        )
+        .expect("writing the request");
+        let mut raw = String::new();
+        stream
+            .read_to_string(&mut raw)
+            .expect("reading the response");
+        raw.split_once("\r\n\r\n")
+            .map_or(raw.clone(), |(head, _)| head.to_string())
+    }
 }
 
 #[test]
@@ -695,6 +715,47 @@ fn every_page_carries_a_content_security_policy() {
         assert!(
             body.contains("form-action 'none'"),
             "a page rendering note content must not be able to submit anywhere: {path}"
+        );
+    }
+}
+
+#[test]
+fn the_editor_page_carries_a_policy_scoped_to_what_it_actually_does() {
+    // Through M5 this page had no CSP at all — the one page in the application that runs
+    // JavaScript, opens a WebSocket and renders untrusted note content. The read-only pages
+    // were covered and this was not, because it is served from a file rather than rendered.
+    let vault_dir = TempDir::new("http-editor-csp-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web_dir = TempDir::new("http-editor-csp-web");
+    web_dir.write(
+        "index.html",
+        "<main><div id=\"editor\" class=\"editor-surface\"></div></main>",
+    );
+    web_dir.write("assets/index-abc123.js", "console.log('editor')");
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web_dir.path().to_path_buf(),
+    );
+
+    let headers = server.headers("/v/personal/One.md").to_lowercase();
+    assert!(
+        headers.contains("content-security-policy:"),
+        "the editor page must carry a policy: {headers}"
+    );
+    // Each of these is load-bearing, and removing one is a silent outage rather than an
+    // error: without `wasm-unsafe-eval` mb-wasm never instantiates, and without `connect-src`
+    // the sync socket is refused. The E2E suite proves they are *sufficient*; this proves
+    // they are still *present*, which a unit test can do and a browser run should not have to.
+    for directive in [
+        "default-src 'none'",
+        "script-src 'self' 'wasm-unsafe-eval'",
+        "connect-src 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'none'",
+    ] {
+        assert!(
+            headers.contains(directive),
+            "the editor policy is missing `{directive}`: {headers}"
         );
     }
 }

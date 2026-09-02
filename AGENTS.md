@@ -113,7 +113,9 @@ code — never relax the test:
 - Sync convergence under partition (§22.3)
 - Invariant I1: `rm -rf .memberberry/` and everything still works, permissions included (§22.4)
 - **The permission leak suite (§22.5)** — the single most valuable suite in the repo
-- Transclusion cycle protection, conflict-callout round-tripping, presence scoping (§22.6)
+- Transclusion cycle protection, conflict-callout round-tripping, presence scoping (§22.7)
+- **The Playwright E2E suite (§22.6)** — the only thing here that can say a page works. A
+  green unit suite has already shipped an application nobody could log into.
 - Performance budgets (§21)
 
 ---
@@ -257,25 +259,35 @@ assignments stable and record new ones here before adding a listener:
 |---|---|
 | `9010` | Memberberry HTTP and WebSocket server |
 | `9011` | Vite frontend when it runs separately from the server |
-| `9012`-`9020` | Available for supporting services |
+| `9012` | Throwaway server the Playwright E2E suite provisions and drives |
+| `9013`-`9020` | Available for supporting services |
 
 Production ports remain explicit deployment configuration. Tests that do not need a stable
 address should ask the OS for an ephemeral port instead of consuming this range.
 
 ```
-make check        # fmt + clippy + test + coverage gate — run before done
+make check        # fmt + clippy + test + coverage + tokens — run before done
+make e2e          # Playwright in a real browser, desktop and mobile (SPEC §22.6)
 make test         # all tests
 make test-fast    # behavioural only, the inner loop
 make test-props   # the round-trip property suite (SPEC §22.1)
 make soak         # property suite at 20k cases; finds what CI will not
 make coverage     # per-crate coverage report
 make coverage-gate # enforce the floors in §2.1 — part of `make check`
+make token-check  # the design-token contract, both directions — part of `make check`
 make wasm-check   # mb-core must stay wasm32-clean
+make bench        # hot-path benchmarks
 make gen-vault    # synthetic 10k-note vault for perf/scale work
 make prod         # release build
 ```
 
 `make check` is the gate. If it does not pass, the change is not done.
+
+**`make check` does not open a browser.** It is separate from `make e2e` because the browser
+download makes it too slow for the inner loop, and because they answer different questions:
+`check` says the code is correct, `e2e` says the page works. CI runs both. **If your change
+touches anything a user sees, `make check` alone is not evidence** — that combination has
+already shipped an application nobody could log into (§2.3).
 
 ---
 

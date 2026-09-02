@@ -160,6 +160,18 @@ web-check:
 		python3 scripts/web-coverage-gate.py; \
 	fi
 
+# Builds everything the suite needs, because a stale bundle or a stale binary is exactly the
+# class of failure this suite exists to catch and it should not be able to cause a false one.
+.PHONY: e2e
+e2e: web-build ## Playwright E2E in a real browser, desktop and mobile (SPEC 22, 23 M7)
+	$(CARGO) build -p mb-cli
+	npm --prefix web exec -- playwright install --with-deps chromium
+	npm --prefix web run e2e
+
+.PHONY: e2e-report
+e2e-report: ## Open the report from the last `make e2e`
+	npm --prefix web exec -- playwright show-report
+
 .PHONY: wasm-check
 wasm-check: ## mb-core must stay wasm32-clean at all times (AGENTS.md 4.2)
 	@rustup target list --installed | grep -q wasm32-unknown-unknown \

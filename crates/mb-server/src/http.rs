@@ -541,7 +541,11 @@ async fn note(
         editor.push_str("\" data-user=\"");
         push_escaped_attr(&mut editor, user.as_str());
         editor.push_str("\"></div>");
-        return Html(index.replace(marker, &editor)).into_response();
+        return (
+            [(header::CONTENT_SECURITY_POLICY, EDITOR_CSP)],
+            Html(index.replace(marker, &editor)),
+        )
+            .into_response();
     }
     let doc = mb_core::parse(&source);
     let title = mb_core::extract::title(&doc).unwrap_or_else(|| note.clone());
@@ -564,6 +568,30 @@ async fn note(
     body.push_str("</article>");
     page(&title, &body).into_response()
 }
+
+/// The policy for the one page that runs JavaScript.
+///
+/// The server-rendered pages get `default-src 'none'` and nothing else because they need
+/// nothing else. This page needs a real policy, and it went out through M5 with none at all
+/// — the one page with a script, a WebSocket and untrusted note content in it.
+///
+/// Each allowance is here because something breaks without it, and the E2E suite is what
+/// says so: `'wasm-unsafe-eval'` for instantiating `mb-wasm` (§5.2), `'unsafe-inline'` under
+/// `style-src` because ProseMirror and the presence decorations set `style` attributes on
+/// elements, `blob:` for images the editor creates locally and for the workers §21.3 puts
+/// long work on. `connect-src 'self'` covers the sync socket: a same-origin `ws://` is
+/// `'self'` under CSP3. **`form-action 'none'`** is safe here and only here — this page has
+/// no form; putting it on the sign-in page is what broke logging in during M5.
+const EDITOR_CSP: &str = "default-src 'none'; \
+     script-src 'self' 'wasm-unsafe-eval'; \
+     style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data: blob:; \
+     font-src 'self'; \
+     connect-src 'self'; \
+     worker-src 'self' blob:; \
+     base-uri 'none'; \
+     form-action 'none'; \
+     frame-ancestors 'none'";
 
 async fn asset(State(state): State<Arc<AppState>>, AxumPath(asset): AxumPath<String>) -> Response {
     let Some(root) = &state.web_root else {

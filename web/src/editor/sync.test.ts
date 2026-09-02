@@ -301,6 +301,37 @@ describe("createSyncProvider", () => {
     sync.destroy();
   });
 
+  it("survives an awareness frame announcing that a client has no state", () => {
+    // Regression. `y-protocols` encodes a client with no state — one that has left, or that
+    // cleared its own — as a literal `null`, and the rewrite that stamps the server's
+    // username over the client's claim destructured it unconditionally. In a browser that
+    // threw `Cannot destructure property 'user' of 'object null'` out of the socket's
+    // message handler on every editor load, which the unit suite never saw because every
+    // fixture here had a state to rewrite. Playwright found it on the first run.
+    const { socket, awareness, sync } = provider();
+    socket.emit("open", {});
+    const remoteDoc = new Doc();
+    const remote = new Awareness(remoteDoc);
+    remote.setLocalState(null);
+    const encoded = [...encodeAwarenessUpdate(remote, [remote.clientID])];
+
+    expect(() => {
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "awareness",
+          vault: "personal",
+          note: "One.md",
+          user: "bob",
+          state: { update: encoded },
+        }),
+      });
+    }).not.toThrow();
+
+    // A stateless client contributes no cursor rather than an empty one.
+    expect(awareness.getStates().get(remote.clientID)).toBeUndefined();
+    sync.destroy();
+  });
+
   it("throttles presence rather than sending one frame per cursor move", () => {
     vi.useFakeTimers();
     try {

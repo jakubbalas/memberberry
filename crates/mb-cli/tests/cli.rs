@@ -514,6 +514,87 @@ fn walk_md(root: &Path) -> Vec<PathBuf> {
 /// Passed with `--config` rather than through `MEMBERBERRY_DATA_DIR`: the workspace forbids
 /// `unsafe`, so a test cannot set an environment variable, and process-wide state would
 /// make these race when run in parallel. `config_path_in` unit-tests the precedence.
+/// Provisions a server by spawning the real binary, the way a script or a container would.
+///
+/// why: every other test in this file calls `mb_cli::run` in process with an injected
+/// reader, which cannot see the difference between reading stdin and prompting on
+/// `/dev/tty` — the whole point of `--password-stdin`. Only the built binary can.
+#[test]
+fn the_binary_provisions_a_server_from_a_pipe_with_no_terminal() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let dir = TempDir::new("password-stdin");
+    let vault_dir = TempDir::new("password-stdin-vault");
+    let config = config_of(&dir);
+
+    let provision = |args: &[&str], stdin: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_memberberry"))
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawning memberberry");
+        child
+            .stdin
+            .as_mut()
+            .expect("piped stdin")
+            .write_all(stdin.as_bytes())
+            .expect("writing the password");
+        child.wait_with_output().expect("waiting for memberberry")
+    };
+
+    let setup = provision(
+        &[
+            "user",
+            "setup",
+            "--username",
+            "alice",
+            "--password-stdin",
+            "--config",
+            &config,
+        ],
+        "correct horse battery staple\n",
+    );
+    assert!(
+        setup.status.success(),
+        "setup failed: {}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    assert!(dir.path().join("auth.db").exists());
+
+    let vault_path = vault_dir.path().to_string_lossy().into_owned();
+    let created = provision(
+        &[
+            "vault",
+            "create",
+            "--slug",
+            "personal",
+            "--path",
+            &vault_path,
+            "--actor",
+            "alice",
+            "--password-stdin",
+            "--config",
+            &config,
+        ],
+        "correct horse battery staple\n",
+    );
+    assert!(
+        created.status.success(),
+        "vault create failed: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+
+    let listed = provision(&["vault", "list", "--config", &config], "");
+    assert!(
+        String::from_utf8_lossy(&listed.stdout).contains("personal"),
+        "the vault should be registered: {}",
+        String::from_utf8_lossy(&listed.stdout)
+    );
+}
+
 fn config_of(dir: &TempDir) -> String {
     dir.path()
         .join("server.toml")

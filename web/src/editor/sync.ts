@@ -141,10 +141,16 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   };
   const applyRemoteAwareness = (user: string, state: unknown): void => {
     if (options.awareness === undefined || !isAwarenessState(state)) return;
-    const update = modifyAwarenessUpdate(new Uint8Array(state.update), ({ user: _ignored, ...rest }) => ({
-      ...rest,
-      user: { name: user, color: presenceColor(user) },
-    }));
+    const update = modifyAwarenessUpdate(new Uint8Array(state.update), (client: unknown) => {
+      // why: `y-protocols` represents "this client has no state" — it left, or cleared its
+      // own — as a literal `null`, and an update may carry those alongside live ones.
+      // Destructuring one threw out of the socket's message handler on every editor load.
+      // Passing it through unchanged is also the correct behaviour: there is no claimed
+      // username to overwrite, and inventing a state would resurrect a departed cursor.
+      if (client === null || typeof client !== "object") return client;
+      const { user: _ignored, ...rest } = client as Record<string, unknown>;
+      return { ...rest, user: { name: user, color: presenceColor(user) } };
+    });
     applyAwarenessUpdate(options.awareness, update, REMOTE_SYNC_ORIGIN);
   };
   socket.addEventListener("open", onOpen);

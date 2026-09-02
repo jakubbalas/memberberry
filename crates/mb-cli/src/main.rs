@@ -11,7 +11,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
-    let result = if needs_password_prompt(&args) {
+    let result = if mb_cli::reads_password_from_terminal(&args) {
         run_with_terminal_passwords(&args, &mut out)
     } else {
         let stdin = io::stdin();
@@ -47,14 +47,4 @@ fn run_with_terminal_passwords(args: &[String], out: &mut dyn Write) -> Result<E
     // The command library deliberately takes an injected reader for tests. The binary is
     // the only caller that owns a terminal, so it supplies the no-echo password here.
     mb_cli::run(args, &mut input, out)
-}
-
-fn needs_password_prompt(args: &[String]) -> bool {
-    matches!(args.first().map(String::as_str), Some("user"))
-        && matches!(
-            args.get(1).map(String::as_str),
-            Some("setup" | "reset-password")
-        )
-        || matches!(args.first().map(String::as_str), Some("vault"))
-            && matches!(args.get(1).map(String::as_str), Some("create" | "remove"))
 }
