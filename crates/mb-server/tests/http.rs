@@ -1011,9 +1011,10 @@ fn the_workspace_route_stores_a_layout_per_user_and_denies_everyone_else_identic
 
     let route = "/api/v1/vaults/v/workspace/laptop";
 
-    // Nothing saved yet.
+    // Nothing saved yet. `204`, not `404`: this is the normal first visit, and answering it
+    // with an error makes every fresh page load log one.
     let (status, _) = server.get_with_headers(route, &alice_header);
-    assert!(is_not_found(&status), "{status}");
+    assert!(status.contains("204"), "{status}");
 
     // Alice saves and reads back exactly what she stored.
     let (status, _) = server.put_json(route, &alice_header, LAYOUT);
@@ -1024,7 +1025,7 @@ fn the_workspace_route_stores_a_layout_per_user_and_denies_everyone_else_identic
 
     // Bob is a member of the same vault on the same device id, and sees nothing of hers.
     let (status, body) = server.get_with_headers(route, &bob_header);
-    assert!(is_not_found(&status), "{status}");
+    assert!(status.contains("204"), "{status}");
     assert!(!body.contains("focusedGroup"), "{body}");
 
     // Charlie is not a member: the vault must not appear to exist.
@@ -1091,5 +1092,5 @@ fn a_workspace_layout_that_is_not_json_is_refused() {
     assert!(is_not_found(&status), "{status}");
     // And nothing was stored, so the next load still reports nothing saved.
     let (status, _) = server.get_with_headers(route, "");
-    assert!(is_not_found(&status), "{status}");
+    assert!(status.contains("204"), "{status}");
 }

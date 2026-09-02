@@ -47,8 +47,14 @@ export interface WorkspaceTransport {
   load(): Promise<WorkspaceLoad>;
   /** Records a new layout to be written after the debounce settles. */
   save(workspace: Workspace): void;
-  /** Writes any pending layout immediately. Resolves when the request has completed. */
-  flush(): Promise<void>;
+  /**
+   * Writes any pending layout immediately. Resolves when the request has completed.
+   *
+   * `final` marks the last write of the page's life — the `pagehide` handler. A normal
+   * `fetch` started while the page is unloading is aborted by the browser, so that write
+   * needs `keepalive`, which lets it outlive the document.
+   */
+  flush(options?: { readonly final?: boolean }): Promise<void>;
   /** Cancels any pending write and releases the timer. */
   destroy(): void;
 }
@@ -96,19 +102,30 @@ export function createWorkspaceTransport(
 
   let timer: number | undefined;
   let pending: Workspace | undefined;
+  /** The most recent layout handed to `save`, whether or not it has been written yet. */
+  let latest: Workspace | undefined;
+  /** The most recent layout the server acknowledged. */
+  let written: Workspace | undefined;
   let inFlight: Promise<void> = Promise.resolve();
   let destroyed = false;
 
-  const write = async (workspace: Workspace): Promise<void> => {
+  const write = async (workspace: Workspace, final = false): Promise<void> => {
     try {
+      const body = serializeWorkspace(workspace);
       const response = await request(url, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: serializeWorkspace(workspace),
+        body,
+        // why: only on the final write. `keepalive` is what stops the browser aborting a
+        // request issued during `pagehide`, but it caps the *total* body at 64 KB across all
+        // in-flight keepalive requests — well under `MAX_LAYOUT_BYTES`. Paying that limit on
+        // every save would trade a common case for a rare one.
+        ...(final ? { keepalive: true } : {}),
       });
       if (!response.ok) {
         throw new Error(`the server refused the layout: ${response.status}`);
       }
+      written = workspace;
     } catch (error) {
       // A failed save is not worth interrupting anyone over — the layout is still correct in
       // memory, and the next change tries again. It is reported so a shell can say so.
@@ -116,14 +133,14 @@ export function createWorkspaceTransport(
     }
   };
 
-  const drain = (): void => {
+  const drain = (final = false): void => {
     timer = undefined;
     const workspace = pending;
     pending = undefined;
     if (workspace === undefined) return;
     // Chained rather than raced, so two saves can never land out of order and leave the
     // server holding the older layout.
-    inFlight = inFlight.then(() => write(workspace));
+    inFlight = inFlight.then(() => write(workspace, final));
   };
 
   return {
@@ -146,16 +163,26 @@ export function createWorkspaceTransport(
     save: (workspace: Workspace): void => {
       if (destroyed) return;
       pending = workspace;
+      latest = workspace;
       if (timer !== undefined) clearTimer(timer);
       timer = setTimer(drain, debounceMs);
     },
 
-    flush: async (): Promise<void> => {
+    flush: async (options?: { readonly final?: boolean }): Promise<void> => {
+      const final = options?.final ?? false;
       if (timer !== undefined) {
         clearTimer(timer);
-        drain();
+        drain(final);
       }
       await inFlight;
+
+      // why: a request already in flight when the page starts unloading is aborted, and
+      // nothing re-sends it — so the last thing the user did is exactly what gets lost.
+      // On the final flush, re-send the latest layout with `keepalive` unless the server has
+      // already acknowledged that exact one. Costs at most one redundant write per unload.
+      if (final && latest !== undefined && latest !== written) {
+        await write(latest, true);
+      }
     },
 
     destroy: (): void => {

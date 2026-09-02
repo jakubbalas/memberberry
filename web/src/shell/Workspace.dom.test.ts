@@ -1,0 +1,728 @@
+// @vitest-environment jsdom
+
+/**
+ * The desktop workspace shell (`SPEC.md` §8.2).
+ *
+ * `openNoteSurface` is injected, so no test here builds a Tiptap editor or a socket — what
+ * is under test is the *layout*: that the pane tree renders, that a split produces two panes
+ * and a divider, that only the active tab of each pane holds an editor, and that every
+ * pointer gesture has a keyboard equivalent (§8.4).
+ *
+ * That last one is the reason half of these exist. Native drag-and-drop is not keyboard
+ * operable at all, so "tabs are draggable" and "tabs can be moved by keyboard" are two
+ * separate features that have to be tested separately, or the second silently never ships.
+ */
+
+import { mount, tick, unmount } from "svelte";
+import { beforeEach, describe, expect, it } from "vitest";
+
+import Workspace from "./Workspace.svelte";
+import type { NoteSurface, OpenNoteSurfaceOptions } from "./note-surface.js";
+import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
+import { createWorkspace } from "./workspace.js";
+
+/**
+ * Records which notes have live editors.
+ *
+ * Counting alone is not enough: rendering the *wrong* tab still opens exactly one editor per
+ * pane, so a count-only assertion passes while the pane shows a note the user did not select.
+ * That gap was real — this stub grew the note list after a deliberate break slipped through.
+ */
+function surfaces() {
+  let opened = 0;
+  let destroyed = 0;
+  const live = new Set<string>();
+  const open = async (options: OpenNoteSurfaceOptions): Promise<NoteSurface> => {
+    opened += 1;
+    const note = options.bootstrap?.note ?? "(local)";
+    live.add(note);
+    return {
+      destroy: async () => {
+        destroyed += 1;
+        live.delete(note);
+      },
+    };
+  };
+  return {
+    open,
+    get live(): number {
+      return opened - destroyed;
+    },
+    get opened(): number {
+      return opened;
+    },
+    /** The notes currently holding an editor, sorted so assertions are stable. */
+    get notes(): readonly string[] {
+      return [...live].sort();
+    },
+  };
+}
+
+/** A `localStorage` stand-in, so sidebar state does not leak between tests. */
+function chrome() {
+  const values = new Map<string, string>();
+  return {
+    getItem: (key: string): string | null => values.get(key) ?? null,
+    setItem: (key: string, value: string): void => {
+      values.set(key, value);
+    },
+  };
+}
+
+function store(notes: readonly string[] = []): WorkspaceStore {
+  const ids = sessionIds();
+  const workspace = new WorkspaceStore({ initial: createWorkspace("personal", ids), ids });
+  for (const note of notes) workspace.open(note);
+  return workspace;
+}
+
+let target: HTMLElement;
+
+beforeEach(() => {
+  document.body.innerHTML = "";
+  target = document.createElement("div");
+  document.body.append(target);
+  commands = new EventTarget();
+});
+
+const flush = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await tick();
+};
+
+/**
+ * Mounts the shell and returns a teardown, so no test leaks a mounted component.
+ *
+ * `open` is always injected, even when a test does not care about it. Left out, the real
+ * `openNoteSurface` runs and reaches for IndexedDB, which jsdom does not have — the failure
+ * surfaces as an unhandled rejection from a component effect rather than as a test failure,
+ * which is the most confusing shape a broken test can take.
+ */
+function render(workspace: WorkspaceStore, open?: ReturnType<typeof surfaces>["open"]) {
+  const app = mount(Workspace, {
+    target,
+    props: {
+      store: workspace,
+      session: { vault: "personal", user: "alice" },
+      chrome: chrome(),
+      open: open ?? surfaces().open,
+      // The commands listen on a target rather than on the shell element, because a `div`
+      // cannot hold focus. Injected here so a test drives them without touching `window`.
+      target: commands,
+      // A wide viewport, so the sidebars start open as they do on desktop.
+      narrow: false,
+    },
+  });
+  return () => unmount(app);
+}
+
+/** Where the shell's keyboard commands are dispatched in these tests. */
+let commands: EventTarget;
+
+const tabs = (): HTMLElement[] => [...target.querySelectorAll<HTMLElement>('[role="tab"]')];
+const panes = (): HTMLElement[] => [...target.querySelectorAll<HTMLElement>(".pane")];
+
+describe("the shell", () => {
+  it("renders both sidebars and a main area", () => {
+    const teardown = render(store());
+    try {
+      expect(target.querySelector('[aria-label="Navigation"]')).not.toBeNull();
+      expect(target.querySelector('[aria-label="Context"]')).not.toBeNull();
+      expect(target.querySelector(".workspace-main")).not.toBeNull();
+    } finally {
+      teardown();
+    }
+  });
+
+  it("says which milestone fills an empty sidebar, rather than 'coming soon'", () => {
+    // A reader who opens this should be able to tell whether it is unfinished or broken.
+    const teardown = render(store());
+    try {
+      const placeholders = [...target.querySelectorAll(".sidebar-placeholder")];
+      expect(placeholders).toHaveLength(2);
+      for (const placeholder of placeholders) {
+        expect(placeholder.textContent).toMatch(/M\d+/);
+      }
+    } finally {
+      teardown();
+    }
+  });
+
+  it("shows an empty pane rather than nothing when no note is open", () => {
+    const teardown = render(store());
+    try {
+      expect(panes()).toHaveLength(1);
+      expect(target.querySelector(".note-pane.is-empty")).not.toBeNull();
+      expect(tabs()).toEqual([]);
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("tabs", () => {
+  it("are a tablist, so a screen reader reports position rather than a row of buttons", () => {
+    const teardown = render(store(["One.md", "Two.md"]));
+    try {
+      expect(target.querySelector('[role="tablist"]')).not.toBeNull();
+      expect(tabs()).toHaveLength(2);
+      expect(tabs()[1]?.getAttribute("aria-selected")).toBe("true");
+      expect(tabs()[0]?.getAttribute("aria-selected")).toBe("false");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("show the note's own name but carry the full path for a reader who needs it", () => {
+    const teardown = render(store(["Projects/Roadmap.md"]));
+    try {
+      expect(tabs()[0]?.querySelector(".tab-label")?.textContent).toBe("Roadmap");
+      expect(tabs()[0]?.getAttribute("title")).toBe("Projects/Roadmap.md");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("activate on click", async () => {
+    const workspace = store(["One.md", "Two.md"]);
+    const teardown = render(workspace);
+    try {
+      tabs()[0]?.click();
+      await tick();
+      expect(workspace.activeTab?.note).toBe("One.md");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("close from their own button", async () => {
+    const workspace = store(["One.md", "Two.md"]);
+    const teardown = render(workspace);
+    try {
+      const close = tabs()[0]?.querySelector<HTMLButtonElement>(".tab-close");
+      expect(close?.getAttribute("aria-label")).toBe("Close One");
+      close?.click();
+      await tick();
+      expect(workspace.tabs.map((tab) => tab.note)).toEqual(["Two.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("move focus and selection with the arrow keys", async () => {
+    const workspace = store(["One.md", "Two.md", "Three.md"]);
+    const teardown = render(workspace);
+    try {
+      expect(workspace.activeTab?.note).toBe("Three.md");
+      tabs()[2]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+      await tick();
+      expect(workspace.activeTab?.note).toBe("Two.md");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("move the tab itself with cmd-shift-arrow, which is the drag's keyboard equivalent", async () => {
+    // §8.4: no mouse-only feature ships, and native drag-and-drop is not keyboard operable
+    // at all — so this is a separate feature from the drag, and needs its own test.
+    const workspace = store(["One.md", "Two.md"]);
+    const teardown = render(workspace);
+    try {
+      const second = tabs()[1];
+      second?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowLeft",
+          metaKey: true,
+          shiftKey: true,
+          bubbles: true,
+        }),
+      );
+      await tick();
+      expect(workspace.tabs.map((tab) => tab.note)).toEqual(["Two.md", "One.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("close with Delete while focused", async () => {
+    const workspace = store(["One.md"]);
+    const teardown = render(workspace);
+    try {
+      tabs()[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+      await tick();
+      expect(workspace.tabs).toEqual([]);
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("splits", () => {
+  it("render two panes and a divider between them", async () => {
+    const workspace = store(["One.md"]);
+    workspace.split(workspace.focusedGroup, "vertical", "Two.md");
+    const teardown = render(workspace);
+    try {
+      await tick();
+      expect(panes()).toHaveLength(2);
+      const divider = target.querySelector('[role="separator"]');
+      expect(divider?.getAttribute("aria-orientation")).toBe("vertical");
+      expect(divider?.getAttribute("aria-valuenow")).toBe("50");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("resize from the keyboard, and report the new position to assistive technology", async () => {
+    const workspace = store(["One.md"]);
+    workspace.split(workspace.focusedGroup, "vertical", "Two.md");
+    const teardown = render(workspace);
+    try {
+      const divider = target.querySelector<HTMLElement>('[role="separator"]');
+      divider?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      await tick();
+      expect(target.querySelector('[role="separator"]')?.getAttribute("aria-valuenow")).toBe("52");
+
+      divider?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+      await tick();
+      expect(target.querySelector('[role="separator"]')?.getAttribute("aria-valuenow")).toBe("12");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("open from cmd-backslash, so a split is reachable without a menu", async () => {
+    const workspace = store(["One.md"]);
+    const teardown = render(workspace);
+    try {
+      // The listener is registered by an effect, which runs after mount rather than during
+      // it — dispatching synchronously beats it there.
+      await tick();
+      commands.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true }));
+      await tick();
+      expect(panes()).toHaveLength(2);
+      // Inherited from the pane that was split, which is what "split right" means.
+      expect(workspace.tabs.map((tab) => tab.note)).toEqual(["One.md", "One.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("collapse when a pane loses its last tab", async () => {
+    const workspace = store(["One.md"]);
+    workspace.split(workspace.focusedGroup, "vertical", "Two.md");
+    const teardown = render(workspace);
+    try {
+      await tick();
+      expect(panes()).toHaveLength(2);
+
+      const two = workspace.tabs.find((tab) => tab.note === "Two.md");
+      if (two === undefined) throw new Error("expected a tab on Two.md");
+      workspace.close(two.id);
+      await tick();
+
+      expect(panes()).toHaveLength(1);
+      expect(target.querySelector('[role="separator"]')).toBeNull();
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("editors", () => {
+  it("exist only for the active tab of each pane", async () => {
+    // The memory claim in `NotePane`: four open panes should cost four editors, not four
+    // times the number of tabs. §21.2 budgets 250 MB for a whole vault on a phone.
+    const workspace = store(["One.md", "Two.md", "Three.md"]);
+    const live = surfaces();
+    const teardown = render(workspace, live.open);
+    try {
+      await flush();
+      expect(workspace.tabs).toHaveLength(3);
+      expect(live.live).toBe(1);
+      // And it is the *active* tab's note. Without this, rendering the first tab in every
+      // pane satisfies the count while showing the user something they did not select.
+      expect(live.notes).toEqual(["Three.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("are released when their pane closes", async () => {
+    const workspace = store(["One.md"]);
+    workspace.split(workspace.focusedGroup, "vertical", "Two.md");
+    const live = surfaces();
+    const teardown = render(workspace, live.open);
+    try {
+      await flush();
+      expect(live.notes).toEqual(["One.md", "Two.md"]);
+
+      workspace.closePane(workspace.focusedGroup);
+      await flush();
+      expect(live.notes).toEqual(["One.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("are rebuilt when the tab navigates, because an editor cannot be re-pointed", async () => {
+    const workspace = store(["One.md"]);
+    const live = surfaces();
+    const teardown = render(workspace, live.open);
+    try {
+      await flush();
+      expect(live.opened).toBe(1);
+
+      const tab = workspace.activeTab;
+      if (tab === undefined) throw new Error("expected an open tab");
+      workspace.navigate(tab.id, "Two.md");
+      await flush();
+
+      expect(live.opened).toBe(2);
+      expect(live.notes).toEqual(["Two.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("are all released when the shell unmounts", async () => {
+    const workspace = store(["One.md"]);
+    workspace.split(workspace.focusedGroup, "vertical", "Two.md");
+    const live = surfaces();
+    const teardown = render(workspace, live.open);
+    await flush();
+    expect(live.live).toBe(2);
+
+    teardown();
+    await flush();
+    expect(live.live).toBe(0);
+  });
+});
+
+describe("sidebars", () => {
+  it("collapse and expand, keeping the control that reopens them reachable", async () => {
+    // Collapsing a sidebar must not remove the only way back. That is a keyboard trap, not
+    // a styling detail, which is why the toggle lives outside the collapsible region.
+    const teardown = render(store());
+    try {
+      const toggle = target.querySelector<HTMLButtonElement>(
+        '.sidebar-frame[data-side="left"] .sidebar-toggle',
+      );
+      const panel = target.querySelector('[aria-label="Navigation"]');
+      expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+      expect(panel?.hasAttribute("hidden")).toBe(false);
+
+      toggle?.click();
+      await tick();
+      expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+      expect(target.querySelector('[aria-label="Navigation"]')?.hasAttribute("hidden")).toBe(true);
+      // Still in the document, still focusable.
+      expect(target.querySelector('.sidebar-frame[data-side="left"] .sidebar-toggle')).not.toBeNull();
+    } finally {
+      teardown();
+    }
+  });
+
+  it("are reachable by keyboard through their own buttons", async () => {
+    // §8.4 requires every action to be reachable by keyboard, not that every action has a
+    // shortcut. `Cmd+B` deliberately has no binding here: it is bold, and an application
+    // built around a rich text editor must not steal it. Remappable hotkeys are their own
+    // milestone item.
+    const teardown = render(store());
+    try {
+      const toggle = target.querySelector<HTMLButtonElement>(
+        '.sidebar-frame[data-side="left"] .sidebar-toggle',
+      );
+      expect(toggle?.tagName).toBe("BUTTON");
+      toggle?.focus();
+      expect(document.activeElement).toBe(toggle);
+
+      toggle?.click();
+      await tick();
+      expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("start closed on a narrow viewport, because an open drawer covers the note", async () => {
+    // Below the §8.3 breakpoint a sidebar overlays the content. Open on arrival, it covers
+    // the note and swallows taps meant for the tab strip — which is how the E2E mobile
+    // project found this, after every mobile test failed to click anything.
+    const app = mount(Workspace, {
+      target,
+      props: {
+        store: store(["One.md"]),
+        session: { vault: "personal", user: "alice" },
+        chrome: chrome(),
+        open: surfaces().open,
+        target: commands,
+        narrow: true,
+      },
+    });
+    try {
+      for (const side of ["left", "right"]) {
+        expect(
+          target
+            .querySelector(`.sidebar-frame[data-side="${side}"] .sidebar-toggle`)
+            ?.getAttribute("aria-expanded"),
+        ).toBe("false");
+      }
+    } finally {
+      unmount(app);
+    }
+  });
+
+  it("remember their state across a remount", async () => {
+    const preferences = chrome();
+    const first = mount(Workspace, {
+      target,
+      props: {
+        store: store(),
+        session: { vault: "personal", user: "alice" },
+        chrome: preferences,
+        open: surfaces().open,
+        target: commands,
+        narrow: false,
+      },
+    });
+    target
+      .querySelector<HTMLButtonElement>('.sidebar-frame[data-side="left"] .sidebar-toggle')
+      ?.click();
+    await tick();
+    unmount(first);
+
+    const second = mount(Workspace, {
+      target,
+      props: {
+        store: store(),
+        session: { vault: "personal", user: "alice" },
+        chrome: preferences,
+        open: surfaces().open,
+        target: commands,
+        narrow: false,
+      },
+    });
+    try {
+      expect(
+        target
+          .querySelector('.sidebar-frame[data-side="left"] .sidebar-toggle')
+          ?.getAttribute("aria-expanded"),
+      ).toBe("false");
+    } finally {
+      unmount(second);
+    }
+  });
+});
+
+describe("dragging", () => {
+  /**
+   * A `DataTransfer` stand-in.
+   *
+   * jsdom does not implement one, and `DragEvent` there carries `dataTransfer: null`. The
+   * handlers only use `getData`, `setData`, `types`, `effectAllowed` and `dropEffect`, so a
+   * small object is enough — and closer to the real thing than mocking the handlers would be.
+   */
+  function dataTransfer() {
+    const values = new Map<string, string>();
+    return {
+      setData: (type: string, value: string): void => {
+        values.set(type, value);
+      },
+      getData: (type: string): string => values.get(type) ?? "",
+      get types(): string[] {
+        return [...values.keys()];
+      },
+      effectAllowed: "none",
+      dropEffect: "none",
+    };
+  }
+
+  /** Fires a drag event carrying `transfer`, which jsdom will not do on its own. */
+  function drag(element: Element, type: string, transfer: ReturnType<typeof dataTransfer>): Event {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: transfer });
+    element.dispatchEvent(event);
+    return event;
+  }
+
+  it("carries the tab id in the drag payload, so another pane's strip can read it", () => {
+    const teardown = render(store(["One.md", "Two.md"]));
+    try {
+      const transfer = dataTransfer();
+      drag(tabs()[0] as Element, "dragstart", transfer);
+      expect(transfer.types).toEqual(["application/x-memberberry-tab"]);
+      expect(transfer.getData("application/x-memberberry-tab")).not.toBe("");
+      expect(transfer.effectAllowed).toBe("move");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("accepts the drop, which the browser refuses unless dragover is prevented", async () => {
+    // Without `preventDefault` on `dragover` the browser rejects the drop and the tab springs
+    // back with no explanation — a bug that looks like nothing happening.
+    const teardown = render(store(["One.md", "Two.md"]));
+    try {
+      const transfer = dataTransfer();
+      drag(tabs()[1] as Element, "dragstart", transfer);
+      const over = drag(tabs()[0] as Element, "dragover", transfer);
+      expect(over.defaultPrevented).toBe(true);
+      expect(transfer.dropEffect).toBe("move");
+
+      await tick();
+      expect(tabs()[0]?.getAttribute("data-drop-before")).toBe("true");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("ignores a drag that is not one of ours", () => {
+    // A file dragged onto the tab strip must not be treated as a tab move.
+    const teardown = render(store(["One.md"]));
+    try {
+      const foreign = dataTransfer();
+      foreign.setData("text/plain", "some text");
+      const over = drag(tabs()[0] as Element, "dragover", foreign);
+      expect(over.defaultPrevented).toBe(false);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("reorders on drop", async () => {
+    const workspace = store(["One.md", "Two.md"]);
+    const teardown = render(workspace);
+    try {
+      const transfer = dataTransfer();
+      drag(tabs()[1] as Element, "dragstart", transfer);
+      drag(tabs()[0] as Element, "drop", transfer);
+      await tick();
+      expect(workspace.tabs.map((tab) => tab.note)).toEqual(["Two.md", "One.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("drops onto the empty space past the last tab, which means 'put it at the end'", async () => {
+    // Without a target there, releasing in the obvious blank area does nothing, which reads
+    // as a broken drag rather than as a missing drop zone.
+    const workspace = store(["One.md", "Two.md"]);
+    const teardown = render(workspace);
+    try {
+      const transfer = dataTransfer();
+      drag(tabs()[0] as Element, "dragstart", transfer);
+      const rest = target.querySelector(".tab-strip-rest");
+      expect(rest).not.toBeNull();
+      drag(rest as Element, "drop", transfer);
+      await tick();
+      expect(workspace.tabs.map((tab) => tab.note)).toEqual(["Two.md", "One.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("clears the drop indicator when the drag ends without a drop", async () => {
+    const teardown = render(store(["One.md", "Two.md"]));
+    try {
+      const transfer = dataTransfer();
+      drag(tabs()[1] as Element, "dragstart", transfer);
+      drag(tabs()[0] as Element, "dragover", transfer);
+      await tick();
+      expect(tabs()[0]?.getAttribute("data-drop-before")).toBe("true");
+
+      drag(tabs()[1] as Element, "dragend", transfer);
+      await tick();
+      expect(tabs()[0]?.getAttribute("data-drop-before")).toBe("false");
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("dragging a split divider", () => {
+  /** jsdom implements neither pointer capture nor layout, so both are supplied. */
+  function prepare(divider: HTMLElement, split: HTMLElement): void {
+    const captured = new Set<number>();
+    divider.setPointerCapture = (id: number): void => {
+      captured.add(id);
+    };
+    divider.releasePointerCapture = (id: number): void => {
+      captured.delete(id);
+    };
+    divider.hasPointerCapture = (id: number): boolean => captured.has(id);
+    split.getBoundingClientRect = (): DOMRect =>
+      ({ left: 0, top: 0, width: 1000, height: 800, right: 1000, bottom: 800, x: 0, y: 0 }) as DOMRect;
+  }
+
+  function pointer(type: string, x: number, y: number): PointerEvent {
+    // jsdom has no PointerEvent constructor; a MouseEvent carries the fields used here.
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+    Object.defineProperty(event, "pointerId", { value: 1 });
+    return event as unknown as PointerEvent;
+  }
+
+  it("resizes proportionally to the split's own box", async () => {
+    const workspace = store(["One.md"]);
+    workspace.split(workspace.focusedGroup, "vertical", "Two.md");
+    const teardown = render(workspace);
+    try {
+      await tick();
+      const divider = target.querySelector<HTMLElement>(".pane-divider");
+      const split = target.querySelector<HTMLElement>(".pane-split");
+      if (divider === null || split === null) throw new Error("expected a split and a divider");
+      prepare(divider, split);
+
+      divider.dispatchEvent(pointer("pointerdown", 500, 400));
+      divider.dispatchEvent(pointer("pointermove", 300, 400));
+      await tick();
+      // 300 of 1000 across, so 30%.
+      expect(target.querySelector(".pane-divider")?.getAttribute("aria-valuenow")).toBe("30");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("ignores movement it never captured, so a stray pointer cannot resize a pane", async () => {
+    const workspace = store(["One.md"]);
+    workspace.split(workspace.focusedGroup, "vertical", "Two.md");
+    const teardown = render(workspace);
+    try {
+      await tick();
+      const divider = target.querySelector<HTMLElement>(".pane-divider");
+      const split = target.querySelector<HTMLElement>(".pane-split");
+      if (divider === null || split === null) throw new Error("expected a split and a divider");
+      prepare(divider, split);
+
+      // No `pointerdown` first: the pointer is down on something else and merely passing over.
+      divider.dispatchEvent(pointer("pointermove", 200, 400));
+      await tick();
+      expect(target.querySelector(".pane-divider")?.getAttribute("aria-valuenow")).toBe("50");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("stops resizing once the pointer is released", async () => {
+    const workspace = store(["One.md"]);
+    workspace.split(workspace.focusedGroup, "vertical", "Two.md");
+    const teardown = render(workspace);
+    try {
+      await tick();
+      const divider = target.querySelector<HTMLElement>(".pane-divider");
+      const split = target.querySelector<HTMLElement>(".pane-split");
+      if (divider === null || split === null) throw new Error("expected a split and a divider");
+      prepare(divider, split);
+
+      divider.dispatchEvent(pointer("pointerdown", 500, 400));
+      divider.dispatchEvent(pointer("pointermove", 400, 400));
+      divider.dispatchEvent(pointer("pointerup", 400, 400));
+      divider.dispatchEvent(pointer("pointermove", 900, 400));
+      await tick();
+      expect(target.querySelector(".pane-divider")?.getAttribute("aria-valuenow")).toBe("40");
+    } finally {
+      teardown();
+    }
+  });
+});

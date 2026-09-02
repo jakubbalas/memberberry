@@ -568,9 +568,17 @@ async fn workspace_load(
         return workspace_denied();
     };
     match store.load(&user, &device) {
-        // A device that has never saved one is not an error: the client opens a fresh
-        // workspace, which is also what it does for a layout it cannot parse.
-        Ok(None) | Err(_) => workspace_denied(),
+        // why: `204`, not `404`. A device that has never saved a layout is the *normal* first
+        // visit, and answering it with an error made every fresh page load log a 404 in the
+        // console — noise that trains everyone to ignore the one that matters.
+        //
+        // This does distinguish "member with nothing saved" from "not a member", and that is
+        // fine: a caller already knows which vaults they are a member of, because `/` lists
+        // them. §6.5 protects what someone cannot see, and this tells them nothing new.
+        Ok(None) => StatusCode::NO_CONTENT.into_response(),
+        // A layout that cannot be read is treated as absent for the same reason: the client's
+        // answer to both is to open a fresh workspace.
+        Err(_) => StatusCode::NO_CONTENT.into_response(),
         Ok(Some(layout)) => (
             StatusCode::OK,
             [

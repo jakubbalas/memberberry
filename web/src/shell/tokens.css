@@ -100,6 +100,22 @@
   --shadow-md: 0 0.4rem 1rem color-mix(in srgb, var(--text-primary) 8%, transparent);
   --shadow-lg: 0 1.5rem 4rem color-mix(in srgb, var(--text-primary) 14%, transparent);
 
+  /* ---------------------------------------------------------------- colour: interaction */
+  /* Hover and selected states for the shell chrome — tabs, tree rows, palette entries.
+     Composed from the surrounding surface rather than given a hue of their own, so a theme
+     that changes `--surface-note` does not have to remember to change these too — and so
+     neither needs a dark-theme counterpart, because a `var()` inside a custom property is
+     substituted where it is *used*, picking up whichever theme is in force. */
+  --surface-hover: color-mix(in srgb, var(--accent-primary) 8%, var(--surface-raised));
+  --surface-selected: var(--surface-note);
+
+  /* ---------------------------------------------------------------- workspace shell */
+  --sidebar-width: 15rem;
+  --tab-height: 2.25rem;
+  /* The grab area between two panes. Wider than it looks: the visible line is 1px and the
+     rest is padding, because a 1px drag target is a 1px drag target. */
+  --divider-thickness: 0.5rem;
+
   /* ---------------------------------------------------------------- controls */
   --control-height: 2.25rem;
   /* 44px. SPEC.md §8.3 and §20.3: the floor for anything a finger has to hit. */
@@ -139,6 +155,9 @@
   /* Written by the shell from `VisualViewport` so the mobile toolbar can sit above the
      virtual keyboard (§8.3). Zero whenever no keyboard is up. */
   --keyboard-offset: 0px;
+  /* Set per split by `PaneTree.svelte` — the first child's share of the space. The default
+     is an even split, which is what a new one starts at. */
+  --split-ratio: 0.5;
 }
 
 @media (prefers-color-scheme: dark) {

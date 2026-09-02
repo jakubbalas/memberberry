@@ -38,10 +38,14 @@ export const test = base.extend<{ failures: Failures }>({
       });
       page.on("pageerror", (error) => record(`uncaught exception: ${error.message}`));
       page.on("requestfailed", (request) => {
-        record(
-          `request failed: ${request.method()} ${request.url()} — ` +
-            `${request.failure()?.errorText ?? "no reason given"}`,
-        );
+        const reason = request.failure()?.errorText ?? "no reason given";
+        // why: an abort is not a failure of the application. It means the page navigated or
+        // closed while a request was in flight — which is exactly what happens to the
+        // debounced layout save on every `page.goto`. Recording it would mean every test
+        // that navigates twice has to allow it, and an allowlist everyone copies is not a
+        // check. Every *other* failure, and every response >= 400, still counts.
+        if (reason.includes("net::ERR_ABORTED")) return;
+        record(`request failed: ${request.method()} ${request.url()} — ${reason}`);
       });
       page.on("response", (response) => {
         if (response.status() >= 400) record(`HTTP ${response.status()} ${response.url()}`);

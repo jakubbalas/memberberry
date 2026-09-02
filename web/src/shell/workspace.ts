@@ -22,7 +22,14 @@
  * test is deterministic and a replay reproduces exactly.
  */
 
-/** How a split divides its space. */
+/**
+ * How a split divides its space, named after the divider rather than the arrangement.
+ *
+ * why: this is genuinely ambiguous and worth pinning once. **`vertical` means a vertical
+ * divider**, so the two children sit side by side in columns; `horizontal` stacks them in
+ * rows. It matches what the user is dragging, and it is what "split vertically" means in
+ * every editor that offers the command.
+ */
 export type SplitDirection = "horizontal" | "vertical";
 
 /** Whether a tab is editing or reading. */

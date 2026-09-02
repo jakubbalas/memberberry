@@ -48,6 +48,7 @@ interface Recorded {
   readonly url: string;
   readonly method: string;
   readonly body: string | undefined;
+  readonly keepalive: boolean;
 }
 
 /** A `fetch` that records calls and answers with whatever the test set up. */
@@ -58,6 +59,7 @@ function transportFetch(reply: (call: Recorded) => Response | Promise<Response>)
       url: String(input),
       method: init?.method ?? "GET",
       body: typeof init?.body === "string" ? init.body : undefined,
+      keepalive: init?.keepalive === true,
     };
     calls.push(call);
     return reply(call);
@@ -275,6 +277,88 @@ describe("saving", () => {
     await transport.flush();
     expect(calls).toHaveLength(2);
     expect(failures).toHaveLength(1);
+  });
+
+  it("uses keepalive only for the final write, which the browser would otherwise abort", async () => {
+    // A `fetch` started during `pagehide` is aborted as the document goes away — the layout
+    // never reaches the server. `keepalive` is what lets it outlive the page. It is not used
+    // on ordinary saves because it caps the total in-flight body at 64 KB, far under
+    // `MAX_LAYOUT_BYTES`.
+    const timers = clock();
+    const { fetch, calls } = transportFetch(() => new Response(null, { status: 204 }));
+    const transport = createWorkspaceTransport({
+      vault: "personal",
+      device: "laptop",
+      ids: ids(),
+      fetch,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    transport.save(populated(["One.md"]));
+    await transport.flush();
+    expect(calls[0]?.keepalive).toBe(false);
+
+    transport.save(populated(["One.md", "Two.md"]));
+    await transport.flush({ final: true });
+    expect(calls[1]?.keepalive).toBe(true);
+  });
+
+  it("re-sends the latest layout on the final flush when a write was lost", async () => {
+    // The case this exists for: a debounced PUT is in flight when the page starts unloading,
+    // the browser aborts it, and nothing retries — so the last thing the user did is exactly
+    // what disappears. The final flush re-sends, with keepalive, unless the server already
+    // acknowledged that same layout.
+    const timers = clock();
+    let failNext = true;
+    const { fetch, calls } = transportFetch(() => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("aborted");
+      }
+      return new Response(null, { status: 204 });
+    });
+    const transport = createWorkspaceTransport({
+      vault: "personal",
+      device: "laptop",
+      ids: ids(),
+      fetch,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+      onSaveError: () => undefined,
+    });
+
+    const last = populated(["One.md", "Two.md"]);
+    transport.save(last);
+    timers.tick();
+    await transport.flush();
+    expect(calls).toHaveLength(1);
+
+    await transport.flush({ final: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.keepalive).toBe(true);
+    expect(calls[1]?.body).toBe(serializeWorkspace(last));
+  });
+
+  it("does not re-send on the final flush when the server already has the layout", async () => {
+    const timers = clock();
+    const { fetch, calls } = transportFetch(() => new Response(null, { status: 204 }));
+    const transport = createWorkspaceTransport({
+      vault: "personal",
+      device: "laptop",
+      ids: ids(),
+      fetch,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    transport.save(populated(["One.md"]));
+    timers.tick();
+    await transport.flush();
+    expect(calls).toHaveLength(1);
+
+    await transport.flush({ final: true });
+    expect(calls, "an unload must not cost a redundant write").toHaveLength(1);
   });
 
   it("writes nothing more after it is destroyed", async () => {

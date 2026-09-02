@@ -78,3 +78,99 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
   .editor-toolbar.is-block-tools-open + .slash-menu { display: flex; }
   .ProseMirror-yjs-cursor > div { display: none; }
 }
+
+/* ---------------------------------------------------------------- workspace shell (SPEC 8.2)
+
+   The desktop layout: sidebars either side of a main area of recursive splits. The whole
+   thing is `100dvh` and every level passes `min-height: 0` down, because a nested flex or
+   grid child defaults to its content size — without it a long note stretches the pane
+   instead of scrolling inside it, which is the classic way this layout breaks. */
+
+.workspace-shell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.sidebar-frame { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border-subtle); background: var(--surface-canvas); }
+.sidebar-frame[data-side="right"] { border-right: 0; border-left: 1px solid var(--border-subtle); }
+.sidebar-toggle { display: flex; align-items: center; gap: var(--space-3); min-height: var(--tab-height); padding: 0 var(--space-4); border: 0; border-bottom: 1px solid var(--border-subtle); color: var(--text-muted); background: none; font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); text-align: left; cursor: pointer; }
+.sidebar-toggle:hover { color: var(--text-primary); background: var(--surface-hover); }
+.sidebar-toggle:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
+.sidebar-toggle-icon { font-size: var(--text-sm); }
+.sidebar { width: var(--sidebar-width); min-height: 0; overflow: auto; padding: var(--space-5); }
+.sidebar-placeholder { margin: 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+/* Collapsed: the toggle stays, the panel goes. The label is dropped rather than the button,
+   so the control that reopens it is still reachable — including by keyboard. */
+.sidebar-frame[data-collapsed="true"] .sidebar-toggle-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.workspace-main { display: flex; min-width: 0; min-height: 0; overflow: hidden; }
+.workspace-main > * { flex: 1 1 auto; min-width: 0; min-height: 0; }
+
+.pane-split { display: grid; min-width: 0; min-height: 0; }
+.pane-split[data-direction="vertical"] { grid-template-columns: minmax(0, calc(var(--split-ratio) * 100%)) auto minmax(0, 1fr); }
+.pane-split[data-direction="horizontal"] { grid-template-rows: minmax(0, calc(var(--split-ratio) * 100%)) auto minmax(0, 1fr); }
+.pane-split-side { display: flex; min-width: 0; min-height: 0; }
+.pane-split-side > * { flex: 1 1 auto; min-width: 0; min-height: 0; }
+
+.pane-divider { position: relative; padding: 0; background: none; border: 0; appearance: none; }
+/* The visible line is one pixel; the element around it is the grab area. */
+.pane-divider::after { content: ""; position: absolute; inset: 0; margin: auto; background: var(--border-subtle); }
+.pane-divider[data-direction="vertical"] { width: var(--divider-thickness); cursor: col-resize; }
+.pane-divider[data-direction="vertical"]::after { width: 1px; }
+.pane-divider[data-direction="horizontal"] { height: var(--divider-thickness); cursor: row-resize; }
+.pane-divider[data-direction="horizontal"]::after { height: 1px; }
+.pane-divider:hover::after, .pane-divider:focus-visible::after { background: var(--accent-primary); }
+.pane-divider:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
+
+.pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface-canvas); }
+
+.tab-strip { display: flex; align-items: stretch; min-height: var(--tab-height); border-bottom: 1px solid var(--border-subtle); background: var(--surface-raised); overflow-x: auto; }
+.tab { display: flex; align-items: center; gap: var(--space-2); max-width: 14rem; padding: 0 var(--space-2) 0 var(--space-4); border-right: 1px solid var(--border-subtle); color: var(--text-muted); font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); white-space: nowrap; cursor: pointer; }
+.tab:hover { background: var(--surface-hover); }
+.tab[aria-selected="true"] { color: var(--text-primary); background: var(--surface-selected); }
+.tab:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
+.tab[data-mode="read"] .tab-label { font-style: italic; }
+.tab[data-dragging="true"] { opacity: .4; }
+/* Where the drop will land, shown before the button is released. */
+.tab[data-drop-before="true"] { box-shadow: inset 2px 0 0 0 var(--accent-primary); }
+.tab-strip-rest[data-drop-end="true"] { box-shadow: inset 2px 0 0 0 var(--accent-primary); }
+.tab-label { overflow: hidden; text-overflow: ellipsis; }
+.tab-close { display: grid; width: var(--space-7); height: var(--space-7); place-items: center; border: 0; border-radius: var(--radius-sm); color: inherit; background: none; font: var(--weight-bold) var(--text-sm)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.tab-close:hover { color: var(--accent-primary); background: var(--surface-hover); }
+.tab-close:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-offset)); }
+.tab-strip-rest { flex: 1 1 auto; min-width: var(--space-8); }
+
+.note-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: var(--space-5); overflow: auto; }
+.note-pane.is-empty { place-content: center; place-items: center; }
+.note-pane-empty { margin: 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+/* Inside a pane the panel is a scroll container rather than a page-sized card. */
+.note-pane .editor-panel { flex: 1 1 auto; min-height: 0; padding: var(--space-6); }
+.note-pane .editor-surface { min-height: 0; }
+
+/* Below the SPEC 8.3 breakpoint the sidebars cannot sit beside the content: two of them at
+   `--sidebar-width` is wider than a phone. They become overlays over the main area, which
+   keeps the shell usable at any width and is the structure the M7 mobile layout builds the
+   swipe-in drawers on. Without this the main column computes to zero and the editor is
+   present but invisible — which is how the E2E mobile project found it. */
+@media (max-width: 47.99rem) {
+  /* The toggles stay in the grid; only the open *panel* overlays the content. Floating the
+     whole frame instead puts a 44px strip on top of the tab strip, where it silently eats
+     taps meant for the first tab — which is how the E2E mobile project found this. */
+  .workspace-shell { position: relative; }
+  .sidebar {
+    position: absolute;
+    z-index: 3;
+    top: 0;
+    bottom: 0;
+    width: min(var(--sidebar-width), 80vw);
+    background: var(--surface-canvas);
+    box-shadow: var(--shadow-lg);
+  }
+  .sidebar-frame[data-side="left"] .sidebar { left: var(--touch-target-min); }
+  .sidebar-frame[data-side="right"] .sidebar { right: var(--touch-target-min); }
+  /* A finger, not a cursor (§8.3): the toggle is the whole edge strip. */
+  .sidebar-toggle { min-width: var(--touch-target-min); min-height: var(--touch-target-min); justify-content: center; }
+  .sidebar-toggle-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
