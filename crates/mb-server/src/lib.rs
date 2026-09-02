@@ -15,6 +15,7 @@ pub mod repository;
 pub mod sync;
 pub mod vault;
 pub mod watch;
+pub mod workspace;
 
 use std::path::PathBuf;
 

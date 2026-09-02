@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Form, Path as AxumPath, State};
+use axum::extract::{DefaultBodyLimit, Form, Path as AxumPath, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -26,6 +26,7 @@ use crate::audit::{AuditAction, AuditEvent, AuditLog, AuditResult};
 use crate::repository::AuthorizedVault;
 use crate::sync::{Announcement, ClientFrame, ConnectionId, ServerFrame, SyncRegistry, Wire};
 use crate::watch::{Changes, WatchSignal};
+use crate::workspace::{DeviceId, WorkspaceStore};
 use crate::{AccessFile, Error, Slug, Vault};
 
 /// The vaults this server knows about, keyed by slug.
@@ -197,6 +198,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(index))
         .route("/login", post(login))
         .route("/api/v1/sync", get(websocket))
+        .route(
+            "/api/v1/vaults/{slug}/workspace/{device}",
+            get(workspace_load)
+                .put(workspace_save)
+                // why: bounded before the handler sees it. `WorkspaceStore::save` also
+                // refuses an oversized layout, but axum's 2 MB default would buffer the
+                // whole thing first — an authenticated member gets to allocate that per
+                // request otherwise.
+                .layer(DefaultBodyLimit::max(crate::workspace::MAX_LAYOUT_BYTES)),
+        )
         .route("/assets/{*asset}", get(asset))
         .route("/v/{slug}", get(vault_index))
         .route("/v/{slug}/", get(vault_index))
@@ -506,6 +517,88 @@ async fn vault_index(
     }
     body.push_str("</ul>");
     page(vault.name(), &body).into_response()
+}
+
+/// The JSON denial every workspace route gives, whatever went wrong.
+///
+/// why: one shape for "no such vault", "you are not a member", "that is not a device id" and
+/// "you have saved nothing". Distinguishing them would let an unauthenticated prober map the
+/// vaults on a server, which §6.5 says must not be possible.
+fn workspace_denied() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, "application/json")],
+        "{}",
+    )
+        .into_response()
+}
+
+/// The user and store for a workspace request, or `None` if it is denied (E15).
+///
+/// The user comes from the session, never from the URL: there is no route parameter naming
+/// whose layout this is, so there is nothing for a caller to substitute.
+fn authorize_workspace<'a>(
+    state: &'a AppState,
+    slug: &str,
+    device: &str,
+    headers: &HeaderMap,
+) -> Option<(Username, DeviceId, WorkspaceStore<'a>)> {
+    let vault = state.vault(slug)?;
+    let access = state.access_for(vault.slug())?;
+    let view = state.authorized_vault(vault, &access, headers)?;
+    // Vault membership, not note-level access: a layout is not a note. A user with no access
+    // to this vault at all must not be able to tell it exists.
+    if !view.has_any_access().unwrap_or(false) {
+        return None;
+    }
+    let user = state
+        .authenticated_user(headers)
+        .or_else(|| state.api_token_user(vault.slug(), headers))?;
+    let device = DeviceId::parse(device).ok()?;
+    Some((user, device, WorkspaceStore::new(vault.root())))
+}
+
+/// `GET /api/v1/vaults/{slug}/workspace/{device}` — this user's saved layout (§8.1).
+async fn workspace_load(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, device)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((user, device, store)) = authorize_workspace(&state, &slug, &device, &headers) else {
+        return workspace_denied();
+    };
+    match store.load(&user, &device) {
+        // A device that has never saved one is not an error: the client opens a fresh
+        // workspace, which is also what it does for a layout it cannot parse.
+        Ok(None) | Err(_) => workspace_denied(),
+        Ok(Some(layout)) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                // A layout names notes. Nothing should keep a copy of it.
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            layout,
+        )
+            .into_response(),
+    }
+}
+
+/// `PUT /api/v1/vaults/{slug}/workspace/{device}` — replace this user's saved layout.
+async fn workspace_save(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, device)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    layout: String,
+) -> Response {
+    let Some((user, device, store)) = authorize_workspace(&state, &slug, &device, &headers) else {
+        return workspace_denied();
+    };
+    match store.save(&user, &device, &layout) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        // Oversized or unparseable. Neutral, like every other refusal on this route.
+        Err(_) => workspace_denied(),
+    }
 }
 
 async fn note(

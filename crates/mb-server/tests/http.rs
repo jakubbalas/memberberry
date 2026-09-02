@@ -136,6 +136,20 @@ impl TestServer {
         )
     }
 
+    /// Issues a PUT with a JSON body and the given extra headers.
+    fn put_json(&self, path: &str, headers: &str, body: &str) -> (String, String) {
+        self.request(
+            "PUT",
+            path,
+            &format!(
+                "{}{headers}Content-Type: application/json\r\nContent-Length: {}\r\n",
+                self.default_headers,
+                body.len()
+            ),
+            body,
+        )
+    }
+
     fn request(&self, method: &str, path: &str, headers: &str, body: &str) -> (String, String) {
         let mut stream = TcpStream::connect(self.addr).expect("connecting");
         // A read timeout means a server bug shows up as a failing test rather than a hang.
@@ -943,4 +957,139 @@ fn a_non_markdown_file_is_not_served_as_a_note() {
     dir.write("note.md", "# A\n");
     let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
     assert!(is_not_found(&server.status("/v/v/data.json")));
+}
+
+/// The layout for a note pane, in the shape `workspace-storage.ts` writes.
+const LAYOUT: &str = r#"{"format":1,"vault":"v","focusedGroup":"g","root":{"kind":"group","id":"g","tabs":[],"activeTab":null}}"#;
+
+#[test]
+fn the_workspace_route_stores_a_layout_per_user_and_denies_everyone_else_identically() {
+    // E15. A layout is one user's list of open notes, so the route has to answer four
+    // questions the same way — no such vault, not a member, not a device id, nothing saved —
+    // or a prober learns which vaults exist and who belongs to them (§6.5).
+    let dir = TempDir::new("http-workspace");
+    dir.write("Public.md", "# Public\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("member");
+    let charlie = auth
+        .create_user(mb_auth::NewUser {
+            username: "charlie",
+            display_name: "Charlie",
+            password: "correct horse battery staple",
+        })
+        .expect("non-member");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let charlie_header = header(charlie.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+
+    let route = "/api/v1/vaults/v/workspace/laptop";
+
+    // Nothing saved yet.
+    let (status, _) = server.get_with_headers(route, &alice_header);
+    assert!(is_not_found(&status), "{status}");
+
+    // Alice saves and reads back exactly what she stored.
+    let (status, _) = server.put_json(route, &alice_header, LAYOUT);
+    assert!(status.contains("204"), "{status}");
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert_eq!(body, LAYOUT);
+
+    // Bob is a member of the same vault on the same device id, and sees nothing of hers.
+    let (status, body) = server.get_with_headers(route, &bob_header);
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("focusedGroup"), "{body}");
+
+    // Charlie is not a member: the vault must not appear to exist.
+    let (status, _) = server.get_with_headers(route, &charlie_header);
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.put_json(route, &charlie_header, LAYOUT);
+    assert!(is_not_found(&status), "{status}");
+
+    // Anonymous, an unregistered vault, and a device id that is really a path all get the
+    // same answer as "you have nothing saved".
+    let (anonymous, _) = server.request("GET", route, "", "");
+    assert!(is_not_found(&anonymous), "{anonymous}");
+    let (unknown_vault, _) =
+        server.get_with_headers("/api/v1/vaults/nope/workspace/laptop", &alice_header);
+    assert!(is_not_found(&unknown_vault), "{unknown_vault}");
+    let (traversal, _) = server.get_with_headers(
+        "/api/v1/vaults/v/workspace/..%2F..%2Fetc%2Fpasswd",
+        &alice_header,
+    );
+    assert!(is_not_found(&traversal), "{traversal}");
+
+    // Charlie's refused write left nothing behind for anyone.
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert_eq!(
+        body, LAYOUT,
+        "a denied write must not disturb a stored layout"
+    );
+}
+
+#[test]
+fn a_workspace_layout_is_never_cached() {
+    // A layout names the notes someone has open. An intermediary keeping a copy of it is the
+    // same disclosure the per-user path exists to prevent.
+    let dir = TempDir::new("http-workspace-cache");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let route = "/api/v1/vaults/v/workspace/laptop";
+
+    let (status, _) = server.put_json(route, "", LAYOUT);
+    assert!(status.contains("204"), "{status}");
+
+    let headers = server.headers(route).to_lowercase();
+    assert!(
+        headers.contains("cache-control: no-store"),
+        "a layout must not be cached: {headers}"
+    );
+}
+
+#[test]
+fn a_workspace_layout_that_is_not_json_is_refused() {
+    let dir = TempDir::new("http-workspace-bad");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let route = "/api/v1/vaults/v/workspace/laptop";
+
+    let (status, _) = server.put_json(route, "", "{ not json");
+    assert!(is_not_found(&status), "{status}");
+    // And nothing was stored, so the next load still reports nothing saved.
+    let (status, _) = server.get_with_headers(route, "");
+    assert!(is_not_found(&status), "{status}");
 }
