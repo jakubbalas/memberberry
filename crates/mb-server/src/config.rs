@@ -34,6 +34,9 @@ pub struct ServerConfig {
     pub bind: Option<String>,
     #[serde(default, rename = "vaults")]
     pub vaults: Vec<VaultEntry>,
+    /// Directory containing Vite's production build. Relative paths resolve from the server.
+    #[serde(default)]
+    pub web_root: Option<String>,
 }
 
 /// One `[[vaults]]` entry.

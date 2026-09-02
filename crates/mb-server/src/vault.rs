@@ -20,6 +20,30 @@ pub struct Vault {
     notes_root: PathBuf,
 }
 
+/// One note's canonical identity: the file it is, independent of how it was named.
+///
+/// Produced only by [`Vault::canonical_note`], so holding one is proof the path resolved
+/// inside the vault.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CanonicalNote {
+    path: PathBuf,
+    identity: String,
+}
+
+impl CanonicalNote {
+    /// The absolute path of the Markdown file.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The vault-relative identity, unique per file and stable across vault moves.
+    #[must_use]
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+}
+
 impl Vault {
     /// Opens a vault at `root`.
     ///
@@ -143,6 +167,32 @@ impl Vault {
             return Err(Error::NotFound);
         }
         Ok(real)
+    }
+
+    /// Resolves a note to the identity every writer for that file must agree on.
+    ///
+    /// why: two request strings can name one file — a symlink, or a different
+    /// capitalization on a case-insensitive filesystem. `mb-server` keeps exactly one
+    /// serialized writer per note, and keying that writer on the caller's spelling gives
+    /// one file two writers that clobber each other. The vault-relative form of the
+    /// canonical path is that identity: stable across a vault being moved, unlike the
+    /// absolute path, and unforgeable by a caller, unlike `relative`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] under exactly the conditions [`Vault::resolve`] rejects.
+    pub fn canonical_note(&self, relative: &str) -> Result<CanonicalNote, Error> {
+        let path = self.resolve(relative)?;
+        let base = self
+            .notes_root
+            .canonicalize()
+            .map_err(|_| Error::NotFound)?;
+        let identity = path
+            .strip_prefix(&base)
+            .map_err(|_| Error::NotFound)?
+            .to_string_lossy()
+            .into_owned();
+        Ok(CanonicalNote { path, identity })
     }
 
     /// Finds a note by the human-readable name a wikilink carries (`SPEC.md` §4.3).

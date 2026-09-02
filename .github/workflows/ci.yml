@@ -69,9 +69,13 @@ jobs:
       - name: Types
         run: npm run typecheck
         working-directory: web
-      - name: Tests and coverage floor
+      - name: Tests and coverage
         run: npm run coverage
         working-directory: web
+      # `npm run coverage` reports but does not enforce. The floors in AGENTS.md 2.1 are
+      # checked here, the same way the Rust ones are — a floor nobody enforces is a comment.
+      - name: Frontend coverage floor
+        run: python3 scripts/web-coverage-gate.py
       - name: Production build
         run: npm run build
         working-directory: web

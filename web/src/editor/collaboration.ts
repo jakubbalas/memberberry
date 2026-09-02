@@ -9,7 +9,11 @@ import { Extension } from "@tiptap/core";
 import type { Plugin } from "@tiptap/pm/state";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { Doc, type XmlFragment } from "yjs";
-import { ySyncPlugin, yUndoPlugin } from "y-prosemirror";
+import { Awareness } from "y-protocols/awareness";
+import { yCursorPlugin, ySyncPlugin, yUndoPlugin } from "y-prosemirror";
+
+import { presenceCursorBuilder } from "./presence.js";
+import { createSyncProvider, presenceColor, type SyncProvider } from "./sync.js";
 
 /** The Y.XmlFragment root name defined by the Rust CRDT contract. */
 export const PROSEMIRROR_ROOT = "prosemirror";
@@ -23,18 +27,68 @@ export interface LocalPersistence {
 /** Constructs a persistence provider; injectable so lifecycle behaviour stays unit-testable. */
 export type LocalPersistenceFactory = (name: string, document: Doc) => LocalPersistence;
 
+/** Whether the server transport is reachable, for hosts that want to say so.
+ *
+ * `SPEC.md` §7.5: offline you are alone, and the UI says so rather than showing stale
+ * avatars. A note with no server transport has no connection to report, so this is absent
+ * for local-only documents rather than permanently claiming "offline".
+ */
+export interface ConnectionStatus {
+  readonly connected: boolean;
+  /** Registers a listener and returns its teardown. */
+  subscribe(listener: (connected: boolean) => void): () => void;
+}
+
 /** One locally persisted note document, ready to attach to a Tiptap editor. */
 export interface NoteCollaboration {
   readonly document: Doc;
   readonly fragment: XmlFragment;
+  readonly awareness: Awareness;
+  readonly connection?: ConnectionStatus;
   readonly whenReady: Promise<void>;
   destroy(): Promise<void>;
+}
+
+/** A mutable connection status plus the setter its transport drives. */
+export function createConnectionStatus(): ConnectionStatus & { set(connected: boolean): void } {
+  const listeners = new Set<(connected: boolean) => void>();
+  let connected = false;
+  return {
+    get connected(): boolean {
+      return connected;
+    },
+    subscribe(listener: (connected: boolean) => void): () => void {
+      listeners.add(listener);
+      listener(connected);
+      return () => listeners.delete(listener);
+    },
+    set(next: boolean): void {
+      if (connected === next) return;
+      connected = next;
+      for (const listener of listeners) listener(next);
+    },
+  };
+}
+
+/** A server-backed transport identity, supplied only for a routed vault note. */
+export interface RemoteSyncOptions {
+  readonly endpoint: string;
+  readonly vault: string;
+  readonly note: string;
+  readonly user: string;
 }
 
 export interface CreateNoteCollaborationOptions {
   readonly vaultId: string;
   readonly noteId: string;
   readonly createPersistence?: LocalPersistenceFactory;
+  readonly remoteSync?: RemoteSyncOptions;
+  readonly createRemoteSync?: (
+    options: RemoteSyncOptions,
+    document: Doc,
+    awareness: Awareness,
+    onConnectionChange: (connected: boolean) => void,
+  ) => SyncProvider;
 }
 
 /**
@@ -46,34 +100,57 @@ export interface CreateNoteCollaborationOptions {
 export function createNoteCollaboration(options: CreateNoteCollaborationOptions): NoteCollaboration {
   const name = persistenceName(options.vaultId, options.noteId);
   const document = new Doc({ gc: true });
+  const awareness = new Awareness(document);
+  if (options.remoteSync !== undefined) {
+    awareness.setLocalStateField("user", { name: options.remoteSync.user, color: presenceColor(options.remoteSync.user) });
+  }
   const fragment = document.getXmlFragment(PROSEMIRROR_ROOT);
   const createPersistence = options.createPersistence ?? defaultPersistence;
   const persistence = createPersistence(name, document);
-  const whenReady = persistence.whenSynced.then(() => undefined);
+  let remote: SyncProvider | undefined;
+  const status = options.remoteSync === undefined ? undefined : createConnectionStatus();
+  const whenReady = persistence.whenSynced.then(() => {
+    if (options.remoteSync !== undefined) {
+      const createRemoteSync = options.createRemoteSync ?? defaultRemoteSync;
+      remote = createRemoteSync(options.remoteSync, document, awareness, (connected) =>
+        status?.set(connected),
+      );
+    }
+  });
   let destroyed: Promise<void> | undefined;
 
   return {
     document,
     fragment,
+    awareness,
+    ...(status === undefined ? {} : { connection: status }),
     whenReady,
     destroy: () => {
-      destroyed ??= persistence.destroy().then(() => document.destroy());
+      destroyed ??= whenReady.catch(() => undefined).then(() => persistence.destroy()).then(() => {
+        remote?.destroy();
+        document.destroy();
+      });
       return destroyed;
     },
   };
 }
 
 /** Creates the Tiptap extension that maps editor transactions to the note's Y.XmlFragment. */
-export function createYjsBinding(fragment: XmlFragment): Extension {
+export function createYjsBinding(fragment: XmlFragment, awareness?: Awareness): Extension {
   return Extension.create({
     name: "memberberryYjs",
-    addProseMirrorPlugins: () => yjsPlugins(fragment),
+    addProseMirrorPlugins: () => yjsPlugins(fragment, awareness),
   });
 }
 
 /** The ProseMirror plugins that keep one editor view synchronized with its local Y.Doc. */
-export function yjsPlugins(fragment: XmlFragment): Plugin[] {
-  return [ySyncPlugin(fragment), yUndoPlugin()];
+export function yjsPlugins(fragment: XmlFragment, awareness?: Awareness): Plugin[] {
+  // why: the default cursor builder emits no client id, which leaves no way to age one
+  // caret without re-rendering every decoration. §7.5's fades need per-caret identity.
+  const cursors = awareness === undefined
+    ? []
+    : [yCursorPlugin(awareness, { cursorBuilder: presenceCursorBuilder })];
+  return [ySyncPlugin(fragment), yUndoPlugin(), ...cursors];
 }
 
 /** A collision-free IndexedDB database name for a vault-local note identity. */
@@ -86,4 +163,13 @@ export function persistenceName(vaultId: string, noteId: string): string {
 
 function defaultPersistence(name: string, document: Doc): LocalPersistence {
   return new IndexeddbPersistence(name, document);
+}
+
+function defaultRemoteSync(
+  options: RemoteSyncOptions,
+  document: Doc,
+  awareness: Awareness,
+  onConnectionChange: (connected: boolean) => void,
+): SyncProvider {
+  return createSyncProvider({ ...options, document, awareness, onConnectionChange });
 }

@@ -12,7 +12,9 @@ pub mod config;
 pub mod http;
 pub mod invites;
 pub mod repository;
+pub mod sync;
 pub mod vault;
+pub mod watch;
 
 use std::path::PathBuf;
 

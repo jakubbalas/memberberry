@@ -1,7 +1,10 @@
-//! Permission leak suite for enforcement points implemented through M4 (`SPEC.md` §22.5).
+//! Permission leak suite for enforcement points implemented through M5 (`SPEC.md` §22.5).
 //!
 //! This suite is deliberately organised by enforcement point rather than feature. Adding a
-//! content-bearing M4 surface means extending this file before that surface can ship.
+//! content-bearing surface means extending this file before that surface can ship.
+//!
+//! The wire-level counterparts for E2-E4 live in `tests/websocket.rs`, which drives real
+//! sockets; the cases here pin the properties those frames must never violate.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -10,6 +13,7 @@ mod support;
 use mb_core::{Access, Member, Role, Username};
 use mb_server::Vault;
 use mb_server::repository::AuthorizedVault;
+use mb_server::sync::ConnectionId;
 use mb_server::vault::Slug;
 use support::TempDir;
 
@@ -73,4 +77,102 @@ fn e1_server_admin_is_not_a_vault_reader() {
         view.read("Private.md"),
         Err(mb_server::Error::NotFound)
     ));
+}
+
+/// E2/E3/E4: the sync boundary denies every failure the same way.
+///
+/// The invisibility rule (§6.5) applies to *how* a frame is refused, not only to what it
+/// carries. An unknown vault, an unresolvable path and a note the caller merely cannot read
+/// must be one indistinguishable answer — and so must a caller who is sent nothing at all,
+/// which is why the wire test asserts a frame arrives for each of the six probes rather
+/// than only that no content does.
+#[test]
+fn e2_e3_e4_sync_denials_are_indistinguishable() {
+    let dir = TempDir::new("leak-sync-denial");
+    dir.write("Private.md", "# Private\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = Access::new(Vec::new(), Vec::new()).expect("empty policy");
+    let outsider = Username::parse("outsider").expect("username");
+
+    // The two probes differ in exactly the way an attacker cares about — one resolves to a
+    // real file, one does not — and must still produce one answer. Resolution succeeding is
+    // what an earlier revision leaked: it took the caller down a branch that replied, while
+    // the unresolvable path fell through to silence.
+    assert!(vault.canonical_note("Private.md").is_ok());
+    assert!(vault.canonical_note("Absent.md").is_err());
+    for note in ["Private.md", "Absent.md"] {
+        let path = mb_core::NotePath::parse(note).expect("path");
+        assert_eq!(
+            access.effective_role(&outsider, &path),
+            Role::None,
+            "{note} must be denied identically whether or not it exists"
+        );
+    }
+}
+
+/// E4: presence is data. A room only ever holds readers, and re-checks on every frame.
+#[test]
+fn e4_awareness_reaches_only_current_readers() {
+    let dir = TempDir::new("leak-awareness");
+    dir.write("One.md", "# One\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let canonical = vault.canonical_note("One.md").expect("canonical");
+    let registry = mb_server::sync::SyncRegistry::default();
+    let reader = Username::parse("reader").expect("username");
+    let revoked = Username::parse("revoked").expect("username");
+    let (to_reader, mut reader_inbox) = tokio::sync::mpsc::unbounded_channel();
+    let (to_revoked, mut revoked_inbox) = tokio::sync::mpsc::unbounded_channel();
+    registry
+        .subscribe(
+            &vault,
+            &canonical,
+            "One.md",
+            &reader,
+            ConnectionId::issue(),
+            to_reader,
+        )
+        .expect("subscribe");
+    registry
+        .subscribe(
+            &vault,
+            &canonical,
+            "One.md",
+            &revoked,
+            ConnectionId::issue(),
+            to_revoked,
+        )
+        .expect("subscribe");
+    // `subscribe` returns the initial state to its caller; the channel carries only
+    // subsequent broadcasts.
+
+    registry.broadcast_awareness(
+        &vault,
+        &canonical,
+        mb_server::sync::Announcement {
+            user: reader.as_str(),
+            connection: ConnectionId::issue(),
+            clients: &[7],
+            state: serde_json::json!({ "cursor": 4 }),
+        },
+        &|_, _, user| user != &revoked,
+    );
+
+    assert!(
+        reader_inbox.try_recv().is_ok(),
+        "a current reader sees presence"
+    );
+    assert!(
+        revoked_inbox.try_recv().is_err(),
+        "presence reveals who is reading which note and follows the same filter as content"
+    );
 }

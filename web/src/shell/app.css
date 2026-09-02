@@ -9,6 +9,21 @@
   --focus-ring: #286d60;
   --shadow-note: 0 1.5rem 4rem color-mix(in srgb, var(--text-primary) 14%, transparent);
   --radius-note: 1.25rem;
+
+  /* Collaboration palette (SPEC 7.5, 20.3). Six hues, each checked for >= 4.5:1 against
+     --surface-note in this theme and distinguishable from one another under the common
+     forms of colour blindness. A per-user colour is chosen from these by hashing the
+     username, so the same person is the same colour on every device. */
+  --presence-0: #b03a2e;
+  --presence-1: #0f6e7a;
+  --presence-2: #4a56a6;
+  --presence-3: #8a5107;
+  --presence-4: #2f6b39;
+  --presence-5: #8f3468;
+  --presence-label: #fffdf8;
+  /* SPEC 7.5 idle timings: labels fade after stillness, cursors after a longer silence. */
+  --presence-label-idle: 3s;
+  --presence-cursor-idle: 60s;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -20,6 +35,15 @@
     --border-subtle: #405147;
     --accent-primary: #f29a70;
     --focus-ring: #7fc9b8;
+
+    /* Lightened for the dark surface: the light-theme hues fall below 4.5:1 here. */
+    --presence-0: #f08b7d;
+    --presence-1: #5fc7d4;
+    --presence-2: #9aa4ef;
+    --presence-3: #dfa54a;
+    --presence-4: #7cc98a;
+    --presence-5: #e58ab9;
+    --presence-label: #18231f;
   }
 }
 
@@ -40,6 +64,26 @@ body {
 h1 { margin: 0; font-size: clamp(2.3rem, 7vw, 4.75rem); line-height: .98; letter-spacing: -.055em; }
 .lede { max-width: 36rem; margin: .85rem 0 0; color: var(--text-muted); }
 .editor-panel { min-height: 32rem; padding: clamp(1.25rem, 5vw, 3.75rem); border: 1px solid var(--border-subtle); border-radius: var(--radius-note); background: var(--surface-note); box-shadow: var(--shadow-note); }
+.presence-header { display: flex; align-items: center; gap: .35rem; min-height: 2.25rem; margin: 0 0 .75rem; }
+.presence-people { display: flex; justify-content: flex-end; gap: .35rem; margin-left: auto; }
+.presence-avatar { display: grid; width: 2.25rem; height: 2.25rem; place-items: center; border: 2px solid var(--surface-note); border-radius: 50%; color: var(--presence-label); background: var(--presence-color); font: 700 .75rem/1 ui-rounded, "Avenir Next", system-ui, sans-serif; box-shadow: 0 .15rem .5rem color-mix(in srgb, var(--text-primary) 18%, transparent); }
+.presence-avatar.is-idle { opacity: .45; }
+.connection-status { margin-left: auto; align-self: center; color: var(--text-muted); font: 500 .75rem/1 ui-rounded, "Avenir Next", system-ui, sans-serif; }
+.connection-status[data-state="offline"]::before { content: ""; display: inline-block; width: .5rem; height: .5rem; margin-right: .4rem; border-radius: 50%; background: var(--accent-primary); }
+
+/* SPEC 7.5: a remote caret's name label fades after ~3s of stillness and returns on
+   movement; the caret itself fades after 60s. Both are opacity transitions on a
+   decoration, never a document re-render. The `is-active` class is re-applied on every
+   awareness change, which restarts the transition. */
+.ProseMirror-yjs-cursor { transition: opacity .4s ease; }
+.ProseMirror-yjs-cursor > div { transition: opacity .4s ease; opacity: 0; }
+.ProseMirror-yjs-cursor.is-active > div { opacity: 1; transition-delay: var(--presence-label-idle); transition-duration: .6s; }
+.ProseMirror-yjs-cursor.is-stale { opacity: .25; }
+.ProseMirror-yjs-cursor:hover > div { opacity: 1; transition-delay: 0s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ProseMirror-yjs-cursor, .ProseMirror-yjs-cursor > div { transition: none; }
+}
 .editor-controls { position: sticky; z-index: 2; top: .75rem; display: grid; gap: .55rem; margin: 0 0 1.25rem; font-family: ui-rounded, "Avenir Next", system-ui, sans-serif; }
 .editor-toolbar, .task-inspector { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
 .editor-toolbar { padding: .45rem; border: 1px solid var(--border-subtle); border-radius: .8rem; background: color-mix(in srgb, var(--surface-note) 92%, var(--surface-canvas)); box-shadow: 0 .4rem 1rem color-mix(in srgb, var(--text-primary) 8%, transparent); }
@@ -66,4 +110,5 @@ h1 { margin: 0; font-size: clamp(2.3rem, 7vw, 4.75rem); line-height: .98; letter
   .editor-control { flex: 0 0 auto; min-width: 2.75rem; min-height: 2.75rem; }
   .task-inspector { display: none; }
   .editor-toolbar.is-block-tools-open + .slash-menu { display: flex; }
+  .ProseMirror-yjs-cursor > div { display: none; }
 }

@@ -38,6 +38,7 @@ A change is done only when **every** box is true. Not most.
 - [ ] Public items documented; non-obvious decisions carry a `// why:` comment
 - [ ] Performance budgets (`SPEC.md` §21) still met if a hot path changed
 - [ ] `SPEC.md` updated if behaviour, format, schema or permissions changed
+- [ ] **`HANDOFF.md` rewritten to match reality** (§9) — including anything you left open
 - [ ] No TODO/FIXME left without a linked issue and a reason
 
 If you cannot tick a box, say so explicitly in your summary. Do not quietly skip one and
@@ -92,6 +93,15 @@ was *verified*.
   the network). A mock of your own module tests the mock.
 - Test the failure modes: malformed input, empty input, huge input, unicode, RTL text,
   emoji in every field, path traversal, concurrent access, **and the unauthorized caller**.
+- **A check that cannot observe the failure mode is not a check.** `curl` parses no HTML and
+  enforces no CSP, so a 200 from it says nothing about whether a page renders or a form can
+  submit. M5 shipped a bundle where every asset 404'd and a login form its own CSP blocked;
+  both were green under the unit suite *and* a curl smoke test, and both took one browser
+  load to find. Match the tool to the failure you are ruling out — for anything
+  user-visible, that means a real browser.
+- **A test must be able to fail.** Before trusting a new test, break the thing it covers and
+  watch it go red. M5 had a passing asset test that requested the buggy path — it encoded
+  the defect instead of catching it.
 
 ### 2.4 The suites that must never be weakened
 
@@ -321,3 +331,30 @@ Stated plainly so they are not attempted:
   going — but flag it. Do not stall on a question you can answer with a note in the code.
 - Security findings are reported immediately and plainly, even mid-task, even if it means
   admitting the code you just wrote was wrong.
+
+---
+
+## 9. Handoff — `HANDOFF.md`
+
+A fresh session reads `CLAUDE.md` → `AGENTS.md` → `SPEC.md` and nothing else. None of those
+carry "where things stand", so that lives in one file at the repo root, and keeping it true
+is part of the definition of done (§1).
+
+**What goes in it**
+
+- What was last completed, and what is next.
+- Open items you chose not to fix, each with the reason. An open item nobody wrote down gets
+  rediscovered as a surprise three milestones later.
+- How to run the thing locally, including any step not obvious from the `Makefile`.
+- Anything that would mislead someone picking the work up cold — a passing test that does not
+  prove what it appears to, a toolchain gotcha, a command that needs a pty.
+
+**What does not**
+
+- Anything durable. A file format, a wire protocol, a decision, a known limit, a performance
+  number — those belong in `SPEC.md`, and moving them there is the point. If a fact will
+  still be true two milestones from now, it is spec, not handoff.
+- History. `git log` has that. Rewrite the file; never append to it.
+
+**One file, not one per milestone.** A `M5_HANDOFF.md` goes stale the moment the milestone
+ends, nothing points at it, and so nobody reads it.

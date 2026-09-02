@@ -9,8 +9,10 @@ license.workspace = true
 [dependencies]
 mb-core.workspace = true
 mb-auth.workspace = true
-axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
+mb-crdt.workspace = true
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
@@ -18,9 +20,18 @@ thiserror = "2"
 # why: macOS stores filenames decomposed (NFD) and note text carries them composed (NFC),
 # so a byte comparison makes every accented note name unreachable through its own wikilink.
 unicode-normalization = "0.1"
+notify = "8"
+sha2 = "0.10"
+yrs.workspace = true
 
 [dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "macros", "time", "sync"] }
+tokio-tungstenite = "0.29"
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "sync"
+harness = false

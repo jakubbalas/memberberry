@@ -70,6 +70,73 @@ describe("createNoteCollaboration", () => {
     expect(persistence.destroy).toHaveBeenCalledTimes(1);
     expect(destroyed).toHaveBeenCalledTimes(1);
   });
+
+  it("starts remote sync only after restoration and tears it down with the document", async () => {
+    const synced = deferred<void>();
+    const remote = { connected: true, sendAwareness: vi.fn(), destroy: vi.fn() };
+    const createRemoteSync = vi.fn(() => remote);
+    const collaboration = createNoteCollaboration({
+      vaultId: "vault",
+      noteId: "note",
+      createPersistence: () => fakePersistence(synced.promise),
+      remoteSync: { endpoint: "ws://localhost/api/v1/sync", vault: "personal", note: "One.md", user: "alice" },
+      createRemoteSync,
+    });
+
+    expect(createRemoteSync).not.toHaveBeenCalled();
+    synced.resolve();
+    await collaboration.whenReady;
+    expect(createRemoteSync).toHaveBeenCalledWith(
+      { endpoint: "ws://localhost/api/v1/sync", vault: "personal", note: "One.md", user: "alice" },
+      collaboration.document,
+      collaboration.awareness,
+      expect.any(Function),
+    );
+    await collaboration.destroy();
+    expect(remote.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("reports the transport's connection so the UI can say you are alone", async () => {
+    const synced = deferred<void>();
+    let report: ((connected: boolean) => void) | undefined;
+    const collaboration = createNoteCollaboration({
+      vaultId: "vault",
+      noteId: "note",
+      createPersistence: () => fakePersistence(synced.promise),
+      remoteSync: { endpoint: "ws://localhost/api/v1/sync", vault: "personal", note: "One.md", user: "alice" },
+      createRemoteSync: (_options, _document, _awareness, onConnectionChange) => {
+        report = onConnectionChange;
+        return { connected: false, sendAwareness: vi.fn(), destroy: vi.fn() };
+      },
+    });
+    synced.resolve();
+    await collaboration.whenReady;
+    const seen: boolean[] = [];
+    const unsubscribe = collaboration.connection?.subscribe((connected) => seen.push(connected));
+
+    report?.(true);
+    report?.(true);
+    report?.(false);
+
+    // Subscribing replays the current value, then only genuine transitions follow.
+    expect(seen).toEqual([false, true, false]);
+    expect(collaboration.connection?.connected).toBe(false);
+    unsubscribe?.();
+    report?.(true);
+    expect(seen).toHaveLength(3);
+    await collaboration.destroy();
+  });
+
+  it("has no connection to report for a local-only document", () => {
+    // SPEC 7.5: a note with no server transport is not "offline", it simply has no server.
+    const collaboration = createNoteCollaboration({
+      vaultId: "vault",
+      noteId: "note",
+      createPersistence: () => fakePersistence(Promise.resolve()),
+    });
+
+    expect(collaboration.connection).toBeUndefined();
+  });
 });
 
 describe("createYjsBinding", () => {

@@ -90,6 +90,26 @@ impl TestServer {
         server
     }
 
+    fn authenticated_with_web_root(vaults: Vec<Vault>, web_root: std::path::PathBuf) -> Self {
+        let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+        let alice = auth
+            .setup_first_user(mb_auth::NewUser {
+                username: "alice",
+                display_name: "Alice",
+                password: "correct horse battery staple",
+            })
+            .expect("setup");
+        let token = auth
+            .create_session(alice.id, 4_102_444_800)
+            .expect("session");
+        let cookie = auth.signed_session_cookie(&token).expect("sign cookie");
+        let state =
+            AppState::authenticated_with_web_root(vaults, auth, web_root).expect("secure state");
+        let mut server = Self::start(state);
+        server.default_headers = format!("Cookie: mb_session={cookie}\r\n");
+        server
+    }
+
     /// Issues a GET and returns `(status line, body)`.
     fn get(&self, path: &str) -> (String, String) {
         self.get_with_headers(path, "")
@@ -139,6 +159,87 @@ impl TestServer {
     fn status(&self, path: &str) -> String {
         self.get(path).0
     }
+}
+
+#[test]
+fn editor_route_injects_trusted_bootstrap_and_assets_stay_contained() {
+    let vault_dir = TempDir::new("http-editor-vault");
+    vault_dir.write("One.md", "# One\n");
+    // The layout Vite actually produces: `index.html` beside an `assets/` directory, with
+    // the HTML referencing `/assets/<file>`. An earlier revision resolved that URL against
+    // the build root instead, so every real bundle 404'd and the editor loaded blank — and
+    // the test missed it by asking for the doubled path the bug required.
+    let web_dir = TempDir::new("http-editor-web");
+    web_dir.write("index.html", "<main><div id=\"editor\" class=\"editor-surface\"></div><script type=\"module\" src=\"/assets/index-abc123.js\"></script></main>");
+    web_dir.write("assets/index-abc123.js", "console.log('editor')");
+    web_dir.write("assets/mb_bg-abc123.wasm", "\0asm");
+    web_dir.write("secret.txt", "not part of the bundle");
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web_dir.path().to_path_buf(),
+    );
+
+    let (status, body) = server.get("/v/personal/One.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("data-vault=\"personal\""), "{body}");
+    assert!(body.contains("data-note=\"One.md\""), "{body}");
+    assert!(body.contains("data-user=\"alice\""), "{body}");
+    assert!(
+        !body.contains("# One"),
+        "note content must stay in CRDT, not bootstrap HTML"
+    );
+
+    // Every URL the served HTML references must resolve, or the page loads blank.
+    for reference in body
+        .split("src=\"")
+        .skip(1)
+        .filter_map(|tail| tail.split('"').next())
+    {
+        let (asset_status, asset) = server.get(reference);
+        assert!(is_ok(&asset_status), "{reference} -> {asset_status}");
+        assert!(
+            asset.contains("editor"),
+            "{reference} served the wrong bytes"
+        );
+    }
+
+    let (wasm_status, _) = server.get("/assets/mb_bg-abc123.wasm");
+    assert!(is_ok(&wasm_status), "{wasm_status}");
+
+    // Containment: nothing outside `assets/` is reachable, traversal included.
+    assert!(is_not_found(&server.get("/assets/../secret.txt").0));
+    assert!(is_not_found(&server.get("/assets/../index.html").0));
+    assert!(is_not_found(&server.get("/assets/secret.txt").0));
+}
+
+#[test]
+fn editor_bootstrap_escapes_a_note_name_that_could_close_its_attribute() {
+    // A filename may legally contain a double quote. Unescaped, `data-note` closes early
+    // and the remainder of the name becomes attacker-authored markup in the authenticated
+    // origin — stored XSS writable by anyone who can put a file in the vault.
+    let vault_dir = TempDir::new("http-editor-quote");
+    vault_dir.write("a\" autofocus onfocus=\"alert(1).md", "# Pwn\n");
+    let web_dir = TempDir::new("http-editor-quote-web");
+    web_dir.write(
+        "index.html",
+        "<main><div id=\"editor\" class=\"editor-surface\"></div></main>",
+    );
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web_dir.path().to_path_buf(),
+    );
+
+    let (status, body) = server.get("/v/personal/a%22%20autofocus%20onfocus=%22alert(1).md");
+
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        body.contains("data-note=\"a&quot; autofocus onfocus=&quot;alert(1).md\""),
+        "the note name must survive only as an escaped attribute value: {body}"
+    );
+    assert!(
+        !body.contains("onfocus=\"alert(1)"),
+        "an unescaped event handler escaped into the document: {body}"
+    );
 }
 
 impl Drop for TestServer {
@@ -591,7 +692,42 @@ fn every_page_carries_a_content_security_policy() {
             body.contains("Content-Security-Policy") && body.contains("default-src 'none'"),
             "{path} has no CSP: {body}"
         );
+        assert!(
+            body.contains("form-action 'none'"),
+            "a page rendering note content must not be able to submit anywhere: {path}"
+        );
     }
+}
+
+#[test]
+fn every_page_that_has_a_form_is_allowed_to_submit_it() {
+    // A CSP that forbids what the page itself does is not defence, it is an outage. An
+    // earlier revision stamped `form-action 'none'` on every page including sign-in, so the
+    // login form was blocked by the browser and nobody could authenticate at all. The
+    // previous CSP test asserted the header was *present*, which this failure satisfied.
+    let dir = TempDir::new("http-form-csp");
+    dir.write("note.md", "# A\n");
+    let server = TestServer::start(
+        AppState::authenticated(
+            vec![vault(&dir, "v", "V")],
+            mb_auth::AuthDb::open_in_memory().expect("auth db"),
+        )
+        .expect("state"),
+    );
+
+    // Unauthenticated, so this is the sign-in page.
+    let (status, body) = server.get("/");
+
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("<form"), "expected the sign-in form: {body}");
+    assert!(
+        body.contains("form-action 'self'"),
+        "the sign-in page must permit its own form: {body}"
+    );
+    assert!(
+        !body.contains("form-action 'none'"),
+        "a page carrying a form must not also forbid submitting it: {body}"
+    );
 }
 
 #[test]

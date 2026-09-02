@@ -2,6 +2,10 @@
 
 import type { Editor } from "@tiptap/core";
 import type { Doc } from "yjs";
+import type { Awareness } from "y-protocols/awareness";
+
+import type { ConnectionStatus } from "./collaboration.js";
+import { PRESENCE_CLIENT_ATTRIBUTE, trackPresenceIdle } from "./presence.js";
 
 import { insertBlock, moveCurrentBlock, runTaskSlashCommand, setHeading, setTaskDue, setTaskPriority, slashCommands, toggleTask } from "./commands.js";
 import { applySourceMarkdown, copyMarkdown, editorMarkdown, longNoteMode, setLongNoteMode } from "./source.js";
@@ -16,6 +20,8 @@ export interface MountEditorShellOptions {
   readonly document: Doc;
   readonly panel: HTMLElement;
   readonly status: HTMLElement;
+  readonly awareness?: Awareness;
+  readonly connection?: ConnectionStatus;
 }
 
 /** Mounts the M3 editor controls and releases every listener when the note closes. */
@@ -60,6 +66,9 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   const taskControls = taskInspector(options.editor);
   controls.append(taskControls, source);
   options.panel.prepend(controls);
+  const presence = options.awareness === undefined
+    ? undefined
+    : mountPresence(options.panel, options.awareness, options.connection);
 
   const slash = slashMenu(options.editor, toolbar);
   const onKeyDown = (event: KeyboardEvent): void => {
@@ -139,9 +148,77 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       options.editor.off("update", refreshLongNoteMode);
       visualViewport?.removeEventListener("resize", positionToolbar);
       visualViewport?.removeEventListener("scroll", positionToolbar);
+      presence?.destroy();
       clearPress();
       controls.remove();
       slash.destroy();
+    },
+  };
+}
+
+interface PresenceHandle { destroy(): void; }
+
+/**
+ * Renders the note header's presence row: who is here, and whether we can see anyone.
+ *
+ * `role="group"` rather than a bare `div`: an `aria-label` on a generic element is dropped
+ * by screen readers, so the label was previously decorative only (§8.4).
+ */
+function mountPresence(panel: HTMLElement, awareness: Awareness, connection?: ConnectionStatus): PresenceHandle {
+  const header = document.createElement("div");
+  header.className = "presence-header";
+  header.setAttribute("role", "group");
+  header.setAttribute("aria-label", "People editing this note");
+  const people = document.createElement("div");
+  people.className = "presence-people";
+  header.append(people);
+
+  const status = document.createElement("span");
+  status.className = "connection-status";
+  status.setAttribute("role", "status");
+  const unsubscribe = connection?.subscribe((connected) => {
+    status.dataset["state"] = connected ? "online" : "offline";
+    // §7.5: offline you are alone, and the UI says so rather than showing stale avatars.
+    status.textContent = connected ? "" : "Offline — you are editing alone";
+    status.hidden = connected;
+  });
+  if (connection !== undefined) header.append(status);
+
+  const render = (): void => {
+    people.replaceChildren();
+    const present = [...awareness.getStates().entries()]
+      .filter(([client]) => client !== awareness.clientID)
+      .flatMap(([client, state]) => {
+        const user = state["user"];
+        return typeof user === "object" && user !== null && typeof user.name === "string" && typeof user.color === "string"
+          ? [{ client, name: user.name, color: user.color }]
+          : [];
+      });
+    header.hidden = present.length === 0 && connection === undefined;
+    for (const user of present) {
+      const avatar = document.createElement("span");
+      avatar.className = "presence-avatar";
+      avatar.setAttribute(PRESENCE_CLIENT_ATTRIBUTE, String(user.client));
+      avatar.style.setProperty("--presence-color", user.color);
+      avatar.title = user.name;
+      avatar.setAttribute("aria-label", user.name);
+      avatar.textContent = user.name.slice(0, 1).toUpperCase();
+      people.append(avatar);
+    }
+  };
+  awareness.on("change", render);
+  render();
+  panel.prepend(header);
+
+  // Ages both the avatars here and the carets inside the editor, from one tick.
+  const idle = trackPresenceIdle({ awareness, root: panel });
+
+  return {
+    destroy: () => {
+      idle.destroy();
+      unsubscribe?.();
+      awareness.off("change", render);
+      header.remove();
     },
   };
 }

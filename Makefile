@@ -97,6 +97,10 @@ fuzz-list: ## Show the available fuzz targets
 fuzz-build: ## Compile the fuzz targets without running them — what CI checks
 	cd fuzz && cargo +nightly fuzz build
 
+.PHONY: bench
+bench: ## Hot-path benchmarks (AGENTS.md 4.5). Laptop numbers; the budget target is a phone.
+	$(CARGO) bench -p mb-server --bench sync
+
 .PHONY: coverage
 coverage: ## Per-file coverage report (needs cargo-llvm-cov)
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
@@ -148,7 +152,8 @@ web-check:
 	else \
 		npm --prefix web install --silent && \
 		npm --prefix web run typecheck --silent && \
-		npm --prefix web run coverage --silent; \
+		npm --prefix web run coverage --silent && \
+		python3 scripts/web-coverage-gate.py; \
 	fi
 
 .PHONY: wasm-check

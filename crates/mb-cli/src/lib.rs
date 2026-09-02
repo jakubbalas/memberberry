@@ -129,9 +129,18 @@ fn serve(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
     let data_dir = auth_path.parent().unwrap_or_else(|| Path::new("."));
     let audit = mb_server::audit::AuditLog::new(data_dir, 10 * 1024 * 1024)
         .map_err(|error| error.to_string())?;
+    let web_root = config
+        .web_root
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("web/dist"));
     let state = std::sync::Arc::new(
-        mb_server::http::AppState::authenticated_with_audit(vaults, auth, Some(audit))
-            .map_err(|error| error.to_string())?,
+        mb_server::http::AppState::authenticated_with_audit_and_web_root(
+            vaults,
+            auth,
+            Some(audit),
+            web_root,
+        )
+        .map_err(|error| error.to_string())?,
     );
     runtime
         .block_on(mb_server::http::serve(state, addr))
