@@ -7,17 +7,15 @@
     <link rel="stylesheet" href="/src/shell/app.css" />
   </head>
   <body>
-    <main class="workspace">
-      <header class="workspace-header">
-        <p class="eyebrow">Memberberry</p>
-        <h1>Scratch note</h1>
-        <p class="lede">Local-first editing. Changes are persisted in this browser.</p>
-      </header>
-      <section class="editor-panel" aria-label="Note editor">
-        <div id="editor" class="editor-surface"></div>
-      </section>
-      <p class="offline-status" role="status">Local replica ready. Server sync is not connected yet.</p>
-    </main>
+    <!--
+      `mb-server` replaces this element with the same one carrying escaped `data-vault`,
+      `data-note` and `data-user`. Served straight from Vite the attributes stay empty and the
+      editor runs against a purely local replica, which is the `npm run dev` inner loop.
+
+      The attribute values are empty rather than absent so the server has one exact string to
+      match, and a test can assert the marker still exists.
+    -->
+    <div id="app" data-vault="" data-note="" data-user=""></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -1,51 +1,24 @@
-/** The M3 local editor shell. Server-selected note identities arrive with M4 sync. */
+/**
+ * The browser entry point.
+ *
+ * A shim, the same role `mb-cli/src/main.rs` plays: it finds the mount element, reads what
+ * the server said about the page, and hands both to Svelte. Everything worth testing is in
+ * the modules it calls, which is why this file is excluded from coverage.
+ */
 
-import { Editor } from "@tiptap/core";
+import { mount } from "svelte";
 
-import { mountEditorShell } from "./editor/editor-shell.js";
-import { startNoteEditor } from "./editor/note-editor.js";
+import NoteWorkspace from "./shell/NoteWorkspace.svelte";
+import { readNoteBootstrap } from "./shell/bootstrap.js";
 
-async function main(): Promise<void> {
-  const element = document.querySelector<HTMLElement>("#editor");
-  if (!element) {
-    throw new Error("the page is missing the editor element");
-  }
-  const remoteSync = remoteSyncFrom(element);
-
-  const editor = await startNoteEditor({
-    element,
-    vaultId: remoteSync?.vault ?? "local-demo",
-    noteId: remoteSync?.note ?? "scratch-note",
-    ...(remoteSync === undefined ? {} : { remoteSync }),
-  });
-  if (!(editor.editor instanceof Editor)) {
-    throw new Error("the default editor factory must return a Tiptap Editor");
-  }
-  const panel = document.querySelector<HTMLElement>(".editor-panel");
-  const status = document.querySelector<HTMLElement>(".offline-status");
-  if (panel === null || status === null) {
-    throw new Error("the page is missing the editor shell");
-  }
-  const { collaboration } = editor;
-  const shell = mountEditorShell({
-    editor: editor.editor,
-    document: collaboration.document,
-    awareness: collaboration.awareness,
-    ...(collaboration.connection === undefined ? {} : { connection: collaboration.connection }),
-    panel,
-    status,
-  });
-  window.addEventListener("pagehide", () => {
-    shell.destroy();
-    void editor.destroy();
-  }, { once: true });
+const target = document.querySelector<HTMLElement>("#app");
+if (target === null) {
+  throw new Error("the page is missing its #app mount element");
 }
 
-function remoteSyncFrom(element: HTMLElement): { endpoint: string; vault: string; note: string; user: string } | undefined {
-  const { vault, note, user } = element.dataset;
-  if (vault === undefined || note === undefined || user === undefined) return undefined;
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return { endpoint: `${protocol}//${window.location.host}/api/v1/sync`, vault, note, user };
-}
-
-void main();
+mount(NoteWorkspace, {
+  target,
+  // `undefined` on the Vite dev server, which serves `index.html` with the attributes still
+  // empty. The editor then runs against a purely local replica (`SPEC.md` §3.1, layer 2).
+  props: { bootstrap: readNoteBootstrap(target) },
+});

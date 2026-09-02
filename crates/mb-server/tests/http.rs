@@ -190,7 +190,7 @@ fn editor_route_injects_trusted_bootstrap_and_assets_stay_contained() {
     // the build root instead, so every real bundle 404'd and the editor loaded blank — and
     // the test missed it by asking for the doubled path the bug required.
     let web_dir = TempDir::new("http-editor-web");
-    web_dir.write("index.html", "<main><div id=\"editor\" class=\"editor-surface\"></div><script type=\"module\" src=\"/assets/index-abc123.js\"></script></main>");
+    web_dir.write("index.html", "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div><script type=\"module\" src=\"/assets/index-abc123.js\"></script></body>");
     web_dir.write("assets/index-abc123.js", "console.log('editor')");
     web_dir.write("assets/mb_bg-abc123.wasm", "\0asm");
     web_dir.write("secret.txt", "not part of the bundle");
@@ -242,7 +242,7 @@ fn editor_bootstrap_escapes_a_note_name_that_could_close_its_attribute() {
     let web_dir = TempDir::new("http-editor-quote-web");
     web_dir.write(
         "index.html",
-        "<main><div id=\"editor\" class=\"editor-surface\"></div></main>",
+        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div></body>",
     );
     let server = TestServer::authenticated_with_web_root(
         vec![vault(&vault_dir, "personal", "Personal")],
@@ -720,6 +720,32 @@ fn every_page_carries_a_content_security_policy() {
 }
 
 #[test]
+fn a_frontend_build_without_the_bootstrap_element_is_reported_rather_than_served() {
+    // `str::replace` on an absent marker is a no-op, so a mismatched `web_root` would ship a
+    // page whose bootstrap is empty — and the editor would run against a local-only replica
+    // instead of syncing, silently, while looking like working software. An operator with a
+    // stale bundle has to be told, not left to hear it from a user's lost edits.
+    let vault_dir = TempDir::new("http-editor-stale-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web_dir = TempDir::new("http-editor-stale-web");
+    web_dir.write("index.html", "<body><div id=\"root\"></div></body>");
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web_dir.path().to_path_buf(),
+    );
+
+    let (status, body) = server.get("/v/personal/One.md");
+    assert!(
+        status.contains("500"),
+        "expected a server error, got {status}"
+    );
+    assert!(
+        !body.contains("data-vault"),
+        "a page with an unfilled bootstrap must not be served at all: {body}"
+    );
+}
+
+#[test]
 fn the_editor_page_carries_a_policy_scoped_to_what_it_actually_does() {
     // Through M5 this page had no CSP at all — the one page in the application that runs
     // JavaScript, opens a WebSocket and renders untrusted note content. The read-only pages
@@ -729,7 +755,7 @@ fn the_editor_page_carries_a_policy_scoped_to_what_it_actually_does() {
     let web_dir = TempDir::new("http-editor-csp-web");
     web_dir.write(
         "index.html",
-        "<main><div id=\"editor\" class=\"editor-surface\"></div></main>",
+        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div></body>",
     );
     web_dir.write("assets/index-abc123.js", "console.log('editor')");
     let server = TestServer::authenticated_with_web_root(

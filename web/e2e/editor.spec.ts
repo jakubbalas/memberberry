@@ -37,16 +37,19 @@ test("the bootstrap identifies the note without carrying its content", async ({ 
   await signIn(page);
   await page.goto("/v/personal/Welcome.md");
 
-  const surface = page.locator("#editor");
-  await expect(surface).toHaveAttribute("data-vault", "personal");
-  await expect(surface).toHaveAttribute("data-note", "Welcome.md");
-  await expect(surface).toHaveAttribute("data-user", "alice");
+  // The bootstrap sits on the Svelte mount element: the server fills these in before
+  // sending `index.html`, and it is the only thing the client is told about the page.
+  const mount = page.locator("#app");
+  await expect(mount).toHaveAttribute("data-vault", "personal");
+  await expect(mount).toHaveAttribute("data-note", "Welcome.md");
+  await expect(mount).toHaveAttribute("data-user", "alice");
 
   // SPEC §3.3: body text reaches the browser over the CRDT, never inlined into the HTML.
   // Serving it both ways would make the bootstrap a second source of truth for content.
-  const html = await page.content();
-  const bootstrap = html.slice(0, html.indexOf("</head>"));
-  expect(bootstrap).not.toContain("A note that already exists");
+  // Checked against the HTML the server sent rather than the rendered DOM, which by now
+  // holds the note because the CRDT put it there.
+  const served = await page.request.get("/v/personal/Welcome.md");
+  expect(await served.text()).not.toContain("A note that already exists");
 });
 
 test("typing is saved as plain Markdown in the note file", async ({ page }) => {
