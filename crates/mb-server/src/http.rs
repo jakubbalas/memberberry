@@ -1056,9 +1056,10 @@ async fn login(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) 
         }
         return (
             StatusCode::UNAUTHORIZED,
-            page(
+            page_with(
+                PagePolicy::SignIn,
                 "Sign in",
-                "<p class=\"mb-empty\">Invalid username or password.</p>",
+                &login_form(Some("Invalid username or password."), &form.username),
             ),
         )
             .into_response();
@@ -1272,11 +1273,50 @@ fn unix_seconds() -> i64 {
 }
 
 fn login_page() -> Html<String> {
-    page_with(
-        PagePolicy::SignIn,
-        "Sign in",
-        "<form method=\"post\" action=\"/login\"><label>Username <input name=\"username\" autocomplete=\"username\" /></label><label>Password <input type=\"password\" name=\"password\" autocomplete=\"current-password\" /></label><button type=\"submit\">Sign in</button></form>",
-    )
+    page_with(PagePolicy::SignIn, "Sign in", &login_form(None, ""))
+}
+
+/// The sign-in form, optionally above the reason a previous attempt failed.
+///
+/// why: the failed attempt renders the *form* again rather than a dead-end message. An
+/// earlier revision returned only "Invalid username or password.", which left the browser on
+/// a page with nothing to submit — the user's only route back was editing the address bar.
+/// Carrying `username` forward means a mistyped password does not also cost the username.
+/// Both the initial page and this one are `PagePolicy::SignIn`, because a page that carries
+/// a form and forbids submitting it is the M5 outage all over again.
+fn login_form(error: Option<&str>, username: &str) -> String {
+    let mut out = String::with_capacity(768);
+    out.push_str("<form class=\"mb-form\" method=\"post\" action=\"/login\">");
+    if let Some(message) = error {
+        // role="alert" so a screen reader hears the refusal rather than only sighted users
+        // seeing it (AGENTS.md §4.4: no mouse-only, and no eyes-only, feature ships).
+        out.push_str("<p class=\"mb-form-error\" role=\"alert\">");
+        push_escaped_text(&mut out, message);
+        out.push_str("</p>");
+    }
+    out.push_str(
+        "<div class=\"mb-field\"><label for=\"mb-username\">Username</label>\
+         <input id=\"mb-username\" name=\"username\" autocomplete=\"username\" required ",
+    );
+    // Focus goes where the work is: the empty form starts at the username, a refused one at
+    // the password, which is the field that was almost certainly wrong.
+    if error.is_none() {
+        out.push_str("autofocus ");
+    }
+    out.push_str("value=\"");
+    push_escaped_attr(&mut out, username);
+    out.push_str("\" /></div>");
+    out.push_str(
+        "<div class=\"mb-field\"><label for=\"mb-password\">Password</label>\
+         <input id=\"mb-password\" type=\"password\" name=\"password\" \
+         autocomplete=\"current-password\" required ",
+    );
+    if error.is_some() {
+        out.push_str("autofocus ");
+    }
+    out.push_str("/></div>");
+    out.push_str("<button class=\"mb-button\" type=\"submit\">Sign in</button></form>");
+    out
 }
 
 async fn not_found() -> Response {
@@ -1484,4 +1524,11 @@ ul,ol{padding-left:var(--space-7)}\
 .mb-note-list,.mb-vault-list{list-style:none;padding:0}\
 .mb-note-list li,.mb-vault-list li{border-bottom:1px solid var(--border-subtle);padding:var(--space-3) 0}\
 .mb-count,.mb-breadcrumb,.mb-empty{color:var(--text-muted);font:var(--text-xs)/var(--leading-snug) var(--font-ui)}\
+.mb-form{display:flex;flex-direction:column;gap:var(--space-6);max-width:22rem;margin:var(--space-7) 0;padding:var(--space-7);border:1px solid var(--border-subtle);border-radius:var(--radius-md);background:var(--surface-note);box-shadow:var(--shadow-sm)}\
+.mb-field{display:flex;flex-direction:column;gap:var(--space-3)}\
+.mb-field label{color:var(--text-muted);font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-form input{min-height:var(--touch-target-min);padding:var(--space-4) var(--space-5);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-primary);background:var(--surface-sunken);font:var(--text-md)/var(--leading-flat) var(--font-ui)}\
+.mb-button{min-height:var(--touch-target-min);padding:var(--space-4) var(--space-6);border:1px solid var(--accent-primary);border-radius:var(--radius-sm);color:var(--presence-label);background:var(--accent-primary);font:var(--weight-bold) var(--text-sm)/var(--leading-flat) var(--font-ui);cursor:pointer}\
+.mb-form input:focus-visible,.mb-button:focus-visible{outline:var(--focus-ring-width) solid var(--focus-ring);outline-offset:var(--focus-ring-offset)}\
+.mb-form-error{margin:0;color:var(--state-danger);font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
 ";

@@ -877,6 +877,110 @@ fn every_page_that_has_a_form_is_allowed_to_submit_it() {
 }
 
 #[test]
+fn a_refused_sign_in_offers_the_form_again_and_keeps_the_username() {
+    // The refusal page used to be a dead end: "Invalid username or password." and nothing to
+    // submit, so the only route back was editing the address bar. It renders the form again,
+    // and it must carry the sign-in CSP rather than the note pages' `form-action 'none'` —
+    // otherwise the retry is blocked by the browser and looks like a broken password.
+    let dir = TempDir::new("http-login-retry");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("setup");
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("state");
+    let server = TestServer::start(state);
+
+    let (status, body) = server.post_form("/login", "username=alice&password=wrong");
+
+    assert!(status.contains("401"), "{status}");
+    assert!(
+        body.contains("Invalid username or password."),
+        "expected the refusal: {body}"
+    );
+    assert!(body.contains("<form"), "expected the form again: {body}");
+    assert!(
+        body.contains("form-action 'self'"),
+        "the retry must be submittable: {body}"
+    );
+    assert!(
+        body.contains("value=\"alice\""),
+        "the username should survive a wrong password: {body}"
+    );
+    // The password never does. Reflecting it would put the secret in the page source, in
+    // the browser's cache and in any proxy log between the two.
+    assert!(
+        !body.contains("wrong"),
+        "the password was reflected: {body}"
+    );
+}
+
+#[test]
+fn a_username_from_a_refused_sign_in_cannot_inject_markup() {
+    // The refusal page is the one place a server-rendered page reflects unauthenticated
+    // input, so it is the one place an escaping slip becomes stored-free XSS.
+    let dir = TempDir::new("http-login-escape");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("setup");
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("state");
+    let server = TestServer::start(state);
+
+    // `"><script>alert(1)</script>` percent-encoded as a form field.
+    let (status, body) = server.post_form(
+        "/login",
+        "username=%22%3E%3Cscript%3Ealert%281%29%3C%2Fscript%3E&password=wrong",
+    );
+
+    assert!(status.contains("401"), "{status}");
+    assert!(!body.contains("<script>"), "markup escaped out: {body}");
+    assert!(
+        body.contains("&lt;script&gt;") || body.contains("&#60;script"),
+        "expected the username escaped into the value attribute: {body}"
+    );
+}
+
+#[test]
+fn every_sign_in_field_is_labelled_and_styled_as_a_stacked_field() {
+    // The user reported the form as "no padding between fields and labels". The fix is CSS,
+    // so this asserts the two halves a browser needs for it: each input is associated with
+    // its label by id, and the page ships the rule that stacks and spaces them. Whether the
+    // gap is actually painted is not something a string can say — `signin.spec.ts` measures
+    // it in a real browser (AGENTS.md §2.3).
+    let dir = TempDir::new("http-login-fields");
+    let state = AppState::authenticated(
+        vec![vault(&dir, "v", "V")],
+        mb_auth::AuthDb::open_in_memory().expect("auth db"),
+    )
+    .expect("state");
+    let server = TestServer::start(state);
+
+    let (status, body) = server.get("/");
+
+    assert!(is_ok(&status), "{status}");
+    for field in ["username", "password"] {
+        assert!(
+            body.contains(&format!("for=\"mb-{field}\"")),
+            "{field} has no label association: {body}"
+        );
+        assert!(
+            body.contains(&format!("id=\"mb-{field}\"")),
+            "{field} has no id to associate with: {body}"
+        );
+    }
+    assert!(
+        body.contains(".mb-field{display:flex;flex-direction:column;gap:"),
+        "the page carries no rule spacing a label from its input: {body}"
+    );
+}
+
+#[test]
 fn a_filesystem_error_does_not_leak_a_path_to_the_page() {
     // An I/O error names a path, and a path describes the shape of someone's private vault.
     let dir = TempDir::new("http-error");

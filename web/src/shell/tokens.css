@@ -46,10 +46,12 @@
   --focus-ring-offset: 0.12rem;
 
   /* ---------------------------------------------------------------- colour: semantic state */
-  /* Reserved for "something needs your attention but nothing is broken" — the offline
-     indicator today. Success, danger and conflict tints arrive with the features that
-     surface them (§3.5 conflict callouts, M6). */
+  /* warning is "something needs your attention but nothing is broken" — the offline
+     indicator. danger is "this did not happen": a refused sign-in today. Both are checked
+     for >= 4.5:1 against --surface-note in their own theme. Success and conflict tints
+     arrive with the features that surface them (§3.5 conflict callouts, M6). */
   --state-warning: #9a5b12;
+  --state-danger: #a52016;
 
   /* ---------------------------------------------------------------- typography: families */
   --font-body: Georgia, "Times New Roman", serif;
@@ -194,6 +196,7 @@
     --focus-ring: #7fc9b8;
 
     --state-warning: #e0aa5f;
+    --state-danger: #f2a09a;
 
     /* Lightened for the dark surface: the light-theme hues fall below 4.5:1 here. */
     --presence-0: #f08b7d;
