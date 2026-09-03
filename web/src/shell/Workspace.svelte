@@ -11,12 +11,15 @@
   editor is the thing this shell exists to hold.
 -->
 <script lang="ts">
+  import CommandCenter from "./CommandCenter.svelte";
   import MobileMain from "./MobileMain.svelte";
   import PaneTree from "./PaneTree.svelte";
   import Sidebar from "./Sidebar.svelte";
   import type { NoteBootstrap } from "./bootstrap.js";
+  import type { fetchNotes, fetchVaults } from "./catalog.js";
+  import type { Platform } from "./hotkeys.js";
   import { type SwipeStart, swipeProgress, swipeStart } from "./gestures.js";
-  import { type LayoutMode, currentLayoutMode, splitLimitFor, watchLayoutMode } from "./layout.js";
+  import { type LayoutMode, currentLayoutMode, watchLayoutMode } from "./layout.js";
   import type { openNoteSurface } from "./note-surface.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { groups } from "./workspace.js";
@@ -32,9 +35,32 @@
     readonly target?: EventTarget | undefined;
     /** Which layout to render. Injectable for tests; otherwise watched from the viewport. */
     readonly mode?: LayoutMode | undefined;
+    /**
+     * Passed to `CommandCenter`, so a test can supply its own lists and navigation.
+     *
+     * Named rather than spread from a bag: a `Record<string, unknown>` forwarded into a typed
+     * component silently accepts a misspelled prop, which is exactly the class of mistake
+     * §4.3 exists to prevent — and one this codebase has already made once, with `narrow`.
+     */
+    /** Which modifier `Mod` means; tests pin it so they do not depend on the runner. */
+    readonly platform?: Platform | undefined;
+    readonly loadNotes?: typeof fetchNotes | undefined;
+    readonly loadVaults?: typeof fetchVaults | undefined;
+    readonly onvault?: ((slug: string) => void) | undefined;
   }
 
-  const { store, session, open, chrome, target, mode }: Props = $props();
+  const {
+    store,
+    session,
+    open,
+    chrome,
+    target,
+    mode,
+    platform,
+    loadNotes,
+    loadVaults,
+    onvault,
+  }: Props = $props();
 
   // Seeded synchronously, then kept current by the watcher. Starting from a default and
   // waiting for the effect meant the first render used the wrong layout — see
@@ -102,8 +128,6 @@
    * purpose, and "how many panes fit" is a fact about the viewport, not about the workspace.
    * A layout restored from a wider device keeps its panes — they are simply not added to.
    */
-  const splitLimit = $derived(splitLimitFor(layout));
-  const canSplit = $derived(panes.length <= splitLimit);
 
   /** The edge swipes that open the drawers (§8.3). */
   let swipe = $state<SwipeStart | undefined>(undefined);
@@ -126,44 +150,6 @@
     swipe = undefined;
   }
 
-  /**
-   * The pane-level keyboard commands (§8.4).
-   *
-   * Only two, and both chosen because the editor does not want them. **`Cmd/Ctrl-B` is not
-   * one of them**: it is bold, in an application whose main content is a rich text editor,
-   * and a shell that steals it is a shell that broke the editor. The sidebars are toggled by
-   * their own buttons, which are focusable and therefore already satisfy §8.4 — a *shortcut*
-   * is a convenience, and remappable ones are their own milestone item.
-   *
-   * On `window` rather than on the shell element: a `div` cannot hold focus, so a handler
-   * bound to it only fires once the user has clicked into something. Nothing here calls
-   * `preventDefault` on a combination it does not handle, so the editor keeps everything else.
-   */
-  function onkeydown(event: KeyboardEvent): void {
-    if (!(event.metaKey || event.ctrlKey)) return;
-
-    // Cmd/Ctrl-\\ splits beside, Cmd/Ctrl-Shift-\\ splits below — the shape most editors use.
-    if (event.key === "\\") {
-      event.preventDefault();
-      if (!canSplit) return;
-      store.split(store.focusedGroup, event.shiftKey ? "horizontal" : "vertical");
-      return;
-    }
-    // Cmd/Ctrl-W closes the note's tab, not the browser's: inside a workspace that is what
-    // the user means.
-    if (event.key === "w") {
-      const active = store.activeTab;
-      if (active === undefined) return;
-      event.preventDefault();
-      store.close(active.id);
-    }
-  }
-
-  $effect(() => {
-    const host = target ?? window;
-    host.addEventListener("keydown", onkeydown as EventListener);
-    return () => host.removeEventListener("keydown", onkeydown as EventListener);
-  });
 </script>
 
 <div
@@ -200,3 +186,17 @@
     awaiting="backlinks and the outline in M8"
   />
 </div>
+
+<!-- Outside the shell element: the palettes are modal dialogs over the whole page, and the
+     hotkeys they register have to work wherever focus is. -->
+<CommandCenter
+  {store}
+  vault={session?.vault ?? "local-demo"}
+  {layout}
+  {target}
+  {chrome}
+  {platform}
+  {loadNotes}
+  {loadVaults}
+  {onvault}
+/>

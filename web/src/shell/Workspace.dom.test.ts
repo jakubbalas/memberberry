@@ -110,6 +110,8 @@ function render(workspace: WorkspaceStore, open?: ReturnType<typeof surfaces>["o
       // The commands listen on a target rather than on the shell element, because a `div`
       // cannot hold focus. Injected here so a test drives them without touching `window`.
       target: commands,
+      // Pinned so the suite does not depend on the runner's platform.
+      platform: "mac" as const,
       // A wide viewport, so the sidebars start open as they do on desktop.
       mode: "desktop" as const,
     },
@@ -458,6 +460,7 @@ describe("sidebars", () => {
         chrome: chrome(),
         open: surfaces().open,
         target: commands,
+        platform: "mac" as const,
         mode: "mobile" as const,
       },
     });
@@ -484,6 +487,7 @@ describe("sidebars", () => {
         chrome: preferences,
         open: surfaces().open,
         target: commands,
+        platform: "mac" as const,
         mode: "desktop" as const,
       },
     });
@@ -501,6 +505,7 @@ describe("sidebars", () => {
         chrome: preferences,
         open: surfaces().open,
         target: commands,
+        platform: "mac" as const,
         mode: "desktop" as const,
       },
     });

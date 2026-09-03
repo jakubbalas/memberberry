@@ -12,7 +12,7 @@
  * is the primary performance target (§21.1).
  */
 
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig } from "@playwright/test";
 
 import { E2E_ORIGIN } from "./e2e/environment.js";
 
@@ -31,11 +31,17 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
 
+  // why: the viewport and pointer are set explicitly rather than spread from a device
+  // descriptor. `devices["Desktop Chrome"]` also sets a **Windows** user agent, so a suite
+  // running on a Mac had the shell resolving `Mod` to Ctrl while `ControlOrMeta` sent Cmd —
+  // every keyboard shortcut silently did nothing, and the failure looked like a broken
+  // palette rather than a spoofed platform. Emulating a foreign OS while pressing the host's
+  // keys is not a configuration worth having.
   projects: [
     {
       // ≥ 1024px: the desktop layout of SPEC.md §8.2.
       name: "desktop",
-      use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } },
+      use: { viewport: { width: 1280, height: 800 } },
     },
     {
       // < 768px: the mobile layout of SPEC.md §8.3. Pixel-7a class, which is the device
@@ -43,7 +49,6 @@ export default defineConfig({
       // the `VisualViewport` toolbar only exist on a touch pointer.
       name: "mobile",
       use: {
-        ...devices["Desktop Chrome"],
         viewport: { width: 412, height: 915 },
         deviceScaleFactor: 2.625,
         isMobile: true,

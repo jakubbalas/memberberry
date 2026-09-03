@@ -68,6 +68,27 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
 .editor-surface .tiptap:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--space-4); }
 .offline-status { margin: var(--space-6) var(--space-4) 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
 
+/* ---------------------------------------------------------------- palette (SPEC 8.4)
+
+   The command palette, quick switcher and vault switcher share one component and therefore
+   one set of rules. A `<dialog>`, so the backdrop and the focus trap are the browser's. */
+
+.palette { width: min(var(--palette-width), calc(100vw - var(--space-8))); max-width: 100%; margin: 10vh auto auto; padding: 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-primary); background: var(--surface-note); box-shadow: var(--shadow-lg); }
+.palette::backdrop { background: color-mix(in srgb, var(--text-primary) 35%, transparent); }
+.palette-body { display: flex; flex-direction: column; max-height: var(--palette-max-height); }
+.palette-input { min-height: var(--touch-target-min); padding: var(--space-4) var(--space-5); border: 0; border-bottom: 1px solid var(--border-subtle); color: var(--text-primary); background: none; font: var(--text-md)/var(--leading-flat) var(--font-ui); }
+.palette-input:focus-visible { outline: none; border-bottom-color: var(--accent-primary); }
+.palette-empty { margin: 0; padding: var(--space-5); color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.palette-list { margin: 0; padding: 0; overflow: auto; list-style: none; }
+.palette-option { display: flex; align-items: baseline; gap: var(--space-4); min-height: var(--touch-target-min); padding: var(--space-3) var(--space-5); cursor: pointer; }
+/* Driven by `aria-activedescendant`, so the highlight follows the virtual cursor rather than
+   focus — focus stays in the input, where the user is still typing. */
+.palette-option[data-active="true"] { background: var(--surface-hover); }
+.palette-option[aria-disabled="true"] { color: var(--text-muted); opacity: .55; cursor: default; }
+.palette-label { flex: 1 1 auto; min-width: 0; overflow: hidden; font: var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui); text-overflow: ellipsis; white-space: nowrap; }
+.palette-match { color: inherit; background: var(--match-highlight); border-radius: var(--radius-sm); }
+.palette-hint { flex: 0 0 auto; max-width: 45%; overflow: hidden; color: var(--text-muted); font: var(--text-2xs)/var(--leading-flat) var(--font-ui); text-overflow: ellipsis; white-space: nowrap; }
+
 /* The editor's own mobile rules share the §8.3 breakpoint rather than having their own.
    They used to switch at 40rem, so between 640px and 768px the toolbar floated as if on a
    phone while the desktop shell was showing — two breakpoints that had no reason to differ

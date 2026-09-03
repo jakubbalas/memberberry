@@ -116,6 +116,12 @@
   --mobile-bar-height: 3.25rem;
   /* How much of the screen the tab switcher sheet may take before it scrolls. */
   --sheet-max-height: 70dvh;
+  /* The command palette and switchers (§8.4). */
+  --palette-width: 34rem;
+  --palette-max-height: 60dvh;
+  /* Where a fuzzy match is highlighted. A tint rather than a hue of its own, so it reads as
+     emphasis on the label instead of a second colour competing with it. */
+  --match-highlight: color-mix(in srgb, var(--accent-primary) 24%, transparent);
   /* The grab area between two panes. Wider than it looks: the visible line is 1px and the
      rest is padding, because a 1px drag target is a 1px drag target. */
   --divider-thickness: 0.5rem;

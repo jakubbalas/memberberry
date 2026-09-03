@@ -644,7 +644,20 @@ fn a_missing_note_is_not_found() {
 fn an_unknown_route_is_not_found() {
     let server = TestServer::authenticated(vec![]);
     assert!(is_not_found(&server.status("/nonsense")));
-    assert!(is_not_found(&server.status("/api/v1/vaults")));
+    // The API surface is added milestone by milestone; anything not yet built is absent
+    // rather than stubbed, because a route that answers is a route someone will use.
+    assert!(is_not_found(&server.status("/api/v1/vaults/v/search")));
+    assert!(is_not_found(&server.status("/api/v1/vaults/v/clip")));
+}
+
+#[test]
+fn a_server_with_no_vaults_lists_none_rather_than_failing() {
+    // `/api/v1/vaults` exists as of M7's vault switcher (§8.4). An empty server is a normal
+    // state — first run, before anything is registered — not an error.
+    let server = TestServer::authenticated(vec![]);
+    let (status, body) = server.get("/api/v1/vaults");
+    assert!(is_ok(&status), "{status}");
+    assert_eq!(body, "[]", "{body}");
 }
 
 // ---------------------------------------------------------------- security
@@ -1093,4 +1106,190 @@ fn a_workspace_layout_that_is_not_json_is_refused() {
     // And nothing was stored, so the next load still reports nothing saved.
     let (status, _) = server.get_with_headers(route, "");
     assert!(status.contains("204"), "{status}");
+}
+
+#[test]
+fn the_note_index_lists_only_readable_notes_with_their_titles() {
+    // E1/E5. The quick switcher ranks client-side (§21.2), so the whole readable list travels
+    // — which makes this the largest single disclosure surface in the application, and the
+    // one where a missing filter is least likely to be noticed by looking at the screen.
+    let dir = TempDir::new("http-note-index");
+    dir.write("Public.md", "# The Public One\n\nBody.\n");
+    dir.write("Untitled.md", "");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let charlie = auth
+        .create_user(mb_auth::NewUser {
+            username: "charlie",
+            display_name: "Charlie",
+            password: "correct horse battery staple",
+        })
+        .expect("non-member");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let charlie_header = header(charlie.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+    let route = "/api/v1/vaults/v/notes";
+
+    // The owner sees everything, with titles taken from the note rather than the filename.
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("The Public One"), "{body}");
+    assert!(body.contains("Salary Review"), "{body}");
+    // A note with nothing titleable is listed with a null title, not omitted.
+    assert!(body.contains("Untitled.md"), "{body}");
+
+    // The viewer denied `Private` sees neither the path nor the title.
+    let (status, body) = server.get_with_headers(route, &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Public.md"), "{body}");
+    assert!(
+        !body.contains("Salary"),
+        "a denied note must not be named: {body}"
+    );
+    assert!(!body.contains("Private"), "nor its folder: {body}");
+
+    // A non-member gets the same answer as an unknown vault — not an empty list, which would
+    // confirm the vault exists (§6.5).
+    let (status, body) = server.get_with_headers(route, &charlie_header);
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Public"), "{body}");
+    let (status, _) = server.get_with_headers("/api/v1/vaults/nope/notes", &alice_header);
+    assert!(is_not_found(&status), "{status}");
+
+    // Anonymous likewise.
+    let (status, body) = server.request("GET", route, "", "");
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Public"), "{body}");
+}
+
+#[test]
+fn the_note_index_is_never_cached() {
+    // It is a list of note titles — the thing §6.5 exists to protect. An intermediary holding
+    // a copy would outlive the session that was allowed to see it.
+    let dir = TempDir::new("http-note-index-cache");
+    dir.write("One.md", "# One\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let headers = server.headers("/api/v1/vaults/v/notes").to_lowercase();
+    assert!(
+        headers.contains("cache-control: no-store"),
+        "the note index must not be cached: {headers}"
+    );
+}
+
+#[test]
+fn the_note_index_reflects_a_note_edited_underneath_it() {
+    // The title cache exists so 10 000 notes are not re-parsed per keystroke (§21.2). A cache
+    // that serves a stale title is worse than no cache: the switcher shows a name the note no
+    // longer has, and no amount of retyping fixes it.
+    let dir = TempDir::new("http-note-index-stale");
+    dir.write("One.md", "# Before\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let route = "/api/v1/vaults/v/notes";
+
+    let (_, body) = server.get(route);
+    assert!(body.contains("Before"), "{body}");
+
+    // Rewritten with a different length, so the fingerprint changes even where the filesystem
+    // has coarse modification times.
+    dir.write("One.md", "# After the edit\n");
+    let (_, body) = server.get(route);
+    assert!(
+        body.contains("After the edit"),
+        "the cache must notice: {body}"
+    );
+    assert!(!body.contains("Before"), "{body}");
+}
+
+#[test]
+fn the_vault_list_shows_only_vaults_the_caller_can_open() {
+    // E1. The vault switcher would otherwise be a way to enumerate every vault on a server —
+    // names included — from any authenticated account.
+    let mine = TempDir::new("http-vaults-mine");
+    mine.write("One.md", "# One\n");
+    mine.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let theirs = TempDir::new("http-vaults-theirs");
+    theirs.write("Secret.md", "# Secret\n");
+    theirs.write(
+        "access.toml",
+        "[[members]]\nuser = \"bob\"\nrole = \"owner\"\n",
+    );
+
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let alice_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&token).expect("sign cookie")
+    );
+    let state = AppState::authenticated(
+        vec![
+            vault(&mine, "mine", "Mine"),
+            vault(&theirs, "theirs", "Theirs"),
+        ],
+        auth,
+    )
+    .expect("secure state");
+    let server = TestServer::start(state);
+
+    let (status, body) = server.get_with_headers("/api/v1/vaults", &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("mine"), "{body}");
+    assert!(
+        !body.contains("theirs") && !body.contains("Theirs"),
+        "a vault the caller cannot open must not be named: {body}"
+    );
+
+    // Anonymous sees none of them, rather than the list without the contents.
+    let (status, body) = server.request("GET", "/api/v1/vaults", "", "");
+    assert!(is_ok(&status), "{status}");
+    assert_eq!(body, "[]", "{body}");
 }

@@ -1,10 +1,14 @@
 //! Routes and rendering.
 //!
-//! Routes follow `SPEC.md` §6.1: the UI lives under `/v/<slug>/…`. The API surface
-//! (`/api/v1/vaults/<slug>/…`) belongs to later milestones and is deliberately absent
-//! rather than stubbed.
+//! Routes follow `SPEC.md` §6.1: the UI lives under `/v/<slug>/…`, and the API under
+//! `/api/v1/…`. The API grows a milestone at a time — sync in M5, the workspace, note index
+//! and vault list in M7 — and anything not yet built is **absent rather than stubbed**,
+//! because a route that answers is a route someone will build on.
 //!
-//! Everything served here is read-only. Nothing in this module writes to a vault.
+//! Every route that names a note or a vault goes through
+//! [`AuthorizedVault`](crate::repository::AuthorizedVault) first. There is no unfiltered
+//! listing helper in this module, and adding one would be the bug §6.4 enumerates
+//! enforcement points to prevent.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,6 +29,7 @@ use mb_core::html::Urls;
 use crate::audit::{AuditAction, AuditEvent, AuditLog, AuditResult};
 use crate::repository::AuthorizedVault;
 use crate::sync::{Announcement, ClientFrame, ConnectionId, ServerFrame, SyncRegistry, Wire};
+use crate::titles::{NoteSummary, TitleCache};
 use crate::watch::{Changes, WatchSignal};
 use crate::workspace::{DeviceId, WorkspaceStore};
 use crate::{AccessFile, Error, Slug, Vault};
@@ -45,6 +50,8 @@ struct Security {
     access: RwLock<BTreeMap<Slug, VaultAccess>>,
     audit: Option<AuditLog>,
     sync: SyncRegistry,
+    /// Note titles for the quick switcher, per vault (§8.4, §21.2).
+    titles: RwLock<BTreeMap<Slug, Arc<TitleCache>>>,
 }
 
 /// One vault's policy and the file state it was parsed from.
@@ -169,8 +176,28 @@ impl AppState {
                 access: RwLock::new(access),
                 audit,
                 sync: SyncRegistry::default(),
+                titles: RwLock::new(BTreeMap::new()),
             },
         })
+    }
+
+    /// This vault's title cache, created on first use.
+    fn title_cache(&self, slug: &Slug) -> Arc<TitleCache> {
+        if let Ok(caches) = self.security.titles.read()
+            && let Some(cache) = caches.get(slug)
+        {
+            return Arc::clone(cache);
+        }
+        let Ok(mut caches) = self.security.titles.write() else {
+            // A poisoned lock costs the cache, not the request: an uncached instance still
+            // returns correct titles, just slowly.
+            return Arc::new(TitleCache::new());
+        };
+        Arc::clone(
+            caches
+                .entry(slug.clone())
+                .or_insert_with(|| Arc::new(TitleCache::new())),
+        )
     }
 
     #[must_use]
@@ -198,6 +225,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(index))
         .route("/login", post(login))
         .route("/api/v1/sync", get(websocket))
+        .route("/api/v1/vaults", get(vault_index_json))
+        .route("/api/v1/vaults/{slug}/notes", get(note_index))
         .route(
             "/api/v1/vaults/{slug}/workspace/{device}",
             get(workspace_load)
@@ -556,6 +585,120 @@ fn authorize_workspace<'a>(
         .or_else(|| state.api_token_user(vault.slug(), headers))?;
     let device = DeviceId::parse(device).ok()?;
     Some((user, device, WorkspaceStore::new(vault.root())))
+}
+
+#[derive(serde::Serialize)]
+struct VaultSummary<'a> {
+    slug: &'a str,
+    name: &'a str,
+}
+
+/// `GET /api/v1/vaults` — the vaults this user can open, for the vault switcher (§8.4).
+///
+/// Enforcement point E1. Discoverability is `AuthorizedVault::has_any_access`, the same rule
+/// the HTML index uses: a vault-wide membership makes even an empty vault discoverable, and a
+/// path-specific grant makes it discoverable once it applies to a readable note. A vault this
+/// user has no access to is not listed, so the switcher cannot be used to enumerate a server.
+async fn vault_index_json(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let mut visible: Vec<VaultSummary<'_>> = Vec::new();
+    for vault in state.vaults.values() {
+        let Some(access) = state.access_for(vault.slug()) else {
+            continue;
+        };
+        let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+            continue;
+        };
+        if view.has_any_access().unwrap_or(false) {
+            visible.push(VaultSummary {
+                slug: vault.slug().as_str(),
+                name: vault.name(),
+            });
+        }
+    }
+
+    let body = match serde_json::to_string(&visible) {
+        Ok(body) => body,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// The most notes one response will name.
+///
+/// why: a ceiling at all. The quick switcher ranks client-side (§21.2 budgets it at 80 ms over
+/// 10 000 notes), so the whole readable list has to travel — but a vault an order of magnitude
+/// larger than the design target should degrade into a truncated list rather than a response
+/// nobody can hold. `truncated` says so, so the UI can tell the user instead of silently
+/// looking like the note does not exist.
+const MAX_NOTE_INDEX: usize = 20_000;
+
+#[derive(serde::Serialize)]
+struct NoteIndexResponse {
+    notes: Vec<NoteSummary>,
+    truncated: bool,
+}
+
+/// `GET /api/v1/vaults/{slug}/notes` — the readable notes and their titles (§8.4).
+///
+/// Enforcement point E1/E5: the list comes from [`AuthorizedVault::notes`], which is already
+/// filtered, and the title cache is only ever handed paths that survived that filter. A note
+/// this user cannot read is not named, not counted, and not distinguishable from one that does
+/// not exist (§6.5).
+async fn note_index(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(mut readable) = view.notes() else {
+        return workspace_denied();
+    };
+    // A non-member gets the same empty-handed answer as an unknown vault, rather than an
+    // empty list that confirms the vault exists.
+    if !view.has_any_access().unwrap_or(false) {
+        return workspace_denied();
+    }
+
+    let truncated = readable.len() > MAX_NOTE_INDEX;
+    readable.truncate(MAX_NOTE_INDEX);
+
+    let cache = state.title_cache(vault.slug());
+    let notes = cache.summaries(readable.iter().map(String::as_str), |relative| {
+        // Through the *authorized* view, so a path that stopped being readable between the
+        // listing and the read is refused rather than parsed.
+        view.resolve(relative).ok()
+    });
+
+    let body = match serde_json::to_string(&NoteIndexResponse { notes, truncated }) {
+        Ok(body) => body,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            // The list is a list of note titles. Nothing should keep a copy.
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// `GET /api/v1/vaults/{slug}/workspace/{device}` — this user's saved layout (§8.1).

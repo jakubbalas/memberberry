@@ -13,6 +13,7 @@ pub mod http;
 pub mod invites;
 pub mod repository;
 pub mod sync;
+pub mod titles;
 pub mod vault;
 pub mod watch;
 pub mod workspace;

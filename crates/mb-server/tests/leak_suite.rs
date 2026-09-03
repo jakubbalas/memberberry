@@ -248,3 +248,118 @@ fn e15_a_device_id_cannot_escape_the_workspace_directory() {
         assert!(DeviceId::parse(usable).is_ok(), "`{usable}` should parse");
     }
 }
+
+/// E5: the note index is the largest disclosure surface in the application.
+///
+/// The quick switcher ranks client-side (§21.2 budgets it at 80 ms over 10 000 notes), so the
+/// *whole readable list* travels to the browser — every path and every title. That is the one
+/// place where "the client never receives data it may not see" (AGENTS.md §3.1) is doing the
+/// most work, and where a missing filter is least likely to be noticed by looking at a screen:
+/// the results simply contain a note the user forgot they should not have.
+#[test]
+fn e5_the_note_index_names_nothing_the_viewer_cannot_read() {
+    use mb_server::titles::TitleCache;
+
+    let dir = TempDir::new("leak-note-index");
+    dir.write("Shared.md", "# Shared\n");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let view = AuthorizedVault::new(&vault, &access, alice);
+
+    let readable = view.notes().expect("notes");
+    let cache = TitleCache::new();
+    let summaries = cache.summaries(readable.iter().map(String::as_str), |relative| {
+        view.resolve(relative).ok()
+    });
+
+    let rendered = format!("{summaries:?}");
+    assert!(
+        !rendered.contains("Salary"),
+        "an unreadable note's title reached the index: {rendered}"
+    );
+    assert!(
+        !rendered.contains("Private"),
+        "nor may its folder be named: {rendered}"
+    );
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(
+        summaries.first().and_then(|note| note.title.as_deref()),
+        Some("Shared")
+    );
+}
+
+/// E5: the title cache must not become a way to read a note the ACL just took away.
+#[test]
+fn e5_a_revoked_note_leaves_the_title_cache_on_the_next_listing() {
+    use mb_server::titles::TitleCache;
+
+    let dir = TempDir::new("leak-title-cache");
+    dir.write("Shared.md", "# Shared\n");
+    dir.write("Secret.md", "# Secret Plans\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let permissive = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        Vec::new(),
+    )
+    .expect("policy");
+    let cache = TitleCache::new();
+
+    // While she can read it, the title is cached.
+    let open = AuthorizedVault::new(&vault, &permissive, alice.clone());
+    let before = cache.summaries(
+        open.notes().expect("notes").iter().map(String::as_str),
+        |relative| open.resolve(relative).ok(),
+    );
+    assert!(format!("{before:?}").contains("Secret Plans"));
+
+    // After revocation the note is not in the readable list, so it is never named to the
+    // cache — and a cached title cannot become a way back to it.
+    let revoked = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Secret.md").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let closed = AuthorizedVault::new(&vault, &revoked, alice);
+    let after = cache.summaries(
+        closed.notes().expect("notes").iter().map(String::as_str),
+        |relative| closed.resolve(relative).ok(),
+    );
+
+    let rendered = format!("{after:?}");
+    assert!(
+        !rendered.contains("Secret"),
+        "a cached title outlived the permission that produced it: {rendered}"
+    );
+}

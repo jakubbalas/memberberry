@@ -106,6 +106,8 @@ function render(
       chrome: chrome(),
       open: open ?? surfaces().open,
       target: commands,
+      // Pinned so the suite does not depend on the runner's platform.
+      platform: "mac" as const,
       mode,
     },
   });

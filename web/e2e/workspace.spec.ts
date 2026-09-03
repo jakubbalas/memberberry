@@ -302,3 +302,86 @@ test.describe("the mobile layout (§8.3)", () => {
     await page.locator(EDITOR).first().click();
   });
 });
+
+test.describe("the command palette and switchers (§8.4)", () => {
+  test.beforeEach(({}, info) => {
+    test.skip(info.project.name === "mobile", "the shortcuts are checked on desktop");
+  });
+
+  test("the command palette opens, filters and runs a command", async ({ page }) => {
+    await openWorkspace(page);
+
+    await page.keyboard.press("ControlOrMeta+Shift+P");
+    const palette = page.getByRole("dialog", { name: "Command palette" });
+    await expect(palette).toBeVisible();
+    // Ready to type into, which is the whole point of a palette.
+    await expect(page.getByRole("combobox", { name: "Command palette" })).toBeFocused();
+
+    await page.keyboard.type("split right");
+    // Scoped to the palette: the editor's task-metadata `<select>` has real `<option>`
+    // elements of its own, and an unscoped role locator finds those too.
+    await expect(palette.getByRole("option")).toHaveCount(1);
+    await page.keyboard.press("Enter");
+
+    await expect(palette).toBeHidden();
+    await expect(page.locator(".pane")).toHaveCount(2);
+  });
+
+  test("the quick switcher finds a note by title and opens it", async ({ page }) => {
+    // The end-to-end claim: the server parsed the title, the list was permission-filtered on
+    // the way out, and the client ranked it. Nothing short of this exercises all three.
+    await openWorkspace(page);
+
+    await page.keyboard.press("ControlOrMeta+k");
+    const switcher = page.getByRole("dialog", { name: "Open a note" });
+    await expect(switcher).toBeVisible();
+
+    await page.keyboard.type("roadmap");
+    await expect(switcher.getByRole("option").first()).toContainText("Roadmap");
+    await page.keyboard.press("Enter");
+
+    await expect(page.getByRole("tab", { name: "Roadmap" })).toBeVisible();
+    await expect(page.locator(EDITOR).first()).toContainText("Ship the workspace shell");
+  });
+
+  test("the vault switcher lists the vaults this user can open", async ({ page }) => {
+    await openWorkspace(page);
+
+    await page.keyboard.press("ControlOrMeta+Shift+V");
+    const switcher = page.getByRole("dialog", { name: "Switch vault" });
+    await expect(switcher).toBeVisible();
+    await expect(switcher.getByRole("option", { name: /Personal/ })).toBeVisible();
+    // The only vault the E2E server has, and it is the current one.
+    await expect(switcher.getByRole("option").first()).toContainText("current");
+  });
+
+  test("Escape closes the palette without acting", async ({ page }) => {
+    await openWorkspace(page);
+    const before = await page.getByRole("tab").count();
+
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(page.getByRole("dialog", { name: "Open a note" })).toBeVisible();
+    await page.keyboard.press("Escape");
+
+
+    await expect(page.getByRole("dialog", { name: "Open a note" })).toBeHidden();
+    await expect(page.getByRole("tab")).toHaveCount(before);
+  });
+
+  test("a shortcut works from inside the editor, and typing does not trigger one", async ({
+    page,
+  }) => {
+    // The rule that keeps the shell out of the editor's way: a Mod chord reaches the shell
+    // from inside a note, a bare key does not. Getting the second wrong means typing a letter
+    // opens a palette.
+    await openWorkspace(page);
+    await page.locator(EDITOR).first().click();
+
+    await page.keyboard.type("pk");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator(EDITOR).first()).toContainText("pk");
+
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(page.getByRole("dialog", { name: "Open a note" })).toBeVisible();
+  });
+});
