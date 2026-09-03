@@ -11,9 +11,12 @@
   editor is the thing this shell exists to hold.
 -->
 <script lang="ts">
+  import MobileMain from "./MobileMain.svelte";
   import PaneTree from "./PaneTree.svelte";
   import Sidebar from "./Sidebar.svelte";
   import type { NoteBootstrap } from "./bootstrap.js";
+  import { type SwipeStart, swipeProgress, swipeStart } from "./gestures.js";
+  import { type LayoutMode, currentLayoutMode, splitLimitFor, watchLayoutMode } from "./layout.js";
   import type { openNoteSurface } from "./note-surface.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { groups } from "./workspace.js";
@@ -27,11 +30,21 @@
     readonly chrome?: Pick<Storage, "getItem" | "setItem"> | undefined;
     /** Where the shell listens for its commands. Injectable so a test need not use `window`. */
     readonly target?: EventTarget | undefined;
-    /** Whether the viewport is narrow enough for the §8.3 layout. Injectable for tests. */
-    readonly narrow?: boolean | undefined;
+    /** Which layout to render. Injectable for tests; otherwise watched from the viewport. */
+    readonly mode?: LayoutMode | undefined;
   }
 
-  const { store, session, open, chrome, target, narrow }: Props = $props();
+  const { store, session, open, chrome, target, mode }: Props = $props();
+
+  // Seeded synchronously, then kept current by the watcher. Starting from a default and
+  // waiting for the effect meant the first render used the wrong layout — see
+  // `currentLayoutMode` for what that cost.
+  let watched = $state<LayoutMode>(currentLayoutMode());
+  $effect(() => watchLayoutMode({ onChange: (next) => (watched = next) }));
+
+  /** §8.2 and §8.3, decided in one place (`layout.ts`) so the CSS and the components agree. */
+  const layout = $derived(mode ?? watched);
+  const narrowViewport = $derived(layout === "mobile");
 
   /**
    * Sidebar collapse, kept in `localStorage` rather than in the persisted workspace.
@@ -50,15 +63,10 @@
   /**
    * Sidebars start closed on a narrow viewport.
    *
-   * why: below the §8.3 breakpoint a sidebar is a drawer over the content, and a drawer that
-   * is open on arrival covers the note and swallows taps meant for the tab strip. On a wide
+   * why: below the §8.3 breakpoint a sidebar is a drawer over the content, and a drawer open
+   * on arrival covers the note and swallows taps meant for the content beneath it. On a wide
    * viewport they sit beside the content and start open.
    */
-  const narrowViewport = $derived(
-    narrow ??
-      (typeof matchMedia === "undefined" ? false : matchMedia("(max-width: 47.99rem)").matches),
-  );
-
   function readCollapsed(): { left: boolean; right: boolean } {
     const byDefault = { left: narrowViewport, right: narrowViewport };
     try {
@@ -88,6 +96,37 @@
   const panes = $derived(groups(store.current.root).map((group) => group.id));
 
   /**
+   * §8.3: the tablet gets the desktop layout with at most one split, and mobile none at all.
+   *
+   * Enforced at the call site rather than in the model: the model is layout-agnostic on
+   * purpose, and "how many panes fit" is a fact about the viewport, not about the workspace.
+   * A layout restored from a wider device keeps its panes — they are simply not added to.
+   */
+  const splitLimit = $derived(splitLimitFor(layout));
+  const canSplit = $derived(panes.length <= splitLimit);
+
+  /** The edge swipes that open the drawers (§8.3). */
+  let swipe = $state<SwipeStart | undefined>(undefined);
+
+  function onpointerdown(event: PointerEvent): void {
+    if (!narrowViewport) return;
+    swipe = swipeStart(event, { width: window.innerWidth });
+  }
+
+  function onpointermove(event: PointerEvent): void {
+    const started = swipe;
+    if (started === undefined) return;
+    const result = swipeProgress(started, event, { width: window.innerWidth });
+    if (result.kind === "pending") return;
+    swipe = undefined;
+    if (result.kind === "open") collapsed = { ...collapsed, [result.edge]: false };
+  }
+
+  function endSwipe(): void {
+    swipe = undefined;
+  }
+
+  /**
    * The pane-level keyboard commands (§8.4).
    *
    * Only two, and both chosen because the editor does not want them. **`Cmd/Ctrl-B` is not
@@ -106,6 +145,7 @@
     // Cmd/Ctrl-\\ splits beside, Cmd/Ctrl-Shift-\\ splits below — the shape most editors use.
     if (event.key === "\\") {
       event.preventDefault();
+      if (!canSplit) return;
       store.split(store.focusedGroup, event.shiftKey ? "horizontal" : "vertical");
       return;
     }
@@ -126,7 +166,16 @@
   });
 </script>
 
-<div class="workspace-shell" role="application" aria-label="Memberberry workspace">
+<div
+  class="workspace-shell"
+  role="application"
+  aria-label="Memberberry workspace"
+  data-layout={layout}
+  {onpointerdown}
+  {onpointermove}
+  onpointerup={endSwipe}
+  onpointercancel={endSwipe}
+>
   <Sidebar
     side="left"
     label="Navigation"
@@ -136,7 +185,11 @@
   />
 
   <main class="workspace-main" aria-label="Open notes">
-    <PaneTree node={store.current.root} {store} {panes} {session} {open} />
+    {#if layout === "mobile"}
+      <MobileMain {store} {session} {open} />
+    {:else}
+      <PaneTree node={store.current.root} {store} {panes} {session} {open} />
+    {/if}
   </main>
 
   <Sidebar

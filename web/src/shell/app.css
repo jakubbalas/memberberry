@@ -68,10 +68,17 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
 .editor-surface .tiptap:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--space-4); }
 .offline-status { margin: var(--space-6) var(--space-4) 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
 
-@media (max-width: 40rem) {
+/* The editor's own mobile rules share the §8.3 breakpoint rather than having their own.
+   They used to switch at 40rem, so between 640px and 768px the toolbar floated as if on a
+   phone while the desktop shell was showing — two breakpoints that had no reason to differ
+   and every reason to drift. `layout.ts` owns the number; this must match it. */
+@media (max-width: 767.98px) {
   .workspace { width: min(100% - var(--space-6), var(--editor-measure)); padding-top: var(--space-8); }
   .editor-panel { min-height: 60vh; padding: var(--space-7); border-radius: var(--radius-md); }
-  .editor-controls { position: fixed; right: var(--space-4); bottom: calc(var(--space-4) + var(--keyboard-offset)); left: var(--space-4); top: auto; margin: 0; }
+  /* Above the virtual keyboard *and* above whatever chrome the shell puts at the bottom.
+     Without `--bottom-chrome` the toolbar sits on top of the workspace nav bar and swallows
+     every tap meant for the tab switcher. */
+  .editor-controls { position: fixed; right: var(--space-4); bottom: calc(var(--space-4) + var(--bottom-chrome) + var(--keyboard-offset)); left: var(--space-4); top: auto; margin: 0; }
   .editor-toolbar { overflow-x: auto; flex-wrap: nowrap; padding: var(--space-3); }
   .editor-control { flex: 0 0 auto; min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
   .task-inspector { display: none; }
@@ -154,7 +161,44 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
    keeps the shell usable at any width and is the structure the M7 mobile layout builds the
    swipe-in drawers on. Without this the main column computes to zero and the editor is
    present but invisible — which is how the E2E mobile project found it. */
-@media (max-width: 47.99rem) {
+/* ---------------------------------------------------------------- mobile (SPEC 8.3)
+
+   One active document with a bar beneath it, and a bottom sheet for everything else that is
+   open. The breakpoint is the one `layout.ts` computes; the two must agree, which is why the
+   number is written down in that module and repeated here rather than invented twice. */
+
+.mobile-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; --bottom-chrome: var(--mobile-bar-height); }
+.mobile-main > .note-pane { flex: 1 1 auto; min-height: 0; }
+
+.mobile-bar { display: flex; align-items: center; gap: var(--space-3); min-height: var(--mobile-bar-height); padding: var(--space-2) var(--space-4); border-top: 1px solid var(--border-subtle); background: var(--surface-raised); }
+.mobile-bar-button { display: grid; min-width: var(--touch-target-min); min-height: var(--touch-target-min); place-items: center; border: 0; border-radius: var(--radius-sm); color: var(--text-primary); background: none; font: var(--weight-bold) var(--text-2xl)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.mobile-bar-button:disabled { color: var(--text-muted); opacity: .4; cursor: default; }
+.mobile-bar-button:not(:disabled):hover { background: var(--surface-hover); }
+.mobile-bar-button:focus-visible, .mobile-bar-tabs:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.mobile-bar-tabs { display: flex; flex: 1 1 auto; align-items: center; gap: var(--space-3); min-height: var(--touch-target-min); min-width: 0; padding: 0 var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-note); font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.mobile-bar-count { display: grid; min-width: var(--space-7); height: var(--space-7); place-items: center; border-radius: var(--radius-round); color: var(--presence-label); background: var(--accent-primary); font-weight: var(--weight-bold); }
+.mobile-bar-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The tab switcher. A real `<dialog>`, so the backdrop, focus trap and Escape are the
+   browser's rather than ours. */
+.tab-sheet { width: 100%; max-width: 100%; margin: auto auto 0; padding: 0; border: 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0; color: var(--text-primary); background: var(--surface-note); }
+.tab-sheet::backdrop { background: color-mix(in srgb, var(--text-primary) 45%, transparent); }
+.tab-sheet-body { display: flex; flex-direction: column; gap: var(--space-4); max-height: var(--sheet-max-height); padding: var(--space-4) var(--space-5) var(--space-6); overflow: auto; }
+.tab-sheet-handle { width: var(--space-9); height: var(--space-2); margin: 0 auto; border-radius: var(--radius-sm); background: var(--border-subtle); }
+.tab-sheet-title { margin: 0; font: var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui); letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--text-muted); }
+.tab-sheet-empty { margin: 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.tab-sheet-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.tab-sheet-item { display: flex; align-items: center; gap: var(--space-3); border-bottom: 1px solid var(--border-subtle); }
+.tab-sheet-item[data-current="true"] { background: var(--surface-hover); }
+.tab-sheet-open { display: flex; flex: 1 1 auto; flex-direction: column; gap: var(--space-1); min-height: var(--touch-target-min); min-width: 0; padding: var(--space-3) var(--space-2); border: 0; color: inherit; background: none; font: var(--weight-medium) var(--text-sm)/var(--leading-flat) var(--font-ui); text-align: left; cursor: pointer; }
+.tab-sheet-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-sheet-folder { color: var(--text-muted); font-size: var(--text-2xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-sheet-close { display: grid; min-width: var(--touch-target-min); min-height: var(--touch-target-min); place-items: center; border: 0; border-radius: var(--radius-sm); color: var(--text-muted); background: none; font: var(--weight-bold) var(--text-sm)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.tab-sheet-close:hover { color: var(--accent-primary); background: var(--surface-hover); }
+.tab-sheet-open:focus-visible, .tab-sheet-close:focus-visible, .tab-sheet-dismiss:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
+.tab-sheet-dismiss { min-height: var(--touch-target-min); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-raised); font: var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+
+@media (max-width: 767.98px) {
   /* The toggles stay in the grid; only the open *panel* overlays the content. Floating the
      whole frame instead puts a 44px strip on top of the tab strip, where it silently eats
      taps meant for the first tab — which is how the E2E mobile project found this. */

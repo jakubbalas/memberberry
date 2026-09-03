@@ -23,12 +23,20 @@ async function openWorkspace(page: import("@playwright/test").Page): Promise<voi
   await expect(page.locator(EDITOR).first()).toBeVisible();
 }
 
-test("renders one pane with the served note open in a tab", async ({ page }) => {
+test("renders one pane with the served note open in a tab", async ({ page }, info) => {
+  test.skip(info.project.name === "mobile", "the mobile layout has no tab strip (§8.3)");
   await openWorkspace(page);
 
   await expect(page.locator(PANE)).toHaveCount(1);
   await expect(page.getByRole("tab", { name: "Welcome" })).toBeVisible();
   await expect(page.getByRole("tab")).toHaveCount(1);
+  await expect(page.locator(EDITOR).first()).toContainText("A note that already exists");
+});
+
+test("opens the served note whichever layout is showing", async ({ page }) => {
+  // The layout-independent half of the test above: whatever the chrome looks like, the note
+  // the server served is the note on screen.
+  await openWorkspace(page);
   await expect(page.locator(EDITOR).first()).toContainText("A note that already exists");
 });
 
@@ -85,7 +93,8 @@ test("the divider resizes the panes and reports its position", async ({ page }, 
   expect(after?.width ?? 0).toBeGreaterThan((before?.width ?? 0) + 20);
 });
 
-test("closing the last tab leaves a usable empty pane", async ({ page }) => {
+test("closing the last tab leaves a usable empty pane", async ({ page }, info) => {
+  test.skip(info.project.name === "mobile", "mobile closes tabs from the sheet (§8.3)");
   await openWorkspace(page);
 
   await page.getByRole("button", { name: "Close Welcome" }).click();
@@ -162,3 +171,134 @@ async function deviceOf(page: import("@playwright/test").Page): Promise<string> 
   expect(device, "the shell should have created a device id").not.toBeNull();
   return device ?? "";
 }
+
+test.describe("the mobile layout (§8.3)", () => {
+  test.beforeEach(({}, info) => {
+    test.skip(info.project.name !== "mobile", "these are the mobile-only rules");
+  });
+
+  test("shows one document, a nav bar, and no tab strip", async ({ page }) => {
+    await openWorkspace(page);
+
+    await expect(page.locator(".mobile-main")).toBeVisible();
+    await expect(page.getByRole("tablist")).toHaveCount(0);
+    await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
+  });
+
+  test("the note fills the space above the bar, and the bar is reachable", async ({ page }) => {
+    // The layout failure this catches: the bar overlaps the editor, or is pushed off the
+    // bottom of the screen. jsdom has no layout engine and cannot see either.
+    await openWorkspace(page);
+
+    const viewport = page.viewportSize();
+    const bar = await page.getByRole("navigation", { name: "Navigation" }).boundingBox();
+    const pane = await page.locator(".note-pane").boundingBox();
+    expect(bar).not.toBeNull();
+    expect(pane).not.toBeNull();
+
+    expect(bar?.height ?? 0).toBeGreaterThanOrEqual(44);
+    // The bar sits below the note, not on top of it.
+    expect(bar?.y ?? 0).toBeGreaterThanOrEqual((pane?.y ?? 0) + (pane?.height ?? 0) - 1);
+    // And entirely on screen.
+    expect((bar?.y ?? 0) + (bar?.height ?? 0)).toBeLessThanOrEqual((viewport?.height ?? 0) + 1);
+  });
+
+  test("every control in the bar clears the 44px touch floor", async ({ page }) => {
+    await openWorkspace(page);
+
+    for (const name of ["Back", "Forward"]) {
+      const box = await page.getByRole("button", { name, exact: true }).boundingBox();
+      expect(box?.width ?? 0, `${name} is too narrow to hit`).toBeGreaterThanOrEqual(44);
+      expect(box?.height ?? 0, `${name} is too short to hit`).toBeGreaterThanOrEqual(44);
+    }
+    const switcher = await page.locator(".mobile-bar-tabs").boundingBox();
+    expect(switcher?.height ?? 0).toBeGreaterThanOrEqual(44);
+  });
+
+  test("the tab switcher opens as a sheet over the note and closes again", async ({ page }) => {
+    await openWorkspace(page);
+
+    await page.locator(".mobile-bar-tabs").click();
+    const sheet = page.getByRole("dialog", { name: "Open notes" });
+    await expect(sheet).toBeVisible();
+
+    // A bottom sheet: anchored to the bottom of the screen, not floating in the middle.
+    const viewport = page.viewportSize();
+    const box = await sheet.boundingBox();
+    expect((box?.y ?? 0) + (box?.height ?? 0)).toBeCloseTo(viewport?.height ?? 0, -1);
+
+    await page.getByRole("button", { name: "Done" }).click();
+    await expect(sheet).toBeHidden();
+  });
+
+  test("Escape closes the sheet, because it is a real dialog", async ({ page }) => {
+    // The reason for `<dialog>` over a styled div: Escape, focus trapping and an inert page
+    // behind it are the browser's, and none of them was written here.
+    await openWorkspace(page);
+
+    await page.locator(".mobile-bar-tabs").click();
+    const sheet = page.getByRole("dialog", { name: "Open notes" });
+    await expect(sheet).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+  });
+
+  test("closing the last note from the sheet leaves a usable empty pane", async ({ page }) => {
+    await openWorkspace(page);
+
+    await page.locator(".mobile-bar-tabs").click();
+    await page.getByRole("button", { name: "Close Welcome" }).click();
+    await expect(page.getByText("Nothing is open.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Done" }).click();
+    await expect(page.getByText("No note open in this pane.")).toBeVisible();
+  });
+
+  test("an edge swipe opens the drawer", async ({ page }) => {
+    // §8.3: "sidebars become swipe-in drawers". Unit tests cover the recogniser's rules; only
+    // a browser can say the events actually reach it through the shell's handlers.
+    await openWorkspace(page);
+    const toggle = page.getByRole("button", { name: /Navigation$/ });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    const shell = page.locator(".workspace-shell");
+    const common = { pointerId: 1, pointerType: "touch", isPrimary: true, bubbles: true };
+    await shell.dispatchEvent("pointerdown", { ...common, clientX: 4, clientY: 400 });
+    await shell.dispatchEvent("pointermove", { ...common, clientX: 140, clientY: 404 });
+
+    await expect(page.getByRole("button", { name: /Navigation$/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  test("a vertical drag near the edge scrolls instead of opening a drawer", async ({ page }) => {
+    // The rule that matters most: the surface being swiped over is a text editor, and a
+    // recogniser that is even slightly too eager steals scrolls and selection drags.
+    await openWorkspace(page);
+
+    const shell = page.locator(".workspace-shell");
+    const common = { pointerId: 1, pointerType: "touch", isPrimary: true, bubbles: true };
+    await shell.dispatchEvent("pointerdown", { ...common, clientX: 4, clientY: 200 });
+    await shell.dispatchEvent("pointermove", { ...common, clientX: 10, clientY: 500 });
+
+    await expect(page.getByRole("button", { name: /Navigation$/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
+  test("the sidebars start closed, so nothing covers the note", async ({ page }) => {
+    // Below the breakpoint a sidebar is a drawer over the content. Open on arrival it covers
+    // the note and swallows taps meant for what is beneath.
+    await openWorkspace(page);
+
+    for (const name of [/Navigation$/, /Context$/]) {
+      await expect(page.getByRole("button", { name })).toHaveAttribute("aria-expanded", "false");
+    }
+    // And the editor is hittable, which is what "covered" would break.
+    await expect(page.locator(EDITOR).first()).toBeVisible();
+    await page.locator(EDITOR).first().click();
+  });
+});

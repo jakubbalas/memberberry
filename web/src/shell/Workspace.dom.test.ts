@@ -111,7 +111,7 @@ function render(workspace: WorkspaceStore, open?: ReturnType<typeof surfaces>["o
       // cannot hold focus. Injected here so a test drives them without touching `window`.
       target: commands,
       // A wide viewport, so the sidebars start open as they do on desktop.
-      narrow: false,
+      mode: "desktop" as const,
     },
   });
   return () => unmount(app);
@@ -458,7 +458,7 @@ describe("sidebars", () => {
         chrome: chrome(),
         open: surfaces().open,
         target: commands,
-        narrow: true,
+        mode: "mobile" as const,
       },
     });
     try {
@@ -484,7 +484,7 @@ describe("sidebars", () => {
         chrome: preferences,
         open: surfaces().open,
         target: commands,
-        narrow: false,
+        mode: "desktop" as const,
       },
     });
     target
@@ -501,7 +501,7 @@ describe("sidebars", () => {
         chrome: preferences,
         open: surfaces().open,
         target: commands,
-        narrow: false,
+        mode: "desktop" as const,
       },
     });
     try {

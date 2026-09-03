@@ -64,11 +64,12 @@ test("the note surface is styled, not merely present", async ({ page }) => {
   // mobile `--radius-md`, so pinning a number here would assert the viewport, not the CSS.
   await expect(panel).not.toHaveCSS("border-radius", "0px");
   await expect(panel).not.toHaveCSS("box-shadow", "none");
-  // The tab strip is the shell's own chrome rather than the editor's, so it catches a
-  // stylesheet that loaded for one and not the other.
-  await expect(page.locator(".tab-strip")).not.toHaveCSS(
-    "background-color",
-    "rgba(0, 0, 0, 0)",
+  // The sidebar toggle is the shell's own chrome rather than the editor's, so it catches a
+  // stylesheet that loaded for one and not the other. Chosen over the tab strip because both
+  // layouts have it — §8.3 replaces the strip with a nav bar.
+  await expect(page.locator(".sidebar-toggle").first()).not.toHaveCSS(
+    "color",
+    "rgb(0, 0, 0)",
   );
 });
 

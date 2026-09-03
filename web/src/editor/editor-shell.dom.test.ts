@@ -169,3 +169,159 @@ describe("editor shell presence", () => {
     expect(panel.querySelector(".presence-header")).toBeNull();
   });
 });
+
+/**
+ * The virtual-keyboard toolbar (`SPEC.md` §8.3).
+ *
+ * §8.3 calls this "the most commonly botched thing in mobile editors" and says it gets an
+ * explicit test. It did not have one until M7 — the code shipped in M3 and nothing checked
+ * it, which is the same shape as every other bug this project has found late.
+ *
+ * The botched version is not "no code at all"; it is code that computes the offset once, or
+ * from the wrong viewport, and so leaves the toolbar under the keyboard on exactly the
+ * devices nobody tested. So the assertions are about the *arithmetic* and about the toolbar
+ * moving again when the keyboard does.
+ */
+describe("the toolbar above the virtual keyboard", () => {
+  /** A controllable `visualViewport`, which jsdom does not provide. */
+  function fakeViewport(height: number, offsetTop = 0) {
+    const listeners = new Map<string, Set<() => void>>();
+    const viewport = {
+      height,
+      offsetTop,
+      addEventListener: (type: string, listener: () => void): void => {
+        const existing = listeners.get(type) ?? new Set();
+        existing.add(listener);
+        listeners.set(type, existing);
+      },
+      removeEventListener: (type: string, listener: () => void): void => {
+        listeners.get(type)?.delete(listener);
+      },
+    };
+    return {
+      viewport,
+      /** Shrinks the visual viewport, the way a keyboard opening does. */
+      resizeTo(next: number, top = 0): void {
+        viewport.height = next;
+        viewport.offsetTop = top;
+        for (const listener of [...(listeners.get("resize") ?? [])]) listener();
+      },
+      get listenerCount(): number {
+        return [...listeners.values()].reduce((total, set) => total + set.size, 0);
+      },
+    };
+  }
+
+  async function mountWithViewport(fake: ReturnType<typeof fakeViewport>) {
+    const panel = document.createElement("section");
+    const surface = document.createElement("div");
+    const status = document.createElement("p");
+    panel.append(surface);
+    document.body.append(panel, status);
+    const editor = new Editor({
+      element: surface,
+      extensions: createMemberberryExtensions(contract),
+    });
+    const ydoc = new Doc();
+    applyUpdate(ydoc, await updateFromMarkdown("# Note\n"));
+
+    const original = Object.getOwnPropertyDescriptor(window, "visualViewport");
+    Object.defineProperty(window, "visualViewport", {
+      value: fake.viewport,
+      configurable: true,
+    });
+    const shell = mountEditorShell({ editor, document: ydoc, panel, status });
+    const controls = panel.querySelector<HTMLElement>(".editor-controls");
+    if (controls === null) throw new Error("the control strip should be mounted");
+
+    return {
+      controls,
+      offset: (): string => controls.style.getPropertyValue("--keyboard-offset"),
+      destroy: (): void => {
+        shell.destroy();
+        editor.destroy();
+        if (original === undefined) {
+          Reflect.deleteProperty(window, "visualViewport");
+        } else {
+          Object.defineProperty(window, "visualViewport", original);
+        }
+      },
+    };
+  }
+
+  it("sits flat against the bottom while no keyboard is up", async () => {
+    const fake = fakeViewport(window.innerHeight);
+    const mounted = await mountWithViewport(fake);
+    try {
+      expect(mounted.offset()).toBe("0px");
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("lifts by exactly the height the keyboard took", async () => {
+    // The arithmetic is the whole feature: layout height minus visual height minus how far
+    // the visual viewport has been scrolled up. Get any term wrong and the toolbar sits
+    // under the keyboard — visible in a screenshot, invisible to every other kind of test.
+    const fake = fakeViewport(window.innerHeight);
+    const mounted = await mountWithViewport(fake);
+    try {
+      fake.resizeTo(window.innerHeight - 300);
+      expect(mounted.offset()).toBe("300px");
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("accounts for the visual viewport being scrolled, not just shrunk", async () => {
+    // iOS scrolls the visual viewport as well as shrinking it when focus moves near the
+    // bottom of the page. Ignoring `offsetTop` leaves the toolbar floating in the middle.
+    const fake = fakeViewport(window.innerHeight);
+    const mounted = await mountWithViewport(fake);
+    try {
+      fake.resizeTo(window.innerHeight - 300, 120);
+      expect(mounted.offset()).toBe("180px");
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("moves again when the keyboard closes, rather than staying lifted", async () => {
+    // The "computed once" failure: the toolbar rises correctly and then never comes back
+    // down, leaving a gap above the bottom of the screen for the rest of the session.
+    const fake = fakeViewport(window.innerHeight);
+    const mounted = await mountWithViewport(fake);
+    try {
+      fake.resizeTo(window.innerHeight - 300);
+      expect(mounted.offset()).toBe("300px");
+      fake.resizeTo(window.innerHeight);
+      expect(mounted.offset()).toBe("0px");
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("never lifts by a negative amount", async () => {
+    // A visual viewport taller than the layout one happens during overscroll on iOS. A
+    // negative offset pushes the toolbar off the bottom of the screen entirely.
+    const fake = fakeViewport(window.innerHeight);
+    const mounted = await mountWithViewport(fake);
+    try {
+      fake.resizeTo(window.innerHeight + 200);
+      expect(mounted.offset()).toBe("0px");
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("releases its viewport listeners with the note", async () => {
+    // A pane is opened and closed constantly under tabs and splits (§8.2), so a listener
+    // left on `visualViewport` is a fast leak rather than a slow one.
+    const fake = fakeViewport(window.innerHeight);
+    const mounted = await mountWithViewport(fake);
+    expect(fake.listenerCount).toBe(2);
+
+    mounted.destroy();
+    expect(fake.listenerCount).toBe(0);
+  });
+});
