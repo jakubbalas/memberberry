@@ -137,15 +137,15 @@ describe("the shell", () => {
     }
   });
 
-  it("says which milestone fills an empty sidebar, rather than 'coming soon'", () => {
-    // A reader who opens this should be able to tell whether it is unfinished or broken.
+  it("says which milestone fills a sidebar that is still empty", () => {
+    // A reader should be able to tell unfinished from broken. The left sidebar has the note
+    // tree now, so only the right one is still a placeholder.
     const teardown = render(store());
     try {
       const placeholders = [...target.querySelectorAll(".sidebar-placeholder")];
-      expect(placeholders).toHaveLength(2);
-      for (const placeholder of placeholders) {
-        expect(placeholder.textContent).toMatch(/M\d+/);
-      }
+      expect(placeholders).toHaveLength(1);
+      expect(placeholders[0]?.textContent).toMatch(/M\d+/);
+      expect(target.querySelector('[aria-label="Navigation"] .tree-panel')).not.toBeNull();
     } finally {
       teardown();
     }

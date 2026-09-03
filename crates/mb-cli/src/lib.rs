@@ -171,7 +171,8 @@ fn serve(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
             Some(audit),
             web_root,
         )
-        .map_err(|error| error.to_string())?,
+        .map_err(|error| error.to_string())?
+        .with_data_dir(data_dir.to_path_buf()),
     );
     runtime
         .block_on(mb_server::http::serve(state, addr))

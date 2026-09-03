@@ -10,14 +10,7 @@
 -->
 <script lang="ts">
   import Palette, { type PaletteItem } from "./Palette.svelte";
-  import {
-    type NoteSummary,
-    type VaultSummary,
-    fetchNotes,
-    fetchVaults,
-    noteHint,
-    noteLabel,
-  } from "./catalog.js";
+  import { type VaultSummary, fetchVaults, noteHint, noteLabel } from "./catalog.js";
   import {
     type Command,
     CommandRegistry,
@@ -27,11 +20,14 @@
   import { type Platform, detectPlatform, formatBinding } from "./hotkeys.js";
   import type { LayoutMode } from "./layout.js";
   import { splitLimitFor } from "./layout.js";
+  import type { NoteCatalog } from "./note-catalog.svelte.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { groups } from "./workspace.js";
 
   interface Props {
     readonly store: WorkspaceStore;
+    /** The vault's readable notes, shared with the tree so the list is fetched once. */
+    readonly catalog: NoteCatalog;
     readonly vault: string;
     readonly layout: LayoutMode;
     /** Where the shell listens for hotkeys. Injectable so a test need not use `window`. */
@@ -45,8 +41,7 @@
      * the other. That is a genuinely platform-dependent test, which is a flaky test.
      */
     readonly platform?: Platform | undefined;
-    /** Injectable for tests; defaults to the real HTTP calls. */
-    readonly loadNotes?: typeof fetchNotes | undefined;
+    /** Injectable for tests; defaults to the real HTTP call. */
     readonly loadVaults?: typeof fetchVaults | undefined;
     /** Called to move to another vault. Defaults to a real navigation. */
     readonly onvault?: ((slug: string) => void) | undefined;
@@ -54,12 +49,12 @@
 
   const {
     store,
+    catalog,
     vault,
     layout,
     target,
     chrome,
     platform,
-    loadNotes = fetchNotes,
     loadVaults = fetchVaults,
     onvault,
   }: Props = $props();
@@ -68,15 +63,15 @@
 
   let mode = $state<Mode | undefined>(undefined);
   let query = $state("");
-  let notes = $state<readonly NoteSummary[]>([]);
   let vaults = $state<readonly VaultSummary[]>([]);
 
   function openPalette(next: Mode): void {
     mode = next;
     query = "";
     // Fetched on first open rather than at mount: most sessions never open the switcher, and
-    // the note index of a large vault is the biggest payload the shell can ask for.
-    if (next === "notes" && notes.length === 0) void loadNotes(vault).then((list) => (notes = list));
+    // the note index of a large vault is the biggest payload the shell can ask for. The
+    // catalog is shared with the tree, so whichever asks first pays and the other is free.
+    if (next === "notes") catalog.ensure();
     if (next === "vaults" && vaults.length === 0) {
       void loadVaults().then((list) => (vaults = list));
     }
@@ -224,7 +219,7 @@
       );
     }
     if (mode === "notes") {
-      return fuzzyRank(query, notes, { key: noteLabel }).map(({ item, match }) => ({
+      return fuzzyRank(query, catalog.notes, { key: noteLabel }).map(({ item, match }) => ({
         id: item.path,
         label: noteLabel(item),
         hint: noteHint(item),

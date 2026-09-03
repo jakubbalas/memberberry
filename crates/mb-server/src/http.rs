@@ -27,6 +27,7 @@ use mb_core::Username;
 use mb_core::html::Urls;
 
 use crate::audit::{AuditAction, AuditEvent, AuditLog, AuditResult};
+use crate::bookmarks::BookmarkStore;
 use crate::repository::AuthorizedVault;
 use crate::sync::{Announcement, ClientFrame, ConnectionId, ServerFrame, SyncRegistry, Wire};
 use crate::titles::{NoteSummary, TitleCache};
@@ -39,6 +40,9 @@ use crate::{AccessFile, Error, Slug, Vault};
 pub struct AppState {
     vaults: BTreeMap<Slug, Vault>,
     web_root: Option<PathBuf>,
+    /// Server-owned storage (§4.1). Bookmarks live here rather than in a vault; see
+    /// `bookmarks.rs` for why. `None` leaves the routes that need it answering as denied.
+    data_dir: Option<PathBuf>,
     security: Security,
 }
 
@@ -148,6 +152,13 @@ impl AppState {
         Ok(state)
     }
 
+    /// Points the server at its own data directory, for storage that is not a vault's (§4.1).
+    #[must_use]
+    pub fn with_data_dir(mut self, data_dir: PathBuf) -> Self {
+        self.data_dir = Some(data_dir);
+        self
+    }
+
     /// Builds production state with authentication, ACLs, and an audit writer.
     pub fn authenticated_with_audit(
         vaults: Vec<Vault>,
@@ -171,6 +182,7 @@ impl AppState {
         Ok(Self {
             vaults: registered,
             web_root: None,
+            data_dir: None,
             security: Security {
                 auth: Mutex::new(auth),
                 access: RwLock::new(access),
@@ -227,6 +239,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sync", get(websocket))
         .route("/api/v1/vaults", get(vault_index_json))
         .route("/api/v1/vaults/{slug}/notes", get(note_index))
+        .route(
+            "/api/v1/vaults/{slug}/bookmarks",
+            get(bookmarks_load)
+                .put(bookmarks_save)
+                .layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route(
             "/api/v1/vaults/{slug}/workspace/{device}",
             get(workspace_load)
@@ -699,6 +717,113 @@ async fn note_index(
         body,
     )
         .into_response()
+}
+
+/// `GET /api/v1/vaults/{slug}/bookmarks` — this user's bookmarked notes (§8.2).
+///
+/// Enforcement point E15, with a filter the workspace layout does not have: the stored list is
+/// read through the authorized vault, so a note whose access was revoked since it was
+/// bookmarked leaves the sidebar rather than sitting there as a name the user may no longer
+/// see (§6.5). A bookmark list survives for months across ACL changes, which is why it is
+/// worth filtering where a short-lived pane layout is not.
+async fn bookmarks_load(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(allowed) = authorize_bookmarks(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(allowed.vault, &allowed.access, &headers) else {
+        return workspace_denied();
+    };
+    let readable: Vec<String> = allowed
+        .store
+        .load(&allowed.user, allowed.vault.slug())
+        .into_iter()
+        .filter(|path| view.resolve(path).is_ok())
+        .collect();
+
+    match serde_json::to_string(&readable) {
+        Ok(body) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
+/// `PUT /api/v1/vaults/{slug}/bookmarks` — replace this user's bookmarks.
+///
+/// A path the caller cannot read is refused rather than stored. Otherwise the list becomes a
+/// way to record that a note exists, which is the thing §6.5 forbids — and one that would be
+/// handed back the moment access was granted.
+async fn bookmarks_save(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let Some(allowed) = authorize_bookmarks(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(allowed.vault, &allowed.access, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(paths) = serde_json::from_str::<Vec<String>>(&body) else {
+        return workspace_denied();
+    };
+    if paths.iter().any(|path| view.resolve(path).is_err()) {
+        return workspace_denied();
+    }
+    match allowed
+        .store
+        .save(&allowed.user, allowed.vault.slug(), &paths)
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(_) => workspace_denied(),
+    }
+}
+
+/// What a bookmark request is allowed to touch.
+///
+/// The ACL is handed back as the `Arc` rather than as an [`AuthorizedVault`]: the view borrows
+/// the policy, so building it here would mean returning a reference to a local. The caller
+/// constructs the view from `access`, which keeps the borrow where its owner is.
+struct BookmarkAccess<'a> {
+    user: Username,
+    vault: &'a Vault,
+    access: Arc<mb_core::Access>,
+    store: BookmarkStore<'a>,
+}
+
+/// Resolves a bookmark request, or `None` if it is denied (E15).
+fn authorize_bookmarks<'a>(
+    state: &'a AppState,
+    slug: &str,
+    headers: &HeaderMap,
+) -> Option<BookmarkAccess<'a>> {
+    let data_dir = state.data_dir.as_deref()?;
+    let vault = state.vault(slug)?;
+    let access = state.access_for(vault.slug())?;
+    let view = state.authorized_vault(vault, &access, headers)?;
+    if !view.has_any_access().unwrap_or(false) {
+        return None;
+    }
+    let user = state
+        .authenticated_user(headers)
+        .or_else(|| state.api_token_user(vault.slug(), headers))?;
+    Some(BookmarkAccess {
+        user,
+        vault,
+        access,
+        store: BookmarkStore::new(data_dir),
+    })
 }
 
 /// `GET /api/v1/vaults/{slug}/workspace/{device}` — this user's saved layout (§8.1).

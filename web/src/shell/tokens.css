@@ -114,6 +114,9 @@
   --tab-height: 2.25rem;
   /* The mobile bottom bar (§8.3). Tall enough for a 44px target plus its padding. */
   --mobile-bar-height: 3.25rem;
+  /* How far each level of the note tree indents (§8.2). */
+  --tree-indent: 0.875rem;
+  --tree-row-height: 1.75rem;
   /* How much of the screen the tab switcher sheet may take before it scrolls. */
   --sheet-max-height: 70dvh;
   /* The command palette and switchers (§8.4). */
@@ -168,6 +171,8 @@
   /* Set per split by `PaneTree.svelte` — the first child's share of the space. The default
      is an even split, which is what a new one starts at. */
   --split-ratio: 0.5;
+  /* Set per row by `NoteTree.svelte` — how many levels deep it sits (§8.2). */
+  --tree-depth: 0;
   /* How much bottom chrome the editor's floating mobile toolbar has to clear. Zero by
      default — the standalone editor page has none — and raised to the nav bar's height
      inside the mobile workspace, where both want the bottom of the screen (§8.3). */

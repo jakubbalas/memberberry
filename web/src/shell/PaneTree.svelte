@@ -11,6 +11,7 @@
   what the invariants are for.
 -->
 <script lang="ts">
+  import Breadcrumbs from "./Breadcrumbs.svelte";
   import NotePane from "./NotePane.svelte";
   import PaneTree from "./PaneTree.svelte";
   import SplitDivider from "./SplitDivider.svelte";
@@ -26,9 +27,11 @@
     readonly panes: readonly GroupId[];
     readonly session?: Pick<NoteBootstrap, "vault" | "user"> | undefined;
     readonly open?: typeof openNoteSurface | undefined;
+    /** A note's title, for the breadcrumbs each pane draws. */
+    readonly titleOf?: ((path: string) => string | null) | undefined;
   }
 
-  const { node, store, panes, session, open }: Props = $props();
+  const { node, store, panes, session, open, titleOf }: Props = $props();
 
   /** The split's own box, which the divider measures a pointer position against. */
   let container = $state<HTMLElement | undefined>(undefined);
@@ -57,6 +60,10 @@
       onclose={(tab) => store.close(tab)}
       onmove={(tab, toGroup, index) => store.move(tab, toGroup, index)}
     />
+    <Breadcrumbs
+      path={active?.note}
+      title={active === undefined ? undefined : titleOf?.(active.note)}
+    />
     <NotePane
       tab={active}
       {session}
@@ -74,7 +81,7 @@
     bind:this={container}
   >
     <div class="pane-split-side">
-      <PaneTree node={node.first} {store} {panes} {session} {open} />
+      <PaneTree node={node.first} {store} {panes} {session} {open} {titleOf} />
     </div>
     <SplitDivider
       split={node}
@@ -82,7 +89,7 @@
       onresize={(ratio) => store.resize(node.id, ratio)}
     />
     <div class="pane-split-side">
-      <PaneTree node={node.second} {store} {panes} {session} {open} />
+      <PaneTree node={node.second} {store} {panes} {session} {open} {titleOf} />
     </div>
   </div>
 {/if}

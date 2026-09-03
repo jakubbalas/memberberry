@@ -68,6 +68,39 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
 .editor-surface .tiptap:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--space-4); }
 .offline-status { margin: var(--space-6) var(--space-4) 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
 
+/* ---------------------------------------------------------------- note tree (SPEC 8.2)
+
+   One tab stop for the whole tree, with the current row marked by `aria-activedescendant`
+   rather than focus — so the highlight below follows `aria-selected`, not `:focus`. */
+
+.tree-panel { display: flex; flex-direction: column; gap: var(--space-6); }
+.tree-section { display: flex; flex-direction: column; gap: var(--space-2); }
+.tree-heading { margin: 0; color: var(--text-muted); font: var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+.tree-empty { margin: 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.bookmark-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+
+.tree:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); border-radius: var(--radius-sm); }
+.tree-row { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: var(--tree-row-height); padding: 0 var(--space-2) 0 calc(var(--space-2) + var(--tree-depth, 0) * var(--tree-indent)); border: 0; border-radius: var(--radius-sm); color: var(--text-primary); background: none; font: var(--text-xs)/var(--leading-flat) var(--font-ui); text-align: left; cursor: pointer; }
+.tree-row:hover { background: var(--surface-hover); }
+.tree-row[aria-selected="true"] { background: var(--surface-hover); }
+/* The note showing in the focused pane, which is a different thing from the keyboard cursor
+   and has to look like one. */
+.tree-row[data-current="true"] { color: var(--accent-primary); font-weight: var(--weight-bold); }
+.tree-row[data-kind="folder"] { font-weight: var(--weight-medium); }
+.tree-icon { flex: 0 0 auto; width: var(--space-5); color: var(--text-muted); text-align: center; }
+.tree-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-bookmark { flex: 0 0 auto; padding: 0 var(--space-1); border: 0; color: var(--text-muted); background: none; font-size: var(--text-xs); cursor: pointer; opacity: 0; }
+/* Revealed on hover or when set, so a column of empty stars does not compete with the names.
+   Always revealed for keyboard users, who cannot hover. */
+.tree-row:hover .tree-bookmark, .tree-bookmark[aria-pressed="true"], .tree-bookmark:focus-visible { opacity: 1; }
+.tree-bookmark[aria-pressed="true"] { color: var(--accent-primary); }
+.tree-bookmark:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); border-radius: var(--radius-sm); }
+
+.breadcrumbs { flex: 0 0 auto; padding: var(--space-2) var(--space-5); border-bottom: 1px solid var(--border-subtle); background: var(--surface-canvas); }
+.breadcrumb-list { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; padding: 0; list-style: none; color: var(--text-muted); font: var(--text-2xs)/var(--leading-flat) var(--font-ui); }
+.breadcrumb + .breadcrumb::before { content: "/"; margin-right: var(--space-2); color: var(--border-subtle); }
+.breadcrumb-note { color: var(--text-primary); font-weight: var(--weight-medium); }
+
 /* ---------------------------------------------------------------- palette (SPEC 8.4)
 
    The command palette, quick switcher and vault switcher share one component and therefore
@@ -133,7 +166,11 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
    so the control that reopens it is still reachable — including by keyboard. */
 .sidebar-frame[data-collapsed="true"] .sidebar-toggle-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-.workspace-main { display: flex; min-width: 0; min-height: 0; overflow: hidden; }
+.workspace-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+/* The breadcrumbs are a fixed strip; whatever follows takes the rest.
+   why: `flex` and sizing only — never `display`. Setting it here beat `.pane-split`'s own
+   `display: grid` on specificity and silently turned every split into a flex row, so the
+   divider moved its `aria-valuenow` while the panes did not move at all. */
 .workspace-main > * { flex: 1 1 auto; min-width: 0; min-height: 0; }
 
 .pane-split { display: grid; min-width: 0; min-height: 0; }
@@ -153,6 +190,11 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
 .pane-divider:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
 
 .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface-canvas); }
+/* The breadcrumbs sit *inside* the pane, under its own tab strip. A single bar above the
+   whole main area describes only the focused pane while appearing to head both, which is
+   wrong the moment there is a split. */
+.pane > .breadcrumbs, .mobile-main > .breadcrumbs { flex: 0 0 auto; }
+.pane > .note-pane, .mobile-main > .note-pane { flex: 1 1 auto; min-height: 0; }
 
 .tab-strip { display: flex; align-items: stretch; min-height: var(--tab-height); border-bottom: 1px solid var(--border-subtle); background: var(--surface-raised); overflow-x: auto; }
 .tab { display: flex; align-items: center; gap: var(--space-2); max-width: 14rem; padding: 0 var(--space-2) 0 var(--space-4); border-right: 1px solid var(--border-subtle); color: var(--text-muted); font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); white-space: nowrap; cursor: pointer; }

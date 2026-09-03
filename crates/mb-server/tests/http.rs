@@ -176,13 +176,18 @@ impl TestServer {
 
     /// The response headers, for the policies that travel as headers rather than markup.
     fn headers(&self, path: &str) -> String {
+        self.headers_with(path, "")
+    }
+
+    /// The same, with extra request headers — for a caller who is not the default user.
+    fn headers_with(&self, path: &str, extra: &str) -> String {
         let mut stream = TcpStream::connect(self.addr).expect("connecting");
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .expect("setting a read timeout");
         write!(
             stream,
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\n{}Connection: close\r\n\r\n",
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\n{}{extra}Connection: close\r\n\r\n",
             self.default_headers
         )
         .expect("writing the request");
@@ -1292,4 +1297,233 @@ fn the_vault_list_shows_only_vaults_the_caller_can_open() {
     let (status, body) = server.request("GET", "/api/v1/vaults", "", "");
     assert!(is_ok(&status), "{status}");
     assert_eq!(body, "[]", "{body}");
+}
+
+#[test]
+fn bookmarks_are_per_user_and_filtered_by_what_the_caller_can_still_read() {
+    // E15, with the filter a workspace layout does not have. A bookmark list survives for
+    // months across ACL changes, so a revoked note must leave the sidebar rather than sitting
+    // there as a name the user is no longer allowed to see (§6.5).
+    let dir = TempDir::new("http-bookmarks");
+    let data = TempDir::new("http-bookmarks-data");
+    dir.write("Public.md", "# Public\n");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("member");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth)
+        .expect("secure state")
+        .with_data_dir(data.path().to_path_buf());
+    let server = TestServer::start(state);
+    let route = "/api/v1/vaults/v/bookmarks";
+
+    // Nothing saved yet is an empty list, not an error: it is the normal first visit.
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert_eq!(body, "[]", "{body}");
+
+    let (status, _) = server.put_json(route, &alice_header, r#"["Public.md","Private/Salary.md"]"#);
+    assert!(status.contains("204"), "{status}");
+    let (_, body) = server.get_with_headers(route, &alice_header);
+    assert!(body.contains("Salary"), "the owner keeps both: {body}");
+
+    // Bob is a member of the same vault and sees his own empty list, not hers.
+    let (status, body) = server.get_with_headers(route, &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert_eq!(
+        body, "[]",
+        "one member must not read another's bookmarks: {body}"
+    );
+
+    // The revocation half — a note losing its permission leaves the list on the next read —
+    // is asserted at the store level in `leak_suite.rs`. It needs the ACL to change, and a
+    // live policy reload happens on the maintenance tick, which this bare router does not run.
+}
+
+#[test]
+fn a_stored_bookmark_the_caller_cannot_read_is_filtered_out_of_the_reply() {
+    // Defence in depth, and the assertion that actually exercises the handler. `PUT` refuses
+    // an unreadable path, so the only way one is on disk is that permission changed after it
+    // was stored — or that the file arrived some other way, from a restored backup or an
+    // administrator's editor. Either way the *read* is what must not name it (§6.5).
+    //
+    // Written straight to disk on purpose: routing it through `PUT` would test the write
+    // guard again and leave the read guard uncovered, which is how removing the read filter
+    // passed the whole suite once.
+    let dir = TempDir::new("http-bookmarks-stale");
+    let data = TempDir::new("http-bookmarks-stale-data");
+    dir.write("Public.md", "# Public\n");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let stored = data.path().join("bookmarks").join("alice");
+    std::fs::create_dir_all(&stored).expect("creating the bookmark directory");
+    std::fs::write(
+        stored.join("v.json"),
+        r#"["Public.md","Private/Salary.md"]"#,
+    )
+    .expect("planting a stale bookmark");
+
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let cookie = auth.signed_session_cookie(&token).expect("sign cookie");
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth)
+        .expect("secure state")
+        .with_data_dir(data.path().to_path_buf());
+    let mut server = TestServer::start(state);
+    server.default_headers = format!("Cookie: mb_session={cookie}\r\n");
+
+    let (status, body) = server.get("/api/v1/vaults/v/bookmarks");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Public.md"), "{body}");
+    assert!(
+        !body.contains("Salary") && !body.contains("Private"),
+        "a bookmark the caller cannot read must not be named back at them: {body}"
+    );
+}
+
+#[test]
+fn a_bookmark_the_caller_cannot_read_is_refused_rather_than_stored() {
+    // Otherwise the list becomes a way to record that a note exists — the thing §6.5 forbids —
+    // and one that would be handed straight back the moment access was granted.
+    let dir = TempDir::new("http-bookmarks-deny");
+    let data = TempDir::new("http-bookmarks-deny-data");
+    dir.write("Public.md", "# Public\n");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let data_dir = data.path().to_path_buf();
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let cookie = auth.signed_session_cookie(&token).expect("sign cookie");
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth)
+        .expect("secure state")
+        .with_data_dir(data_dir);
+    let mut server = TestServer::start(state);
+    server.default_headers = format!("Cookie: mb_session={cookie}\r\n");
+    let route = "/api/v1/vaults/v/bookmarks";
+
+    let (status, _) = server.put_json(route, "", r#"["Private/Salary.md"]"#);
+    assert!(is_not_found(&status), "{status}");
+
+    // A traversal dressed as a bookmark is refused the same way.
+    let (status, _) = server.put_json(route, "", r#"["../../etc/passwd"]"#);
+    assert!(is_not_found(&status), "{status}");
+
+    let (_, body) = server.get_with_headers(route, "");
+    assert_eq!(body, "[]", "nothing may have been stored: {body}");
+}
+
+#[test]
+fn bookmarks_are_denied_to_a_non_member_and_never_cached() {
+    let dir = TempDir::new("http-bookmarks-outsider");
+    let data = TempDir::new("http-bookmarks-outsider-data");
+    dir.write("One.md", "# One\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let charlie = auth
+        .create_user(mb_auth::NewUser {
+            username: "charlie",
+            display_name: "Charlie",
+            password: "correct horse battery staple",
+        })
+        .expect("non-member");
+    let charlie_token = auth
+        .create_session(charlie.id, 4_102_444_800)
+        .expect("session");
+    let charlie_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&charlie_token)
+            .expect("sign cookie")
+    );
+    let alice_token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let alice_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&alice_token)
+            .expect("sign cookie")
+    );
+    // No default headers: `get_with_headers` *concatenates* them with what it is given, so a
+    // default cookie plus an explicit one sends two, and the server reads the first — which
+    // silently turns a "denied" assertion into a test of the wrong user.
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth)
+        .expect("secure state")
+        .with_data_dir(data.path().to_path_buf());
+    let server = TestServer::start(state);
+    let route = "/api/v1/vaults/v/bookmarks";
+
+    // A non-member gets the same reply as an unknown vault, not an empty list — which would
+    // confirm the vault exists.
+    let (status, _) = server.get_with_headers(route, &charlie_header);
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.request("GET", route, "", "");
+    assert!(is_not_found(&status), "{status}");
+
+    // A list of note names should not be kept by anything on the way past.
+    let headers = server.headers_with(route, &alice_header).to_lowercase();
+    assert!(
+        headers.contains("cache-control: no-store"),
+        "bookmarks must not be cached: {headers}"
+    );
 }

@@ -12,6 +12,7 @@
   the drawers instead.
 -->
 <script lang="ts">
+  import Breadcrumbs from "./Breadcrumbs.svelte";
   import NotePane from "./NotePane.svelte";
   import TabSheet from "./TabSheet.svelte";
   import type { NoteBootstrap } from "./bootstrap.js";
@@ -23,9 +24,10 @@
     readonly store: WorkspaceStore;
     readonly session?: Pick<NoteBootstrap, "vault" | "user"> | undefined;
     readonly open?: typeof openNoteSurface | undefined;
+    readonly titleOf?: ((path: string) => string | null) | undefined;
   }
 
-  const { store, session, open }: Props = $props();
+  const { store, session, open, titleOf }: Props = $props();
 
   let sheetOpen = $state(false);
 
@@ -35,6 +37,10 @@
 </script>
 
 <div class="mobile-main">
+  <Breadcrumbs
+    path={active?.note}
+    title={active === undefined ? undefined : titleOf?.(active.note)}
+  />
   <NotePane
     tab={active}
     {session}

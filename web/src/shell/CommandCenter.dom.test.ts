@@ -12,7 +12,9 @@ import { mount, tick, unmount } from "svelte";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import Workspace from "./Workspace.svelte";
+import { Bookmarks } from "./bookmarks.svelte.js";
 import type { NoteSummary, VaultSummary } from "./catalog.js";
+import { NoteCatalog } from "./note-catalog.svelte.js";
 import type { NoteSurface, OpenNoteSurfaceOptions } from "./note-surface.js";
 import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
@@ -85,7 +87,13 @@ function render(
       target: commands,
       platform: "mac" as const,
       mode: "desktop" as const,
-      loadNotes: async () => NOTES,
+      // The note list is the shared catalog now, not a per-palette fetch: the tree and the
+      // switcher search the same one.
+      catalog: new NoteCatalog({ vault: "personal", load: async () => NOTES }),
+      bookmarks: new Bookmarks({
+        vault: "personal",
+        fetch: (async () => new Response("[]")) as unknown as typeof globalThis.fetch,
+      }),
       loadVaults: async () => VAULTS,
       ...(options.onvault === undefined ? {} : { onvault: options.onvault }),
     },

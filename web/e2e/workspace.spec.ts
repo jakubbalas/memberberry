@@ -385,3 +385,99 @@ test.describe("the command palette and switchers (§8.4)", () => {
     await expect(page.getByRole("dialog", { name: "Open a note" })).toBeVisible();
   });
 });
+
+test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
+  test.beforeEach(({}, info) => {
+    test.skip(info.project.name === "mobile", "the sidebar is a drawer on mobile (§8.3)");
+  });
+
+  test("lists the vault's readable notes, folders first", async ({ page }) => {
+    // The end-to-end claim: the server listed the notes, filtered them, parsed their titles,
+    // and the tree built a shape out of the paths.
+    await openWorkspace(page);
+    const tree = page.getByRole("tree", { name: "Notes" });
+    await expect(tree).toBeVisible();
+
+    await expect(tree.getByRole("treeitem", { name: /Projects/ })).toBeVisible();
+    await expect(tree.getByRole("treeitem", { name: /Welcome/ })).toBeVisible();
+    // A folder comes before a loose note.
+    const names = await tree.getByRole("treeitem").allInnerTexts();
+    expect(names[0]).toContain("Projects");
+  });
+
+  test("expands a folder and opens the note inside it", async ({ page }) => {
+    await openWorkspace(page);
+    const tree = page.getByRole("tree", { name: "Notes" });
+
+    const folder = tree.getByRole("treeitem", { name: /Projects/ });
+    await expect(folder).toHaveAttribute("aria-expanded", "false");
+    await folder.click();
+    await expect(tree.getByRole("treeitem", { name: /Projects/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+
+    await tree.getByRole("treeitem", { name: /Roadmap/ }).click();
+    await expect(page.getByRole("tab", { name: "Roadmap" })).toBeVisible();
+    await expect(page.locator(EDITOR).first()).toContainText("Ship the workspace shell");
+  });
+
+  test("is navigable from the keyboard alone", async ({ page }, info) => {
+    // §8.4: no mouse-only feature ships. One tab stop, then arrows — which is also the only
+    // way to tell a real `tree` from a list of buttons.
+    await openWorkspace(page);
+    const tree = page.getByRole("tree", { name: "Notes" });
+    await tree.focus();
+
+    await tree.press("ArrowRight");
+    await expect(tree.getByRole("treeitem", { name: /Projects/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await tree.press("ArrowDown");
+    await tree.press("Enter");
+
+    await expect(page.getByRole("tab", { name: "Roadmap" })).toBeVisible();
+    expect(info.project.name).toBe("desktop");
+  });
+
+  test("bookmarks a note, and keeps it across a reload", async ({ page }) => {
+    // The whole path: the star writes to the server, the server stores it under this user,
+    // and the next session reads it back — filtered by what they can still see.
+    await openWorkspace(page);
+    const tree = page.getByRole("tree", { name: "Notes" });
+
+    await tree.getByRole("treeitem", { name: /Welcome/ }).hover();
+    await page.getByRole("button", { name: "Add bookmark for Welcome" }).click();
+    await expect(page.getByRole("button", { name: "Remove bookmark for Welcome" })).toBeVisible();
+
+    // The save is debounced; poll the server rather than sleeping.
+    await expect
+      .poll(
+        async () => {
+          const stored = await page.request.get("/api/v1/vaults/personal/bookmarks");
+          return stored.ok() ? await stored.text() : "";
+        },
+        { timeout: 10_000, intervals: [200] },
+      )
+      .toContain("Welcome.md");
+
+    await page.reload();
+    await expect(page.locator(EDITOR).first()).toBeVisible();
+    await expect(page.getByText("Bookmarks")).toBeVisible();
+    await expect(page.locator(".bookmark-list")).toContainText("Welcome");
+  });
+
+  test("shows where the open note lives", async ({ page }) => {
+    await openWorkspace(page);
+    const crumbs = page.getByRole("navigation", { name: "Note location" });
+    await expect(crumbs).toContainText("Welcome");
+
+    // A note in a folder shows the folder too.
+    await page.keyboard.press("ControlOrMeta+k");
+    await page.keyboard.type("roadmap");
+    await page.keyboard.press("Enter");
+    await expect(crumbs).toContainText("Projects");
+    await expect(crumbs).toContainText("Roadmap");
+  });
+});

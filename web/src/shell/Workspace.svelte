@@ -11,12 +11,17 @@
   editor is the thing this shell exists to hold.
 -->
 <script lang="ts">
+  import { untrack } from "svelte";
+
   import CommandCenter from "./CommandCenter.svelte";
   import MobileMain from "./MobileMain.svelte";
+  import NoteTree from "./NoteTree.svelte";
   import PaneTree from "./PaneTree.svelte";
   import Sidebar from "./Sidebar.svelte";
+  import { Bookmarks } from "./bookmarks.svelte.js";
   import type { NoteBootstrap } from "./bootstrap.js";
-  import type { fetchNotes, fetchVaults } from "./catalog.js";
+  import type { fetchVaults } from "./catalog.js";
+  import { NoteCatalog } from "./note-catalog.svelte.js";
   import type { Platform } from "./hotkeys.js";
   import { type SwipeStart, swipeProgress, swipeStart } from "./gestures.js";
   import { type LayoutMode, currentLayoutMode, watchLayoutMode } from "./layout.js";
@@ -44,9 +49,11 @@
      */
     /** Which modifier `Mod` means; tests pin it so they do not depend on the runner. */
     readonly platform?: Platform | undefined;
-    readonly loadNotes?: typeof fetchNotes | undefined;
     readonly loadVaults?: typeof fetchVaults | undefined;
     readonly onvault?: ((slug: string) => void) | undefined;
+    /** The note list and bookmarks. Supplied by a test; built from the session otherwise. */
+    readonly catalog?: NoteCatalog | undefined;
+    readonly bookmarks?: Bookmarks | undefined;
   }
 
   const {
@@ -57,10 +64,29 @@
     target,
     mode,
     platform,
-    loadNotes,
     loadVaults,
     onvault,
+    catalog: suppliedCatalog,
+    bookmarks: suppliedBookmarks,
   }: Props = $props();
+
+  const vaultSlug = $derived(session?.vault ?? "local-demo");
+
+  /**
+   * Built once, from the session as it was at mount.
+   *
+   * why: `untrack`, and why that is safe. Both hold fetched state, so rebuilding either would
+   * refetch the largest payload the shell asks for on every render. Reading `session` without
+   * tracking it is only correct because the session cannot change under a mounted shell —
+   * switching vaults is a full navigation (see `CommandCenter`), precisely so the ACL, the
+   * note index and the layout are all handed over fresh by the server.
+   */
+  const catalog = untrack(
+    () => suppliedCatalog ?? new NoteCatalog({ vault: session?.vault ?? "local-demo" }),
+  );
+  const bookmarks = untrack(
+    () => suppliedBookmarks ?? new Bookmarks({ vault: session?.vault ?? "local-demo" }),
+  );
 
   // Seeded synchronously, then kept current by the watcher. Starting from a default and
   // waiting for the effect meant the first render used the wrong layout — see
@@ -122,6 +148,15 @@
   const panes = $derived(groups(store.current.root).map((group) => group.id));
 
   /**
+   * A note's title, for the breadcrumbs a pane draws.
+   *
+   * Passed as a function rather than handing the catalog down: a pane needs one string, not
+   * the whole index, and the layout components have no other reason to know what a catalog is.
+   */
+  const titleOf = (path: string): string | null =>
+    catalog.notes.find((note) => note.path === path)?.title ?? null;
+
+  /**
    * §8.3: the tablet gets the desktop layout with at most one split, and mobile none at all.
    *
    * Enforced at the call site rather than in the model: the model is layout-agnostic on
@@ -167,14 +202,21 @@
     label="Navigation"
     collapsed={collapsed.left}
     ontoggle={() => toggle("left")}
-    awaiting="the note tree in M7 and search in M9"
-  />
+    awaiting="search in M9"
+  >
+    <NoteTree
+      {catalog}
+      {bookmarks}
+      activeNote={store.activeTab?.note}
+      onopen={(path) => store.open(path)}
+    />
+  </Sidebar>
 
   <main class="workspace-main" aria-label="Open notes">
     {#if layout === "mobile"}
-      <MobileMain {store} {session} {open} />
+      <MobileMain {store} {session} {open} {titleOf} />
     {:else}
-      <PaneTree node={store.current.root} {store} {panes} {session} {open} />
+      <PaneTree node={store.current.root} {store} {panes} {session} {open} {titleOf} />
     {/if}
   </main>
 
@@ -191,12 +233,12 @@
      hotkeys they register have to work wherever focus is. -->
 <CommandCenter
   {store}
-  vault={session?.vault ?? "local-demo"}
+  {catalog}
+  vault={vaultSlug}
   {layout}
   {target}
   {chrome}
   {platform}
-  {loadNotes}
   {loadVaults}
   {onvault}
 />

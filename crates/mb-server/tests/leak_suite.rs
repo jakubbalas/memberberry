@@ -363,3 +363,125 @@ fn e5_a_revoked_note_leaves_the_title_cache_on_the_next_listing() {
         "a cached title outlived the permission that produced it: {rendered}"
     );
 }
+
+/// E15: a bookmark outlives the permission that created it, so reading one is filtered.
+///
+/// This is the case a workspace layout does not have to handle. A layout is short-lived and
+/// its tree shape makes filtering awkward, so a stale entry there simply fails to open. A
+/// bookmark list is curated over months and sits in a sidebar, so a note whose access was
+/// revoked would keep showing its name — which is exactly what §6.5 forbids.
+#[test]
+fn e15_a_revoked_note_leaves_the_bookmark_list() {
+    use mb_server::bookmarks::BookmarkStore;
+
+    let vault_dir = TempDir::new("leak-bookmarks-vault");
+    let data_dir = TempDir::new("leak-bookmarks-data");
+    vault_dir.write("Shared.md", "# Shared\n");
+    vault_dir.write("Private/Salary.md", "# Salary Review\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        vault_dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let store = BookmarkStore::new(data_dir.path());
+
+    let permissive = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        Vec::new(),
+    )
+    .expect("policy");
+
+    // Bookmarked while she could read it.
+    let open = AuthorizedVault::new(&vault, &permissive, alice.clone());
+    let wanted = vec!["Shared.md".to_string(), "Private/Salary.md".to_string()];
+    assert!(wanted.iter().all(|path| open.resolve(path).is_ok()));
+    store
+        .save(&alice, vault.slug(), &wanted)
+        .expect("saving bookmarks");
+
+    // After revocation the stored file is untouched, and the *read* is what filters.
+    let revoked = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let closed = AuthorizedVault::new(&vault, &revoked, alice.clone());
+
+    let visible: Vec<String> = store
+        .load(&alice, vault.slug())
+        .into_iter()
+        .filter(|path| closed.resolve(path).is_ok())
+        .collect();
+
+    assert_eq!(visible, vec!["Shared.md".to_string()]);
+    let rendered = format!("{visible:?}");
+    assert!(
+        !rendered.contains("Salary") && !rendered.contains("Private"),
+        "a revoked note must not be named by its own bookmark: {rendered}"
+    );
+}
+
+/// E15: one member's bookmarks are not another's, and neither can name a path.
+#[test]
+fn e15_bookmarks_are_per_user_and_cannot_escape_the_data_directory() {
+    use mb_server::bookmarks::{BookmarkStore, MAX_BOOKMARKS};
+
+    let vault_dir = TempDir::new("leak-bookmarks-users-vault");
+    let data_dir = TempDir::new("leak-bookmarks-users-data");
+    vault_dir.write("Shared.md", "# Shared\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        vault_dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let bob = Username::parse("bob").expect("username");
+    let store = BookmarkStore::new(data_dir.path());
+
+    store
+        .save(&alice, vault.slug(), &["Shared.md".to_string()])
+        .expect("alice saves");
+    assert!(
+        store.load(&bob, vault.slug()).is_empty(),
+        "one member must not read another's bookmarks"
+    );
+
+    // A path is parsed before it is stored, because everything downstream joins these strings
+    // to a vault root — and a `..` reaching one of them is a traversal.
+    for hostile in [
+        "../../etc/passwd",
+        "/etc/passwd",
+        "..",
+        "Private/../../secret.md",
+    ] {
+        assert!(
+            store
+                .save(&alice, vault.slug(), &[hostile.to_string()])
+                .is_err(),
+            "`{hostile}` must not be storable as a bookmark"
+        );
+    }
+    // And the refusals left the good list alone.
+    assert_eq!(
+        store.load(&alice, vault.slug()),
+        vec!["Shared.md".to_string()]
+    );
+
+    // A member is trusted to read notes, not to fill the server's own directory.
+    let too_many: Vec<String> = (0..=MAX_BOOKMARKS)
+        .map(|n| format!("Note {n}.md"))
+        .collect();
+    assert!(store.save(&alice, vault.slug(), &too_many).is_err());
+}
