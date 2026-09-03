@@ -172,6 +172,23 @@ e2e: web-build ## Playwright E2E in a real browser, desktop and mobile (SPEC 22,
 e2e-report: ## Open the report from the last `make e2e`
 	npm --prefix web exec -- playwright show-report
 
+# Separate from `make check` for the same reason `e2e` is: it opens a browser, provisions a
+# 10k-note vault and takes minutes. `perf-bundle` is the deterministic half and is quick.
+.PHONY: perf
+perf: web-build ## Performance harness, both device classes (SPEC 21, 23 M7)
+	$(CARGO) build -p mb-cli
+	npm --prefix web exec -- playwright install --with-deps chromium
+	npm --prefix web run perf
+
+.PHONY: perf-bundle
+perf-bundle: web-build ## Just the critical-path bundle budget — deterministic, no browser
+	npm --prefix web run perf -- --bundle-only
+
+.PHONY: perf-record
+perf-record: web-build ## Run the harness and print the breaches.json entries it would need
+	$(CARGO) build -p mb-cli
+	npm --prefix web run perf -- --record
+
 .PHONY: wasm-check
 wasm-check: ## mb-core must stay wasm32-clean at all times (AGENTS.md 4.2)
 	@rustup target list --installed | grep -q wasm32-unknown-unknown \

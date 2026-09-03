@@ -11,6 +11,7 @@
     "coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "e2e": "playwright test",
+    "perf": "node --disable-warning=ExperimentalWarning --experimental-strip-types perf/run.ts",
     "e2e:ui": "playwright test --ui"
   },
   "devDependencies": {

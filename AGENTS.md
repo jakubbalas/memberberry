@@ -260,7 +260,8 @@ assignments stable and record new ones here before adding a listener:
 | `9010` | Memberberry HTTP and WebSocket server |
 | `9011` | Vite frontend when it runs separately from the server |
 | `9012` | Throwaway server the Playwright E2E suite provisions and drives |
-| `9013`-`9020` | Available for supporting services |
+| `9013` | Throwaway server the performance harness provisions over a 10k-note vault |
+| `9014`-`9020` | Available for supporting services |
 
 Production ports remain explicit deployment configuration. Tests that do not need a stable
 address should ask the OS for an ephemeral port instead of consuming this range.
@@ -277,6 +278,8 @@ make coverage-gate # enforce the floors in §2.1 — part of `make check`
 make token-check  # the design-token contract, both directions — part of `make check`
 make wasm-check   # mb-core must stay wasm32-clean
 make bench        # hot-path benchmarks
+make perf         # the SPEC 21 budgets, both device classes, in a real browser
+make perf-bundle  # just the critical-path bundle budget — deterministic, no browser
 make gen-vault    # synthetic 10k-note vault for perf/scale work
 make prod         # release build
 ```

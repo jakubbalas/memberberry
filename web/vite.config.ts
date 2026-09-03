@@ -26,10 +26,22 @@ export default defineConfig({
       // `.svelte` is included on purpose. AGENTS.md §4.4 keeps components presentational and
       // logic in plain `.ts`, which only holds if an untested component shows up as a hole
       // rather than as nothing at all.
-      include: ["src/**/*.ts", "src/**/*.svelte"],
+      include: ["src/**/*.ts", "src/**/*.svelte", "perf/**/*.ts"],
       // `main.ts` is the entry shim that wires the DOM to the modules below it, the same
       // role `mb-cli/src/main.rs` plays; `src/wasm` is generated.
-      exclude: ["src/wasm/**", "src/main.ts"],
+      //
+      // `perf/` is included so the harness's arithmetic — the part that decides whether the
+      // build fails — carries a floor like anything else. Three are excluded: `run.ts` is
+      // the same kind of entry shim as `main.ts`, and `measure.ts` and `server.ts` are the
+      // browser and process boundaries, exercised by `make perf` itself rather than by
+      // vitest. Mocking a browser to cover them would test the mock (AGENTS.md §2.3).
+      exclude: [
+        "src/wasm/**",
+        "src/main.ts",
+        "perf/run.ts",
+        "perf/measure.ts",
+        "perf/server.ts",
+      ],
     },
   },
 });

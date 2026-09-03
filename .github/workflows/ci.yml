@@ -132,6 +132,60 @@ jobs:
           path: web/playwright-report/
           retention-days: 7
 
+  # The SPEC 21 budgets (SPEC 21, 23 M7).
+  #
+  # Two halves, gated differently on purpose. The bundle budget is deterministic — the same
+  # build gzips to the same byte count on any machine — so it is enforced, and any growth
+  # past the value recorded in web/perf/breaches.json fails this job. The browser half runs
+  # in --report-only mode: 21.1 wants the desktop class pinned to "CI runner spec, fixed and
+  # recorded", nobody has recorded it, and an absolute millisecond budget on a shared runner
+  # would be a flaky gate — which AGENTS.md 2.3 counts as a failing one. Running it anyway is
+  # what keeps the harness itself from rotting, and the report is uploaded either way.
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@wasm-pack
+
+      - name: Build the WebAssembly bindings
+        run: wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb
+      - run: npm ci
+        working-directory: web
+      - name: Build the frontend
+        run: npm run build
+        working-directory: web
+
+      # Enforced. Deterministic, and needs no browser and no server.
+      - name: Critical-path bundle budget
+        run: npm run perf -- --bundle-only
+        working-directory: web
+
+      - name: Build the server
+        run: cargo build -p mb-cli
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      # Reported, not enforced. See the comment above this job.
+      - name: Runtime budgets, desktop and mobile
+        run: npm run perf -- --report-only
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-report
+          path: target/perf/report.json
+          retention-days: 30
+
   # The fuzz targets are built, not run: a useful run takes minutes and one known upstream
   # panic is still open (SPEC.md §22.1). Building them stops the targets rotting against
   # changes to mb-core, which is what silently happens to fuzzers nobody compiles.
