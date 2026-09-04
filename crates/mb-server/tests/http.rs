@@ -115,6 +115,33 @@ impl TestServer {
         self.get_with_headers(path, "")
     }
 
+    /// Issues a GET and returns `(head, body bytes)`.
+    ///
+    /// why: every other helper here reads the response as a `String`, which a gzipped body
+    /// is not. Anything asserting on what compression did needs the head and the raw bytes
+    /// together — the head to see `Content-Encoding`, the bytes to prove they decode back to
+    /// what was on disk.
+    fn get_raw(&self, path: &str, headers: &str) -> (String, Vec<u8>) {
+        let mut stream = TcpStream::connect(self.addr).expect("connecting");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("setting a read timeout");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\n{}{headers}Connection: close\r\n\r\n",
+            self.default_headers
+        )
+        .expect("writing the request");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).expect("reading the response");
+        let split = raw
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("a response with a header block");
+        let head = String::from_utf8_lossy(&raw[..split]).to_ascii_lowercase();
+        (head, raw[split + 4..].to_vec())
+    }
+
     fn get_with_headers(&self, path: &str, headers: &str) -> (String, String) {
         self.request(
             "GET",
@@ -1629,5 +1656,406 @@ fn bookmarks_are_denied_to_a_non_member_and_never_cached() {
     assert!(
         headers.contains("cache-control: no-store"),
         "bookmarks must not be cached: {headers}"
+    );
+}
+
+// -- Response compression (SPEC §21.1) ---------------------------------------------------
+//
+// `crates/mb-server/src/compress.rs` exists because §21.2 budgets the critical-path bundle
+// in gzip while nothing in the serving path compressed: a cold load transferred 1.39 MB
+// against a 515.9 KB budget. These assert the wire, not the middleware — a body is decoded
+// back and compared to what was written to disk, because "the header said gzip" and "the
+// browser can read it" are different claims.
+//
+// Note that every other test in this file sends no `Accept-Encoding` at all, which is why
+// none of them changed: a response is only compressed for a client that asked. That is
+// convenient and also a trap — a `String`-reading assertion here can never see a
+// compression bug, so anything about compression belongs in this section using `get_raw`.
+
+/// A build root holding one script big enough to be worth compressing and one file whose
+/// type is not on the allowlist.
+fn compressible_web_root() -> TempDir {
+    let web = TempDir::new("http-compress-web");
+    web.write(
+        "index.html",
+        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div></body>",
+    );
+    web.write(
+        "assets/index-abc123.js",
+        &"console.log('editor');".repeat(60),
+    );
+    web.write("assets/tiny-abc123.js", "x");
+    web.write("assets/blob-abc123.bin", &"binary-ish payload".repeat(60));
+    web
+}
+
+fn gzip_len(bytes: &[u8]) -> usize {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(9));
+    encoder.write_all(bytes).expect("compressing");
+    encoder.finish().expect("finishing").len()
+}
+
+fn gunzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_end(&mut out)
+        .expect("the body should be valid gzip");
+    out
+}
+
+#[test]
+fn a_script_is_gzipped_for_a_client_that_asks_and_decodes_back_to_the_file_on_disk() {
+    let vault_dir = TempDir::new("http-compress-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web = compressible_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web.path().to_path_buf(),
+    );
+    let on_disk = std::fs::read(web.path().join("assets/index-abc123.js")).expect("the script");
+
+    let (head, body) = server.get_raw("/assets/index-abc123.js", "Accept-Encoding: gzip\r\n");
+
+    assert!(head.contains("content-encoding: gzip"), "{head}");
+    assert!(head.contains("vary: accept-encoding"), "{head}");
+    assert_eq!(gunzip(&body), on_disk, "the decoded body must be the file");
+    assert!(
+        body.len() < on_disk.len(),
+        "compressed {} vs {} on disk",
+        body.len(),
+        on_disk.len()
+    );
+    // The whole point of the change: fewer bytes on the wire than the budget's own figure
+    // was being compared against.
+    assert!(
+        head.contains(&format!("content-length: {}", body.len())),
+        "{head}"
+    );
+}
+
+#[test]
+fn a_wasm_module_is_gzipped_because_it_is_where_the_bundle_budget_is_lost() {
+    // §21.1: `mb_bg.wasm` is 945 KB raw and 355 KB gzipped, and is the single largest item
+    // on the critical path. A content-type allowlist that forgot `application/wasm` would
+    // leave the budget almost exactly as breached as it was, while every other asset test
+    // passed — so this is asserted separately from the script above rather than folded in.
+    let vault_dir = TempDir::new("http-compress-wasm-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web = TempDir::new("http-compress-wasm-web");
+    web.write("index.html", "<body></body>");
+    web.write("assets/mb_bg-abc123.wasm", &"\0asm\u{1}\0\0\0".repeat(80));
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web.path().to_path_buf(),
+    );
+    let on_disk = std::fs::read(web.path().join("assets/mb_bg-abc123.wasm")).expect("the module");
+
+    let (head, body) = server.get_raw("/assets/mb_bg-abc123.wasm", "Accept-Encoding: gzip\r\n");
+
+    assert!(head.contains("content-encoding: gzip"), "{head}");
+    assert!(head.contains("content-type: application/wasm"), "{head}");
+    assert_eq!(gunzip(&body), on_disk);
+}
+
+#[test]
+fn a_client_that_offers_no_encoding_gets_the_bytes_uncompressed_but_still_gets_vary() {
+    let vault_dir = TempDir::new("http-compress-plain-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web = compressible_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web.path().to_path_buf(),
+    );
+    let on_disk = std::fs::read(web.path().join("assets/index-abc123.js")).expect("the script");
+
+    let (head, body) = server.get_raw("/assets/index-abc123.js", "");
+
+    assert!(!head.contains("content-encoding"), "{head}");
+    assert_eq!(body, on_disk);
+    // why: without `Vary`, a cache that stored this plain response is free to serve it to a
+    // client that asked for gzip and — worse — to serve the gzipped variant to one that did
+    // not. It belongs on the response that was *not* compressed just as much as on the one
+    // that was, which is the case a test is most likely to miss.
+    assert!(head.contains("vary: accept-encoding"), "{head}");
+}
+
+#[test]
+fn gzip_at_quality_zero_is_a_refusal_and_not_an_offer() {
+    let vault_dir = TempDir::new("http-compress-q0-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web = compressible_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web.path().to_path_buf(),
+    );
+
+    // `gzip;q=0` contains the substring "gzip", so a header search says yes and RFC 9110
+    // says no. The `q=0` form is how a client turns an encoding off.
+    let (head, _) = server.get_raw("/assets/index-abc123.js", "Accept-Encoding: gzip;q=0\r\n");
+    assert!(!head.contains("content-encoding"), "{head}");
+
+    // And the forms that are offers still work: a q-value, a wildcard, and a list.
+    for offer in [
+        "gzip",
+        "GZIP",
+        "gzip;q=1.0",
+        "*",
+        "br, gzip;q=0.8",
+        "deflate, gzip",
+    ] {
+        let (head, _) = server.get_raw(
+            "/assets/index-abc123.js",
+            &format!("Accept-Encoding: {offer}\r\n"),
+        );
+        assert!(
+            head.contains("content-encoding: gzip"),
+            "`{offer}` offers gzip: {head}"
+        );
+    }
+}
+
+#[test]
+fn a_body_too_short_to_be_worth_compressing_is_sent_as_it_is() {
+    let vault_dir = TempDir::new("http-compress-tiny-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web = compressible_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web.path().to_path_buf(),
+    );
+
+    let (head, body) = server.get_raw("/assets/tiny-abc123.js", "Accept-Encoding: gzip\r\n");
+
+    assert!(!head.contains("content-encoding"), "{head}");
+    assert_eq!(body, b"x", "a one-byte script gzips to 21 bytes");
+}
+
+#[test]
+fn a_content_type_off_the_allowlist_is_not_compressed() {
+    let vault_dir = TempDir::new("http-compress-blob-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web = compressible_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web.path().to_path_buf(),
+    );
+    let on_disk = std::fs::read(web.path().join("assets/blob-abc123.bin")).expect("the blob");
+
+    // `application/octet-stream` is deliberately absent from the allowlist: an unknown type
+    // is as likely to be an already-compressed format as not, and M11's media path will
+    // serve images and video through content addressing.
+    let (head, body) = server.get_raw("/assets/blob-abc123.bin", "Accept-Encoding: gzip\r\n");
+
+    assert!(!head.contains("content-encoding"), "{head}");
+    assert!(
+        !head.contains("vary"),
+        "no variants, so nothing to vary on: {head}"
+    );
+    assert_eq!(body, on_disk);
+}
+
+#[test]
+fn a_server_rendered_note_page_is_compressed() {
+    // The read-only rendering path (§17.2) serves HTML, and a note page is the largest
+    // response this server produces that is not an asset.
+    let vault_dir = TempDir::new("http-compress-note-vault");
+    vault_dir.write(
+        "One.md",
+        &format!("# One\n\n{}\n", "Some prose about berries. ".repeat(80)),
+    );
+    let server = TestServer::authenticated(vec![vault(&vault_dir, "personal", "Personal")]);
+
+    let (head, body) = server.get_raw("/v/personal/One.md", "Accept-Encoding: gzip\r\n");
+
+    assert!(head.contains("content-encoding: gzip"), "{head}");
+    let decoded = String::from_utf8(gunzip(&body)).expect("html is utf-8");
+    assert!(decoded.contains("Some prose about berries."), "{decoded}");
+    // This path carries its CSP as a `<meta http-equiv>` inside the document rather than as
+    // a header, so the policy is one of the bytes compression has to hand back intact — a
+    // truncated body here would be a note page with no content policy at all.
+    assert!(
+        decoded.contains("Content-Security-Policy"),
+        "the policy must survive the round trip: {decoded}"
+    );
+}
+
+#[test]
+fn compression_does_not_soften_a_denial() {
+    // A route that denies is still a route, and `not_found` goes through the same layer.
+    // What must not happen is a 404 turning into a 200 because the body changed shape.
+    let vault_dir = TempDir::new("http-compress-denied-vault");
+    vault_dir.write("One.md", "# One\n");
+    let server = TestServer::authenticated(vec![vault(&vault_dir, "personal", "Personal")]);
+
+    let (head, _) = server.get_raw("/v/personal/Missing.md", "Accept-Encoding: gzip\r\n");
+    assert!(head.starts_with("http/1.1 404"), "{head}");
+    let (head, _) = server.get_raw("/v/nope/One.md", "Accept-Encoding: gzip\r\n");
+    assert!(head.starts_with("http/1.1 404"), "{head}");
+}
+
+#[test]
+fn a_cached_gzip_is_reused_and_dropped_when_the_file_underneath_it_changes() {
+    // The asset route compresses once and keeps the result, because gzipping a 945 KB
+    // WebAssembly module per visitor costs 31.5 ms of server CPU each time (§21.6). Vite
+    // content-hashes filenames, so in a real bundle a changed asset is a changed URL and the
+    // cache could not go stale — but `web_root` is a directory an operator controls, and a
+    // rebuild dropped over it in place is exactly what would serve last week's editor
+    // forever. The stamp is what stops that, and this is what says the stamp works.
+    let vault_dir = TempDir::new("http-compress-cache-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web = TempDir::new("http-compress-cache-web");
+    web.write("index.html", "<body></body>");
+    web.write("assets/app-abc123.js", &"console.log('first');".repeat(60));
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web.path().to_path_buf(),
+    );
+
+    let (_, first) = server.get_raw("/assets/app-abc123.js", "Accept-Encoding: gzip\r\n");
+    let (_, again) = server.get_raw("/assets/app-abc123.js", "Accept-Encoding: gzip\r\n");
+    assert_eq!(first, again, "the second request is the cached body");
+    assert!(String::from_utf8(gunzip(&first)).unwrap().contains("first"));
+
+    // A different length as well as different content: mtime granularity is coarse enough
+    // that two writes in the same test can share a timestamp, and the point here is the
+    // cache invalidating rather than a demonstration of clock resolution.
+    web.write(
+        "assets/app-abc123.js",
+        &"console.log('second edition');".repeat(60),
+    );
+
+    let (head, replaced) = server.get_raw("/assets/app-abc123.js", "Accept-Encoding: gzip\r\n");
+    assert!(head.contains("content-encoding: gzip"), "{head}");
+    let decoded = String::from_utf8(gunzip(&replaced)).unwrap();
+    assert!(decoded.contains("second edition"), "served a stale body");
+    assert!(
+        !decoded.contains("console.log('first')"),
+        "served a stale body"
+    );
+}
+
+#[test]
+fn an_asset_that_gzip_would_not_shrink_is_served_as_it_is() {
+    // Incompressible bytes gzip to slightly *more* than they started as. The cache refuses
+    // to store a body bigger than the file, so the client gets the original — one fewer
+    // decompression on a mid-range phone for no bytes saved (§21.1).
+    let vault_dir = TempDir::new("http-compress-noshrink-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web = TempDir::new("http-compress-noshrink-web");
+    web.write("index.html", "<body></body>");
+    // A .js extension to stay on the allowlist, holding bytes with no redundancy to find.
+    // Written directly rather than through `TempDir::write`, because high-entropy *text* is
+    // not high-entropy bytes: a printable alphabet caps at ~6.6 bits a character and gzip
+    // still takes a third off it. Random bytes are what actually grows under gzip, and
+    // already-compressed media is what this case stands in for.
+    let noise: Vec<u8> = (0..4000u64)
+        .map(|n| {
+            let mut hash = n.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            hash ^= hash >> 29;
+            hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            hash ^= hash >> 32;
+            u8::try_from(hash & 0xff).unwrap_or(0)
+        })
+        .collect();
+    std::fs::create_dir_all(web.path().join("assets")).expect("assets dir");
+    std::fs::write(web.path().join("assets/noise-abc123.js"), &noise).expect("the file");
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web.path().to_path_buf(),
+    );
+    let on_disk = std::fs::read(web.path().join("assets/noise-abc123.js")).expect("the file");
+    // The premise, asserted rather than assumed: if this ever compresses well the test below
+    // is measuring nothing.
+    assert!(
+        gzip_len(&on_disk) >= on_disk.len(),
+        "this input is supposed to be incompressible: {} gzipped vs {} raw",
+        gzip_len(&on_disk),
+        on_disk.len()
+    );
+
+    let (head, body) = server.get_raw("/assets/noise-abc123.js", "Accept-Encoding: gzip\r\n");
+
+    assert!(!head.contains("content-encoding"), "{head}");
+    assert_eq!(body, on_disk);
+}
+
+#[test]
+fn a_compressed_denial_is_byte_identical_whether_or_not_the_note_exists() {
+    // §6.5: a note the caller cannot read does not exist for them. Compression is a new way
+    // to break that, because it turns a body into a *length* — and two denials that differ
+    // by one byte of prose differ by more than that once gzipped. Deterministic compression
+    // of identical bodies keeps them identical, and this is what says so.
+    //
+    // It is a distinct case from `http_read_matrix_...` above rather than a duplicate of it:
+    // teaching the note route to answer an existing-but-unreadable note differently from a
+    // missing one fails this test and leaves that one green.
+    let dir = TempDir::new("http-compress-invisible");
+    dir.write(
+        "Public.md",
+        "# Public
+",
+    );
+    dir.write(
+        "Private/Salary.md",
+        "# Salary Review
+",
+    );
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    drop(
+        auth.setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup"),
+    );
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let bob_token = auth.create_session(bob.id, 4_102_444_800).expect("session");
+    let bob_cookie = format!(
+        "Cookie: mb_session={}\r\nAccept-Encoding: gzip\r\n",
+        auth.signed_session_cookie(&bob_token).expect("sign cookie")
+    );
+    let server = TestServer::start(
+        AppState::authenticated(vec![vault(&dir, "personal", "Personal")], auth)
+            .expect("secure state"),
+    );
+
+    // A note that exists and is unreadable, one that does not exist, and one in a folder
+    // that does not exist. Bob must not be able to tell them apart by any of head, body or
+    // length.
+    let unreadable = server.get_raw("/v/personal/Private/Salary.md", &bob_cookie);
+    let missing = server.get_raw("/v/personal/Private/Bonus.md", &bob_cookie);
+    let nowhere = server.get_raw("/v/personal/Nowhere/Bonus.md", &bob_cookie);
+
+    let date = |head: String| {
+        head.lines()
+            .filter(|line| !line.starts_with("date:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(date(unreadable.0.clone()), date(missing.0.clone()));
+    assert_eq!(date(unreadable.0), date(nowhere.0));
+    assert_eq!(unreadable.1, missing.1);
+    assert_eq!(unreadable.1, nowhere.1);
+
+    // And the readable one is a different answer, or the assertions above are vacuous.
+    let (head, _) = server.get_raw("/v/personal/Public.md", &bob_cookie);
+    assert!(
+        is_ok(&head.to_uppercase()) || head.starts_with("http/1.1 200"),
+        "{head}"
     );
 }

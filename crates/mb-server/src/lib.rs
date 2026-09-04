@@ -9,6 +9,7 @@
 pub mod access;
 pub mod audit;
 pub mod bookmarks;
+pub mod compress;
 pub mod config;
 pub mod http;
 pub mod invites;

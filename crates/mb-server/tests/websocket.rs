@@ -61,6 +61,39 @@ impl Server {
             .expect("websocket")
     }
 
+    /// Connects while offering gzip, returning the handshake response alongside the socket.
+    ///
+    /// why: `compress.rs` is layered over the whole router, the sync route included, so a
+    /// real browser's `Accept-Encoding` now reaches the `101`. The response is handed back
+    /// because the socket alone cannot show the failure: a `101` compressed anyway *still
+    /// works* — axum spawns the upgrade from the request and does not consult the response
+    /// — so what goes wrong is a header describing a body that does not exist, and only the
+    /// handshake response has that.
+    async fn connect_offering_gzip(
+        &self,
+        cookie: &str,
+    ) -> (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ) {
+        let mut request = format!("ws://{}/api/v1/sync", self.address)
+            .into_client_request()
+            .expect("request");
+        request.headers_mut().insert(
+            "Cookie",
+            format!("mb_session={cookie}").parse().expect("cookie"),
+        );
+        request.headers_mut().insert(
+            "Accept-Encoding",
+            "gzip, deflate, br".parse().expect("encoding"),
+        );
+        tokio_tungstenite::connect_async(request)
+            .await
+            .expect("the upgrade must survive the compression layer")
+    }
+
     /// Connects with one arbitrary credential header, surfacing a rejected upgrade.
     async fn connect_with(
         &self,
@@ -680,4 +713,60 @@ fn update_frame(vault: &str, note: &str, update: &[u8]) -> Message {
     bytes.extend_from_slice(note.as_bytes());
     bytes.extend_from_slice(update);
     Message::Binary(bytes.into())
+}
+
+#[tokio::test]
+async fn a_socket_still_syncs_when_the_client_offers_gzip() {
+    // `compress.rs` wraps the whole router, so every WebSocket handshake now passes through
+    // a layer that reads response headers and — for a compressible body — consumes the
+    // body. Every other test in this file connects without an `Accept-Encoding` header, so
+    // none of them goes near that.
+    //
+    // What this asserts is the *headers*, not that the socket survives. The socket survives
+    // regardless: compressing the `101` anyway still leaves a working connection, because
+    // axum spawns the upgrade task from the request and never consults the response. So the
+    // failure available here is a `101` claiming an encoding for a body it does not have —
+    // which a lenient client shrugs off and a strict proxy refuses. The sync round-trip at
+    // the end is the second half, and is what would catch a middleware that did manage to
+    // interfere.
+    let dir = TempDir::new("websocket-gzip");
+    dir.write("One.md", "before\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let vault = Vault::open(Slug::parse("personal").unwrap(), "Personal", dir.path()).unwrap();
+    let mut auth = mb_auth::AuthDb::open_in_memory().unwrap();
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .unwrap();
+    let token = auth.create_session(alice.id, 4_102_444_800).unwrap();
+    let cookie = auth.signed_session_cookie(&token).unwrap();
+    let server = Server::start(AppState::authenticated(vec![vault], auth).unwrap()).await;
+
+    let (mut socket, handshake) = server.connect_offering_gzip(&cookie).await;
+
+    // A `101` has no body, so neither of these headers can be true of it. `Content-Encoding`
+    // on a bodyless response is the kind of thing a lenient client shrugs off and a strict
+    // proxy refuses, which is exactly the failure a test has to catch rather than the socket.
+    assert_eq!(handshake.status(), 101, "{handshake:?}");
+    assert!(
+        handshake.headers().get("content-encoding").is_none(),
+        "the handshake must not claim an encoding: {:?}",
+        handshake.headers()
+    );
+    assert!(
+        handshake.headers().get("vary").is_none(),
+        "and has no variants to vary on: {:?}",
+        handshake.headers()
+    );
+
+    // And sync still works, which is the other half: the document has to arrive and decode.
+    let state = subscribe(&mut socket, "personal", "One.md").await;
+    let document = document_from_yrs(&document_from_update_v1(&state).unwrap()).unwrap();
+    assert_eq!(mb_core::to_markdown(&document), "before\n");
 }

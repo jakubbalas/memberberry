@@ -48,6 +48,18 @@ async function main(): Promise<number> {
   const breaches = loadBreaches(BREACHES);
   const measurements: Reduced[] = [];
   const notes: string[] = [];
+  /**
+   * Things that are wrong regardless of any budget, and fail the run on their own.
+   *
+   * why: separate from `breaches`. A breach is a number that is worse than §21.2 wants and
+   * is being carried with a reason; a violation is a *property* that has stopped holding,
+   * and there is no number to record it at. The compression check below is the first one:
+   * §21.2 is written in gzip, so a server that sends the critical path uncompressed makes
+   * every bundle figure in this report describe a download nobody performs. That was true
+   * until compression landed, and it was a note in this report rather than a failure — a
+   * comment, in the sense §21.3 warns about.
+   */
+  const violations: string[] = [];
 
   const bundle = measureBundle(DIST);
   for (const device of DEVICE_CLASSES) {
@@ -86,11 +98,27 @@ async function main(): Promise<number> {
               "not a Pixel 7a. See perf/measure.ts on what that does and does not tell you.",
           );
         }
+        // Both figures, always, and the gap between them. `bundle.ts` measures the budget
+        // statically at gzip level 9 and the server compresses with a different DEFLATE
+        // implementation at the same level, so these agree in intent and differ by a few
+        // hundred bytes in practice. The static figure is the gate because it is
+        // deterministic across machines; printing the observed one beside it is what would
+        // show code-splitting arriving, or compression going away again.
+        const delta = run.observedTransfer - bundle.totalGzip;
         notes.push(
           `${run.device} cold load actually transferred ` +
             `${format(run.observedTransfer, "bytes")} of JS + WASM, ` +
-            `${run.observedCompressed ? "compressed" : "**uncompressed**"}.`,
+            `${run.observedCompressed ? "compressed" : "**uncompressed**"} ` +
+            `(${delta >= 0 ? "+" : "-"}${format(Math.abs(delta), "bytes")} against the ` +
+            `static ${format(bundle.totalGzip, "bytes")} this run gates on).`,
         );
+        if (!run.observedCompressed) {
+          violations.push(
+            `${run.device} received the critical path uncompressed. SPEC §21.2 budgets it in ` +
+              "gzip, so every bundle number in this report would describe a download that " +
+              "does not happen. See crates/mb-server/src/compress.rs.",
+          );
+        }
         for (const lost of run.lost) {
           notes.push(`${run.device} measured nothing for ${lost}`);
         }
@@ -127,19 +155,28 @@ async function main(): Promise<number> {
     console.log(suggest(report.failures));
   }
 
-  if (report.failures.length === 0) {
+  for (const violation of violations) {
+    console.log(`\nperf: ${violation}`);
+  }
+
+  if (report.failures.length === 0 && violations.length === 0) {
     console.log("\nperf: ok — every measured budget is within SPEC §21.2 or a recorded breach");
     return 0;
   }
-  console.log(`\nperf: ${report.failures.length} metric(s) need a decision:`);
-  for (const failure of report.failures) {
-    console.log(
-      `  ${failure.id} [${failure.device}] ${failure.formatted}: ${failure.verdict.detail}`,
-    );
+  if (report.failures.length > 0) {
+    console.log(`\nperf: ${report.failures.length} metric(s) need a decision:`);
+    for (const failure of report.failures) {
+      console.log(
+        `  ${failure.id} [${failure.device}] ${failure.formatted}: ${failure.verdict.detail}`,
+      );
+    }
+    if (!recording) {
+      console.log("\n  Re-run with --record to see the breaches.json entries these would need.");
+    }
   }
-  if (!recording) {
-    console.log("\n  Re-run with --record to see the breaches.json entries these would need.");
-  }
+  // `--report-only` covers a violation as well as a breach: the flag means "this is a
+  // report", and a run that printed a violation and then exited 0 for a breach would be
+  // making a distinction nobody asked for.
   if (reportOnly) {
     console.log("\nperf: --report-only, so this is a report and not a gate. Exit 0.");
     return 0;

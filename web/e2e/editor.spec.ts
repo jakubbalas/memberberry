@@ -33,6 +33,34 @@ test("opening a note loads the bundle and mounts an editable surface", async ({ 
   await expect(editor).toHaveAttribute("contenteditable", "true");
 });
 
+test("the critical-path bundle arrives gzipped", async ({ page }) => {
+  // SPEC §21.2 budgets initial JS + WASM **in gzip**, and until `mb-server` grew a
+  // compression layer the same server sent 1.39 MB where the budget was measured against
+  // 515.9 KB. Both numbers were true; only one of them was what a browser downloaded.
+  //
+  // Asserted from a real page load rather than from a request this file constructs, because
+  // what matters is the encoding the *browser's* `Accept-Encoding` gets back — and no
+  // hand-written header can stand in for that. The Rust suite covers the negotiation; this
+  // covers the header a real Chromium actually sends.
+  const encodings = new Map<string, string | null>();
+  page.on("response", (response) => {
+    const url = response.url();
+    if (/\.(?:js|wasm)(?:\?|$)/.test(url)) {
+      encodings.set(new URL(url).pathname, response.headers()["content-encoding"] ?? null);
+    }
+  });
+
+  await signIn(page);
+  await page.goto("/v/personal/Welcome.md");
+  await expect(page.locator(EDITOR)).toBeVisible();
+
+  // The premise: if a future build stops emitting these, the loop below passes vacuously.
+  expect(encodings.size, `saw ${[...encodings.keys()].join(", ")}`).toBeGreaterThan(0);
+  for (const [path, encoding] of encodings) {
+    expect(encoding, `${path} must be compressed on the wire`).toBe("gzip");
+  }
+});
+
 test("the bootstrap identifies the note without carrying its content", async ({ page }) => {
   await signIn(page);
   await page.goto("/v/personal/Welcome.md");

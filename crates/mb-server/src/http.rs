@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Form, Path as AxumPath, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use futures_util::{SinkExt, StreamExt};
@@ -43,7 +43,25 @@ pub struct AppState {
     /// Server-owned storage (§4.1). Bookmarks live here rather than in a vault; see
     /// `bookmarks.rs` for why. `None` leaves the routes that need it answering as denied.
     data_dir: Option<PathBuf>,
+    /// Gzipped bundle assets, so a 945 KB WebAssembly module is compressed once rather than
+    /// once per visitor. See [`asset`].
+    assets: RwLock<BTreeMap<PathBuf, CachedAsset>>,
     security: Security,
+}
+
+/// One bundle asset, already compressed.
+///
+/// The stamp is what makes this safe to hold: Vite content-hashes every filename, so a
+/// changed asset is a *different* URL and this map can only ever grow. A stamp is carried
+/// anyway because `web_root` is a directory an operator controls, and a rebuilt bundle
+/// dropped over an old one in place would otherwise be served from a stale entry forever.
+#[derive(Debug, Clone)]
+struct CachedAsset {
+    stamp: FileStamp,
+    /// `Bytes` rather than `Vec<u8>`: cloning it for a response is a reference count, so a
+    /// cache hit copies nothing. A `Vec` would have meant memcpy-ing 360 KB per request,
+    /// which is most of what the cache exists to avoid.
+    gzip: axum::body::Bytes,
 }
 
 #[derive(Debug)]
@@ -183,6 +201,7 @@ impl AppState {
             vaults: registered,
             web_root: None,
             data_dir: None,
+            assets: RwLock::new(BTreeMap::new()),
             security: Security {
                 auth: Mutex::new(auth),
                 access: RwLock::new(access),
@@ -210,6 +229,38 @@ impl AppState {
                 .entry(slug.clone())
                 .or_insert_with(|| Arc::new(TitleCache::new())),
         )
+    }
+
+    /// This asset's gzipped bytes, compressing and caching them on first use.
+    ///
+    /// `None` means "serve it uncompressed" — a read failure, a compression failure or a
+    /// poisoned lock all cost the compression, never the response. `path` must already be
+    /// the canonicalized, containment-checked path: this is a cache, not a boundary.
+    fn compressed_asset(&self, path: &std::path::Path) -> Option<axum::body::Bytes> {
+        let stamp = FileStamp::of(path)?;
+        if let Ok(cache) = self.assets.read()
+            && let Some(hit) = cache.get(path)
+            && hit.stamp == stamp
+        {
+            return Some(hit.gzip.clone());
+        }
+        let bytes = std::fs::read(path).ok()?;
+        let gzip = axum::body::Bytes::from(crate::compress::to_gzip(&bytes).ok()?);
+        // Never larger than the file: a bundle asset that does not compress is served as it
+        // is rather than grown by an envelope.
+        if gzip.len() >= bytes.len() {
+            return None;
+        }
+        if let Ok(mut cache) = self.assets.write() {
+            cache.insert(
+                path.to_path_buf(),
+                CachedAsset {
+                    stamp,
+                    gzip: gzip.clone(),
+                },
+            );
+        }
+        Some(gzip)
     }
 
     #[must_use]
@@ -261,6 +312,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v/{slug}/{*note}", get(note))
         .fallback(not_found)
         .with_state(state)
+        // Outermost, so it sees every response including the fallback's. §21.2 budgets the
+        // critical path in gzip and this is what makes the wire agree with the budget;
+        // `compress.rs` documents what it will and will not touch, and why the WebSocket
+        // upgrade passes through it untouched.
+        .layer(axum::middleware::from_fn(crate::compress::gzip))
 }
 
 /// The largest sync frame the server will read.
@@ -990,7 +1046,11 @@ const EDITOR_CSP: &str = "default-src 'none'; \
      form-action 'none'; \
      frame-ancestors 'none'";
 
-async fn asset(State(state): State<Arc<AppState>>, AxumPath(asset): AxumPath<String>) -> Response {
+async fn asset(
+    State(state): State<Arc<AppState>>,
+    AxumPath(asset): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
     let Some(root) = &state.web_root else {
         return not_found().await;
     };
@@ -1012,20 +1072,53 @@ async fn asset(State(state): State<Arc<AppState>>, AxumPath(asset): AxumPath<Str
     if !path.starts_with(&base) || !path.is_file() {
         return not_found().await;
     }
-    let Ok(bytes) = std::fs::read(path) else {
-        return not_found().await;
+    // why: compressed here rather than by the `compress` layer, which would otherwise gzip
+    // the same immutable 945 KB WebAssembly module for every visitor. Measured: 31.5 ms at
+    // level 9 against 0.6 ms to serve it from cache, and level 9 is only 783 bytes better
+    // than the default level 6 — so a cache is what makes the smallest available body worth
+    // asking for at all (§21.7). The layer then passes this response through untouched,
+    // because it already carries a `Content-Encoding`.
+    let content_type = content_type(&asset);
+    let compressible = crate::compress::is_compressible_type(content_type);
+    let gzip =
+        if compressible && crate::compress::accepts_gzip(headers.get(header::ACCEPT_ENCODING)) {
+            state.compressed_asset(&path)
+        } else {
+            None
+        };
+    let body = match gzip {
+        Some(ref bytes) => bytes.clone(),
+        None => match std::fs::read(&path) {
+            Ok(bytes) => axum::body::Bytes::from(bytes),
+            Err(_) => return not_found().await,
+        },
     };
-    (
+
+    let mut response = (
         [
-            (header::CONTENT_TYPE, content_type(&asset)),
+            (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
             // Content types here are inferred from a file extension, so tell the browser not
             // to second-guess them: a sniffed type is a script-execution decision.
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
-        bytes,
+        body,
     )
-        .into_response()
+        .into_response();
+    if compressible {
+        // On the uncompressed answer too: without it a cache that stored this is free to
+        // hand it to a client that asked for gzip, and the gzipped one to a client that did
+        // not. An incompressible type has one representation, so it says nothing there.
+        response
+            .headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+    }
+    if gzip.is_some() {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    }
+    response
 }
 
 fn content_type(path: &str) -> &'static str {

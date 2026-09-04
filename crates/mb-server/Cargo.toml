@@ -12,6 +12,13 @@ mb-auth.workspace = true
 mb-crdt.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
+# why: gzip for the response compression layer. SPEC §21.1 states the problem it solves
+# and §21.7 what it cost; `compress.rs` says why this rather than `tower-http`. Default
+# features build the pure-Rust miniz_oxide backend, so no C toolchain is added.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# The `Body` trait, for the exact size hint that decides whether a response is worth
+# compressing without consuming a body that could not then be rebuilt.
+http-body = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
