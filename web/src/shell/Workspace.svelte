@@ -17,6 +17,7 @@
   import CommandCenter from "./CommandCenter.svelte";
   import MobileMain from "./MobileMain.svelte";
   import NoteTree from "./NoteTree.svelte";
+  import Outline from "./Outline.svelte";
   import PaneTree from "./PaneTree.svelte";
   import Sidebar from "./Sidebar.svelte";
   import TagPane from "./TagPane.svelte";
@@ -25,6 +26,9 @@
   import type { NoteBootstrap } from "./bootstrap.js";
   import type { fetchVaults } from "./catalog.js";
   import { NoteCatalog } from "./note-catalog.svelte.js";
+  import { OUTLINE_EVENT, type OutlineDetail } from "../editor/outline.js";
+  import { fromVisiblePane } from "./outline.js";
+  import { OutlineView } from "./outline.svelte.js";
   import { TagView } from "./tags.svelte.js";
   import type { Platform } from "./hotkeys.js";
   import { type SwipeStart, swipeProgress, swipeStart } from "./gestures.js";
@@ -64,6 +68,8 @@
     readonly backlinks?: BacklinkView | undefined;
     /** The vault's tags. Supplied by a test; built from the session otherwise. */
     readonly tags?: TagView | undefined;
+    /** The open note's headings. Supplied by a test; built here otherwise. */
+    readonly outline?: OutlineView | undefined;
     /** How a wikilink is resolved to a note. Injectable so a test needs no server. */
     readonly resolveLink?: typeof resolveNote | undefined;
   }
@@ -82,6 +88,7 @@
     bookmarks: suppliedBookmarks,
     backlinks: suppliedBacklinks,
     tags: suppliedTags,
+    outline: suppliedOutline,
     resolveLink,
   }: Props = $props();
 
@@ -108,6 +115,9 @@
   const tags = untrack(
     () => suppliedTags ?? new TagView({ vault: session?.vault ?? "local-demo" }),
   );
+  // Fetches nothing, so unlike the three above it costs nothing to build and needs no
+  // session: the headings arrive from whichever editor is mounted.
+  const outline = untrack(() => suppliedOutline ?? new OutlineView());
 
   // Seeded synchronously, then kept current by the watcher. Starting from a default and
   // waiting for the effect meant the first render used the wrong layout — see
@@ -221,9 +231,18 @@
         detail,
       );
     };
+    // §9.5: the outline follows the focused pane, so a split's other editor is ignored
+    // rather than allowed to overwrite the panel from behind.
+    const announce = (event: Event): void => {
+      if (!(event instanceof CustomEvent)) return;
+      if (!fromVisiblePane(event.target)) return;
+      outline.receive(event.detail as OutlineDetail, event.target);
+    };
     element.addEventListener(OPEN_NOTE_EVENT, handle);
+    element.addEventListener(OUTLINE_EVENT, announce);
     return () => {
       element.removeEventListener(OPEN_NOTE_EVENT, handle);
+      element.removeEventListener(OUTLINE_EVENT, announce);
       // A pane closed while a resolution is in flight must not open a tab afterwards.
       aborter.abort();
     };
@@ -292,8 +311,9 @@
     label="Context"
     collapsed={collapsed.right}
     ontoggle={() => toggle("right")}
-    awaiting="the outline and the local graph in M8"
+    awaiting="the local graph in M8"
   >
+    <Outline view={outline} note={store.activeTab?.note} />
     <Backlinks
       view={backlinks}
       note={store.activeTab?.note}

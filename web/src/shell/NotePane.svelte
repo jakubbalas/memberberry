@@ -29,6 +29,7 @@
 
   const { tab, session, onscroll, open = openNoteSurface }: Props = $props();
 
+  let pane = $state<HTMLElement | undefined>(undefined);
   let surface = $state<HTMLElement | undefined>(undefined);
   let panel = $state<HTMLElement | undefined>(undefined);
   let status = $state<HTMLElement | undefined>(undefined);
@@ -40,20 +41,30 @@
       : { vault: session.vault, user: session.user, note: tab.note },
   );
 
-  $effect(() => {
-    if (tab === undefined) return;
-    if (surface === undefined || panel === undefined || status === undefined) return;
-    const elements = { surface, panel, status };
+  /**
+   * The two facts the editor's lifetime depends on, as values rather than as a prop.
+   *
+   * why: `$derived` of a string, not `tab.id` read inside the effect. The store is immutable,
+   * so *every* mutation hands this component a new `tab` object — including `setScroll`,
+   * which fires continuously — and an effect that reads a field of the prop re-runs for the
+   * new object even when the field is unchanged. Reading through a derived primitive stops
+   * there, because a derived whose value is `===` its previous one notifies nobody.
+   *
+   * That is not a tidiness point. Once scrolling actually reached the store (it did not, see
+   * below), the effect tore the editor down and rebuilt it on every scroll event, the rebuild
+   * restored the scroll, and the restore scrolled: a loop that mounted dozens of editors a
+   * second and left the outline announcing a note that was always at offset zero.
+   */
+  const editorTab = $derived(tab?.id);
+  const editorNote = $derived(tab?.note);
 
-    // why: the effect depends on *which* note this pane shows, and nothing else. Reading the
-    // whole tab would make it re-run on every mutation of it — including `scroll`, which
-    // fires continuously — tearing down and rebuilding the editor mid-keystroke. That is
-    // exactly what happened: typing landed at the top of the document because the editor had
-    // just been recreated under the cursor. `untrack` is what keeps a *read* from becoming a
-    // dependency.
-    void tab.id;
-    void tab.note;
-    const restore = untrack(() => tab.scroll);
+  $effect(() => {
+    if (editorTab === undefined || editorNote === undefined) return;
+    if (surface === undefined || panel === undefined || status === undefined) return;
+    if (pane === undefined) return;
+    const elements = { surface, panel, status };
+    const scroller = pane;
+    const restore = untrack(() => tab?.scroll ?? 0);
 
     let live = true;
     let opened: NoteSurface | undefined;
@@ -67,7 +78,12 @@
           return;
         }
         opened = result;
-        if (restore > 0) elements.surface.scrollTop = restore;
+        // why: the pane, not the surface. `.note-pane` is what has `overflow: auto`
+        // (`app.css`); the surface inside it never scrolls, so both the restore and the
+        // `onscroll` below used to address an element whose `scrollTop` is always 0 — §8.1's
+        // per-tab scroll offset was written as 0 and restored as nothing, silently, for two
+        // milestones. `e2e/workspace.spec.ts` now switches tabs and looks.
+        if (restore > 0) scroller.scrollTop = restore;
       })
       .catch((error: unknown) => {
         failure = error instanceof Error ? error.message : "the note could not be opened";
@@ -80,10 +96,26 @@
     };
   });
 
+  /**
+   * Reports the scroll offset, at most once per frame.
+   *
+   * A scroll fires many times per frame and each report rebuilds the workspace tree, so the
+   * unthrottled version did that work tens of times for one flick of a trackpad. §21.2
+   * budgets a sustained 60 fps scroll; this keeps the store off that path.
+   */
+  let pending = 0;
   function reportScroll(event: Event): void {
     const element = event.currentTarget;
-    if (element instanceof HTMLElement) onscroll?.(element.scrollTop);
+    if (!(element instanceof HTMLElement) || pending !== 0) return;
+    pending = requestAnimationFrame(() => {
+      pending = 0;
+      onscroll?.(element.scrollTop);
+    });
   }
+
+  $effect(() => () => {
+    if (pending !== 0) cancelAnimationFrame(pending);
+  });
 </script>
 
 {#if tab === undefined}
@@ -93,18 +125,13 @@
   </div>
 {:else}
   {#key `${tab.id}:${tab.note}`}
-    <div class="note-pane">
+    <div class="note-pane" bind:this={pane} onscroll={reportScroll}>
       <section
         class="editor-panel"
         aria-label={`Note editor: ${tab.note}`}
         bind:this={panel}
       >
-        <div
-          id="editor"
-          class="editor-surface"
-          bind:this={surface}
-          onscroll={reportScroll}
-        ></div>
+        <div id="editor" class="editor-surface" bind:this={surface}></div>
       </section>
       {#if failure === undefined}
         <p class="offline-status" role="status" bind:this={status}>Local replica ready.</p>

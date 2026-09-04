@@ -375,6 +375,34 @@ describe("editors", () => {
     }
   });
 
+  it("survive a scroll, which changes the tab but not which note it shows", async () => {
+    // The store is immutable, so recording a scroll offset hands the pane a *new* tab object
+    // with the same id and note. An effect that reads a field off the prop re-runs for that
+    // new object and tears the editor down — and since rebuilding restores the scroll, and
+    // restoring scrolls, the result was a loop that mounted dozens of editors a second. Found
+    // in a browser (the outline announced a note that was permanently at offset zero); this
+    // is the version of it a unit suite can see.
+    const workspace = store(["One.md"]);
+    const live = surfaces();
+    const teardown = render(workspace, live.open);
+    try {
+      await flush();
+      expect(live.opened).toBe(1);
+
+      const tab = workspace.activeTab;
+      if (tab === undefined) throw new Error("expected an open tab");
+      workspace.setScroll(tab.id, 240);
+      await flush();
+      workspace.setScroll(tab.id, 480);
+      await flush();
+
+      expect(live.opened).toBe(1);
+      expect(live.notes).toEqual(["One.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
   it("are rebuilt when the tab navigates, because an editor cannot be re-pointed", async () => {
     const workspace = store(["One.md"]);
     const live = surfaces();

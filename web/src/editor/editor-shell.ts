@@ -8,6 +8,7 @@ import type { ConnectionStatus } from "./collaboration.js";
 import { PRESENCE_CLIENT_ATTRIBUTE, trackPresenceIdle } from "./presence.js";
 
 import { insertBlock, moveCurrentBlock, runTaskSlashCommand, setHeading, setTaskDue, setTaskPriority, slashCommands, toggleTask } from "./commands.js";
+import { mountOutline } from "./outline.js";
 import { applySourceMarkdown, copyMarkdown, editorMarkdown, longNoteMode, setLongNoteMode } from "./source.js";
 import { TASK_CHIP_EVENT, type TaskChipEventDetail } from "./task-view.js";
 import type { TaskChipField, TaskPriority } from "./task-metadata.js";
@@ -168,6 +169,11 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   options.editor.view.dom.addEventListener("pointerup", clearPress);
   options.editor.view.dom.addEventListener("pointercancel", clearPress);
 
+  // §9.5's outline. Mounted here because this is where the editor's lifetime is already
+  // owned: the bridge holds a scroll listener and two of its own, and every one of them has
+  // to go when the note closes.
+  const outline = mountOutline(options.editor);
+
   return {
     destroy: () => {
       options.editor.view.dom.removeEventListener("keydown", onKeyDown);
@@ -182,6 +188,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       visualViewport?.removeEventListener("resize", positionToolbar);
       visualViewport?.removeEventListener("scroll", positionToolbar);
       presence?.destroy();
+      outline.destroy();
       clearPress();
       controls.remove();
       slash.destroy();

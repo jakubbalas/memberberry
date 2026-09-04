@@ -51,10 +51,42 @@ export function scratchNote(purpose: string, project: string): string {
 }
 
 /** One note per (editing test, viewport). The name is the test's, so a clash is visible. */
-const SCRATCH_PURPOSES: readonly string[] = ["slash-menu", "task-toggle"];
+const SCRATCH_PURPOSES: readonly string[] = ["slash-menu", "task-toggle", "outline"];
 const SCRATCH_PROJECTS: readonly string[] = ["desktop", "mobile"];
 
 const SCRATCH_BODY = "# Scratch\n\nA note this test may edit.\n\n- [ ] Ship the workspace shell \u{1F4C5} 2026-09-30 \u{23EB}\n";
+
+/**
+ * Sections for the outline pane (§9.5), long enough that the note actually scrolls.
+ *
+ * Its own body rather than `SCRATCH_BODY`: reordering sections rewrites this file, and the
+ * assertions are about the order of headings in it — a shared body would mean the outline
+ * test and the task test each had an opinion about the same bytes. The filler paragraphs are
+ * what give the surface something to scroll, which is the one thing only a browser can check.
+ */
+const OUTLINE_BODY = [
+  "# Outline scratch",
+  "",
+  "Front matter, above every heading. See also [[Outline/Other]].",
+  "",
+  "## Alpha",
+  "",
+  ...Array.from({ length: 12 }, (_, line) => `Alpha line ${line + 1}.\n`),
+  "### Alpha detail",
+  "",
+  ...Array.from({ length: 12 }, (_, line) => `Detail line ${line + 1}.\n`),
+  "## Beta",
+  "",
+  // Long enough that `Beta` can actually reach the top of the viewport when the outline
+  // scrolls to it: a heading in the last screenful of a note cannot, because the scroll is
+  // clamped, and an assertion that ignored that would be asserting the clamp.
+  ...Array.from({ length: 40 }, (_, line) => `Beta line ${line + 1}.\n`),
+].join("\n");
+
+/** The body one scratch note is provisioned with. */
+function scratchBody(purpose: string): string {
+  return purpose === "outline" ? OUTLINE_BODY : SCRATCH_BODY;
+}
 
 /** Notes the suite can rely on being present. Kept small and canonical on purpose. */
 export const E2E_NOTES: Readonly<Record<string, string>> = {
@@ -84,6 +116,14 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
     + "Gone: ![[Embeds/Nothing At All]]\n",
   // A note that embeds itself. §9.2 requires this to render as a link rather than to hang.
   "Embeds/Cycle.md": "# Cycling\n\n![[Embeds/Cycle]]\n",
+  // The outline fixture (§9.5), read-only: three of the four outline tests only look at it,
+  // and the fourth reorders sections and therefore takes its own scratch copy. `fullyParallel`
+  // means those would otherwise race over the same bytes.
+  "Outline/Sections.md": OUTLINE_BODY,
+  // A second note in the same folder, so a test can open a second tab from a link inside a
+  // note that is long enough to scroll. Nothing else links to it, so its backlink count is
+  // this one link and stays that way.
+  "Outline/Other.md": "# Other\n\nA second tab's worth of note.\n",
   // Nested-tag fixtures (§9.3). Read-only, in their own folder so the tag counts asserted in
   // `tags.spec.ts` are exactly these three notes and nothing a later fixture adds. The two
   // spellings of `#Project` are the point of the first two: case is not identity, so the pane
@@ -95,7 +135,9 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
   "Projects/Tasks.md": "# Tasks\n\n- [ ] First task\n- [ ] Second task\n- [x] Third task \u{2705} 2026-08-28\n",
   ...Object.fromEntries(
     SCRATCH_PURPOSES.flatMap((purpose) =>
-      SCRATCH_PROJECTS.map((project) => [`Scratch/${purpose}.${project}.md`, SCRATCH_BODY] as const),
+      SCRATCH_PROJECTS.map(
+        (project) => [`Scratch/${purpose}.${project}.md`, scratchBody(purpose)] as const,
+      ),
     ),
   ),
 };

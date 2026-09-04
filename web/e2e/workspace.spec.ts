@@ -104,6 +104,40 @@ test("closing the last tab leaves a usable empty pane", async ({ page }, info) =
   await expect(page.locator(PANE)).toHaveCount(1);
 });
 
+test("a tab keeps its scroll position while another tab is in front", async ({ page }, info) => {
+  test.skip(info.project.name === "mobile", "the tab strip is a desktop control (§8.3)");
+  // §8.1: an inactive tab is "a row in the strip and a scroll offset in the model". Only the
+  // active tab holds an editor, so coming back rebuilds one and puts it where it was — and
+  // *where* is measured from the element that actually scrolls, which is the pane and not the
+  // editor surface inside it. Binding the handler to the surface made this silently do
+  // nothing for two milestones: it was written as 0 and restored as nothing, with no test
+  // able to see it, because jsdom lays nothing out and so scrolls nothing.
+  await signIn(page);
+  await page.goto("/v/personal/Outline/Sections.md");
+  await expect(page.locator(EDITOR).first()).toBeVisible();
+
+  // A second tab in the same pane, from a link inside this note (§8.2).
+  await page.locator(`${EDITOR} [data-wikilink]`).first().click({ modifiers: ["Meta"] });
+  await expect(page.getByRole("tab")).toHaveCount(2);
+
+  const scroller = page.locator(".note-pane").first();
+  await page.getByRole("tab").first().click();
+  await expect(page.locator(EDITOR).first()).toContainText("Outline scratch");
+  await scroller.evaluate((element) => {
+    element.scrollTop = 600;
+  });
+  await expect.poll(async () => scroller.evaluate((element) => element.scrollTop)).toBe(600);
+
+  await page.getByRole("tab").nth(1).click();
+  await expect(page.locator(EDITOR).first()).toContainText("A second tab");
+  await page.getByRole("tab").first().click();
+  await expect(page.locator(EDITOR).first()).toContainText("Outline scratch");
+
+  await expect
+    .poll(async () => scroller.evaluate((element) => element.scrollTop), { timeout: 10_000 })
+    .toBe(600);
+});
+
 test("the layout survives a reload", async ({ page }, info) => {
   test.skip(info.project.name === "mobile", "splits are a desktop layout concern (§8.2)");
   // The end-to-end claim: the pane tree reached the server, was stored under this user and

@@ -190,6 +190,23 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
 .tree-bookmark[aria-pressed="true"] { color: var(--accent-primary); }
 .tree-bookmark:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); border-radius: var(--radius-sm); }
 
+/* ---------------------------------------------------------------- outline (SPEC 9.5)
+
+   Rows are the tree's, indented by heading level rather than by nesting depth — the level is
+   what the document says and what a `##` under a `####` should still look like. The drop
+   marker is a border rather than a moved element, so the list does not reflow under the
+   pointer mid-drag. */
+
+.outline-panel { display: flex; flex-direction: column; gap: var(--space-2); }
+.outline-row { cursor: grab; }
+.outline-row .tree-icon { width: auto; min-width: var(--space-6); font-size: var(--text-2xs); font-weight: var(--weight-medium); }
+.outline-row[data-level="1"] { font-weight: var(--weight-medium); }
+/* The section the reader is inside, which is a different thing from the keyboard cursor and
+   from a row being dragged — all three can be different rows at once. */
+.outline-row[data-current="true"] { color: var(--accent-primary); }
+.outline-row[data-dragging="true"] { opacity: 0.5; }
+.outline-row[data-drop-before="true"] { box-shadow: inset 0 2px 0 0 var(--accent-primary); }
+
 /* ---------------------------------------------------------------- tag pane (SPEC 9.3)
 
    Reuses the tree's row, heading and empty-state classes for the reason the backlinks panel
