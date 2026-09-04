@@ -10,6 +10,7 @@ license.workspace = true
 mb-core.workspace = true
 mb-auth.workspace = true
 mb-crdt.workspace = true
+mb-index.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 # why: gzip for the response compression layer. SPEC §21.1 states the problem it solves

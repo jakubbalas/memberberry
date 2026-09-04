@@ -400,9 +400,15 @@ test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
 
     await expect(tree.getByRole("treeitem", { name: /Projects/ })).toBeVisible();
     await expect(tree.getByRole("treeitem", { name: /Welcome/ })).toBeVisible();
-    // A folder comes before a loose note.
-    const names = await tree.getByRole("treeitem").allInnerTexts();
-    expect(names[0]).toContain("Projects");
+    // Every folder comes before every loose note. Asserted as a partition rather than by
+    // naming whichever folder happens to sort first: adding a note to the fixture vault
+    // must not be able to break a test about ordering.
+    const kinds = await tree
+      .getByRole("treeitem")
+      .evaluateAll((rows) => rows.map((row) => row.dataset["kind"] ?? ""));
+    expect(kinds).toContain("folder");
+    expect(kinds).toContain("note");
+    expect(kinds.lastIndexOf("folder")).toBeLessThan(kinds.indexOf("note"));
   });
 
   test("expands a folder and opens the note inside it", async ({ page }) => {
@@ -429,15 +435,21 @@ test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
     const tree = page.getByRole("tree", { name: "Notes" });
     await tree.focus();
 
+    // Whichever folder the cursor starts on, rather than a named one — see the ordering
+    // test above for why.
+    const rows = tree.getByRole("treeitem");
     await tree.press("ArrowRight");
-    await expect(tree.getByRole("treeitem", { name: /Projects/ })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
+    await expect(rows.first()).toHaveAttribute("aria-expanded", "true");
     await tree.press("ArrowDown");
+    // From the row's path rather than its label: the tree shows a note's *title* and a tab
+    // shows its filename (`TabStrip.svelte` — a tab is narrow), so the two disagree for any
+    // note whose title is not its filename.
+    // The row's tooltip is its path (`NoteTree.svelte`).
+    const path = (await rows.nth(1).getAttribute("title")) ?? "";
+    const child = (path.split("/").pop() ?? path).replace(/\.md$/, "");
     await tree.press("Enter");
 
-    await expect(page.getByRole("tab", { name: "Roadmap" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: child })).toBeVisible();
     expect(info.project.name).toBe("desktop");
   });
 

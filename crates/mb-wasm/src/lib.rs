@@ -188,7 +188,13 @@ pub fn facts_of(markdown: &str) -> Facts {
             .collect(),
         tags: facts.tags.clone(),
         emoji: facts.emoji.clone(),
-        anchors: facts.anchors.clone(),
+        // The boundary keeps anchors as bare ids: the text of an anchored block is for
+        // the server index (§9.1 `blocks`), and no client surface reads it.
+        anchors: facts
+            .anchors
+            .iter()
+            .map(|block| block.anchor.clone())
+            .collect(),
         media: facts.media.clone(),
         tasks: facts
             .tasks

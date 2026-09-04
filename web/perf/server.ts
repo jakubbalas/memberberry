@@ -50,15 +50,20 @@ const WEB_ROOT = join(REPO, "web", "dist");
 
 /** Newest of the two build profiles — the same rule, and the same reason, as `e2e/serve.ts`. */
 function binary(): string {
+  return newestBuild().path;
+}
+
+/** The newest binary and which profile it came from. */
+function newestBuild(): { readonly path: string; readonly profile: string } {
   const newest = ["debug", "release"]
-    .map((profile) => join(REPO, "target", profile, "memberberry"))
-    .filter((path) => existsSync(path))
-    .map((path) => ({ path, at: statSync(path).mtimeMs }))
+    .map((profile) => ({ profile, path: join(REPO, "target", profile, "memberberry") }))
+    .filter(({ path }) => existsSync(path))
+    .map((build) => ({ ...build, at: statSync(build.path).mtimeMs }))
     .sort((a, b) => b.at - a.at)[0];
   if (newest === undefined) {
     throw new Error("no memberberry binary in target/{debug,release}. `make perf` builds one.");
   }
-  return newest.path;
+  return newest;
 }
 
 /** How many `.md` files the cached vault holds, or 0 if there is no cached vault. */
@@ -174,6 +179,40 @@ export async function startServer(): Promise<PerfServer> {
       child.kill("SIGTERM");
     },
   };
+}
+
+/**
+ * Times a full reindex of the generated vault, in milliseconds.
+ *
+ * §21.2's "Full reindex, 10k notes". `memberberry reindex` deletes the database before it
+ * rebuilds, so this is a build from nothing rather than a reconcile that finds no work — the
+ * two differ by three orders of magnitude (§21.8) and only the first one is what the budget
+ * is about.
+ *
+ * Must run with the server stopped: the command removes the database file, and a running
+ * server holds an open handle to the deleted inode and would go on writing to it.
+ *
+ * Depends on `startServer` having provisioned the config, which is the same dependency the
+ * resident-memory measurement has on the server still being alive.
+ */
+export function measureReindex(): { readonly ms: number; readonly profile: string } {
+  if (!existsSync(CONFIG)) {
+    throw new Error(
+      `${CONFIG} is missing: the reindex measurement runs after the server has been ` +
+        "provisioned, so that the vault and the registry it reads already exist.",
+    );
+  }
+  // why: the profile is reported, not just used. `make perf` builds the *debug* binary and
+  // this picks the newest, so the figure is a debug build unless somebody rebuilt release
+  // afterwards — and debug is ~5.8x slower here (5.5 s against 955 ms). A timing number
+  // that silently changes by that much depending on which build is newer is a number nobody
+  // can compare across runs, so it travels with the answer.
+  const build = newestBuild();
+  const started = performance.now();
+  execFileSync(build.path, ["reindex", "--config", CONFIG, "--slug", PERF_SLUG], {
+    stdio: "ignore",
+  });
+  return { ms: performance.now() - started, profile: build.profile };
 }
 
 /** Whether anything is listening on the harness's port right now. */

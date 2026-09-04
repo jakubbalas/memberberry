@@ -94,6 +94,36 @@ impl<'a> AuthorizedVault<'a> {
             })
     }
 
+    /// Resolves a reference to the canonical vault-relative identity of a readable note.
+    ///
+    /// The identity is what the index keys on and what a sync room is named by: the
+    /// vault-relative form of the *canonical* path, so two spellings of one file — a
+    /// symlink, a different capitalization on a case-insensitive filesystem — cannot become
+    /// two identities. Accepts anything [`AuthorizedVault::resolve_reference`] does.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] for an absent, unreadable or uncontainable reference, with no way
+    /// to tell those apart (§6.5).
+    pub fn identity(&self, reference: &str) -> Result<String, Error> {
+        let path = self.resolve_reference(reference)?;
+        let relative = path
+            .strip_prefix(
+                self.vault
+                    .notes_root()
+                    .canonicalize()
+                    .map_err(|_| Error::NotFound)?,
+            )
+            .map_err(|_| Error::NotFound)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if self.can_read(&relative) {
+            Ok(relative)
+        } else {
+            Err(Error::NotFound)
+        }
+    }
+
     /// Reads note source after the read authorization check has succeeded.
     pub fn read(&self, reference: &str) -> Result<String, Error> {
         let path = self.resolve_reference(reference)?;

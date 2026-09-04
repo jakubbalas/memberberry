@@ -28,6 +28,7 @@ use mb_core::html::Urls;
 
 use crate::audit::{AuditAction, AuditEvent, AuditLog, AuditResult};
 use crate::bookmarks::BookmarkStore;
+use crate::indexing::IndexRegistry;
 use crate::repository::AuthorizedVault;
 use crate::sync::{Announcement, ClientFrame, ConnectionId, ServerFrame, SyncRegistry, Wire};
 use crate::titles::{NoteSummary, TitleCache};
@@ -46,6 +47,9 @@ pub struct AppState {
     /// Gzipped bundle assets, so a 945 KB WebAssembly module is compressed once rather than
     /// once per visitor. See [`asset`].
     assets: RwLock<BTreeMap<PathBuf, CachedAsset>>,
+    /// One graph/link/tag index per vault (§9.1), opened on first use and kept in step with
+    /// the files by [`AppState::maintain_index`].
+    indexes: IndexRegistry,
     security: Security,
 }
 
@@ -114,6 +118,18 @@ impl AppState {
             &|slug, note, user| self.may_read_note(slug, note, user),
         ));
         errors
+    }
+
+    /// Brings every vault's index in step with its files (§9.1).
+    ///
+    /// Separate from [`AppState::maintain_sync`] and on its own cadence: sync maintenance
+    /// inspects the notes that are *open*, while a full index reconcile walks the whole
+    /// vault, and doing that at sync cadence would spend a directory walk of 10 000 notes
+    /// every few hundred milliseconds to notice nothing. `indexing.rs` has the two cadences.
+    ///
+    /// Blocking: callers must keep it off the async runtime.
+    pub fn maintain_index(&self, changed: &Changes) -> Vec<String> {
+        self.indexes.maintain(self.vaults.values(), changed)
     }
 
     /// Every directory whose contents this server must notice changing.
@@ -202,6 +218,7 @@ impl AppState {
             web_root: None,
             data_dir: None,
             assets: RwLock::new(BTreeMap::new()),
+            indexes: IndexRegistry::default(),
             security: Security {
                 auth: Mutex::new(auth),
                 access: RwLock::new(access),
@@ -290,6 +307,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sync", get(websocket))
         .route("/api/v1/vaults", get(vault_index_json))
         .route("/api/v1/vaults/{slug}/notes", get(note_index))
+        .route(
+            "/api/v1/vaults/{slug}/backlinks/{*note}",
+            get(note_backlinks),
+        )
         .route(
             "/api/v1/vaults/{slug}/bookmarks",
             get(bookmarks_load)
@@ -775,6 +796,117 @@ async fn note_index(
         .into_response()
 }
 
+#[derive(serde::Serialize)]
+struct BacklinksResponse {
+    /// The canonical identity the backlinks were resolved for, so the client can tell that
+    /// its request for `[[Roadmap]]` landed on `Projects/Roadmap.md`.
+    note: String,
+    sources: Vec<BacklinkSource>,
+}
+
+#[derive(serde::Serialize)]
+struct BacklinkSource {
+    path: String,
+    title: Option<String>,
+    links: Vec<BacklinkEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct BacklinkEntry {
+    context: Option<String>,
+    source_block: Option<String>,
+    embed: bool,
+    /// `none`, `heading` or `block` — the same vocabulary as `links.anchor_kind` (§9.1).
+    anchor_kind: &'static str,
+    anchor: Option<String>,
+    target_raw: String,
+}
+
+/// `GET /api/v1/vaults/{slug}/backlinks/{note}` — inbound links to one note (§9.5).
+///
+/// Enforcement point **E8**. Three filters, and it is worth knowing which one does what:
+/// `authorized_vault` establishes that this user may read the *target* at all (E1), the
+/// index [`Reader`](mb_index::Reader) is constructed from the live ACL so the *sources* are
+/// filtered server-side (E5), and link resolution runs against readable candidates only, so
+/// an edge into a note this user cannot read does not exist (E9).
+///
+/// A target the user cannot read answers exactly as a missing one does — the empty-handed
+/// `workspace_denied`, not an empty list, because an empty list confirms the note exists.
+async fn note_backlinks(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, note)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(user) = state.vault_user(vault.slug(), &headers) else {
+        return workspace_denied();
+    };
+    let view = AuthorizedVault::new(vault, &access, user.clone());
+    let Ok(identity) = view.identity(&note) else {
+        return workspace_denied();
+    };
+    let Some(index) = state.indexes.get(vault) else {
+        return server_error(&Error::Config("no index for this vault".to_string()));
+    };
+    let Ok(mut index) = index.lock() else {
+        return server_error(&Error::Config("the index lock is poisoned".to_string()));
+    };
+    let sources = match index
+        .reader(&access, &user)
+        .and_then(|reader| reader.backlinks(&identity))
+    {
+        Ok(groups) => groups,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+
+    let body = BacklinksResponse {
+        note: identity,
+        sources: sources
+            .into_iter()
+            .map(|group| BacklinkSource {
+                path: group.path,
+                title: group.title,
+                links: group.links.into_iter().map(entry_of).collect(),
+            })
+            .collect(),
+    };
+    let body = match serde_json::to_string(&body) {
+        Ok(body) => body,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            // Note titles and note text. Nothing should keep a copy.
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+fn entry_of(link: mb_index::Backlink) -> BacklinkEntry {
+    let (anchor_kind, anchor) = match link.anchor {
+        None => ("none", None),
+        Some(mb_core::model::Anchor::Heading(heading)) => ("heading", Some(heading)),
+        Some(mb_core::model::Anchor::Block(block)) => ("block", Some(block)),
+    };
+    BacklinkEntry {
+        context: link.context,
+        source_block: link.source_block,
+        embed: link.embed,
+        anchor_kind,
+        anchor,
+        target_raw: link.target_raw,
+    }
+}
+
 /// `GET /api/v1/vaults/{slug}/bookmarks` — this user's bookmarked notes (§8.2).
 ///
 /// Enforcement point E15, with a filter the workspace layout does not have: the stored list is
@@ -1221,10 +1353,17 @@ impl AppState {
         access: &'a mb_core::Access,
         headers: &HeaderMap,
     ) -> Option<AuthorizedVault<'a>> {
-        let user = self
-            .authenticated_user(headers)
-            .or_else(|| self.api_token_user(vault.slug(), headers))?;
+        let user = self.vault_user(vault.slug(), headers)?;
         Some(AuthorizedVault::new(vault, access, user))
+    }
+
+    /// The authenticated caller, by session cookie or by this vault's API token.
+    ///
+    /// Separate from [`AppState::authorized_vault`] for callers that need the name as well
+    /// as the view — the index reader is constructed from a user, not from a vault.
+    fn vault_user(&self, slug: &Slug, headers: &HeaderMap) -> Option<Username> {
+        self.authenticated_user(headers)
+            .or_else(|| self.api_token_user(slug, headers))
     }
 
     /// Re-reads any `access.toml` that changed on disk, failing closed on a bad one.
@@ -1524,6 +1663,15 @@ const MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_mill
 /// can get, and is the reason a lost event is a delay rather than a permanently wrong note.
 const RECOVERY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How often the index reconciles the *whole* vault when the watcher has said nothing.
+///
+/// why: not the sync sweep's five seconds. A full reconcile lists and stamps every note, so
+/// at the design target of 10 000 notes (A8) it is 10 000 syscalls; at five seconds that is
+/// a directory walk every five seconds to discover nothing changed. The watcher covers every
+/// change it can see within a tick, and this covers what it cannot — a dropped event, an
+/// unwatchable root, a note deleted while the process was down.
+const INDEX_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Serves until the process is asked to stop.
 ///
 /// # Errors
@@ -1540,22 +1688,57 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
     for problem in problems {
         eprintln!("memberberry watcher: {problem}; falling back to the recovery sweep");
     }
+    // why: the index is built before the first request rather than on the first tick. An
+    // index that is still filling makes an empty backlinks panel mean two different things,
+    // and "no backlinks yet" is indistinguishable from "no backlinks" to a reader and to a
+    // test. Paying for it at startup is a cost an operator can see; the alternative is a
+    // window nobody can see.
+    let built = std::time::Instant::now();
+    let index_state = Arc::clone(&state);
+    let errors = tokio::task::spawn_blocking(move || index_state.maintain_index(&Changes::All))
+        .await
+        .unwrap_or_default();
+    for error in &errors {
+        eprintln!("memberberry index: {error}");
+    }
+    println!(
+        "memberberry: index ready in {} ms",
+        built.elapsed().as_millis()
+    );
+
     let maintenance_state = Arc::clone(&state);
     let maintenance = tokio::spawn(async move {
         let mut interval = tokio::time::interval(MAINTENANCE_INTERVAL);
         let mut since_sweep = std::time::Duration::ZERO;
+        let mut since_index_sweep = std::time::Duration::ZERO;
         loop {
             interval.tick().await;
             since_sweep += MAINTENANCE_INTERVAL;
+            since_index_sweep += MAINTENANCE_INTERVAL;
             let mut changed = signal.take();
             if since_sweep >= RECOVERY_SWEEP_INTERVAL {
                 since_sweep = std::time::Duration::ZERO;
                 changed = Changes::All;
             }
+            let indexed = if since_index_sweep >= INDEX_SWEEP_INTERVAL {
+                since_index_sweep = std::time::Duration::ZERO;
+                Changes::All
+            } else {
+                // The watcher's own report, not the sync sweep's `All`: this is the fast
+                // path, and it is empty on a tick where nothing was touched.
+                changed.clone()
+            };
             let tick = Arc::clone(&maintenance_state);
-            let errors = tokio::task::spawn_blocking(move || tick.maintain_sync(&changed)).await;
+            let errors = tokio::task::spawn_blocking(move || {
+                let mut errors = tick.maintain_sync(&changed);
+                if !indexed.is_empty() {
+                    errors.extend(tick.maintain_index(&indexed));
+                }
+                errors
+            })
+            .await;
             for error in errors.unwrap_or_default() {
-                eprintln!("memberberry sync maintenance: {error}");
+                eprintln!("memberberry maintenance: {error}");
             }
         }
     });

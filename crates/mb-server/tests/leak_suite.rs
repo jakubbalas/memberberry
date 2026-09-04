@@ -485,3 +485,66 @@ fn e15_bookmarks_are_per_user_and_cannot_escape_the_data_directory() {
         .collect();
     assert!(store.save(&alice, vault.slug(), &too_many).is_err());
 }
+
+/// E8: backlinks are titles and note text, and both are filtered by the readable set.
+///
+/// The index's own suite (`mb-index/tests/permissions.rs`) covers the query layer against
+/// hand-built policies. This is the server's side of the same point: a real vault, a real
+/// `access.toml`, and the index maintained the way the maintenance tick maintains it — so a
+/// filter that is right in `mb-index` and wrongly wired here still fails.
+#[test]
+fn e8_backlinks_name_no_note_the_viewer_cannot_read() {
+    let dir = TempDir::new("leak-backlinks");
+    dir.write("Shared.md", "# Shared\n");
+    dir.write(
+        "Private/Salary.md",
+        "# Salary Review\n\nCosting for [[Shared]].\n",
+    );
+    dir.write("Open.md", "# Open\n\nAlso about [[Shared]].\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let mut index = index.lock().expect("index lock");
+    let alice = Username::parse("alice").expect("username");
+    let reader = index
+        .reader(access.policy(), &alice)
+        .expect("a reader for alice");
+
+    let sources: Vec<String> = reader
+        .backlinks("Shared.md")
+        .expect("backlinks")
+        .into_iter()
+        .map(|group| group.path)
+        .collect();
+    assert_eq!(
+        sources,
+        vec!["Open.md".to_string()],
+        "the private note appeared in the backlinks of a note alice may read"
+    );
+
+    // The private note itself has no backlinks, because for alice it does not exist — and
+    // the answer is the same as for a note that was never written.
+    assert!(
+        reader
+            .backlinks("Private/Salary.md")
+            .expect("backlinks")
+            .is_empty()
+    );
+    assert_eq!(
+        reader.contains("Private/Salary.md").expect("contains"),
+        reader.contains("Private/Never.md").expect("contains")
+    );
+}

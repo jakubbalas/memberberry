@@ -1,0 +1,21 @@
+[package]
+name = "mb-index"
+description = "SQLite graph, link, tag, task and media store for a vault, behind a permission-filtered reader."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mb-core.workspace = true
+# why: `bundled` compiles SQLite from source rather than linking whatever the host has.
+# The index is derived state (Invariant I1) and its schema is stamped in `user_version`, so
+# a version skew between two machines that share a vault directory would silently change
+# which SQL features parse. Bundling makes that skew impossible.
+rusqlite = { version = "0.37", features = ["bundled", "functions"] }
+sha2 = "0.10"
+thiserror = "2"
+unicode-normalization = "0.1"
+
+[lints]
+workspace = true

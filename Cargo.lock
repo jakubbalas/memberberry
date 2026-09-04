@@ -880,6 +880,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mb-index"
+version = "0.1.0"
+dependencies = [
+ "mb-core",
+ "rusqlite",
+ "sha2",
+ "thiserror",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "mb-server"
 version = "0.1.0"
 dependencies = [
@@ -891,6 +902,7 @@ dependencies = [
  "mb-auth",
  "mb-core",
  "mb-crdt",
+ "mb-index",
  "notify",
  "serde",
  "serde_json",

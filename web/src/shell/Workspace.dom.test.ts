@@ -137,15 +137,15 @@ describe("the shell", () => {
     }
   });
 
-  it("says which milestone fills a sidebar that is still empty", () => {
-    // A reader should be able to tell unfinished from broken. The left sidebar has the note
-    // tree now, so only the right one is still a placeholder.
+  it("fills both sidebars, and each panel says what it is", () => {
+    // A reader should be able to tell unfinished from broken. Both sidebars now have
+    // content — the note tree on the left, backlinks on the right — so the placeholder is
+    // gone and what is left to check is that neither panel is silently missing.
     const teardown = render(store());
     try {
-      const placeholders = [...target.querySelectorAll(".sidebar-placeholder")];
-      expect(placeholders).toHaveLength(1);
-      expect(placeholders[0]?.textContent).toMatch(/M\d+/);
+      expect([...target.querySelectorAll(".sidebar-placeholder")]).toHaveLength(0);
       expect(target.querySelector('[aria-label="Navigation"] .tree-panel')).not.toBeNull();
+      expect(target.querySelector('[aria-label="Context"] .backlinks-panel')).not.toBeNull();
     } finally {
       teardown();
     }

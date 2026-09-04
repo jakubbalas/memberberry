@@ -983,3 +983,120 @@ fn the_usage_text_documents_the_new_commands() {
         "usage should say where it binds and why: {out}"
     );
 }
+
+// ---------------------------------------------------------------- reindex
+
+/// A `server.toml` registering one vault at `path`.
+fn config_for(dir: &TempDir, vault: &Path) -> PathBuf {
+    dir.write(
+        "server.toml",
+        &format!(
+            "[[vaults]]\nslug = \"personal\"\nname = \"Personal\"\npath = {:?}\n",
+            vault.to_str().unwrap()
+        ),
+    )
+}
+
+#[test]
+fn reindex_builds_the_index_from_the_notes() {
+    let dir = TempDir::new("reindex");
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    fs::write(vault.join("A.md"), "# A\n").unwrap();
+    fs::write(vault.join("B.md"), "see [[A]]\n").unwrap();
+    let config = config_for(&dir, &vault);
+
+    let (code, out) = run(&["reindex", "--config", config.to_str().unwrap()]);
+    assert!(is_success(code), "{out}");
+    assert!(out.contains("indexed 2 notes"), "{out}");
+    assert!(vault.join(".memberberry/index/graph.sqlite").is_file());
+}
+
+#[test]
+fn reindex_starts_from_nothing_rather_than_from_the_last_run() {
+    // The reason to run this command at all is a stale index, so the one thing it must not
+    // do is keep whatever was there. A note removed while the server was down is the case:
+    // its rows have to be gone even though no reconcile ever saw it leave.
+    let dir = TempDir::new("reindex-stale");
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    fs::write(vault.join("A.md"), "# A\n").unwrap();
+    let config = config_for(&dir, &vault);
+    run(&["reindex", "--config", config.to_str().unwrap()]);
+    let first = fs::metadata(vault.join(".memberberry/index/graph.sqlite"))
+        .unwrap()
+        .len();
+
+    fs::write(vault.join("B.md"), "see [[A]]\n").unwrap();
+    let (code, out) = run(&["reindex", "--config", config.to_str().unwrap()]);
+    assert!(is_success(code), "{out}");
+    assert!(out.contains("indexed 2 notes"), "{out}");
+    assert!(
+        fs::metadata(vault.join(".memberberry/index/graph.sqlite"))
+            .unwrap()
+            .len()
+            >= first,
+        "the database was not rebuilt"
+    );
+}
+
+#[test]
+fn reindex_can_name_one_vault() {
+    let dir = TempDir::new("reindex-slug");
+    let first = dir.path().join("one");
+    let second = dir.path().join("two");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&second).unwrap();
+    fs::write(first.join("A.md"), "# A\n").unwrap();
+    fs::write(second.join("B.md"), "# B\n").unwrap();
+    let config = dir.write(
+        "server.toml",
+        &format!(
+            "[[vaults]]\nslug = \"one\"\nname = \"One\"\npath = {:?}\n\n\
+             [[vaults]]\nslug = \"two\"\nname = \"Two\"\npath = {:?}\n",
+            first.to_str().unwrap(),
+            second.to_str().unwrap()
+        ),
+    );
+
+    let (code, out) = run(&[
+        "reindex",
+        "--config",
+        config.to_str().unwrap(),
+        "--slug",
+        "two",
+    ]);
+    assert!(is_success(code), "{out}");
+    assert!(out.contains("vault two"), "{out}");
+    assert!(!out.contains("vault one"), "{out}");
+    assert!(second.join(".memberberry/index/graph.sqlite").is_file());
+    assert!(
+        !first.join(".memberberry").exists(),
+        "a vault that was not named must not be touched"
+    );
+}
+
+#[test]
+fn reindex_reports_an_unknown_slug_rather_than_indexing_everything() {
+    let dir = TempDir::new("reindex-unknown");
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    let config = config_for(&dir, &vault);
+    let message = run_err(&[
+        "reindex",
+        "--config",
+        config.to_str().unwrap(),
+        "--slug",
+        "nope",
+    ]);
+    assert!(message.contains("nope"), "{message}");
+    assert!(!vault.join(".memberberry").exists());
+}
+
+#[test]
+fn reindex_reports_an_empty_registry() {
+    let dir = TempDir::new("reindex-empty");
+    let config = dir.write("server.toml", "");
+    let message = run_err(&["reindex", "--config", config.to_str().unwrap()]);
+    assert!(message.contains("no vaults registered"), "{message}");
+}

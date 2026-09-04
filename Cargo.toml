@@ -4,6 +4,7 @@ members = [
     "crates/mb-auth",
     "crates/mb-core",
     "crates/mb-crdt",
+    "crates/mb-index",
     "crates/mb-wasm",
     "crates/mb-server",
     "crates/mb-cli",
@@ -22,6 +23,7 @@ crc32fast = "1"
 mb-core = { path = "crates/mb-core" }
 mb-auth = { path = "crates/mb-auth" }
 mb-crdt = { path = "crates/mb-crdt" }
+mb-index = { path = "crates/mb-index" }
 mb-server = { path = "crates/mb-server" }
 mb-wasm = { path = "crates/mb-wasm" }
 thiserror = "2"

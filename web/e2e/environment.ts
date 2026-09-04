@@ -62,6 +62,12 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
   // Read-only: nothing in the suite may edit this one, which is what lets a test assert on
   // the metadata it was provisioned with.
   "Projects/Roadmap.md": "# Roadmap\n\n- [ ] Ship the workspace shell \u{1F4C5} 2026-09-30 \u{23EB}\n",
+  // Two notes that link to `Projects/Roadmap.md`, so the backlinks panel (§9.5) has
+  // something to show. Read-only: the panel's contents are asserted against the text
+  // provisioned here, so an edit would be an edit to the assertion.
+  "Links/Planning.md":
+    "# Quarter planning\n\nWe should ship [[Roadmap]] this quarter. ^commitment\n",
+  "Links/Notes.md": "# Loose notes\n\nSee also [[Projects/Roadmap#Goals]].\n",
   // Three adjacent tasks, so a test can check that neighbouring tap targets do not overlap.
   "Projects/Tasks.md": "# Tasks\n\n- [ ] First task\n- [ ] Second task\n- [x] Third task \u{2705} 2026-08-28\n",
   ...Object.fromEntries(

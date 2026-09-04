@@ -32,7 +32,7 @@ import { measureBundle } from "./bundle.ts";
 import { DEVICE_CLASSES, type DeviceClass } from "./budgets.ts";
 import { PROFILES, measureBrowser } from "./measure.ts";
 import { buildReport, formatReport, reduce, type Reduced } from "./report.ts";
-import { REPO, residentBytes, startServer } from "./server.ts";
+import { REPO, measureReindex, residentBytes, startServer } from "./server.ts";
 import { format } from "./verdict.ts";
 
 const OUT = join(REPO, "target", "perf");
@@ -139,6 +139,21 @@ async function main(): Promise<number> {
       }
     } finally {
       server.stop();
+    }
+
+    // After the server is stopped, and deliberately so: `reindex` deletes the database it
+    // rebuilds, and a live server would keep writing to the deleted file.
+    const reindex = measureReindex();
+    for (const device of DEVICE_CLASSES) {
+      measurements.push({
+        id: "reindex",
+        device,
+        value: reindex.ms,
+        samples: 1,
+        caveat:
+          `one run of \`memberberry reindex\`, ${reindex.profile} build, this machine, ` +
+          "not a device class",
+      });
     }
   }
 

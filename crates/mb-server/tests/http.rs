@@ -32,6 +32,9 @@ use support::TempDir;
 /// binary if shutdown raced. Signalling and walking away costs one short-lived thread per
 /// test and cannot hang.
 struct TestServer {
+    /// Kept so a test can drive a maintenance tick, which is how an edit made outside the
+    /// application reaches the index without waiting on a timer.
+    state: Arc<AppState>,
     addr: SocketAddr,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     default_headers: String,
@@ -39,7 +42,16 @@ struct TestServer {
 
 impl TestServer {
     fn start(state: AppState) -> Self {
-        let app = router(Arc::new(state));
+        // why: here rather than per test. `serve` builds the index before it serves its
+        // first request (`http.rs`), so a test server that did not would answer every
+        // index-backed route with an empty list — a test that cannot fail.
+        let state = Arc::new(state);
+        let errors = state.maintain_index(&mb_server::watch::Changes::All);
+        assert!(
+            errors.is_empty(),
+            "building the test vault's index: {errors:?}"
+        );
+        let app = router(Arc::clone(&state));
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let (addr_tx, addr_rx) = std::sync::mpsc::channel();
 
@@ -65,6 +77,7 @@ impl TestServer {
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the server should bind within ten seconds");
         Self {
+            state,
             addr,
             shutdown: Some(shutdown_tx),
             default_headers: String::new(),
@@ -108,6 +121,12 @@ impl TestServer {
         let mut server = Self::start(state);
         server.default_headers = format!("Cookie: mb_session={cookie}\r\n");
         server
+    }
+
+    /// Runs one index maintenance tick, as the server's own timer does.
+    fn tick(&self) {
+        let errors = self.state.maintain_index(&mb_server::watch::Changes::All);
+        assert!(errors.is_empty(), "index maintenance: {errors:?}");
     }
 
     /// Issues a GET and returns `(status line, body)`.
@@ -2058,4 +2077,183 @@ fn a_compressed_denial_is_byte_identical_whether_or_not_the_note_exists() {
         is_ok(&head.to_uppercase()) || head.starts_with("http/1.1 200"),
         "{head}"
     );
+}
+
+#[test]
+fn backlinks_name_only_notes_the_caller_can_read() {
+    // E8. The disclosure here is a *name*: a backlink row from a note bob cannot read tells
+    // him it exists, what it is called, and — through the context — what it says.
+    let dir = TempDir::new("http-backlinks");
+    dir.write("Projects/Roadmap.md", "# The Roadmap\n");
+    dir.write(
+        "Public.md",
+        "# Public\n\nWe should ship [[Roadmap]] this quarter.\n",
+    );
+    dir.write(
+        "Private/Salary.md",
+        "# Salary Review\n\nBudget for [[Roadmap]] is set. ^budget\n",
+    );
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let charlie = auth
+        .create_user(mb_auth::NewUser {
+            username: "charlie",
+            display_name: "Charlie",
+            password: "correct horse battery staple",
+        })
+        .expect("non-member");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let charlie_header = header(charlie.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+    let route = "/api/v1/vaults/v/backlinks/Projects/Roadmap.md";
+
+    // The owner sees both sources, with the block context and the source block id.
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Public.md"), "{body}");
+    assert!(body.contains("Private/Salary.md"), "{body}");
+    assert!(
+        body.contains("We should ship Roadmap this quarter."),
+        "the containing block travels as context: {body}"
+    );
+    assert!(body.contains("\"source_block\":\"budget\""), "{body}");
+    assert!(body.contains("\"note\":\"Projects/Roadmap.md\""), "{body}");
+
+    // The viewer denied `Private` sees the public source and nothing about the private one.
+    let (status, body) = server.get_with_headers(route, &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Public.md"), "{body}");
+    assert!(!body.contains("Salary"), "a denied note was named: {body}");
+    assert!(!body.contains("Private"), "nor its folder: {body}");
+    assert!(!body.contains("Budget for"), "nor its text: {body}");
+
+    // A note bob cannot read has no backlinks, and says so the way a missing note does.
+    let (status, body) =
+        server.get_with_headers("/api/v1/vaults/v/backlinks/Private/Salary.md", &bob_header);
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Roadmap"), "{body}");
+
+    // A non-member and an anonymous caller get the same empty-handed answer as an unknown
+    // vault, rather than an empty list that would confirm the note exists.
+    let (status, body) = server.get_with_headers(route, &charlie_header);
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Public"), "{body}");
+    let (status, _) = server.request("GET", route, "", "");
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.get_with_headers(
+        "/api/v1/vaults/nope/backlinks/Projects/Roadmap.md",
+        &alice_header,
+    );
+    assert!(is_not_found(&status), "{status}");
+}
+
+#[test]
+fn backlinks_resolve_a_wikilink_name_to_the_note_it_means() {
+    // §4.3: links are written by name, so the route has to accept what the editor has — the
+    // note's path — and answer for the note that name resolves to.
+    let dir = TempDir::new("http-backlinks-name");
+    dir.write("Projects/Roadmap.md", "# Roadmap\n");
+    dir.write("Q3.md", "see [[Roadmap]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for route in [
+        "/api/v1/vaults/v/backlinks/Projects/Roadmap.md",
+        "/api/v1/vaults/v/backlinks/Projects/Roadmap",
+        "/api/v1/vaults/v/backlinks/Roadmap",
+    ] {
+        let (status, body) = server.get(route);
+        assert!(is_ok(&status), "{route}: {status}");
+        assert!(
+            body.contains("\"note\":\"Projects/Roadmap.md\"") && body.contains("Q3.md"),
+            "{route}: {body}"
+        );
+    }
+}
+
+#[test]
+fn backlinks_accept_a_note_path_with_its_separators_encoded() {
+    // why: asserted rather than assumed. A client that reaches for `encodeURIComponent` on
+    // the whole path sends `%2F` instead of `/`, and whether that still routes is axum's
+    // business, not something to guess at — a wrong guess is a 404 the panel renders as
+    // silence. It does route: the wildcard matches the raw path and the captured segment is
+    // percent-decoded afterwards.
+    let dir = TempDir::new("http-backlinks-encoded");
+    dir.write("Projects/Roadmap.md", "# Roadmap\n");
+    dir.write("Q3.md", "see [[Roadmap]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/backlinks/Projects%2FRoadmap.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Q3.md"), "{body}");
+}
+
+#[test]
+fn backlinks_are_never_cached() {
+    // Note titles and note text, filtered per user. A shared cache would serve one user's
+    // filtered view to another.
+    let dir = TempDir::new("http-backlinks-cache");
+    dir.write("A.md", "# A\n");
+    dir.write("B.md", "[[A]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let headers = server
+        .headers("/api/v1/vaults/v/backlinks/A.md")
+        .to_lowercase();
+    assert!(headers.contains("cache-control: no-store"), "{headers}");
+}
+
+#[test]
+fn backlinks_follow_an_edit_made_outside_the_application() {
+    // C2 and §3.4: the files are the truth, and an edit made in Obsidian has to reach the
+    // index. The maintenance tick is what does that, so the test drives the tick rather
+    // than waiting on a timer — the assertion is about the mechanism, not the clock.
+    let dir = TempDir::new("http-backlinks-edit");
+    dir.write("A.md", "# A\n");
+    dir.write("B.md", "nothing here yet\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let route = "/api/v1/vaults/v/backlinks/A.md";
+
+    let (status, body) = server.get(route);
+    assert!(is_ok(&status), "{status}");
+    assert!(!body.contains("B.md"), "{body}");
+
+    dir.write("B.md", "now it mentions [[A]]\n");
+    server.tick();
+    let (status, body) = server.get(route);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("B.md"), "{body}");
+    assert!(body.contains("now it mentions A"), "{body}");
+
+    // And a note deleted outside the application stops being a source.
+    std::fs::remove_file(dir.path().join("B.md")).expect("delete the note");
+    server.tick();
+    let (_, body) = server.get(route);
+    assert!(!body.contains("B.md"), "{body}");
 }

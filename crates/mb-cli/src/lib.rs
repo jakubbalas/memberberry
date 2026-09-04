@@ -27,6 +27,7 @@ USAGE:
     memberberry user reset-password --username U --actor A  Replace a user's password
     memberberry normalize [--check] [PATH]...   Rewrite notes into canonical Markdown
     memberberry inspect [PATH]                  Show the parsed structure of one note
+    memberberry reindex [--slug S] [--config FILE]  Rebuild a vault's index from its notes
     memberberry gen-vault --out DIR [--notes N] Generate a synthetic vault for scale tests
 
 With no PATH, `normalize` and `inspect` read stdin and write stdout.
@@ -85,6 +86,7 @@ pub fn run(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write) -> Result
         Some("normalize") => normalize(rest, stdin, out),
         Some("inspect") => inspect(rest, stdin, out),
         Some("gen-vault") => gen_vault(rest, out),
+        Some("reindex") => reindex(rest, out),
         Some("--help" | "-h" | "help") | None => {
             write!(out, "{USAGE}").map_err(io("writing usage"))?;
             Ok(ExitCode::SUCCESS)
@@ -178,6 +180,63 @@ fn serve(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
         .block_on(mb_server::http::serve(state, addr))
         .map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// `memberberry reindex` — rebuild the derived index from the notes (`SPEC.md` §9.1).
+///
+/// Needs no authentication, and that is not an oversight: it reads the vault's own files and
+/// writes only `.memberberry/index/`, which is exactly what the server does unprompted on
+/// every start. It grants no read access to anything — the index has no unfiltered query, so
+/// building one discloses nothing (E5).
+///
+/// Rebuilding is normally unnecessary. It exists for the two cases where it is the answer: a
+/// vault whose files were replaced wholesale underneath a running server, and someone who
+/// wants the index rebuilt without waiting for the sweep.
+fn reindex(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
+    let path = config_path(args);
+    let config = mb_server::ServerConfig::load(&path).map_err(|error| error.to_string())?;
+    let vaults = config
+        .open_vaults(std::env::var_os("HOME").as_deref())
+        .map_err(|error| error.to_string())?;
+    let wanted = flag(args, "--slug");
+    let selected: Vec<&mb_server::Vault> = vaults
+        .iter()
+        .filter(|vault| wanted.is_none_or(|slug| vault.slug().as_str() == slug))
+        .collect();
+    if selected.is_empty() {
+        return Err(match wanted {
+            Some(slug) => format!("no vault `{slug}` in {}", path.display()),
+            None => format!("no vaults registered in {}", path.display()),
+        });
+    }
+
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let mut failed = false;
+    for vault in selected {
+        // Dropped first, so the rebuild starts from nothing rather than from whatever the
+        // last run left. A stale row is exactly what someone running this wants gone.
+        let database = vault.root().join(".memberberry/index/graph.sqlite");
+        if database.exists()
+            && let Err(error) = fs::remove_file(&database)
+        {
+            writeln!(out, "vault {}: {error}", vault.slug()).map_err(io("writing report"))?;
+            failed = true;
+            continue;
+        }
+        let errors = registry.maintain(std::iter::once(vault), &mb_server::watch::Changes::All);
+        for error in &errors {
+            writeln!(out, "{error}").map_err(io("writing report"))?;
+        }
+        failed |= !errors.is_empty();
+        let notes = vault.notes().map_or(0, |notes| notes.len());
+        writeln!(out, "vault {}: indexed {notes} notes", vault.slug())
+            .map_err(io("writing report"))?;
+    }
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// `memberberry vault {list, create, remove}` — the registry (`SPEC.md` §6.1).
@@ -575,7 +634,12 @@ fn inspect(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write) -> Result
     writeln!(out, "links:      {}", facts.links.len()).map_err(&w)?;
     writeln!(out, "tags:       {}", join(&facts.tags)).map_err(&w)?;
     writeln!(out, "emoji:      {}", join(&facts.emoji)).map_err(&w)?;
-    writeln!(out, "anchors:    {}", join(&facts.anchors)).map_err(&w)?;
+    let anchors: Vec<String> = facts
+        .anchors
+        .iter()
+        .map(|block| block.anchor.clone())
+        .collect();
+    writeln!(out, "anchors:    {}", join(&anchors)).map_err(&w)?;
     writeln!(out, "media:      {}", join(&facts.media)).map_err(&w)?;
     writeln!(out, "tasks:      {}", facts.tasks.len()).map_err(&w)?;
     for task in &facts.tasks {

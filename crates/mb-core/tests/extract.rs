@@ -66,7 +66,8 @@ fn a_task_carries_its_block_anchor_so_a_task_view_can_link_back() {
     let e = ex("- [x] done ^task-1\n");
     assert_eq!(e.tasks[0].anchor.as_deref(), Some("task-1"));
     assert_eq!(e.tasks[0].task.status, TaskStatus::Done);
-    assert_eq!(e.anchors, vec!["task-1"]);
+    assert_eq!(e.anchors[0].anchor, "task-1");
+    assert_eq!(e.anchors[0].text, "done");
 }
 
 #[test]
@@ -281,4 +282,103 @@ fn an_embed_is_flagged_and_anchors_are_kept() {
     assert!(e.links[0].embed);
     assert!(!e.links[1].embed);
     assert_eq!(e.links[1].alias.as_deref(), Some("alias"));
+}
+
+// --- Link attribution: which block a link sits in, and what that block says (§9.1, §9.5).
+
+#[test]
+fn a_link_carries_the_text_of_the_paragraph_it_sits_in() {
+    let e = ex("Ship notes: see [[Roadmap]] before Friday.\n");
+    assert_eq!(
+        e.links[0].context.as_deref(),
+        Some("Ship notes: see Roadmap before Friday.")
+    );
+}
+
+#[test]
+fn a_link_in_an_anchored_paragraph_names_that_block() {
+    let e = ex("The plan is [[Roadmap]] ^plan\n");
+    assert_eq!(e.links[0].source_block.as_deref(), Some("plan"));
+}
+
+#[test]
+fn a_link_in_an_unanchored_block_has_no_source_block() {
+    let e = ex("See [[Roadmap]].\n");
+    assert_eq!(e.links[0].source_block, None);
+    assert!(e.links[0].context.is_some());
+}
+
+#[test]
+fn a_link_inside_a_list_item_is_attributed_to_the_item_not_the_list() {
+    let e = ex("- first item\n- second mentions [[Roadmap]]\n");
+    // why: the whole list would be useless as backlink context in a note with a 40-item
+    // list. The innermost block that contains the link is the one that describes it.
+    assert_eq!(
+        e.links[0].context.as_deref(),
+        Some("second mentions Roadmap")
+    );
+}
+
+#[test]
+fn a_link_inside_a_blockquote_is_attributed_to_its_paragraph() {
+    let e = ex("> quoted [[Roadmap]] here\n");
+    assert_eq!(e.links[0].context.as_deref(), Some("quoted Roadmap here"));
+}
+
+#[test]
+fn a_link_in_a_table_cell_is_attributed_to_the_whole_table() {
+    // A single cell is rarely a sentence, and the block model does not model a cell as a
+    // block, so the table is the smallest honest unit of context.
+    let e = ex("| a | b |\n| --- | --- |\n| see [[Roadmap]] | done |\n");
+    assert_eq!(e.links[0].context.as_deref(), Some("a b see Roadmap done"));
+}
+
+#[test]
+fn a_link_in_a_heading_is_attributed_to_the_heading() {
+    let e = ex("## Work on [[Roadmap]]\n");
+    assert_eq!(e.links[0].context.as_deref(), Some("Work on Roadmap"));
+}
+
+#[test]
+fn a_link_in_a_callout_is_attributed_to_its_own_paragraph() {
+    let e = ex("> [!note] Heads up\n> see [[Roadmap]]\n");
+    assert_eq!(e.links[0].context.as_deref(), Some("see Roadmap"));
+}
+
+#[test]
+fn two_links_in_one_block_share_its_context_and_block_id() {
+    let e = ex("Compare [[A]] with [[B]] ^cmp\n");
+    assert_eq!(e.links.len(), 2);
+    assert_eq!(e.links[0].context, e.links[1].context);
+    assert_eq!(e.links[0].source_block.as_deref(), Some("cmp"));
+    assert_eq!(e.links[1].source_block.as_deref(), Some("cmp"));
+}
+
+#[test]
+fn links_in_different_blocks_get_different_contexts() {
+    let e = ex("First [[A]].\n\nSecond [[B]].\n");
+    assert_eq!(e.links[0].context.as_deref(), Some("First A."));
+    assert_eq!(e.links[1].context.as_deref(), Some("Second B."));
+}
+
+// --- Anchored blocks (§9.1 `blocks`).
+
+#[test]
+fn an_anchored_block_is_indexed_with_its_text() {
+    let e = ex("The layered truth model has three levels. ^layer-model\n");
+    assert_eq!(e.anchors.len(), 1);
+    assert_eq!(e.anchors[0].anchor, "layer-model");
+    assert_eq!(
+        e.anchors[0].text,
+        "The layered truth model has three levels."
+    );
+}
+
+#[test]
+fn a_repeated_block_id_keeps_the_first_definition() {
+    // A duplicate id is a malformed note; a reference resolves to the first one, so that is
+    // what the index must hold. Silently keeping the last would make the two disagree.
+    let e = ex("first ^dup\n\nsecond ^dup\n");
+    assert_eq!(e.anchors.len(), 1);
+    assert_eq!(e.anchors[0].text, "first");
 }

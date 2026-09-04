@@ -109,6 +109,17 @@ export const BUDGETS: readonly Budget[] = [
     desktop: 150 * 1024 * 1024,
     note: "server-side; no device class",
   },
+  {
+    id: "reindex",
+    metric: "Full reindex, 10k notes",
+    unit: "ms",
+    // §21.2 gives this row a desktop figure and a dash for mobile: it is server work, and a
+    // phone is not the machine that does it. The same number goes in both columns because a
+    // budget of `undefined` would make the metric unreportable rather than unbudgeted.
+    mobile: 30_000,
+    desktop: 30_000,
+    note: "server-side; no device class. §21.8 has where the time goes",
+  },
 ];
 
 export const PENDING: readonly Pending[] = [
@@ -152,12 +163,6 @@ export const PENDING: readonly Pending[] = [
       "the budget is written for a loaded index, which does not exist. The JS heap is " +
       "measurable today but is not the same quantity, and reporting it under this row " +
       "would be a number that looks like compliance without being it",
-  },
-  {
-    id: "reindex",
-    metric: "Full reindex, 10k notes",
-    blockedBy: "M8",
-    reason: "there is nothing to reindex until the SQLite index lands",
   },
 ];
 

@@ -13,11 +13,13 @@
 <script lang="ts">
   import { untrack } from "svelte";
 
+  import Backlinks from "./Backlinks.svelte";
   import CommandCenter from "./CommandCenter.svelte";
   import MobileMain from "./MobileMain.svelte";
   import NoteTree from "./NoteTree.svelte";
   import PaneTree from "./PaneTree.svelte";
   import Sidebar from "./Sidebar.svelte";
+  import { BacklinkView } from "./backlinks.svelte.js";
   import { Bookmarks } from "./bookmarks.svelte.js";
   import type { NoteBootstrap } from "./bootstrap.js";
   import type { fetchVaults } from "./catalog.js";
@@ -54,6 +56,8 @@
     /** The note list and bookmarks. Supplied by a test; built from the session otherwise. */
     readonly catalog?: NoteCatalog | undefined;
     readonly bookmarks?: Bookmarks | undefined;
+    /** The backlinks of the focused note. Supplied by a test; built from the session otherwise. */
+    readonly backlinks?: BacklinkView | undefined;
   }
 
   const {
@@ -68,6 +72,7 @@
     onvault,
     catalog: suppliedCatalog,
     bookmarks: suppliedBookmarks,
+    backlinks: suppliedBacklinks,
   }: Props = $props();
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
@@ -86,6 +91,9 @@
   );
   const bookmarks = untrack(
     () => suppliedBookmarks ?? new Bookmarks({ vault: session?.vault ?? "local-demo" }),
+  );
+  const backlinks = untrack(
+    () => suppliedBacklinks ?? new BacklinkView({ vault: session?.vault ?? "local-demo" }),
   );
 
   // Seeded synchronously, then kept current by the watcher. Starting from a default and
@@ -225,8 +233,14 @@
     label="Context"
     collapsed={collapsed.right}
     ontoggle={() => toggle("right")}
-    awaiting="backlinks and the outline in M8"
-  />
+    awaiting="the outline and the local graph in M8"
+  >
+    <Backlinks
+      view={backlinks}
+      note={store.activeTab?.note}
+      onopen={(path) => store.open(path)}
+    />
+  </Sidebar>
 </div>
 
 <!-- Outside the shell element: the palettes are modal dialogs over the whole page, and the
