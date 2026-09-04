@@ -13,6 +13,13 @@
 
 * { box-sizing: border-box; }
 
+/* why: `[hidden]` is a user-agent rule, and *any* author `display` beats it however low its
+   specificity. `.slash-menu { display: flex }` therefore quietly cancelled every
+   `menu.hidden = true` in `editor-shell.ts`, and the slash menu stood open above every note
+   for two milestones while the JavaScript controlling it read as correct. One rule here
+   closes the whole class rather than the one instance of it. */
+[hidden] { display: none !important; }
+
 body {
   min-width: 20rem;
   min-height: 100vh;
@@ -27,7 +34,10 @@ body {
 .workspace { width: min(100% - var(--space-8), var(--editor-measure)); margin: 0 auto; padding: 8vh 0 var(--space-9); }
 .workspace-header { margin: 0 0 var(--space-7); }
 .eyebrow { margin: 0 0 var(--space-4); color: var(--accent-primary); font: var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
-h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-display); letter-spacing: var(--tracking-display); }
+/* Display type belongs to the page header, not to a heading inside a note. The bare `h1`
+   rule this replaces also caught every `# ` in the editor, so a note title rendered at up to
+   4.75rem inside a pane and dominated a split completely. */
+.workspace-header h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-display); letter-spacing: var(--tracking-display); }
 .lede { max-width: 36rem; margin: var(--space-5) 0 0; color: var(--text-muted); }
 .editor-panel { min-height: var(--editor-panel-min-height); padding: clamp(var(--space-7), 5vw, var(--space-9)); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--surface-note); box-shadow: var(--shadow-lg); }
 .presence-header { display: flex; align-items: center; gap: var(--space-3); min-height: var(--control-height); margin: 0 0 var(--space-5); }
@@ -58,7 +68,10 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
 .editor-control:focus-visible, .task-chip:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
 .task-inspector { color: var(--text-muted); font-size: var(--text-xs); }
 .task-inspector::before { content: "Task chips"; margin-right: var(--space-1); font-weight: var(--weight-bold); }
-.slash-menu { display: flex; flex-wrap: wrap; gap: var(--space-3); max-width: 34rem; padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-canvas); }
+/* Positioned rather than in flow: the menu opens on a keystroke, and a block appearing in
+   the column would shove the note — and the line being typed — down the screen mid-word.
+   `.editor-controls` is `position: sticky`, which makes it the containing block. */
+.slash-menu { position: absolute; z-index: 1; top: 100%; left: 0; margin: var(--space-4) 0 0; display: flex; flex-wrap: wrap; gap: var(--space-3); width: max-content; max-width: min(34rem, 100%); padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); box-shadow: var(--shadow-md); }
 .source-view { width: 100%; min-height: var(--editor-min-height); resize: vertical; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-6); color: var(--text-primary); background: var(--surface-sunken); font: var(--text-sm)/var(--leading-body) var(--font-mono); }
 .editor-panel.is-long-note .tiptap > * { content-visibility: auto; contain-intrinsic-size: auto 3.5rem; }
 .editor-surface .tiptap { min-height: var(--editor-min-height); outline: none; }
@@ -66,6 +79,47 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
 .editor-surface .tiptap > :last-child { margin-bottom: 0; }
 .editor-surface .tiptap p { margin: var(--editor-block-gap) 0; }
 .editor-surface .tiptap:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--space-4); }
+
+/* Headings inside a note are sized for a pane, not for a page. `--text-display` is the
+   workspace header's, and a note is read in a column that may be half a split wide. */
+.editor-surface .tiptap :is(h1, h2, h3, h4, h5, h6) { margin: var(--space-7) 0 var(--space-4); line-height: var(--leading-snug); letter-spacing: var(--tracking-display); }
+.editor-surface .tiptap :is(h1, h2, h3, h4, h5, h6):first-child { margin-top: 0; }
+.editor-surface .tiptap h1 { font-size: var(--text-2xl); }
+.editor-surface .tiptap h2 { font-size: var(--text-xl); }
+.editor-surface .tiptap h3 { font-size: var(--text-lg); }
+.editor-surface .tiptap :is(h4, h5, h6) { font-size: var(--text-md); letter-spacing: normal; }
+
+/* ------------------------------------------------------------------- tasks (SPEC 10.2)
+
+   "Metadata renders as inline chips, not raw emoji." The DOM is built by the node view in
+   `web/src/editor/task-view.ts`; this is what it looks like.
+
+   A task and a plain bullet share a `<ul>`, so the marker is suppressed per item rather
+   than on the list — a list holding one of each still renders both correctly. */
+.task-item { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--space-4); list-style: none; margin-left: calc(-1 * var(--space-6)); }
+.task-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-3); min-width: 0; }
+.task-body { flex: 1 1 12rem; min-width: 0; }
+.task-body > :first-child { margin-top: 0; }
+.task-body > :last-child { margin-bottom: 0; }
+
+.task-checkbox { position: relative; display: grid; place-items: center; width: var(--task-marker-size); height: var(--task-marker-size); margin-top: var(--task-marker-offset); padding: 0; border: 1.5px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--surface-note); background: var(--surface-note); font: var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.task-checkbox:hover { border-color: var(--accent-primary); }
+.task-item[data-task-status="done"] > .task-checkbox { border-color: var(--accent-primary); background: var(--accent-primary); }
+.task-item[data-task-status="cancelled"] > .task-checkbox { border-color: var(--text-muted); background: var(--text-muted); }
+/* Completed and cancelled text is struck through, which is what the `[x]` and `[-]` in the
+   file mean. Only the text: the chips stay legible so a due date is still readable. */
+.task-item[data-task-status="done"] > .task-line > .task-body,
+.task-item[data-task-status="cancelled"] > .task-line > .task-body { color: var(--text-muted); text-decoration: line-through; }
+
+.task-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.task-chip-inline { display: inline-flex; align-items: baseline; gap: var(--space-2); padding: var(--space-1) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-raised); font: var(--weight-medium) var(--text-2xs)/var(--leading-snug) var(--font-ui); white-space: nowrap; }
+button.task-chip-inline { cursor: pointer; }
+button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+/* SPEC 10.4: a marker this version does not model is shown verbatim and is not editable.
+   It reads as a label rather than a control, because that is what it is. */
+.task-chip-inline[data-task-chip="unknown"] { color: var(--text-muted); background: var(--surface-sunken); }
+.task-chip-inline[data-task-chip="due"] { border-color: color-mix(in srgb, var(--accent-primary) 40%, var(--border-subtle)); }
+.task-chip-label { color: var(--text-muted); font-weight: var(--weight-medium); }
 .offline-status { margin: var(--space-6) var(--space-4) 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
 
 /* ---------------------------------------------------------------- note tree (SPEC 8.2)
@@ -135,8 +189,28 @@ h1 { margin: 0; font-size: var(--text-display); line-height: var(--leading-displ
   .editor-controls { position: fixed; right: var(--space-4); bottom: calc(var(--space-4) + var(--bottom-chrome) + var(--keyboard-offset)); left: var(--space-4); top: auto; margin: 0; }
   .editor-toolbar { overflow-x: auto; flex-wrap: nowrap; padding: var(--space-3); }
   .editor-control { flex: 0 0 auto; min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
-  .task-inspector { display: none; }
-  .editor-toolbar.is-block-tools-open + .slash-menu { display: flex; }
+  /* The strip is pinned to the bottom here, so the menu opens upward out of it. */
+  .slash-menu { top: auto; bottom: 100%; margin: 0 0 var(--space-4); max-height: 40dvh; overflow-y: auto; }
+  /* This row used to be hidden here, on the grounds that the strip above the keyboard has
+     no space for it. That held while it was always visible; now that it appears only when a
+     task is selected it is also the *only* keyboard route to completing one at this width —
+     the inline checkbox is deliberately out of the tab order (§10.2) — so hiding it would
+     make completing a task a mouse-only feature, which §8.4 does not allow. Its controls
+     take the touch floor here rather than the desktop control height. */
+  .task-chip { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
+  /* A finger needs 44px even though the box it aims at is a third of that (§20.3), so the
+     hit area is grown with a pseudo-element rather than by inflating the visible box.
+     Its geometry is deliberately not symmetric:
+
+     - It hangs *downward* from the top of the row rather than being centred on the marker,
+       and `min-height` makes the row at least as tall as the target. Together those mean a
+       checkbox cannot reach into the task above it whatever the line metrics do. Rows
+       measure 47px today, so a centred area would not overlap either — but that is a
+       property of the current type scale, and this is a property of the rule.
+     - It stops where the text begins instead of extending 5.6px under it, so tapping the
+       first character of a task places the cursor rather than completing it. */
+  .task-item { min-height: var(--touch-target-min); }
+  .task-checkbox::after { content: ""; position: absolute; top: calc(-1 * var(--task-marker-offset)); height: var(--touch-target-min); right: calc(-1 * var(--space-4)); left: calc(var(--task-marker-size) + var(--space-4) - var(--touch-target-min)); }
   .ProseMirror-yjs-cursor > div { display: none; }
 }
 

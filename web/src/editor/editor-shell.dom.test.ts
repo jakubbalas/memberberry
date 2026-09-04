@@ -6,13 +6,14 @@ import { resolve } from "node:path";
 import { Editor } from "@tiptap/core";
 import { applyUpdate, Doc } from "yjs";
 import { Awareness } from "y-protocols/awareness";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { load, updateFromMarkdown } from "../notes.js";
 import { createConnectionStatus } from "./collaboration.js";
 import { mountEditorShell } from "./editor-shell.js";
 import { PRESENCE_CLIENT_ATTRIBUTE } from "./presence.js";
 import { createMemberberryExtensions } from "./schema.js";
+import { taskItemView } from "./task-view.js";
 
 const contractPath = resolve(process.cwd(), "../crates/mb-core/schema.json");
 const contract = JSON.parse(readFileSync(contractPath, "utf8")) as unknown;
@@ -323,5 +324,254 @@ describe("the toolbar above the virtual keyboard", () => {
 
     mounted.destroy();
     expect(fake.listenerCount).toBe(0);
+  });
+});
+
+/**
+ * The control strip, and what it shows when (`SPEC.md` §8.4, §10.2).
+ *
+ * All three rows — toolbar, slash menu, task inspector — were permanently visible above
+ * every note from M3 until now, roughly 380px of chrome per pane and twice that in a split.
+ * The slash menu's own JavaScript had always set `hidden` correctly; `.slash-menu { display:
+ * flex }` in the stylesheet cancelled it, because an author rule beats the user agent's
+ * `[hidden]` however low its specificity. Nothing could see that: `hidden` read `true` in
+ * every unit test while the menu stood open in the browser.
+ *
+ * So these tests assert on `hidden`, and `tokens.spec.ts` in the E2E suite asserts on the
+ * height a browser actually gives the strip. Neither alone would have caught it.
+ */
+describe("what the control strip shows, and when", () => {
+  async function mount(markdown = "# Note\n") {
+    const panel = document.createElement("section");
+    const surface = document.createElement("div");
+    const status = document.createElement("p");
+    panel.append(surface);
+    document.body.append(panel, status);
+    const editor = new Editor({
+      element: surface,
+      extensions: [...createMemberberryExtensions(contract), taskItemView],
+    });
+    const ydoc = new Doc();
+    applyUpdate(ydoc, await updateFromMarkdown(markdown));
+    const shell = mountEditorShell({ editor, document: ydoc, panel, status });
+
+    const find = <T extends HTMLElement>(selector: string): T => {
+      const found = panel.querySelector<T>(selector);
+      if (found === null) throw new Error(`${selector} is not in the control strip`);
+      return found;
+    };
+    return {
+      editor,
+      panel,
+      menu: find<HTMLElement>(".slash-menu"),
+      inspector: find<HTMLElement>(".task-inspector"),
+      due: find<HTMLInputElement>("[aria-label='Task due date']"),
+      priority: find<HTMLSelectElement>("[aria-label='Task priority']"),
+      /** The labels of the commands the menu is currently offering. */
+      offered: (): readonly string[] =>
+        [...panel.querySelectorAll<HTMLElement>(".slash-menu [role='menuitem']")]
+          .filter((item) => !item.hidden)
+          .map((item) => item.textContent ?? ""),
+      type: (text: string): void => {
+        editor.commands.insertContent(text);
+        editor.view.dom.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+      },
+      /** Types into an empty block, so one case cannot leave text behind for the next. */
+      retype: (text: string): void => {
+        editor.commands.clearContent();
+        editor.commands.insertContent(text);
+        editor.view.dom.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+      },
+      destroy: (): void => {
+        shell.destroy();
+        editor.destroy();
+        ydoc.destroy();
+        panel.remove();
+        status.remove();
+      },
+    };
+  }
+
+  /** A document with a paragraph before a task, so the selection has somewhere else to be. */
+  const WITH_TASK = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "Intro" }] },
+      {
+        type: "bullet_list",
+        content: [
+          {
+            type: "task_item",
+            attrs: { status: "todo", due: "2026-09-30", priority: "high", unknown: [] },
+            content: [{ type: "paragraph", content: [{ type: "text", text: "Ship it" }] }],
+          },
+        ],
+      },
+    ],
+  };
+
+  it("opens no menu and no inspector on a note that is just being read", async () => {
+    const mounted = await mount();
+    try {
+      expect(mounted.menu.hidden).toBe(true);
+      expect(mounted.inspector.hidden).toBe(true);
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("opens the menu when a slash is typed and closes it on the space that ends it", async () => {
+    const mounted = await mount();
+    try {
+      mounted.type("/");
+      expect(mounted.menu.hidden).toBe(false);
+
+      mounted.type("task ");
+      expect(mounted.menu.hidden).toBe(true);
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("leaves a slash inside a word alone", async () => {
+    // The regression this rules out is the menu popping open on a URL or a date written
+    // `9/3`, which the old "any slash anywhere in the block" test would have done — and
+    // which nobody would have noticed while the menu never closed anyway.
+    const mounted = await mount();
+    try {
+      mounted.retype("see https://example.com");
+      expect(mounted.menu.hidden).toBe(true);
+
+      mounted.retype("due 9/3");
+      expect(mounted.menu.hidden).toBe(true);
+
+      // The case that separates "a slash that starts a word" from "a slash anywhere in the
+      // block": the text after this slash *is* a command name, so a permissive match opens
+      // the menu over a folder path someone is simply typing.
+      mounted.retype("Projects/task");
+      expect(mounted.menu.hidden).toBe(true);
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("narrows the menu to what has been typed after the slash", async () => {
+    const mounted = await mount();
+    try {
+      mounted.type("/");
+      expect(mounted.offered().length).toBeGreaterThan(1);
+
+      mounted.type("ta");
+      expect(mounted.offered()).toEqual(["Task", "Table"]);
+
+      mounted.type("s");
+      expect(mounted.offered()).toEqual(["Task"]);
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("closes rather than showing an empty menu when nothing matches", async () => {
+    const mounted = await mount();
+    try {
+      mounted.type("/zzz");
+
+      expect(mounted.menu.hidden).toBe(true);
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("opens the whole menu on a long press, which is the mobile route in (§8.3)", async () => {
+    // This used to be a class the stylesheet turned into a `display: flex` — a second switch
+    // for the same menu, which could not agree with `hidden`. There is one switch now, so
+    // this is the test that it is still wired to the long press at all.
+    vi.useFakeTimers();
+    const mounted = await mount();
+    try {
+      mounted.editor.view.dom.dispatchEvent(new PointerEvent("pointerdown", { pointerType: "touch", bubbles: true }));
+      vi.advanceTimersByTime(500);
+
+      expect(mounted.menu.hidden).toBe(false);
+      expect(mounted.offered().length).toBeGreaterThan(1);
+    } finally {
+      mounted.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the inspector only while a task is selected", async () => {
+    const mounted = await mount();
+    mounted.editor.commands.setContent(WITH_TASK);
+    try {
+      mounted.editor.commands.setTextSelection(3);
+      expect(mounted.editor.isActive("task_item")).toBe(false);
+      expect(mounted.inspector.hidden).toBe(true);
+
+      mounted.editor.commands.setTextSelection(11);
+      expect(mounted.editor.isActive("task_item")).toBe(true);
+      expect(mounted.inspector.hidden).toBe(false);
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("fills the inspector from the selected task rather than leaving it blank", async () => {
+    // The old row was permanently visible *and* permanently empty: selecting a task due on
+    // the 30th showed an empty date field, which invites overwriting it with nothing.
+    const mounted = await mount();
+    mounted.editor.commands.setContent(WITH_TASK);
+    try {
+      mounted.editor.commands.setTextSelection(11);
+
+      expect(mounted.due.value).toBe("2026-09-30");
+      expect(mounted.priority.value).toBe("high");
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("does not overwrite a control the user is currently typing in", async () => {
+    // Every keystroke is a transaction and every transaction re-syncs this row, so seeding
+    // the date input from the document mid-entry would fight whoever is in it.
+    const mounted = await mount();
+    mounted.editor.commands.setContent(WITH_TASK);
+    try {
+      mounted.editor.commands.setTextSelection(11);
+      mounted.due.focus();
+      mounted.due.value = "2026-12-01";
+
+      mounted.editor.commands.setTextSelection(12);
+
+      expect(mounted.due.value).toBe("2026-12-01");
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("focuses the due date field when a due chip is clicked (§10.2)", async () => {
+    const mounted = await mount();
+    mounted.editor.commands.setContent(WITH_TASK);
+    try {
+      const chip = mounted.panel.querySelector<HTMLElement>("[data-task-chip='due']");
+      expect(chip, "the task should render an inline due chip").not.toBeNull();
+      chip?.click();
+
+      expect(mounted.inspector.hidden).toBe(false);
+      expect(document.activeElement).toBe(mounted.due);
+    } finally {
+      mounted.destroy();
+    }
+  });
+
+  it("stops listening to the editor when the note closes", async () => {
+    // A pane is opened and closed constantly under tabs and splits, so a selection listener
+    // left behind is a fast leak — and one that writes into a detached control strip.
+    const mounted = await mount();
+    const before = mounted.editor.storage;
+    mounted.destroy();
+
+    expect(before).toBeDefined();
+    expect(document.querySelector(".editor-controls")).toBeNull();
   });
 });

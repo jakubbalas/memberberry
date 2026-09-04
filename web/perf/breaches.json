@@ -1,10 +1,10 @@
 {
   "critical-bundle-gzip": {
     "recorded": {
-      "mobile": 526850,
-      "desktop": 526850
+      "mobile": 528249,
+      "desktop": 528249
     },
-    "reason": "SPEC §21.1: 514.5 KB gzip against the 350 KB budget, 355 KB of it mb_bg.wasm. The WASM doubled between M0 and M7 and mb-crdt's yrs is the suspect; the JS has grown with the M7 shell. Untried levers: opt-level s/z for the wasm build, wasm-opt -Oz, and splitting mb-crdt out of the initial chunk. Compression is the bigger win and comes first — the server sends this uncompressed today. Carried, not ignored: this harness exists so §21.3's measure-before-and-after can be satisfied before anyone touches opt-level. Tolerance is 0% for bytes, so any growth from here fails the build."
+    "reason": "SPEC §21.1: 516 KB gzip against the 350 KB budget, 355 KB of it mb_bg.wasm. The WASM doubled between M0 and M7 and mb-crdt's yrs is the suspect; the JS has grown with the M7 shell. Untried levers: opt-level s/z for the wasm build, wasm-opt -Oz, and splitting mb-crdt out of the initial chunk. Compression is the bigger win and comes first — the server sends this uncompressed today. Carried, not ignored: this harness exists so §21.3's measure-before-and-after can be satisfied before anyone touches opt-level. Tolerance is 0% for bytes, so any growth from here fails the build.\n\nRaised by 1,399 bytes (526,850 → 528,249) for the inline task view: the node view in web/src/editor/task-view.ts, its chip helpers, and the CSS for both. That is §10.2 — a checkbox and metadata chips — which the application shipped without through M7, so this is a required feature and not an optional one, and 1.4 KB is proportionate to it. It is measured rather than estimated, and it changes none of the reasoning above: the 355 KB of WASM is still where the budget is lost and still where the fix is. Re-measure this line after compression lands rather than trimming a kilobyte of feature code for it."
   },
   "keystroke-to-paint": {
     "recorded": {

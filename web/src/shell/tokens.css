@@ -63,6 +63,11 @@
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-md: 1rem;
+  /* The two steps between body text and the largest heading a note uses. They arrived with
+     the editor's heading scale: a note is read in a pane that may be half a split wide, so
+     its headings are sized from here rather than from `--text-display`. */
+  --text-lg: 1.15rem;
+  --text-xl: 1.4rem;
   --text-2xl: 1.75rem;
   /* The one fluid step: the note title, which is the page's only display type. */
   --text-display: clamp(2.3rem, 7vw, 4.75rem);
@@ -135,6 +140,12 @@
   --control-height: 2.25rem;
   /* 44px. SPEC.md §8.3 and §20.3: the floor for anything a finger has to hit. */
   --touch-target-min: 2.75rem;
+  /* The task checkbox (§10.2). Sized to the text it sits beside rather than to
+     `--control-height`, which would make a list of tasks a column of buttons. Its *hit* area
+     is grown to `--touch-target-min` on touch without changing this box. */
+  --task-marker-size: 1.05rem;
+  /* How far the marker drops to sit on the first line's baseline rather than its box top. */
+  --task-marker-offset: 0.28rem;
 
   /* ---------------------------------------------------------------- editor */
   /* measure is the reading column width; block-gap is the vertical rhythm between blocks

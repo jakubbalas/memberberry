@@ -102,3 +102,69 @@ test("every interactive control clears the 44px touch floor on mobile", async ({
   const tooSmall = measured.filter((c) => c.width < 44 || c.height < 44);
   expect(tooSmall, "every visible control must be reachable by a finger").toEqual([]);
 });
+
+test("the task inspector's controls clear the touch floor when a task is selected", async ({ page }, info) => {
+  test.skip(info.project.name !== "mobile", "the floor is a mobile requirement (SPEC §8.3)");
+
+  // The row is hidden until a task is selected (§10.2), so it cannot be measured on a note
+  // that has none — and it was previously hidden at this width altogether. It is shown here
+  // because the inline checkbox is out of the tab order, which makes this the only keyboard
+  // route to completing a task on a phone. A control nobody can hit is not a route.
+  await signIn(page);
+  await page.goto("/v/personal/Projects/Roadmap.md");
+  await page.getByText("Ship the workspace shell").click();
+
+  const inspector = page.locator(".task-inspector");
+  await expect(inspector).toBeVisible();
+
+  const controls = await inspector.locator(".editor-control, .task-chip").all();
+  expect(controls.length, "the inspector should offer controls to press").toBeGreaterThan(0);
+
+  const tooSmall: string[] = [];
+  for (const control of controls) {
+    const box = await control.boundingBox();
+    if (box === null) continue;
+    if (box.width < 44 || box.height < 44) {
+      tooSmall.push(`${await control.getAttribute("aria-label")}: ${box.width}×${box.height}`);
+    }
+  }
+  expect(tooSmall, "every control in the inspector must be reachable by a finger").toEqual([]);
+});
+
+test("a task's checkbox is a 44px target that does not overlap its neighbours", async ({ page }, info) => {
+  test.skip(info.project.name !== "mobile", "the floor is a mobile requirement (SPEC §8.3)");
+
+  // Two assertions that have to be made together, because satisfying either one alone is
+  // easy and wrong. A 44px area centred on a 17px marker clears the floor — and, at the 26px
+  // of row pitch a list of tasks actually has, reaches 18px into the task above, so tapping
+  // near a boundary completes the wrong one. Big enough *and* inside its own row.
+  await signIn(page);
+  await page.goto("/v/personal/Projects/Tasks.md");
+  await expect(page.locator(".editor-surface .tiptap")).toContainText("Second task");
+
+  const targets = await page.locator(".task-checkbox").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const box = node.getBoundingClientRect();
+      const after = getComputedStyle(node, "::after");
+      const inset = (value: string): number => Number.parseFloat(value) || 0;
+      // Rounded to whole pixels: the width is composed from `rem` arithmetic and lands on
+      // 43.996875, which is 44 once the device rounds it. Half a pixel is not the difference
+      // between reachable and not, and comparing raw floats to 44 fails on nothing else.
+      return {
+        top: box.top + inset(after.top),
+        left: box.left + inset(after.left),
+        width: Math.round(box.width - inset(after.left) - inset(after.right)),
+        height: Math.round(Number.parseFloat(after.height) || box.height),
+      };
+    }),
+  );
+
+  expect(targets.length, "the fixture should render three tasks").toBe(3);
+  expect(targets.filter((t) => t.width < 44 || t.height < 44)).toEqual([]);
+
+  const overlaps = targets
+    .slice(1)
+    .map((target, index) => ({ index, gap: target.top - ((targets[index]?.top ?? 0) + (targets[index]?.height ?? 0)) }))
+    .filter((pair) => pair.gap < 0);
+  expect(overlaps, "no checkbox may reach into the row above it").toEqual([]);
+});

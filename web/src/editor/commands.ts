@@ -2,7 +2,7 @@
 
 import { Extension, InputRule, textblockTypeInputRule, wrappingInputRule, type Editor } from "@tiptap/core";
 import { Fragment } from "@tiptap/pm/model";
-import { parseNaturalDate, todayDate, type TaskPriority } from "./task-metadata.js";
+import { parseNaturalDate, toggledTaskAttributes, type TaskPriority } from "./task-metadata.js";
 
 export type BlockKind = "paragraph" | "heading" | "bullet_list" | "ordered_list" | "task_item" | "blockquote" | "callout" | "code_block" | "divider" | "table";
 
@@ -53,12 +53,9 @@ export function setTaskDue(editor: Editor, input: string, now?: Date): boolean {
 
 /** Toggles task completion and writes today's completion date as required by SPEC.md §10.2. */
 export function toggleTask(editor: Editor, now?: Date): boolean {
-  const attrs = editor.getAttributes("task_item");
-  const done = attrs["status"] === "done";
-  return editor.chain().focus().updateAttributes("task_item", {
-    status: done ? "todo" : "done",
-    done: done ? null : todayDate(now),
-  }).run();
+  // Shared with the inline checkbox in `task-view.ts`: two ways to complete a task that
+  // disagreed about the `✅` date would be two different documents on disk.
+  return editor.chain().focus().updateAttributes("task_item", toggledTaskAttributes(editor.getAttributes("task_item"), now)).run();
 }
 
 /** Moves the selected top-level block one position, preserving its generated node shape. */

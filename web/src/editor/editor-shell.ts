@@ -9,7 +9,8 @@ import { PRESENCE_CLIENT_ATTRIBUTE, trackPresenceIdle } from "./presence.js";
 
 import { insertBlock, moveCurrentBlock, runTaskSlashCommand, setHeading, setTaskDue, setTaskPriority, slashCommands, toggleTask } from "./commands.js";
 import { applySourceMarkdown, copyMarkdown, editorMarkdown, longNoteMode, setLongNoteMode } from "./source.js";
-import type { TaskPriority } from "./task-metadata.js";
+import { TASK_CHIP_EVENT, type TaskChipEventDetail } from "./task-view.js";
+import type { TaskChipField, TaskPriority } from "./task-metadata.js";
 
 export interface EditorShell {
   destroy(): void;
@@ -63,8 +64,8 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   }
   toolbar.append(sourceToggle, copy);
 
-  const taskControls = taskInspector(options.editor);
-  controls.append(taskControls, source);
+  const inspector = taskInspector(options.editor);
+  controls.append(inspector.element, source);
   options.panel.prepend(controls);
   const presence = options.awareness === undefined
     ? undefined
@@ -86,6 +87,32 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   const onKeyUp = (): void => slash.sync();
   options.editor.view.dom.addEventListener("keydown", onKeyDown);
   options.editor.view.dom.addEventListener("keyup", onKeyUp);
+
+  // §10.2: clicking a chip opens its picker. The node view has already moved the selection
+  // onto the task it belongs to, so the inspector below is showing the right one.
+  const onChip = (event: Event): void => {
+    const detail: unknown = event instanceof CustomEvent ? event.detail : undefined;
+    if (typeof detail === "object" && detail !== null && "field" in detail) {
+      inspector.open((detail as TaskChipEventDetail).field);
+    }
+  };
+  options.editor.view.dom.addEventListener(TASK_CHIP_EVENT, onChip);
+
+  /**
+   * The control strip shows only what applies to where the cursor is.
+   *
+   * Both rows below the toolbar were built always-on for M3's convenience and stayed that
+   * way through M7, which is what made the strip about 380px tall above *every* note and
+   * twice that in a split. The slash menu belongs to a `/` being typed and the inspector to a
+   * task being selected; neither is a property of having a note open.
+   */
+  const refreshControls = (): void => {
+    inspector.sync(options.editor.isActive("task_item") ? options.editor.getAttributes("task_item") : null);
+    slash.sync();
+  };
+  options.editor.on("selectionUpdate", refreshControls);
+  options.editor.on("update", refreshControls);
+  refreshControls();
 
   const refreshLongNoteMode = (): void => setLongNoteMode(options.panel, longNoteMode(options.editor));
   options.editor.on("update", refreshLongNoteMode);
@@ -128,7 +155,10 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   let pressTimer: number | undefined;
   const onPointerDown = (event: PointerEvent): void => {
     if (event.pointerType !== "touch") return;
-    pressTimer = window.setTimeout(() => toolbar.classList.add("is-block-tools-open"), 450);
+    // The M3 long-press block menu (§8.3). It used to add a class the stylesheet turned into
+    // a `display: flex`, which is a second way of deciding whether the menu is open — and
+    // one that could not agree with `hidden`. There is one switch now, and it is this.
+    pressTimer = window.setTimeout(() => slash.show(), 450);
   };
   const clearPress = (): void => {
     if (pressTimer !== undefined) window.clearTimeout(pressTimer);
@@ -142,9 +172,12 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     destroy: () => {
       options.editor.view.dom.removeEventListener("keydown", onKeyDown);
       options.editor.view.dom.removeEventListener("keyup", onKeyUp);
+      options.editor.view.dom.removeEventListener(TASK_CHIP_EVENT, onChip);
       options.editor.view.dom.removeEventListener("pointerdown", onPointerDown);
       options.editor.view.dom.removeEventListener("pointerup", clearPress);
       options.editor.view.dom.removeEventListener("pointercancel", clearPress);
+      options.editor.off("selectionUpdate", refreshControls);
+      options.editor.off("update", refreshControls);
       options.editor.off("update", refreshLongNoteMode);
       visualViewport?.removeEventListener("resize", positionToolbar);
       visualViewport?.removeEventListener("scroll", positionToolbar);
@@ -223,10 +256,26 @@ function mountPresence(panel: HTMLElement, awareness: Awareness, connection?: Co
   };
 }
 
-function taskInspector(editor: Editor): HTMLElement {
-  const inspector = document.createElement("div");
-  inspector.className = "task-inspector";
-  inspector.setAttribute("aria-label", "Task metadata chips");
+interface TaskInspector {
+  readonly element: HTMLElement;
+  /** Shows the row for the selected task's attributes, or hides it when none is selected. */
+  sync(attrs: Readonly<Record<string, unknown>> | null): void;
+  /** Focuses the control a clicked chip stands for (§10.2). */
+  open(field: TaskChipField): void;
+}
+
+/**
+ * The task metadata row: the keyboard route to everything the inline chips offer.
+ *
+ * It is hidden unless a task is selected. It also *reads* the selected task now — before,
+ * the date input and the priority menu were permanently blank, so selecting a task due on
+ * the 30th and opening the picker showed you an empty field and invited you to overwrite it.
+ */
+function taskInspector(editor: Editor): TaskInspector {
+  const element = document.createElement("div");
+  element.className = "task-inspector";
+  element.hidden = true;
+  element.setAttribute("aria-label", "Task metadata chips");
   const complete = button("Complete", "Toggle selected task completion");
   const due = document.createElement("input");
   due.type = "date";
@@ -244,31 +293,103 @@ function taskInspector(editor: Editor): HTMLElement {
   complete.addEventListener("click", () => toggleTask(editor));
   due.addEventListener("change", () => { setTaskDue(editor, due.value); });
   priority.addEventListener("change", () => { setTaskPriority(editor, priority.value === "" ? null : priority.value as TaskPriority); });
-  inspector.append(complete, due, priority);
-  return inspector;
+  element.append(complete, due, priority);
+
+  return {
+    element,
+    sync: (attrs) => {
+      element.hidden = attrs === null;
+      if (attrs === null) return;
+      complete.setAttribute("aria-pressed", attrs["status"] === "done" ? "true" : "false");
+      // why: never write into a control the user is currently in. A date input is edited a
+      // field at a time and each keystroke is a transaction, so re-seeding it from the
+      // document mid-entry would fight whoever is typing in it.
+      if (document.activeElement !== due) due.value = typeof attrs["due"] === "string" ? attrs["due"] : "";
+      if (document.activeElement !== priority) priority.value = typeof attrs["priority"] === "string" ? attrs["priority"] : "";
+    },
+    open: (field) => {
+      if (field === "priority") {
+        priority.focus();
+        return;
+      }
+      // Nothing to open for a chip this row does not edit — §10.4's preserved markers above
+      // all, but also `created` and `done`, which are written by the app rather than chosen.
+      // Focusing the wrong control would be worse than doing nothing.
+      if (field !== "due") return;
+      due.focus();
+      if (typeof due.showPicker === "function") {
+        // Not every engine exposes it, and some throw unless the call is inside a user
+        // gesture. The field is focused either way, which is the part that must not fail.
+        try {
+          due.showPicker();
+        } catch {
+          // The picker is a convenience; the focused input is the feature.
+        }
+      }
+    },
+  };
 }
 
+/**
+ * The `/` menu.
+ *
+ * Two different questions were being asked of the same text, and conflating them is half of
+ * why this was always open. *Should the menu be visible* is answered by a `/` that starts a
+ * word at the end of the block with nothing but the command typed after it — so a URL, or a
+ * date written `9/3`, no longer opens it. *What did the user type* is answered permissively,
+ * because `/due tomorrow` contains a space and is still one command.
+ *
+ * The other half was CSS: `.slash-menu` declared `display: flex`, and an author rule beats
+ * the user agent's `[hidden] { display: none }` regardless of specificity. The JavaScript
+ * here has always set `hidden` correctly and it has never had any effect.
+ */
 function slashMenu(editor: Editor, toolbar: HTMLElement) {
   const menu = document.createElement("div");
   menu.className = "slash-menu";
   menu.hidden = true;
   menu.setAttribute("role", "menu");
   menu.setAttribute("aria-label", "Slash commands");
-  for (const command of slashCommands) {
+  const items = slashCommands.map((command) => {
     const item = button(command.label, command.description);
     item.setAttribute("role", "menuitem");
     item.addEventListener("click", () => { command.run(editor); menu.hidden = true; });
     menu.append(item);
-  }
+    return { command, item };
+  });
   toolbar.after(menu);
+
+  const blockText = (): string => editor.state.selection.$from.parent.textContent;
   const query = (): string | null => {
-    const text = editor.state.selection.$from.parent.textContent;
-    const matched = /\/(.*)$/.exec(text);
+    const matched = /\/(.*)$/.exec(blockText());
     return matched === null ? null : matched[1] ?? "";
   };
+  const prefix = (): string | null => {
+    const matched = /(?:^|\s)\/([^\s]*)$/.exec(blockText());
+    return matched === null ? null : (matched[1] ?? "").toLowerCase();
+  };
+
   return {
     query,
-    sync: () => { menu.hidden = query() === null; },
+    sync: (): void => {
+      const typed = prefix();
+      if (typed === null) {
+        menu.hidden = true;
+        return;
+      }
+      let matches = 0;
+      for (const { command, item } of items) {
+        const shown = command.label.toLowerCase().startsWith(typed);
+        item.hidden = !shown;
+        if (shown) matches += 1;
+      }
+      // No match is the same as no menu: an empty popover over the note is an obstruction.
+      menu.hidden = matches === 0;
+    },
+    /** Opens the full menu with no `/` typed — the mobile long-press route (§8.3). */
+    show: (): void => {
+      for (const { item } of items) item.hidden = false;
+      menu.hidden = false;
+    },
     hide: () => { menu.hidden = true; },
     destroy: () => menu.remove(),
   };

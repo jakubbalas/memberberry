@@ -10,6 +10,7 @@ import {
 } from "./collaboration.js";
 import { loadMemberberryExtensions } from "./schema.js";
 import { memberberryInputRules } from "./commands.js";
+import { taskItemView } from "./task-view.js";
 
 export interface EditorHandle {
   destroy(): void;
@@ -51,7 +52,7 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
     const createEditor = options.createEditor ?? defaultEditorFactory;
     const editor = createEditor({
       element: options.element,
-      extensions: [...extensions, memberberryInputRules, createYjsBinding(collaboration.fragment, collaboration.awareness)],
+      extensions: [...extensions, memberberryInputRules, taskItemView, createYjsBinding(collaboration.fragment, collaboration.awareness)],
       editable: options.editable ?? true,
     });
     let destroyed: Promise<void> | undefined;
