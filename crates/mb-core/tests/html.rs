@@ -189,8 +189,50 @@ fn a_block_anchor_becomes_an_element_id() {
 fn a_wikilink_uses_the_note_prefix_and_is_percent_encoded() {
     let out = h_at("[[Some Note]]\n", "/v/personal/", "/v/personal/media/");
     assert!(
-        out.contains("<a class=\"mb-wikilink\" href=\"/v/personal/Some%20Note\">Some Note</a>"),
+        out.contains(
+            "<a class=\"mb-wikilink\" href=\"/v/personal/Some%20Note\" \
+             data-target=\"Some Note\">Some Note</a>"
+        ),
         "{out}"
+    );
+}
+
+#[test]
+fn a_wikilink_carries_the_reference_as_the_file_spells_it() {
+    // A client that has to act on the link — expand a transclusion, open the note in a
+    // split — reads these rather than re-deriving them from the `href`, which is
+    // percent-encoded and cannot tell a `#Heading` from a `#^block-id`.
+    let heading = h_at("[[Note#Heading|shown]]\n", "/v/p/", "/m/");
+    assert!(heading.contains("data-target=\"Note\""), "{heading}");
+    assert!(
+        heading.contains("data-anchor-kind=\"heading\""),
+        "{heading}"
+    );
+    assert!(heading.contains("data-anchor=\"Heading\""), "{heading}");
+
+    let block = h_at("![[Note#^b-1]]\n", "/v/p/", "/m/");
+    assert!(block.contains("data-anchor-kind=\"block\""), "{block}");
+    assert!(block.contains("data-anchor=\"b-1\""), "{block}");
+
+    let plain = h_at("[[Note]]\n", "/v/p/", "/m/");
+    assert!(
+        !plain.contains("data-anchor"),
+        "no anchor means no attribute, rather than an empty one: {plain}"
+    );
+}
+
+#[test]
+fn a_wikilink_reference_cannot_close_its_own_attribute() {
+    // A note is not trusted input and a target can contain a quote. Escaped, or a filename
+    // becomes markup in every page that links to it.
+    let out = h_at("[[a\"onmouseover=alert(1) x=\"]]\n", "/v/p/", "/m/");
+    assert!(
+        out.contains("data-target=\"a&quot;onmouseover"),
+        "the quote has to be escaped inside the attribute: {out}"
+    );
+    assert!(
+        !out.contains("data-target=\"a\""),
+        "an unescaped quote would end the attribute and make the rest markup: {out}"
     );
 }
 

@@ -992,6 +992,84 @@ fn a_caret_at_the_start_of_a_line_is_ordinary_text() {
 }
 
 #[test]
+fn a_callout_keeps_a_block_anchor_written_on_a_lazy_body_line() {
+    // Regression. A callout's header line and its lazy body lines are one Markdown
+    // paragraph, so the trailing `^id` is split off that paragraph before the callout is
+    // detected — and `detect_callout` used to rebuild the body block without it. The anchor
+    // *and* its text were dropped: this normalized to `> body` with no `^b-1` anywhere.
+    let doc = parse("> [!note] Title\n> body ^b-1\n");
+    let BlockKind::Callout(callout) = &doc.blocks.first().expect("a block").kind else {
+        panic!("expected a callout, got {:?}", doc.blocks);
+    };
+    assert_eq!(
+        callout.content.first().and_then(|b| b.anchor.as_deref()),
+        Some("b-1"),
+        "the anchor belongs to the body line it was written on"
+    );
+    assert_eq!(
+        normalize("> [!note] Title\n> body ^b-1\n"),
+        "> [!note] Title\n>\n> body ^b-1\n"
+    );
+}
+
+#[test]
+fn a_callout_keeps_a_block_anchor_written_on_its_header_line() {
+    // The one anchor in the model with no home: a container block cannot carry one, so an
+    // anchor on the header line stays as title text rather than vanishing. Escaped on the
+    // way out, so the next parse reads it as the text it now is.
+    let doc = parse("> [!tip] Title ^t-1\n");
+    let BlockKind::Callout(callout) = &doc.blocks.first().expect("a block").kind else {
+        panic!("expected a callout, got {:?}", doc.blocks);
+    };
+    assert_eq!(mb_core::extract::plain_text(&callout.title), "Title ^t-1");
+    assert!(callout.content.is_empty());
+    assert_eq!(
+        normalize("> [!tip] Title ^t-1\n"),
+        "> [!tip] Title \\^t-1\n"
+    );
+}
+
+#[test]
+fn every_block_that_can_carry_an_anchor_keeps_it_through_a_round_trip() {
+    // A table over the forms an anchor is written in, because the callout losses above were
+    // invisible to every property test the crate has: the anchor was dropped *inside* parse,
+    // so the model that reaches the serializer never had it, and normalizing was idempotent
+    // on the way out. Nothing but naming the forms catches that.
+    for source in [
+        "para ^a\n",
+        "# Heading ^a\n",
+        "- item ^a\n",
+        "1. item ^a\n",
+        "- [ ] task ^a\n",
+        "> quoted ^a\n",
+        "> [!note] Title\n>\n> body ^a\n",
+        "> [!note] Title\n> body ^a\n",
+        "> [!note]\n> body ^a\n",
+    ] {
+        let anchors = |md: &str| {
+            let doc = parse(md);
+            mb_core::extract(&doc)
+                .anchors
+                .into_iter()
+                .map(|a| a.anchor)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            anchors(source),
+            vec!["a".to_string()],
+            "{source:?} lost its anchor at parse time"
+        );
+        let once = normalize(source);
+        assert_eq!(
+            anchors(&once),
+            vec!["a".to_string()],
+            "{source:?} normalized to {once:?}, which has no anchor"
+        );
+        assert_eq!(normalize(&once), once, "{source:?} is not stable");
+    }
+}
+
+#[test]
 fn an_anchor_is_not_split_off_a_block_that_cannot_carry_one() {
     // v1 recognises anchors on paragraphs and headings only; a trailing `^id` elsewhere is
     // ordinary text and must stay that way rather than vanish into a field.

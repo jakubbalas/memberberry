@@ -17,6 +17,8 @@ import { mount, tick, unmount } from "svelte";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import Workspace from "./Workspace.svelte";
+import { OPEN_NOTE_EVENT, type OpenNoteDetail } from "../editor/links.js";
+import type { resolveNote } from "./open-note.js";
 import type { NoteSurface, OpenNoteSurfaceOptions } from "./note-surface.js";
 import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
@@ -99,7 +101,11 @@ const flush = async (): Promise<void> => {
  * surfaces as an unhandled rejection from a component effect rather than as a test failure,
  * which is the most confusing shape a broken test can take.
  */
-function render(workspace: WorkspaceStore, open?: ReturnType<typeof surfaces>["open"]) {
+function render(
+  workspace: WorkspaceStore,
+  open?: ReturnType<typeof surfaces>["open"],
+  resolveLink?: typeof resolveNote,
+) {
   const app = mount(Workspace, {
     target,
     props: {
@@ -107,6 +113,7 @@ function render(workspace: WorkspaceStore, open?: ReturnType<typeof surfaces>["o
       session: { vault: "personal", user: "alice" },
       chrome: chrome(),
       open: open ?? surfaces().open,
+      ...(resolveLink === undefined ? {} : { resolveLink }),
       // The commands listen on a target rather than on the shell element, because a `div`
       // cannot hold focus. Injected here so a test drives them without touching `window`.
       target: commands,
@@ -729,5 +736,126 @@ describe("dragging a split divider", () => {
     } finally {
       teardown();
     }
+  });
+});
+
+describe("following a link out of a note (SPEC 8.2, 9.2)", () => {
+  /**
+   * Raises the event an editor raises, from inside the pane it would come from.
+   *
+   * `await flush()` before the first one is load-bearing: the shell attaches its listener in
+   * an effect, and Svelte runs effects after the mount rather than during it. Dispatching
+   * straight after `render` reaches an element nobody is listening on yet — which looks
+   * exactly like a feature that was never wired up.
+   */
+  function follow(detail: Partial<OpenNoteDetail> = {}, from?: Element): void {
+    const pane = from ?? target.querySelector(".editor-surface") ?? target.querySelector(".pane");
+    if (pane === null || pane === undefined) throw new Error("no pane to raise the event from");
+    pane.dispatchEvent(
+      new CustomEvent<OpenNoteDetail>(OPEN_NOTE_EVENT, {
+        bubbles: true,
+        detail: {
+          target: "Roadmap",
+          anchorKind: "none",
+          anchor: null,
+          intent: "here",
+          resolved: false,
+          ...detail,
+        },
+      }),
+    );
+  }
+
+  it("resolves the reference and navigates the pane it came from", async () => {
+    // The wiring nothing else covers: `embed-view.dom.test.ts` proves the event is raised
+    // and `open-note.test.ts` proves the store does the right thing with it, and between
+    // those two sat a listener that could simply not be attached.
+    const workspace = store(["Q3.md"]);
+    const teardown = render(workspace, undefined, async () => ({
+      note: "Projects/Roadmap.md",
+      title: "The Plan",
+    }));
+    await flush();
+    follow();
+    await flush();
+    expect(workspace.activeTab?.note).toBe("Projects/Roadmap.md");
+    expect(workspace.tabs).toHaveLength(1);
+    teardown();
+  });
+
+  it("resolves relative to the note the pane is showing", async () => {
+    const seen: string[] = [];
+    const workspace = store(["Projects/Q3.md"]);
+    const teardown = render(workspace, undefined, async (_vault, _target, from) => {
+      seen.push(from);
+      return { note: "A.md", title: null };
+    });
+    await flush();
+    follow();
+    await flush();
+    expect(seen).toEqual(["Projects/Q3.md"]);
+    teardown();
+  });
+
+  it("opens a tab for Mod-click and a split for Mod-Alt-click", async () => {
+    const workspace = store(["Q3.md"]);
+    const teardown = render(workspace, undefined, async () => ({ note: "A.md", title: null }));
+    await flush();
+    follow({ intent: "tab" });
+    await flush();
+    expect(workspace.tabs.map((tab) => tab.note)).toEqual(["Q3.md", "A.md"]);
+    follow({ intent: "split", target: "B" });
+    await flush();
+    expect(panes()).toHaveLength(2);
+    teardown();
+  });
+
+  it("does not resolve a path the server already resolved", async () => {
+    let asked = 0;
+    const workspace = store(["Q3.md"]);
+    const teardown = render(workspace, undefined, async () => {
+      asked += 1;
+      return { note: "Elsewhere.md", title: null };
+    });
+    await flush();
+    follow({ target: "Projects/Roadmap.md", resolved: true });
+    await flush();
+    expect(asked).toBe(0);
+    expect(workspace.activeTab?.note).toBe("Projects/Roadmap.md");
+    teardown();
+  });
+
+  it("leaves the workspace alone when the reference resolves to nothing", async () => {
+    const workspace = store(["Q3.md"]);
+    const teardown = render(workspace, undefined, async () => undefined);
+    await flush();
+    follow();
+    await flush();
+    expect(workspace.tabs.map((tab) => tab.note)).toEqual(["Q3.md"]);
+    teardown();
+  });
+
+  it("stops listening when the shell is unmounted", async () => {
+    // The order here is the test. Unmounting first and asserting nothing happened would pass
+    // just as well against a listener that was never attached, which is the shape a
+    // teardown test most often takes and the least useful one — so the listener is proven
+    // live first, and only then taken away.
+    let asked = 0;
+    const workspace = store(["Q3.md"]);
+    const teardown = render(workspace, undefined, async () => {
+      asked += 1;
+      return { note: "A.md", title: null };
+    });
+    await flush();
+    const pane = target.querySelector(".editor-surface");
+    if (pane === null) throw new Error("no pane");
+    follow({}, pane);
+    await flush();
+    expect(asked).toBe(1);
+
+    teardown();
+    follow({}, pane);
+    await flush();
+    expect(asked).toBe(1);
   });
 });

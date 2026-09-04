@@ -310,6 +310,79 @@ fn a_symlink_pointing_out_of_the_vault_is_refused() {
 }
 
 #[test]
+fn a_symlink_pointing_out_of_the_vault_is_not_listed_either() {
+    // Regression, and a leak. `resolve` refused this file all along, but `notes()` listed
+    // it — and `notes()` is what the index is built from, so the *content* of a file the
+    // note route will not serve was being indexed: its title, its tags, and the text of any
+    // block containing a link, which came back out as a backlink's context. Found while
+    // building transclusion, where the same listing decides what an `![[…]]` can name.
+    let outer = TempDir::new("symlink-list-outer");
+    let secret = outer.write("secret.md", "# Secret Outside\n");
+    let dir = TempDir::new("symlink-list-inner");
+    dir.write("Real.md", "# Real\n");
+    let link = dir.path().join("Escape.md");
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&secret, &link).expect("creating the symlink");
+    #[cfg(not(unix))]
+    {
+        let _ = (&secret, &link);
+        return;
+    }
+
+    assert_eq!(
+        vault_at(&dir).notes().expect("notes"),
+        vec!["Real.md".to_string()],
+        "a listing that names a file the vault will not serve is a listing nothing can trust"
+    );
+}
+
+#[test]
+fn a_symlinked_directory_pointing_out_of_the_vault_is_not_walked() {
+    let outer = TempDir::new("symlink-dir-outer");
+    outer.write("inside/secret.md", "# Secret Outside\n");
+    let dir = TempDir::new("symlink-dir-inner");
+    dir.write("Real.md", "# Real\n");
+    let link = dir.path().join("Linked");
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outer.path().join("inside"), &link).expect("creating the symlink");
+    #[cfg(not(unix))]
+    {
+        let _ = &link;
+        return;
+    }
+
+    assert_eq!(
+        vault_at(&dir).notes().expect("notes"),
+        vec!["Real.md".to_string()],
+        "walking a symlinked directory indexes a whole tree from outside the vault"
+    );
+}
+
+#[test]
+fn a_symlink_staying_inside_the_vault_is_still_listed() {
+    // Containment must not become "no symlinks at all" — vaults full of symlinks are
+    // ordinary, and this is the counterpart of the resolve case below.
+    let dir = TempDir::new("symlink-list-ok");
+    let target = dir.write("Real.md", "# Real\n");
+    let link = dir.path().join("Alias.md");
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &link).expect("creating the symlink");
+    #[cfg(not(unix))]
+    {
+        let _ = (&target, &link);
+        return;
+    }
+
+    assert_eq!(
+        vault_at(&dir).notes().expect("notes"),
+        vec!["Alias.md".to_string(), "Real.md".to_string()]
+    );
+}
+
+#[test]
 fn a_symlink_staying_inside_the_vault_still_resolves() {
     // Containment must not become "no symlinks at all" — that would break ordinary vaults.
     let dir = TempDir::new("symlink-inside");

@@ -27,6 +27,8 @@
   import type { Platform } from "./hotkeys.js";
   import { type SwipeStart, swipeProgress, swipeStart } from "./gestures.js";
   import { type LayoutMode, currentLayoutMode, watchLayoutMode } from "./layout.js";
+  import { OPEN_NOTE_EVENT, type OpenNoteDetail } from "../editor/links.js";
+  import { followLink, type resolveNote } from "./open-note.js";
   import type { openNoteSurface } from "./note-surface.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { groups } from "./workspace.js";
@@ -58,6 +60,8 @@
     readonly bookmarks?: Bookmarks | undefined;
     /** The backlinks of the focused note. Supplied by a test; built from the session otherwise. */
     readonly backlinks?: BacklinkView | undefined;
+    /** How a wikilink is resolved to a note. Injectable so a test needs no server. */
+    readonly resolveLink?: typeof resolveNote | undefined;
   }
 
   const {
@@ -73,6 +77,7 @@
     catalog: suppliedCatalog,
     bookmarks: suppliedBookmarks,
     backlinks: suppliedBacklinks,
+    resolveLink,
   }: Props = $props();
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
@@ -172,6 +177,50 @@
    * A layout restored from a wider device keeps its panes — they are simply not added to.
    */
 
+  /**
+   * Following a link out of a note (§8.2, §9.2).
+   *
+   * why: one listener here rather than a callback threaded down through `PaneTree` into
+   * every pane. The event bubbles out of whichever editor raised it, and the two things
+   * needed to place the result — which pane was being read, and whether a split fits — are
+   * both known here and nowhere below. Focus follows the pointer into a pane
+   * (`PaneTree.svelte`), so the focused group *is* the pane the link was clicked in.
+   */
+  let shell = $state<HTMLElement | undefined>(undefined);
+
+  $effect(() => {
+    const element = shell;
+    if (element === undefined) return;
+    const aborter = new AbortController();
+    const handle = (event: Event): void => {
+      if (!(event instanceof CustomEvent)) return;
+      const detail = event.detail as OpenNoteDetail;
+      const group = store.focusedGroup;
+      const pane = store.groups.find((candidate) => candidate.id === group);
+      const tab = pane?.tabs.find((candidate) => candidate.id === pane.activeTab);
+      if (tab === undefined) return;
+      void followLink(
+        {
+          store,
+          group,
+          tab: tab.id,
+          layout,
+          vault: vaultSlug,
+          from: tab.note,
+          signal: aborter.signal,
+          ...(resolveLink === undefined ? {} : { resolve: resolveLink }),
+        },
+        detail,
+      );
+    };
+    element.addEventListener(OPEN_NOTE_EVENT, handle);
+    return () => {
+      element.removeEventListener(OPEN_NOTE_EVENT, handle);
+      // A pane closed while a resolution is in flight must not open a tab afterwards.
+      aborter.abort();
+    };
+  });
+
   /** The edge swipes that open the drawers (§8.3). */
   let swipe = $state<SwipeStart | undefined>(undefined);
 
@@ -200,6 +249,7 @@
   role="application"
   aria-label="Memberberry workspace"
   data-layout={layout}
+  bind:this={shell}
   {onpointerdown}
   {onpointermove}
   onpointerup={endSwipe}

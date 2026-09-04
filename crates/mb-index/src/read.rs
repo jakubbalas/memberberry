@@ -39,6 +39,15 @@ pub struct Backlink {
     pub target_raw: String,
 }
 
+/// A note a reference resolved to, for this user (§4.3, §9.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// Vault-relative path — the canonical identity, which is what a caller reads by.
+    pub path: String,
+    /// Its title, or `None` when it has nothing titleable.
+    pub title: Option<String>,
+}
+
 /// Queries scoped to one user's readable set.
 ///
 /// Obtained from [`Index::reader`], which is the only way to construct one: there is no
@@ -139,6 +148,50 @@ impl Reader<'_> {
             }
         }
         Ok(groups)
+    }
+
+    /// The note `reference` names when read from `source`, for this user (§4.3, E9).
+    ///
+    /// `reference` is a wikilink target as a file spells it — `Roadmap`,
+    /// `Projects/Roadmap`, an alias — with no anchor: which *part* of the note a `#Heading`
+    /// names is [`mb_core::transclude`]'s question, not this one's.
+    ///
+    /// Candidates come from the readable set, so this is E9 for a reference that is not in
+    /// the index yet: a transclusion the user has just typed resolves against the notes
+    /// they may read, and one naming an unreadable note answers `None` exactly as one
+    /// naming a note that was never written does (§6.5).
+    ///
+    /// `source` only breaks ties. §4.3 resolves a name collision by nearest path, so
+    /// `[[Roadmap]]` read from `Projects/Q3.md` is `Projects/Roadmap.md` rather than
+    /// `Archive/Roadmap.md` — and the ordering is `readable.rs`'s, shared with the view
+    /// that resolves the links already in the index, because two rules would be two
+    /// answers.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the query itself fails.
+    pub fn resolve(&self, source: &str, reference: &str) -> Result<Option<Target>, Error> {
+        let key = crate::names::fold(reference);
+        if key.is_empty() {
+            return Ok(None);
+        }
+        let sql = format!(
+            "SELECT nn.path, (SELECT n.title FROM v_notes n WHERE n.id = nn.note_id)
+             FROM v_note_names nn
+             WHERE nn.key = ?1
+             ORDER BY {order}
+             LIMIT 1",
+            order = readable::candidate_order("?2")
+        );
+        let mut statement = self.conn.prepare_cached(&sql)?;
+        Ok(statement
+            .query_row(rusqlite::params![key, source], |row| {
+                Ok(Target {
+                    path: row.get(0)?,
+                    title: row.get(1)?,
+                })
+            })
+            .optional()?)
     }
 
     fn note_id(&self, path: &str) -> Result<Option<i64>, Error> {

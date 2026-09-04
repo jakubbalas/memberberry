@@ -85,6 +85,12 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     element: surface,
     vaultId: bootstrap?.vault ?? LOCAL_ONLY.vault,
     noteId: bootstrap?.note ?? LOCAL_ONLY.note,
+    // why: only with a server behind it. A transclusion is resolved at render time against
+    // the caller's readable set (§9.2, E7), which is a route — so a local-only replica has
+    // nothing to ask and renders an embed as the plain link it was before.
+    ...(bootstrap === undefined
+      ? {}
+      : { embeds: { vault: bootstrap.vault, note: bootstrap.note } }),
     ...(remoteSync === undefined ? {} : { remoteSync }),
     ...(options.createPersistence === undefined
       ? {}

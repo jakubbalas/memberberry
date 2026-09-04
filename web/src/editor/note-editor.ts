@@ -8,6 +8,7 @@ import {
   type CreateNoteCollaborationOptions,
   type NoteCollaboration,
 } from "./collaboration.js";
+import { type EmbedContext, embedViews } from "./embed-view.js";
 import { loadMemberberryExtensions } from "./schema.js";
 import { memberberryInputRules } from "./commands.js";
 import { taskItemView } from "./task-view.js";
@@ -29,6 +30,15 @@ export interface StartNoteEditorOptions extends CreateNoteCollaborationOptions {
   readonly editable?: boolean;
   readonly createEditor?: EditorFactory;
   readonly loadExtensions?: () => Promise<Extensions>;
+  /**
+   * What a transclusion resolves against (§9.2), or `undefined` for no server.
+   *
+   * why: absent rather than defaulted. A local-only replica — `npm run dev`, and what the
+   * editor falls back to rather than syncing under an identity nobody authenticated — has no
+   * route to ask, and an embed there renders as the plain link it always did. Defaulting to
+   * a vault name nobody granted would put a request per embed against a 404.
+   */
+  readonly embeds?: EmbedContext | undefined;
 }
 
 /** A mounted editor and the local Y.Doc it is attached to. */
@@ -52,7 +62,13 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
     const createEditor = options.createEditor ?? defaultEditorFactory;
     const editor = createEditor({
       element: options.element,
-      extensions: [...extensions, memberberryInputRules, taskItemView, createYjsBinding(collaboration.fragment, collaboration.awareness)],
+      extensions: [
+        ...extensions,
+        memberberryInputRules,
+        taskItemView,
+        ...(options.embeds === undefined ? [] : [embedViews(options.embeds)]),
+        createYjsBinding(collaboration.fragment, collaboration.awareness),
+      ],
       editable: options.editable ?? true,
     });
     let destroyed: Promise<void> | undefined;

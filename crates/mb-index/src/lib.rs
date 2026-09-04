@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
-pub use read::{Backlink, BacklinkGroup, Reader};
+pub use read::{Backlink, BacklinkGroup, Reader, Target};
 pub use write::{Changed, NoteInput, Plan, Stamp};
 
 /// Everything that can go wrong reading or maintaining an index.

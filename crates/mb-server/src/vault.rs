@@ -242,6 +242,10 @@ impl Vault {
     pub fn notes(&self) -> Result<Vec<String>, Error> {
         let mut found = Vec::new();
         let mut stack = vec![self.notes_root.clone()];
+        let base = self
+            .notes_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.notes_root.clone());
         while let Some(dir) = stack.pop() {
             let entries = std::fs::read_dir(&dir).map_err(|source| Error::ReadDir {
                 path: dir.clone(),
@@ -254,6 +258,23 @@ impl Vault {
                 })?;
                 let path = entry.path();
                 if entry.file_name().to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                // why: the same containment rule [`Vault::resolve`] applies, applied here as
+                // well. `resolve` refuses a symlink pointing out of the vault, but this
+                // listing did not — and it is what the index is built from, so the *content*
+                // of a file the note route will not serve was reaching the index and coming
+                // back out through a backlink's context text. The canonicalize is paid only
+                // for a symlink, so the ordinary 10 000-note sweep costs nothing extra
+                // (§21.2).
+                let escapes = entry
+                    .file_type()
+                    .map(|kind| kind.is_symlink())
+                    .unwrap_or(true)
+                    && !path
+                        .canonicalize()
+                        .is_ok_and(|real| real.starts_with(&base));
+                if escapes {
                     continue;
                 }
                 if path.is_dir() {

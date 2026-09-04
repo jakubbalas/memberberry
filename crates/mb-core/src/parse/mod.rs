@@ -1070,9 +1070,25 @@ fn detect_callout(
         *slot = Inline::Text(leading);
     }
 
+    // why: the header line and any lazy body lines arrive as *one* paragraph, so a
+    // trailing `^block-id` was already split off that paragraph before this function ran —
+    // and it belongs to whichever line it was written on. Dropping it here lost the anchor
+    // and its text outright: `> [!note] T\n> body ^id` round-tripped to `> body`. It is
+    // also the only anchor in the model with no home of its own, because a container block
+    // cannot carry one (see `finish_text_block`).
+    let anchor = first.anchor.clone();
     let mut body: Vec<Block> = Vec::new();
     if !trailing.is_empty() {
-        body.push(Block::new(BlockKind::Paragraph(trailing.to_vec())));
+        let paragraph = BlockKind::Paragraph(trailing.to_vec());
+        body.push(match &anchor {
+            Some(anchor) => Block::with_anchor(paragraph, anchor.clone()),
+            None => Block::new(paragraph),
+        });
+    } else if let Some(anchor) = &anchor {
+        // Written on the header line, where no block can hold it. Keeping it as title text
+        // is lossless and stable — the serializer escapes the caret, so the next parse
+        // reads it as the text it now is rather than splitting it off again.
+        title.push(Inline::Text(format!(" ^{anchor}")));
     }
     body.extend(inner.into_iter().skip(1));
 

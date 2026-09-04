@@ -548,3 +548,126 @@ fn e8_backlinks_name_no_note_the_viewer_cannot_read() {
         reader.contains("Private/Never.md").expect("contains")
     );
 }
+
+/// E7: a transclusion resolves against the caller's readable set, so an unreadable target
+/// is not a candidate — and a nearer unreadable note does not shadow a readable one.
+#[test]
+fn e7_a_transclusion_resolves_to_nothing_it_cannot_read() {
+    let dir = TempDir::new("leak-transclusion");
+    dir.write(
+        "Private/Roadmap.md",
+        "# Secret Roadmap\n\nAcquire Initech.\n",
+    );
+    dir.write("Archive/Roadmap.md", "# Old Roadmap\n\nShipped.\n");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write("Projects/Q3.md", "quarter: ![[Roadmap]]\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let mut index = index.lock().expect("index lock");
+    let alice = Username::parse("alice").expect("username");
+    let reader = index
+        .reader(access.policy(), &alice)
+        .expect("a reader for alice");
+
+    // `Private/Roadmap.md` is the nearer candidate for nobody: for alice it does not exist,
+    // so the reference means the archived one. Resolving first and dropping the result
+    // afterwards would leave a dead embed exactly where a secret note is (§9.1).
+    let target = reader
+        .resolve("Projects/Q3.md", "Roadmap")
+        .expect("resolve")
+        .expect("a readable candidate");
+    assert_eq!(target.path, "Archive/Roadmap.md");
+    let rendered = format!("{target:?}");
+    assert!(
+        !rendered.contains("Secret") && !rendered.contains("Private"),
+        "the unreadable candidate was named: {rendered}"
+    );
+
+    // And a reference that names *only* an unreadable note answers as one naming a note
+    // that was never written does.
+    assert_eq!(
+        reader.resolve("Projects/Q3.md", "Salary").expect("resolve"),
+        reader.resolve("Projects/Q3.md", "Never").expect("resolve"),
+    );
+}
+
+/// E5: nothing outside the vault reaches the index, and therefore nothing outside the vault
+/// comes back out of a query over it.
+#[test]
+fn e5_content_from_outside_the_vault_never_reaches_the_index() {
+    // The containment boundary is `Vault::resolve`, and it always refused this file — but
+    // the index is built from `Vault::notes`, which used to list it. The title and the block
+    // text of a file the note route will not serve were reaching the index and coming back
+    // out as a backlink row's context. Asserted here as well as in `vault.rs` because the
+    // property that matters is about the *query surface*: this stays true only while
+    // whatever the indexer lists by keeps the boundary.
+    let outside = TempDir::new("leak-outside");
+    outside.write(
+        "secret.md",
+        "# Secret Outside\n\nA token, and a mention of [[Shared]].\n",
+    );
+    let dir = TempDir::new("leak-symlink");
+    dir.write("Shared.md", "# Shared\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let link = dir.path().join("Escape.md");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path().join("secret.md"), &link)
+        .expect("creating the symlink");
+    #[cfg(not(unix))]
+    {
+        let _ = &link;
+        return;
+    }
+
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let mut index = index.lock().expect("index lock");
+    let alice = Username::parse("alice").expect("username");
+    let reader = index
+        .reader(access.policy(), &alice)
+        .expect("a reader for alice");
+
+    assert_eq!(
+        reader.readable_notes(),
+        1,
+        "the symlinked file was indexed as a note of this vault"
+    );
+    let rendered = format!("{:?}", reader.backlinks("Shared.md").expect("backlinks"));
+    for leak in ["Secret Outside", "A token", "Escape"] {
+        assert!(
+            !rendered.contains(leak),
+            "`{leak}` came from outside the vault: {rendered}"
+        );
+    }
+    assert_eq!(
+        reader.resolve("Shared.md", "Escape").expect("resolve"),
+        None,
+        "and it cannot be transcluded either (E7)"
+    );
+}

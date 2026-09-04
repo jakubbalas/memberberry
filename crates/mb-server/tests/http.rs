@@ -1901,6 +1901,51 @@ fn a_server_rendered_note_page_is_compressed() {
 }
 
 #[test]
+fn the_json_api_is_compressed_for_a_client_that_asks() {
+    // why: this was a documented gap rather than a known answer. The asset and note-page
+    // cases pinned the two surfaces that existed when compression landed, so whether a JSON
+    // route added a milestone later was compressed came down to whether its content type
+    // happened to be on the allowlist — true today, and nothing said so. Both index-backed
+    // routes are asserted, because "the one I remembered" is how the gap appeared.
+    let dir = TempDir::new("http-compress-api");
+    dir.write(
+        "Target.md",
+        &format!("# Target\n\n{}\n", "berries ".repeat(80)),
+    );
+    dir.write(
+        "Source.md",
+        &format!("# Source\n\n{} [[Target]]\n", "prose ".repeat(60)),
+    );
+    // Enough notes that the list itself clears the minimum-size floor; two notes do not,
+    // and a route left uncompressed for being small is not the question this test asks.
+    for n in 0..20 {
+        dir.write(
+            &format!("Filler/Note {n} with a long name.md"),
+            "# Filler\n",
+        );
+    }
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for route in [
+        "/api/v1/vaults/v/backlinks/Target.md",
+        "/api/v1/vaults/v/embed/Target?from=Source.md",
+        "/api/v1/vaults/v/notes",
+    ] {
+        let (head, body) = server.get_raw(route, "Accept-Encoding: gzip\r\n");
+        assert!(
+            head.contains("content-encoding: gzip"),
+            "{route} was not compressed: {head}"
+        );
+        assert!(head.contains("vary: accept-encoding"), "{route}: {head}");
+        let decoded = String::from_utf8(gunzip(&body)).expect("json is utf-8");
+        assert!(
+            decoded.starts_with('{'),
+            "{route} decoded to something that is not the JSON body: {decoded}"
+        );
+    }
+}
+
+#[test]
 fn compression_does_not_soften_a_denial() {
     // A route that denies is still a route, and `not_found` goes through the same layer.
     // What must not happen is a 404 turning into a 200 because the body changed shape.
@@ -2213,6 +2258,443 @@ fn backlinks_accept_a_note_path_with_its_separators_encoded() {
     let (status, body) = server.get("/api/v1/vaults/v/backlinks/Projects%2FRoadmap.md");
     assert!(is_ok(&status), "{status}");
     assert!(body.contains("Q3.md"), "{body}");
+}
+
+// ---------------------------------------------------------------- transclusion
+
+/// A vault with two same-named notes, a section, and an anchored block.
+fn embed_vault(label: &str) -> TempDir {
+    let dir = TempDir::new(label);
+    dir.write(
+        "Projects/Roadmap.md",
+        "# The Plan\n\nShip it.\n\n## Risks\n\nTime. ^risk\n\n## Later\n\nMore.\n",
+    );
+    dir.write("Archive/Roadmap.md", "# The Old Plan\n\nShipped.\n");
+    dir.write("Projects/Q3.md", "quarter: ![[Roadmap]]\n");
+    dir
+}
+
+#[test]
+fn an_embed_renders_the_note_the_reference_resolves_to() {
+    let dir = embed_vault("http-embed");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/embed/Roadmap?from=Projects/Q3.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        body.contains("\"note\":\"Projects/Roadmap.md\""),
+        "the canonical identity, so the client can compare it against its stack: {body}"
+    );
+    assert!(body.contains("\"title\":\"The Plan\""), "{body}");
+    assert!(body.contains("\"found\":true"), "{body}");
+    assert!(body.contains("Ship it."), "{body}");
+    assert!(body.contains("<h1>The Plan</h1>"), "{body}");
+}
+
+#[test]
+fn an_embed_resolves_by_nearest_path_from_the_note_it_is_written_in() {
+    // §4.3 through the route: the same reference means a different note read from a
+    // different folder, and the *client* does not get to say which — it says where it is.
+    let dir = embed_vault("http-embed-nearest");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (_, near) = server.get("/api/v1/vaults/v/embed/Roadmap?from=Projects/Q3.md");
+    assert!(near.contains("\"note\":\"Projects/Roadmap.md\""), "{near}");
+    let (_, far) = server.get("/api/v1/vaults/v/embed/Roadmap?from=Archive/Roadmap.md");
+    assert!(far.contains("\"note\":\"Archive/Roadmap.md\""), "{far}");
+}
+
+#[test]
+fn an_embed_of_a_heading_carries_only_that_section() {
+    let dir = embed_vault("http-embed-heading");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server
+        .get("/api/v1/vaults/v/embed/Roadmap?from=Projects/Q3.md&anchor_kind=heading&anchor=Risks");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("\"found\":true"), "{body}");
+    assert!(body.contains("Risks"), "{body}");
+    assert!(body.contains("Time."), "{body}");
+    assert!(!body.contains("Ship it."), "the section above it: {body}");
+    assert!(!body.contains("More."), "the section below it: {body}");
+}
+
+#[test]
+fn an_embed_of_a_block_carries_only_that_block() {
+    let dir = embed_vault("http-embed-block");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server
+        .get("/api/v1/vaults/v/embed/Roadmap?from=Projects/Q3.md&anchor_kind=block&anchor=risk");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Time."), "{body}");
+    assert!(!body.contains("Risks"), "not even its own heading: {body}");
+    assert!(!body.contains("Ship it."), "{body}");
+}
+
+#[test]
+fn an_embed_of_an_absent_anchor_says_it_found_nothing() {
+    // Not a permission boundary: the note is readable, it simply has no such section. That
+    // is a different thing to show than an empty note, and reporting it as one would be a
+    // claim nobody checked (§9.5).
+    let dir = embed_vault("http-embed-no-anchor");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server
+        .get("/api/v1/vaults/v/embed/Roadmap?from=Projects/Q3.md&anchor_kind=heading&anchor=Nope");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("\"found\":false"), "{body}");
+    assert!(body.contains("\"html\":\"\""), "{body}");
+    assert!(
+        body.contains("\"note\":\"Projects/Roadmap.md\""),
+        "the note still resolved, so the client can still offer to jump to it: {body}"
+    );
+}
+
+#[test]
+fn an_embed_of_a_missing_note_answers_empty_handed() {
+    let dir = embed_vault("http-embed-missing");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/embed/Absent?from=Projects/Q3.md");
+    assert!(
+        is_not_found(&status),
+        "a missing target answers as an unreadable one does (§6.5): {status}"
+    );
+    assert_eq!(body, "{}");
+}
+
+#[test]
+fn an_embed_cannot_resolve_from_a_note_the_caller_cannot_read() {
+    // `from` steers name resolution, so it is not a free parameter: without this check a
+    // caller could ask what `[[Roadmap]]` means *inside a folder they have no access to*,
+    // and learn from the answer which notes live there.
+    let dir = TempDir::new("http-embed-from");
+    dir.write("Public.md", "# Public\n");
+    dir.write("Private/Q3.md", "# Q3\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, _) = server.get("/api/v1/vaults/v/embed/Public?from=Private/Q3.md");
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.get("/api/v1/vaults/v/embed/Public?from=Public.md");
+    assert!(is_ok(&status), "the readable case still works: {status}");
+}
+
+#[test]
+fn an_embed_needs_a_from_note_at_all() {
+    let dir = embed_vault("http-embed-no-from");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, _) = server.get("/api/v1/vaults/v/embed/Roadmap");
+    assert!(
+        !is_ok(&status),
+        "resolution is relative to a note; there is no vault-wide default: {status}"
+    );
+}
+
+#[test]
+fn an_embed_rejects_an_anchor_pair_that_cannot_exist() {
+    // `schema.json` requires `none` to carry no anchor text and every other kind to carry
+    // some. A request that breaks that is a probe or a client bug, not a state to guess at.
+    let dir = embed_vault("http-embed-bad-anchor");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    for query in [
+        "anchor_kind=heading&anchor=",
+        "anchor_kind=block&anchor=",
+        "anchor_kind=none&anchor=Risks",
+        "anchor_kind=nonsense&anchor=Risks",
+    ] {
+        let (status, _) = server.get(&format!(
+            "/api/v1/vaults/v/embed/Roadmap?from=Projects/Q3.md&{query}"
+        ));
+        assert!(is_not_found(&status), "{query} was accepted: {status}");
+    }
+}
+
+#[test]
+fn an_embed_marks_a_nested_transclusion_for_the_client_to_mount() {
+    // The recursion is the client's: §9.2's resolution stack lives with whatever mounts one
+    // embed inside another, and this route answers for one reference only. What makes that
+    // possible is that a nested `![[…]]` arrives as a findable element rather than as text.
+    let dir = TempDir::new("http-embed-nested");
+    dir.write("Outer.md", "# Outer\n\n![[Inner]]\n");
+    dir.write("Inner.md", "# Inner\n\ndeep\n");
+    dir.write("Host.md", "![[Outer]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/embed/Outer?from=Host.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        body.contains("data-embed=\\\"true\\\""),
+        "a nested embed has to be findable in the fragment: {body}"
+    );
+    assert!(
+        !body.contains("deep"),
+        "and unexpanded — one request answers for one reference: {body}"
+    );
+}
+
+#[test]
+fn an_embed_escapes_the_note_it_renders() {
+    // The fragment goes into a page as markup, and a note is not trusted input: anyone who
+    // can write a file into the vault would otherwise be writing script into every note
+    // that embeds it.
+    let dir = TempDir::new("http-embed-escape");
+    dir.write("Nasty.md", "# T\n\n<script>alert(1)</script>\n");
+    dir.write("Host.md", "![[Nasty]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/embed/Nasty?from=Host.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(!body.contains("<script>"), "{body}");
+    assert!(body.contains("&lt;script&gt;"), "{body}");
+}
+
+#[test]
+fn an_embed_of_an_unreadable_note_answers_exactly_as_a_missing_one() {
+    // E7 through the route. Two callers, one reference, one name: the owner gets the note,
+    // the denied viewer gets the same empty-handed reply a reference to nothing gets — no
+    // title, no path, no error text that would confirm the note is there.
+    let dir = TempDir::new("http-embed-leak");
+    dir.write("Private/Salary.md", "# Salary Review\n\nBudget is set.\n");
+    dir.write("Host.md", "![[Salary]]\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+    let route = "/api/v1/vaults/v/embed/Salary?from=Host.md";
+
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Budget is set."), "{body}");
+
+    let (denied_status, denied_body) = server.get_with_headers(route, &bob_header);
+    assert!(is_not_found(&denied_status), "{denied_status}");
+    for leak in ["Salary", "Private", "Budget", "Review"] {
+        assert!(
+            !denied_body.contains(leak),
+            "the denial named `{leak}`: {denied_body}"
+        );
+    }
+    let (missing_status, missing_body) =
+        server.get_with_headers("/api/v1/vaults/v/embed/Never?from=Host.md", &bob_header);
+    assert_eq!(
+        (denied_status, denied_body),
+        (missing_status, missing_body),
+        "an unreadable target and a missing one must be one answer (§6.5)"
+    );
+}
+
+#[test]
+fn an_embed_of_a_note_deleted_since_the_last_sweep_answers_empty_handed() {
+    // Why the read goes back through the repository rather than straight to the filesystem:
+    // the index says which note a name means, and it can be a sweep behind the vault. A
+    // reference to a note that is no longer there has to answer as any other reference to
+    // nothing does, rather than as a server error.
+    let dir = TempDir::new("http-embed-deleted");
+    dir.write("Target.md", "# T\n\nbody\n");
+    dir.write("Host.md", "![[Target]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let route = "/api/v1/vaults/v/embed/Target?from=Host.md";
+    let (status, _) = server.get(route);
+    assert!(is_ok(&status), "{status}");
+
+    std::fs::remove_file(dir.path().join("Target.md")).expect("delete the note");
+    let (status, body) = server.get(route);
+    assert!(is_not_found(&status), "{status}");
+    assert_eq!(body, "{}");
+}
+
+#[test]
+fn embeds_accept_a_target_with_its_separators_encoded() {
+    // The client percent-encodes the whole target rather than segment by segment, because a
+    // wikilink target is note text and `../secrets` left as a path segment is normalised by
+    // the browser before the request is sent. That only works if `%2F` still routes, so it
+    // is pinned here rather than assumed — `web/src/editor/embed.ts` names this test.
+    let dir = embed_vault("http-embed-encoded");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) =
+        server.get("/api/v1/vaults/v/embed/Projects%2FRoadmap?from=Projects%2FQ3.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("\"note\":\"Projects/Roadmap.md\""), "{body}");
+}
+
+#[test]
+fn an_embed_is_never_cached() {
+    // Note content, filtered per user, and an embed outlives nothing: a cached one would
+    // still be served after the permission that allowed it was revoked.
+    let dir = embed_vault("http-embed-cache");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let headers = server
+        .headers("/api/v1/vaults/v/embed/Roadmap?from=Projects/Q3.md")
+        .to_lowercase();
+    assert!(headers.contains("cache-control: no-store"), "{headers}");
+}
+
+#[test]
+fn an_embed_follows_an_edit_made_outside_the_application() {
+    // Resolved at render time, never at storage time (§9.2): the embed shows what the file
+    // says now, including after an edit made in another editor.
+    let dir = TempDir::new("http-embed-edit");
+    dir.write("Target.md", "# T\n\nbefore\n");
+    dir.write("Host.md", "![[Target]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let route = "/api/v1/vaults/v/embed/Target?from=Host.md";
+
+    let (_, body) = server.get(route);
+    assert!(body.contains("before"), "{body}");
+    dir.write("Target.md", "# T\n\nafter\n");
+    let (_, body) = server.get(route);
+    assert!(
+        body.contains("after") && !body.contains("before"),
+        "no tick needed: the content comes from the file, not the index: {body}"
+    );
+}
+
+// ---------------------------------------------------------------- link resolution
+
+#[test]
+fn resolving_a_reference_answers_the_note_it_means() {
+    // Following a wikilink needs the canonical identity, not the name it was written by: a
+    // tab keyed on `Roadmap` and a tab keyed on `Projects/Roadmap.md` are two tabs for one
+    // note, and only one of them matches what the sync room is named.
+    let dir = embed_vault("http-resolve");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/resolve/Roadmap?from=Projects/Q3.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("\"note\":\"Projects/Roadmap.md\""), "{body}");
+    assert!(body.contains("\"title\":\"The Plan\""), "{body}");
+    assert!(
+        !body.contains("Ship it."),
+        "the content is the embed route's job, not this one's: {body}"
+    );
+}
+
+#[test]
+fn resolving_a_reference_is_relative_to_the_note_it_was_written_in() {
+    let dir = embed_vault("http-resolve-nearest");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (_, near) = server.get("/api/v1/vaults/v/resolve/Roadmap?from=Projects/Q3.md");
+    assert!(near.contains("Projects/Roadmap.md"), "{near}");
+    let (_, far) = server.get("/api/v1/vaults/v/resolve/Roadmap?from=Archive/Roadmap.md");
+    assert!(far.contains("Archive/Roadmap.md"), "{far}");
+}
+
+#[test]
+fn resolving_a_reference_to_nothing_answers_empty_handed() {
+    let dir = embed_vault("http-resolve-missing");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for route in [
+        "/api/v1/vaults/v/resolve/Absent?from=Projects/Q3.md",
+        "/api/v1/vaults/v/resolve/Roadmap?from=Nowhere.md",
+        "/api/v1/vaults/nope/resolve/Roadmap?from=Projects/Q3.md",
+    ] {
+        let (status, body) = server.get(route);
+        assert!(is_not_found(&status), "{route}: {status}");
+        assert_eq!(body, "{}", "{route}");
+    }
+}
+
+#[test]
+fn resolving_a_reference_to_an_unreadable_note_answers_as_a_missing_one() {
+    // E7/E9 for the navigation path. A link that resolves for one user and not for another
+    // is §9.1's per-user resolution, and the denial must not say which of the two it is.
+    let dir = TempDir::new("http-resolve-leak");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write("Host.md", "see [[Salary]]\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+    let route = "/api/v1/vaults/v/resolve/Salary?from=Host.md";
+
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Private/Salary.md"), "{body}");
+
+    let (denied_status, denied_body) = server.get_with_headers(route, &bob_header);
+    assert!(is_not_found(&denied_status), "{denied_status}");
+    for leak in ["Salary", "Private", "Review"] {
+        assert!(!denied_body.contains(leak), "the denial named `{leak}`");
+    }
+    let (missing_status, missing_body) =
+        server.get_with_headers("/api/v1/vaults/v/resolve/Never?from=Host.md", &bob_header);
+    assert_eq!((denied_status, denied_body), (missing_status, missing_body));
+}
+
+#[test]
+fn resolving_a_reference_is_never_cached() {
+    let dir = embed_vault("http-resolve-cache");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let headers = server
+        .headers("/api/v1/vaults/v/resolve/Roadmap?from=Projects/Q3.md")
+        .to_lowercase();
+    assert!(headers.contains("cache-control: no-store"), "{headers}");
 }
 
 #[test]

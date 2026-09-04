@@ -68,6 +68,22 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
   "Links/Planning.md":
     "# Quarter planning\n\nWe should ship [[Roadmap]] this quarter. ^commitment\n",
   "Links/Notes.md": "# Loose notes\n\nSee also [[Projects/Roadmap#Goals]].\n",
+  // Transclusion fixtures (§9.2). Read-only, and deliberately self-contained: they embed and
+  // link only each other, so the backlinks assertions above keep counting the two sources
+  // they were written for. `Host.md` carries one of every state the panel can render.
+  "Embeds/Target.md":
+    "# Embed target\n\nThe whole note body.\n\n## Details\n\nOnly this section.\n\nJust this block. ^pinned\n",
+  // The order of the references is what the spec's assertions index by, and the plain link
+  // comes *first* on purpose: on a phone the editor's control strip is pinned to the bottom
+  // of the viewport and overlays the last line of the note, so a link written there cannot
+  // be tapped. That is a real limitation, recorded in `HANDOFF.md`, and not one this fixture
+  // should be demonstrating.
+  "Embeds/Host.md":
+    "# Embed host\n\nPlain: [[Embeds/Target]]\n\nWhole: ![[Embeds/Target]]\n\n"
+    + "Section: ![[Embeds/Target#Details]]\n\nBlock: ![[Embeds/Target#^pinned]]\n\n"
+    + "Gone: ![[Embeds/Nothing At All]]\n",
+  // A note that embeds itself. §9.2 requires this to render as a link rather than to hang.
+  "Embeds/Cycle.md": "# Cycling\n\n![[Embeds/Cycle]]\n",
   // Three adjacent tasks, so a test can check that neighbouring tap targets do not overlap.
   "Projects/Tasks.md": "# Tasks\n\n- [ ] First task\n- [ ] Second task\n- [x] Third task \u{2705} 2026-08-28\n",
   ...Object.fromEntries(

@@ -34,6 +34,7 @@ pub mod schema;
 pub mod serialize;
 pub mod syntax;
 pub mod task;
+pub mod transclude;
 pub mod unicode;
 
 pub use canonical::document as canonicalize;

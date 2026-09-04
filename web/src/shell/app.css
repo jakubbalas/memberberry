@@ -111,6 +111,46 @@ body {
 .task-item[data-task-status="done"] > .task-line > .task-body,
 .task-item[data-task-status="cancelled"] > .task-line > .task-body { color: var(--text-muted); text-decoration: line-through; }
 
+/* ------------------------------------------------------------- transclusion (SPEC 9.2)
+
+   An `![[Note]]` is an inline atom in the document, so its node view is a `span` — a `div`
+   inside a paragraph is not markup any HTML parser would produce, and the fragment the
+   server sends is parsed by one. `display: block` is what makes it read as a block, and the
+   content inside it *is* block markup: `mb-core`'s renderer emits `<p>`, `<ul>`, `<h2>`,
+   which is legal here because this subtree is built by script and never re-parsed in place.
+
+   Deliberately quieter than the note around it: a transclusion is someone else's text, and
+   §9.2 asks for it to be "visually distinguished". The rail on the left is the distinction.
+   Its typography is the note's, so a heading inside an embed still reads as a heading. */
+.note-embed { display: block; margin: var(--editor-block-gap) 0; border: 1px solid var(--border-subtle); border-left: var(--divider-thickness) solid var(--accent-primary); border-radius: var(--radius-md); background: var(--surface-raised); }
+.note-embed-bar { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border-subtle); }
+.note-embed[data-embed-collapsed="true"] > .note-embed-bar { border-bottom: 0; }
+.note-embed-toggle { display: grid; flex: 0 0 auto; place-items: center; width: var(--task-marker-size); height: var(--task-marker-size); padding: 0; border: 0; border-radius: var(--radius-sm); color: var(--text-muted); background: none; font: var(--text-2xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.note-embed-source, .note-embed-link { padding: 0; border: 0; color: var(--accent-primary); background: none; font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); text-align: left; cursor: pointer; }
+.note-embed-source:hover, .note-embed-link:hover { text-decoration: underline; }
+.note-embed-badge { padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--surface-sunken); font: var(--text-2xs)/var(--leading-flat) var(--font-ui); white-space: nowrap; }
+.note-embed-toggle:focus-visible, .note-embed-source:focus-visible, .note-embed-link:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); border-radius: var(--radius-sm); }
+.note-embed-body { display: block; padding: var(--space-4); }
+.note-embed[data-embed-collapsed="true"] > .note-embed-body { display: none; }
+.note-embed-body > :first-child { margin-top: 0; }
+.note-embed-body > :last-child { margin-bottom: 0; }
+.note-embed-status { display: block; color: var(--text-muted); font: italic var(--text-xs)/var(--leading-body) var(--font-ui); }
+/* A refusal (§9.2: a cycle or the depth limit) has no body to show, so the bar is the whole
+   thing and the rail stops claiming there is content behind it. */
+.note-embed:is([data-embed-state="cycle"], [data-embed-state="depth"]) { border-left-color: var(--border-subtle); }
+.note-embed:is([data-embed-state="cycle"], [data-embed-state="depth"]) > .note-embed-body { display: none; }
+
+/* The fragment's own classes (SPEC 20.2: `mb-*` is `mb-core`'s renderer, not this file's
+   invention). Only what an embedded note actually needs — a link the reader can see is a
+   link, and a nested embed that still looks like one before it mounts. */
+.note-embed-body p { margin: var(--editor-block-gap) 0; }
+.note-embed-body :is(h1, h2, h3, h4, h5, h6) { margin: var(--space-5) 0 var(--space-3); font-size: var(--text-md); line-height: var(--leading-snug); }
+.note-embed-body :is(ul, ol) { margin: var(--editor-block-gap) 0; padding-left: var(--space-7); }
+.note-embed-body :is(.mb-wikilink, .mb-embed) { color: var(--accent-primary); cursor: pointer; }
+.note-embed-body .mb-tag { color: var(--text-muted); }
+.note-embed-body :is(pre, code) { font-family: var(--font-mono); }
+.note-embed-body pre { overflow-x: auto; padding: var(--space-4); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+
 .task-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .task-chip-inline { display: inline-flex; align-items: baseline; gap: var(--space-2); padding: var(--space-1) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-raised); font: var(--weight-medium) var(--text-2xs)/var(--leading-snug) var(--font-ui); white-space: nowrap; }
 button.task-chip-inline { cursor: pointer; }
@@ -228,6 +268,10 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
      - It stops where the text begins instead of extending 5.6px under it, so tapping the
        first character of a task places the cursor rather than completing it. */
   .task-item { min-height: var(--touch-target-min); }
+  /* §20.3's floor applies to an embed's controls as much as to a task's. The bar is a row
+     of two, so growing them grows the row rather than overlapping anything. */
+  .note-embed-toggle, .note-embed-source, .note-embed-link { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
+  .note-embed-source, .note-embed-link { min-width: 0; }
   .task-checkbox::after { content: ""; position: absolute; top: calc(-1 * var(--task-marker-offset)); height: var(--touch-target-min); right: calc(-1 * var(--space-4)); left: calc(var(--task-marker-size) + var(--space-4) - var(--touch-target-min)); }
   .ProseMirror-yjs-cursor > div { display: none; }
 }

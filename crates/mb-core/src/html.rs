@@ -346,17 +346,35 @@ fn wikilink(w: &WikiLink, urls: &Urls<'_>, out: &mut String) {
         None => {}
     }
 
-    if w.embed {
-        // A transclusion needs the target's content, which needs the index. Until M4 the
-        // link is rendered instead of silently dropping the reference.
-        out.push_str("<a class=\"mb-embed\" href=\"");
-        escape_attr(&href, out);
-        out.push_str("\" data-embed=\"true\">");
+    // why: the reference travels as data attributes as well as an `href`. A client that has
+    // to *act* on this link — expand a transclusion (§9.2), follow a wikilink into a tab —
+    // needs the target and the anchor as the file spells them, and the `href` is a lossy
+    // encoding of both: it is percent-encoded, it carries the alias nowhere, and a
+    // `#^block-id` and a `#Heading` are the same `#…` fragment once written. Re-deriving
+    // the reference from a URL would be parsing our own output back.
+    out.push_str(if w.embed {
+        "<a class=\"mb-embed\" data-embed=\"true\" href=\""
     } else {
-        out.push_str("<a class=\"mb-wikilink\" href=\"");
-        escape_attr(&href, out);
-        out.push_str("\">");
+        "<a class=\"mb-wikilink\" href=\""
+    });
+    escape_attr(&href, out);
+    out.push_str("\" data-target=\"");
+    escape_attr(&w.target, out);
+    out.push('"');
+    match &w.anchor {
+        Some(Anchor::Heading(h)) => {
+            out.push_str(" data-anchor-kind=\"heading\" data-anchor=\"");
+            escape_attr(h, out);
+            out.push('"');
+        }
+        Some(Anchor::Block(b)) => {
+            out.push_str(" data-anchor-kind=\"block\" data-anchor=\"");
+            escape_attr(b, out);
+            out.push('"');
+        }
+        None => {}
     }
+    out.push('>');
     let text = w.alias.as_deref().unwrap_or(&w.target);
     escape_text(text, out);
     out.push_str("</a>");

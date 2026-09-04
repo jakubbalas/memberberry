@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Form, Path as AxumPath, State};
+use axum::extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -311,6 +311,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/vaults/{slug}/backlinks/{*note}",
             get(note_backlinks),
         )
+        .route("/api/v1/vaults/{slug}/embed/{*target}", get(note_embed))
+        .route("/api/v1/vaults/{slug}/resolve/{*target}", get(note_resolve))
         .route(
             "/api/v1/vaults/{slug}/bookmarks",
             get(bookmarks_load)
@@ -1121,6 +1123,239 @@ async fn note(
     body.push_str(&rendered);
     body.push_str("</article>");
     page(&title, &body).into_response()
+}
+
+#[derive(Deserialize)]
+struct EmbedQuery {
+    /// The note the reference was written in. Only breaks a name collision (§4.3), and is
+    /// itself permission-checked: a caller cannot resolve *from* a note they cannot read.
+    from: String,
+    /// `none`, `heading` or `block` — the `anchor_kind` of the wikilink node (§9.1).
+    #[serde(default)]
+    anchor_kind: String,
+    /// The heading text or `^block-id`, with no leading caret.
+    #[serde(default)]
+    anchor: String,
+}
+
+#[derive(serde::Serialize)]
+struct EmbedResponse {
+    /// The canonical identity the reference resolved to, so the client can compare it
+    /// against the notes already on its resolution stack and stop a cycle (§9.2).
+    note: String,
+    title: Option<String>,
+    /// The slice, as an HTML fragment. Empty when `found` is false.
+    html: String,
+    /// Whether the anchor named anything. A readable note with no such heading is **not**
+    /// a permission boundary, so it does not have to be blurred into one — but it is also
+    /// not an empty note, and reporting it as one would be a claim nobody checked (§9.5).
+    found: bool,
+}
+
+/// `GET /api/v1/vaults/{slug}/embed/{target}` — the content one `![[…]]` stands for (§9.2).
+///
+/// Enforcement point **E7**, and the same three filters as [`note_backlinks`] with one
+/// addition. `authorized_vault` establishes membership (E1); the index
+/// [`Reader`](mb_index::Reader) resolves the reference against this user's readable set, so
+/// an unreadable target is not a candidate (E9); and the *read* goes back through
+/// `AuthorizedVault`, which re-checks the resolved path before touching the file — the
+/// index says which note, never that it may be read.
+///
+/// **Absent and unreadable are one answer.** A target that resolves to nothing and one the
+/// caller may not read both get the empty-handed `workspace_denied`, because "no such note"
+/// and "not for you" are distinguishable states and §6.5 does not allow them to be. That is
+/// also why the client cannot offer to create a missing embed target: it is not told which
+/// of the two it is looking at.
+///
+/// The recursion is deliberately *not* here. This route answers for one reference, and the
+/// client mounts one embed inside another — so §9.2's resolution stack lives with the thing
+/// that recurses, and this route cannot be made to loop by a crafted note.
+async fn note_embed(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, target)): AxumPath<(String, String)>,
+    Query(query): Query<EmbedQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let anchor = match anchor_from(&query.anchor_kind, &query.anchor) {
+        Ok(anchor) => anchor,
+        Err(()) => return workspace_denied(),
+    };
+    let (vault, resolved, source) =
+        match resolve_reference(&state, &slug, &target, &query.from, &headers) {
+            Ok(resolution) => resolution,
+            Err(response) => return *response,
+        };
+    let prefix = format!("/v/{}/", vault.slug());
+    let urls = Urls {
+        note: &prefix,
+        media: &prefix,
+    };
+    let doc = mb_core::parse(&source);
+    let slice = mb_core::transclude::slice(&doc, anchor.as_ref());
+    let found = slice.is_some();
+    let html = slice
+        .map(|blocks| mb_core::html::document(&mb_core::model::Document::new(blocks), &urls))
+        .unwrap_or_default();
+
+    let body = EmbedResponse {
+        note: resolved.path,
+        title: resolved.title,
+        html,
+        found,
+    };
+    let body = match serde_json::to_string(&body) {
+        Ok(body) => body,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            // Note content. Nothing between here and the browser should keep a copy, and a
+            // cached embed would outlive the permission that allowed it.
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Resolves one wikilink reference for one caller, or the response to send instead.
+///
+/// The shared half of **E7** and of wikilink navigation (§8.2): three filters, and the
+/// order matters. `AuthorizedVault` establishes membership and that the *source* note is
+/// readable (E1) — `from` steers §4.3's nearest-path tie-break, so a caller who could name
+/// any folder as their vantage point could learn from the answer which notes live in one
+/// they have no access to. The index [`Reader`](mb_index::Reader) then resolves against that
+/// caller's readable set, so an unreadable target is not a candidate (E9). And the read goes
+/// back through the repository, which re-checks the resolved path before touching the file:
+/// the index says *which* note, never that it may be read.
+///
+/// The source is read even by callers that only want the name, because a resolution nobody
+/// can read is not a resolution — and reading it is the only proof of that which does not
+/// trust the index.
+///
+/// Every failure is the empty-handed [`workspace_denied`]: an unknown vault, a non-member, a
+/// reference to nothing and a reference to something unreadable are one answer, because
+/// §6.5 does not allow them to be distinguishable.
+fn resolve_reference<'a>(
+    state: &'a Arc<AppState>,
+    slug: &str,
+    target: &str,
+    from: &str,
+    headers: &HeaderMap,
+) -> Result<(&'a Vault, mb_index::Target, String), Box<Response>> {
+    let Some(vault) = state.vault(slug) else {
+        return Err(Box::new(workspace_denied()));
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return Err(Box::new(workspace_denied()));
+    };
+    let Some(user) = state.vault_user(vault.slug(), headers) else {
+        return Err(Box::new(workspace_denied()));
+    };
+    let view = AuthorizedVault::new(vault, &access, user.clone());
+    let Ok(from) = view.identity(from) else {
+        return Err(Box::new(workspace_denied()));
+    };
+    let Some(index) = state.indexes.get(vault) else {
+        return Err(Box::new(server_error(&Error::Config(
+            "no index for this vault".to_string(),
+        ))));
+    };
+    let Ok(mut index) = index.lock() else {
+        return Err(Box::new(server_error(&Error::Config(
+            "the index lock is poisoned".to_string(),
+        ))));
+    };
+    let resolved = match index
+        .reader(&access, &user)
+        .and_then(|reader| reader.resolve(&from, target))
+    {
+        Ok(Some(resolved)) => resolved,
+        Ok(None) => return Err(Box::new(workspace_denied())),
+        Err(error) => {
+            return Err(Box::new(server_error(&Error::Config(error.to_string()))));
+        }
+    };
+    drop(index);
+    let Ok(source) = view.read(&resolved.path) else {
+        return Err(Box::new(workspace_denied()));
+    };
+    Ok((vault, resolved, source))
+}
+
+#[derive(Deserialize)]
+struct ResolveQuery {
+    /// The note the reference was written in — see [`resolve_reference`].
+    from: String,
+}
+
+#[derive(serde::Serialize)]
+struct ResolveResponse {
+    /// The canonical identity, which is what a tab is keyed by and what a sync room is
+    /// named by. Opening a tab on the *name* instead would give one note two tabs.
+    note: String,
+    title: Option<String>,
+}
+
+/// `GET /api/v1/vaults/{slug}/resolve/{target}` — which note a wikilink means (§4.3, §8.2).
+///
+/// Enforcement point **E7/E9**, through [`resolve_reference`]. Separate from the embed route
+/// because following a link needs the *name* and not the content: the answer is two strings,
+/// and a client that had to fetch a rendered note to find out where a link goes would fetch
+/// one on every click.
+///
+/// Resolution cannot happen on the client. §4.3 resolves a name collision by nearest path
+/// among the notes the asking user may read, so the answer differs per user — which is E9,
+/// and is the reason there is a route here at all rather than a lookup in the note index the
+/// quick switcher already holds.
+async fn note_resolve(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, target)): AxumPath<(String, String)>,
+    Query(query): Query<ResolveQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let (_, resolved, _) = match resolve_reference(&state, &slug, &target, &query.from, &headers) {
+        Ok(resolution) => resolution,
+        Err(response) => return *response,
+    };
+    let body = ResolveResponse {
+        note: resolved.path,
+        title: resolved.title,
+    };
+    let body = match serde_json::to_string(&body) {
+        Ok(body) => body,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            // A note title, filtered per user. Nothing should keep a copy.
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// The `anchor_kind`/`anchor` pair as the model's `Option<Anchor>`.
+///
+/// `Err` for a pair that cannot exist: `schema.json` requires `none` to carry no text and
+/// every other kind to carry some, and a request that breaks that is a client bug or a
+/// probe rather than a state to guess at.
+fn anchor_from(kind: &str, anchor: &str) -> Result<Option<mb_core::model::Anchor>, ()> {
+    match (kind, anchor) {
+        ("" | "none", "") => Ok(None),
+        ("heading", text) if !text.is_empty() => {
+            Ok(Some(mb_core::model::Anchor::Heading(text.to_string())))
+        }
+        ("block", text) if !text.is_empty() => {
+            Ok(Some(mb_core::model::Anchor::Block(text.to_string())))
+        }
+        _ => Err(()),
+    }
 }
 
 /// The element Vite's `index.html` carries for this server to fill in.

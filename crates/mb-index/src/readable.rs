@@ -63,10 +63,7 @@ SELECT * FROM (
     SELECT l.*, nn.note_id AS target_id,
            row_number() OVER (
                PARTITION BY l.id
-               ORDER BY (nn.kind = 'path') DESC,
-                        {rank}(l.source_path, nn.path) DESC,
-                        (length(nn.path) - length(replace(nn.path, '/', ''))) ASC,
-                        nn.path ASC
+               ORDER BY {order}
            ) AS pick
     FROM v_links l
     LEFT JOIN v_note_names nn ON nn.key = l.target_key
@@ -74,10 +71,29 @@ SELECT * FROM (
 WHERE pick = 1;
 ";
 
+/// §4.3's collision rule as an `ORDER BY`, in one place.
+///
+/// why: shared with [`crate::read::Reader::resolve`] rather than written twice. That query
+/// resolves a reference the caller supplies — a transclusion (§9.2) — against the same
+/// candidates by the same rule, and a second copy of this list is a second answer to "what
+/// does `[[Roadmap]]` mean here". `{rank}` is the nearest-path function and `{source}` is
+/// whatever the caller can bind the source note's path from.
+const CANDIDATE_ORDER: &str = "(nn.kind = 'path') DESC,
+                        {rank}({source}, nn.path) DESC,
+                        (length(nn.path) - length(replace(nn.path, '/', ''))) ASC,
+                        nn.path ASC";
+
+/// [`CANDIDATE_ORDER`] with the ranking function and the source-path expression bound.
+pub(crate) fn candidate_order(source: &str) -> String {
+    CANDIDATE_ORDER
+        .replace("{rank}", names::RANK)
+        .replace("{source}", source)
+}
+
 /// Creates the filter's table and views on a fresh connection.
 pub(crate) fn install(conn: &Connection) -> Result<(), Error> {
     conn.execute_batch(VIEWS)?;
-    conn.execute_batch(&RESOLVED.replace("{rank}", names::RANK))?;
+    conn.execute_batch(&RESOLVED.replace("{order}", &candidate_order("l.source_path")))?;
     Ok(())
 }
 

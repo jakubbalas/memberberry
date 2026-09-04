@@ -122,9 +122,13 @@ fn sweep(vault: &Vault, index: &mut Index) -> Result<(), String> {
     let present: Vec<(String, Stamp)> = notes
         .iter()
         .filter_map(|relative| {
-            // Joined rather than resolved: `notes()` listed real files under the notes root,
-            // so containment is already established and `resolve` would canonicalize twice
-            // per note — 20 000 syscalls on a vault at the design target.
+            // Joined rather than resolved: `notes()` listed real files under the notes
+            // root, so containment is already established and `resolve` would canonicalize
+            // twice per note — 20 000 syscalls on a vault at the design target. That claim
+            // was only true of ordinary files until M8: `notes()` used to list a symlink
+            // pointing out of the vault, which `resolve` refuses, so this join indexed the
+            // content of a file the note route will not serve. `notes()` now applies the
+            // same containment rule, and `vault.rs` has the tests that keep it doing so.
             Stamp::of(&vault.notes_root().join(relative)).map(|stamp| (relative.clone(), stamp))
         })
         .collect();
