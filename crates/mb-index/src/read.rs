@@ -48,6 +48,21 @@ pub struct Target {
     pub title: Option<String>,
 }
 
+/// One node of the tag tree: a tag or one of its prefixes (§9.3).
+///
+/// `#project/memberberry/spec` produces three of these, and the count on `project` includes
+/// every note tagged anywhere beneath it — which is what makes the pane's counts add up the
+/// way a reader expects a folder's would.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagNode {
+    /// The prefix as somebody wrote it — see [`Reader::tags`] for which spelling wins.
+    pub tag: String,
+    /// Its folded form, and the node's identity: `#Project` and `#project` are one tag.
+    pub key: String,
+    /// How many readable notes carry this tag or one nested under it.
+    pub notes: usize,
+}
+
 /// Queries scoped to one user's readable set.
 ///
 /// Obtained from [`Index::reader`], which is the only way to construct one: there is no
@@ -192,6 +207,82 @@ impl Reader<'_> {
                 })
             })
             .optional()?)
+    }
+
+    /// Every tag in the readable set, with the count of notes carrying it (§9.3).
+    ///
+    /// One row per *prefix*, so `#project/memberberry/spec` contributes `project`,
+    /// `project/memberberry` and the whole tag, each counting the notes tagged at or below
+    /// it. Ordered by [`TagNode::key`], which puts a parent immediately before its children
+    /// and never depends on insertion order.
+    ///
+    /// **Case is not identity.** `#Project` and `#project` are one tag with one count,
+    /// because a tag typed at the start of a sentence is the same tag. The spelling shown is
+    /// the one the most notes use, ties broken alphabetically — deterministic, and it does
+    /// not change under a note the caller cannot read.
+    ///
+    /// Counts come from the filtered view, so a tag carried *only* by notes this user cannot
+    /// read has no row at all: §6.5 makes a tag count a way of asking how many notes exist.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the query itself fails.
+    pub fn tags(&self) -> Result<Vec<TagNode>, Error> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT t.prefix_key,
+                    count(DISTINCT t.note_id),
+                    (SELECT s.tag_prefix FROM v_tags s
+                     WHERE s.prefix_key = t.prefix_key
+                     GROUP BY s.tag_prefix
+                     ORDER BY count(*) DESC, s.tag_prefix ASC
+                     LIMIT 1)
+             FROM v_tags t
+             GROUP BY t.prefix_key
+             ORDER BY t.prefix_key",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let key: String = row.get(0)?;
+            let notes: i64 = row.get(1)?;
+            // The subquery groups the same rows this one does, so it cannot come back empty;
+            // falling back to the key rather than unwrapping keeps that a display detail
+            // instead of a panic in a library (`AGENTS.md` §4.2).
+            let tag: Option<String> = row.get(2)?;
+            Ok(TagNode {
+                tag: tag.unwrap_or_else(|| key.clone()),
+                key,
+                notes: usize::try_from(notes).unwrap_or(0),
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(Error::from)
+    }
+
+    /// The readable notes carrying `prefix` or any tag nested under it (§9.3).
+    ///
+    /// `prefix` is matched folded, so it may be written in any case, and it names a whole
+    /// subtree: `project` answers for `#project/memberberry/spec`. Ordered by path.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the query itself fails.
+    pub fn tagged(&self, prefix: &str) -> Result<Vec<Target>, Error> {
+        let key = crate::names::fold_tag(prefix.trim().trim_start_matches('#'));
+        if key.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut statement = self.conn.prepare_cached(
+            "SELECT DISTINCT n.path, n.title
+             FROM v_tags t
+             JOIN v_notes n ON n.id = t.note_id
+             WHERE t.prefix_key = ?1
+             ORDER BY n.path",
+        )?;
+        let rows = statement.query_map([key], |row| {
+            Ok(Target {
+                path: row.get(0)?,
+                title: row.get(1)?,
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(Error::from)
     }
 
     fn note_id(&self, path: &str) -> Result<Option<i64>, Error> {

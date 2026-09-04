@@ -84,6 +84,13 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
     + "Gone: ![[Embeds/Nothing At All]]\n",
   // A note that embeds itself. §9.2 requires this to render as a link rather than to hang.
   "Embeds/Cycle.md": "# Cycling\n\n![[Embeds/Cycle]]\n",
+  // Nested-tag fixtures (§9.3). Read-only, in their own folder so the tag counts asserted in
+  // `tags.spec.ts` are exactly these three notes and nothing a later fixture adds. The two
+  // spellings of `#Project` are the point of the first two: case is not identity, so the pane
+  // must show one node counting both.
+  "Tags/Alpha.md": "# Alpha\n\n#Project/memberberry/spec\n",
+  "Tags/Beta.md": "# Beta\n\n#project/memberberry\n",
+  "Tags/Gamma.md": "# Gamma\n\n#reading\n",
   // Three adjacent tasks, so a test can check that neighbouring tap targets do not overlap.
   "Projects/Tasks.md": "# Tasks\n\n- [ ] First task\n- [ ] Second task\n- [x] Third task \u{2705} 2026-08-28\n",
   ...Object.fromEntries(

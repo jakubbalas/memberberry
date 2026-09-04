@@ -311,6 +311,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/vaults/{slug}/backlinks/{*note}",
             get(note_backlinks),
         )
+        .route("/api/v1/vaults/{slug}/tags", get(tag_index))
+        .route("/api/v1/vaults/{slug}/tags/{*prefix}", get(tagged_notes))
         .route("/api/v1/vaults/{slug}/embed/{*target}", get(note_embed))
         .route("/api/v1/vaults/{slug}/resolve/{*target}", get(note_resolve))
         .route(
@@ -886,6 +888,158 @@ async fn note_backlinks(
         [
             (header::CONTENT_TYPE, "application/json"),
             // Note titles and note text. Nothing should keep a copy.
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+#[derive(serde::Serialize)]
+struct TagIndexResponse {
+    tags: Vec<TagEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct TagEntry {
+    /// The prefix as somebody wrote it — the spelling most notes use (§9.3).
+    tag: String,
+    /// Its folded form, which is the tag's identity and what the notes route is asked by.
+    key: String,
+    /// How many readable notes carry this tag or one nested under it.
+    notes: usize,
+}
+
+#[derive(serde::Serialize)]
+struct TaggedNotesResponse {
+    /// The prefix this answers for, echoed exactly as it was asked.
+    ///
+    /// why: echoed rather than normalized. Matching is case- and composition-insensitive and
+    /// `mb-index` owns that rule (§9.3); folding the echo here would be a second copy of it,
+    /// and a second copy is a second answer the day one of them changes.
+    tag: String,
+    notes: Vec<TaggedNote>,
+}
+
+#[derive(serde::Serialize)]
+struct TaggedNote {
+    path: String,
+    title: Option<String>,
+}
+
+/// `GET /api/v1/vaults/{slug}/tags` — the tag tree with per-node counts (§9.3).
+///
+/// Enforcement point **E16**. A tag count is a way of asking how many notes exist, so the
+/// counts come from the index [`Reader`](mb_index::Reader), built from the live ACL: a tag
+/// carried only by notes this user cannot read has no row, and one carried by a readable
+/// note and an unreadable one counts the readable note only (§6.5).
+///
+/// A non-member gets the same empty-handed answer as an unknown vault, rather than an empty
+/// tag list that confirms the vault exists.
+async fn tag_index(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((access, user, index)) = tag_query(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(mut index) = index.lock() else {
+        return server_error(&Error::Config("the index lock is poisoned".to_string()));
+    };
+    let tags = match index
+        .reader(&access, &user)
+        .and_then(|reader| reader.tags())
+    {
+        Ok(tags) => tags,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    let body = TagIndexResponse {
+        tags: tags
+            .into_iter()
+            .map(|node| TagEntry {
+                tag: node.tag,
+                key: node.key,
+                notes: node.notes,
+            })
+            .collect(),
+    };
+    json_no_store(&body)
+}
+
+/// `GET /api/v1/vaults/{slug}/tags/{prefix}` — the readable notes under one tag (§9.3).
+///
+/// Enforcement point **E16**, and the reason selecting a tag node is a server request rather
+/// than a filter over a list the client already has: which notes carry a tag is exactly the
+/// kind of question §6.5 answers per user. The prefix names a whole subtree, so `project`
+/// answers for `#project/memberberry/spec`.
+///
+/// **Not a search.** §9.3 says selecting a node searches that prefix, and the search index
+/// arrives with M9 (§14.1); until then this lists the notes, which is the part of that
+/// promise the index can already keep.
+async fn tagged_notes(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, prefix)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((access, user, index)) = tag_query(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(mut index) = index.lock() else {
+        return server_error(&Error::Config("the index lock is poisoned".to_string()));
+    };
+    let notes = match index
+        .reader(&access, &user)
+        .and_then(|reader| reader.tagged(&prefix))
+    {
+        Ok(notes) => notes,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    let body = TaggedNotesResponse {
+        tag: prefix,
+        notes: notes
+            .into_iter()
+            .map(|target| TaggedNote {
+                path: target.path,
+                title: target.title,
+            })
+            .collect(),
+    };
+    json_no_store(&body)
+}
+
+/// The ACL, user and index a tag query needs, or `None` if it is denied (E16).
+///
+/// Membership is checked here rather than per note: a tag question is about the vault, so
+/// there is no path to resolve, and without this a non-member would learn the vault exists
+/// from an empty list. The readable set does the rest — a member with access to nothing sees
+/// no tags for the same reason they see no notes.
+fn tag_query(
+    state: &AppState,
+    slug: &str,
+    headers: &HeaderMap,
+) -> Option<(Arc<mb_core::Access>, Username, Arc<Mutex<mb_index::Index>>)> {
+    let vault = state.vault(slug)?;
+    let access = state.access_for(vault.slug())?;
+    let user = state.vault_user(vault.slug(), headers)?;
+    let view = AuthorizedVault::new(vault, &access, user.clone());
+    if !view.has_any_access().unwrap_or(false) {
+        return None;
+    }
+    let index = state.indexes.get(vault)?;
+    Some((access, user, index))
+}
+
+/// A JSON body nothing should keep a copy of.
+fn json_no_store<T: serde::Serialize>(body: &T) -> Response {
+    let body = match serde_json::to_string(body) {
+        Ok(body) => body,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
             (header::CACHE_CONTROL, "no-store"),
         ],
         body,

@@ -13,17 +13,19 @@
 //!
 //! **There is no unfiltered read.** Queries live on [`Reader`], which cannot exist without a
 //! user and an ACL, and every one of them is written against views that already join the
-//! readable set (E5, §6.5). The filter is in one place — [`read::VIEWS`] — rather than
+//! readable set (E5, §6.5). The filter is in one place — `readable::VIEWS` — rather than
 //! repeated per query, because a filter repeated per query is a filter someone will forget.
 //! `tests/no_unfiltered_query.rs` fails if a query in `read.rs` names a base table.
 //!
 //! ## What is written versus what is read
 //!
 //! The writer populates every table in §9.1 that has facts available today, including
-//! `tags`, `tasks` and `media_refs`, whose readers arrive with the tag pane, task views and
-//! M11's media authorization. That is deliberate: the extractor already produces those
-//! facts, one reindex path is cheaper to trust than four, and a table that starts being
-//! written two milestones after its rows first mattered is a table full of holes.
+//! `tasks` and `media_refs`, whose readers arrive with task views and M11's media
+//! authorization. That is deliberate: the extractor already produces those facts, one
+//! reindex path is cheaper to trust than four, and a table that starts being written two
+//! milestones after its rows first mattered is a table full of holes. `tags` was written
+//! that way for two milestones and read for the first time by the tag pane (§9.3), which
+//! needed no reindex to work.
 //!
 //! Two tables in §9.1 are **not** here, each for a stated reason:
 //! `zones` (§14.2) has no definition to write until M9 computes zones, and `media_refs`
@@ -49,7 +51,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
-pub use read::{Backlink, BacklinkGroup, Reader, Target};
+pub use read::{Backlink, BacklinkGroup, Reader, TagNode, Target};
 pub use write::{Changed, NoteInput, Plan, Stamp};
 
 /// Everything that can go wrong reading or maintaining an index.

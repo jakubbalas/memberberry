@@ -298,8 +298,9 @@ fn write_links(
 
 /// One row per (tag, prefix) pair, so `#project` finds `#project/mb/spec` (§9.3).
 fn write_tags(transaction: &Transaction<'_>, note_id: i64, facts: &Extracted) -> Result<(), Error> {
-    let mut insert = transaction
-        .prepare_cached("INSERT INTO tags (note_id, tag, tag_prefix) VALUES (?1, ?2, ?3)")?;
+    let mut insert = transaction.prepare_cached(
+        "INSERT INTO tags (note_id, tag, tag_prefix, prefix_key) VALUES (?1, ?2, ?3, ?4)",
+    )?;
     for tag in &facts.tags {
         let mut prefix = String::new();
         for segment in tag.split('/') {
@@ -307,7 +308,12 @@ fn write_tags(transaction: &Transaction<'_>, note_id: i64, facts: &Extracted) ->
                 prefix.push('/');
             }
             prefix.push_str(segment);
-            insert.execute(rusqlite::params![note_id, tag, &prefix])?;
+            insert.execute(rusqlite::params![
+                note_id,
+                tag,
+                &prefix,
+                crate::names::fold_tag(&prefix)
+            ])?;
         }
     }
     Ok(())
@@ -501,6 +507,21 @@ mod tests {
                 vec!["project"],
                 vec!["project/memberberry"],
                 vec!["project/memberberry/spec"],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_prefix_is_stored_folded_beside_the_spelling_that_was_written() {
+        let index = indexed(&[("a.md", "#Project/Memberberry\n")]);
+        assert_eq!(
+            rows(
+                &index,
+                "SELECT tag_prefix, prefix_key FROM tags ORDER BY tag_prefix"
+            ),
+            vec![
+                vec!["Project", "project"],
+                vec!["Project/Memberberry", "project/memberberry"],
             ]
         );
     }

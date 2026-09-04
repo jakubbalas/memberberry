@@ -1,4 +1,4 @@
-//! Permission leak suite for enforcement points implemented through M5 (`SPEC.md` §22.5).
+//! Permission leak suite for the enforcement points implemented so far (`SPEC.md` §22.5).
 //!
 //! This suite is deliberately organised by enforcement point rather than feature. Adding a
 //! content-bearing surface means extending this file before that surface can ship.
@@ -669,5 +669,66 @@ fn e5_content_from_outside_the_vault_never_reaches_the_index() {
         reader.resolve("Shared.md", "Escape").expect("resolve"),
         None,
         "and it cannot be transcluded either (E7)"
+    );
+}
+
+/// E16: a tag count is a statement about how many notes exist, so it is filtered too.
+///
+/// The disclosure here is arithmetic rather than a name. `#salary` appearing at all tells a
+/// reader a note they cannot see carries it; `#shared` reading "3" when they can see one
+/// tells them there are two more. Both are §6.5, and neither is visible in a route test that
+/// only checks which strings came back.
+#[test]
+fn e16_tag_counts_never_include_a_note_the_viewer_cannot_read() {
+    let dir = TempDir::new("leak-tags");
+    dir.write("Open.md", "# Open\n\n#shared\n");
+    dir.write("Private/Salary.md", "# Salary\n\n#shared #salary/2026\n");
+    dir.write("Private/Bonus.md", "# Bonus\n\n#shared\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let mut index = index.lock().expect("index lock");
+    let alice = Username::parse("alice").expect("username");
+    let reader = index
+        .reader(access.policy(), &alice)
+        .expect("a reader for alice");
+
+    let tags = reader.tags().expect("tags");
+    assert_eq!(
+        tags.iter()
+            .map(|node| (node.key.as_str(), node.notes))
+            .collect::<Vec<_>>(),
+        vec![("shared", 1)],
+        "a tag only an unreadable note carries must not exist, and one shared with two \
+         unreadable notes must count one"
+    );
+
+    // Asking for the private tag by name answers as it does for a tag nobody ever wrote.
+    assert!(reader.tagged("salary").expect("tagged").is_empty());
+    assert_eq!(
+        reader.tagged("salary/2026").expect("tagged"),
+        reader.tagged("no-such-tag").expect("tagged")
+    );
+    assert_eq!(
+        reader
+            .tagged("shared")
+            .expect("tagged")
+            .into_iter()
+            .map(|target| target.path)
+            .collect::<Vec<_>>(),
+        vec!["Open.md".to_string()]
     );
 }

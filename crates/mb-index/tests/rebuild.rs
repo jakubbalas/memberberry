@@ -127,6 +127,19 @@ fn a_database_from_another_schema_version_is_rebuilt_not_migrated() {
     assert_eq!(backlink_count(&mut index, "Target.md"), 1);
 }
 
+/// The version this build stamps, read from a database it just created.
+///
+/// why: read rather than written down. A literal here would still pass after the schema
+/// version was bumped — by taking the mismatch path instead of the missing-tables path the
+/// test exists to cover, which is a test that has quietly stopped checking anything.
+fn current_version(dir: &TempDir) -> i32 {
+    let path = dir.path().join("version-probe.sqlite");
+    drop(Index::open(&path).expect("open"));
+    let conn = rusqlite::Connection::open(&path).expect("reopen directly");
+    conn.query_row("SELECT * FROM pragma_user_version", [], |row| row.get(0))
+        .expect("read the stamp")
+}
+
 #[test]
 fn a_stamped_version_with_no_schema_behind_it_is_rebuilt() {
     // A hand-stamped empty file reports the right version and has no tables. Trusting the
@@ -134,7 +147,8 @@ fn a_stamped_version_with_no_schema_behind_it_is_rebuilt() {
     let dir = TempDir::new("stamp-only");
     let path = dir.path().join("graph.sqlite");
     let conn = rusqlite::Connection::open(&path).expect("create");
-    conn.pragma_update(None, "user_version", 1).expect("stamp");
+    conn.pragma_update(None, "user_version", current_version(&dir))
+        .expect("stamp");
     drop(conn);
 
     let mut index = Index::open(&path).expect("open");

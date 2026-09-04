@@ -2260,6 +2260,191 @@ fn backlinks_accept_a_note_path_with_its_separators_encoded() {
     assert!(body.contains("Q3.md"), "{body}");
 }
 
+// ------------------------------------------------------------------------ tags
+
+#[test]
+fn the_tag_tree_counts_every_prefix_of_a_nested_tag() {
+    // §9.3: `#project/memberberry/spec` is one tag with three nodes, and a parent counts the
+    // notes tagged beneath it.
+    let dir = TempDir::new("http-tags-nested");
+    dir.write("A.md", "# A\n\n#project/memberberry/spec\n");
+    dir.write("B.md", "# B\n\n#project/other\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/tags");
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        body.contains("{\"tag\":\"project\",\"key\":\"project\",\"notes\":2}"),
+        "the parent counts both notes: {body}"
+    );
+    assert!(
+        body.contains("\"key\":\"project/memberberry\",\"notes\":1"),
+        "{body}"
+    );
+    assert!(
+        body.contains("\"key\":\"project/memberberry/spec\",\"notes\":1"),
+        "{body}"
+    );
+}
+
+#[test]
+fn tags_name_only_what_the_caller_can_read() {
+    // E16. A tag row is a claim about how many notes exist — a tag carried only by a note
+    // bob cannot read must not appear at all, and one he shares must count only his notes.
+    let dir = TempDir::new("http-tags-acl");
+    dir.write("Public.md", "# Public\n\n#shared\n");
+    dir.write("Private/Salary.md", "# Salary\n\n#shared #compensation\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let charlie = auth
+        .create_user(mb_auth::NewUser {
+            username: "charlie",
+            display_name: "Charlie",
+            password: "correct horse battery staple",
+        })
+        .expect("non-member");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let charlie_header = header(charlie.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+
+    let (status, body) = server.get_with_headers("/api/v1/vaults/v/tags", &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("\"key\":\"shared\",\"notes\":2"), "{body}");
+    assert!(body.contains("compensation"), "{body}");
+
+    let (status, body) = server.get_with_headers("/api/v1/vaults/v/tags", &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        body.contains("\"key\":\"shared\",\"notes\":1"),
+        "the private note was counted: {body}"
+    );
+    assert!(
+        !body.contains("compensation"),
+        "a tag only the private note carries was named: {body}"
+    );
+
+    // Nor may the notes route name it, whichever tag is asked for.
+    let (status, body) = server.get_with_headers("/api/v1/vaults/v/tags/shared", &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Public.md"), "{body}");
+    assert!(!body.contains("Salary"), "{body}");
+    let (status, body) = server.get_with_headers("/api/v1/vaults/v/tags/compensation", &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        !body.contains("Salary") && !body.contains("Private"),
+        "an unreadable note answered a tag query: {body}"
+    );
+
+    // A non-member, an anonymous caller and an unknown vault are one answer.
+    for (route, headers) in [
+        ("/api/v1/vaults/v/tags", charlie_header.as_str()),
+        ("/api/v1/vaults/v/tags/shared", charlie_header.as_str()),
+        ("/api/v1/vaults/nope/tags", alice_header.as_str()),
+    ] {
+        let (status, body) = server.get_with_headers(route, headers);
+        assert!(is_not_found(&status), "{route}: {status}");
+        assert!(!body.contains("shared"), "{route}: {body}");
+    }
+    let (status, _) = server.request("GET", "/api/v1/vaults/v/tags", "", "");
+    assert!(is_not_found(&status), "{status}");
+}
+
+#[test]
+fn selecting_a_tag_lists_the_notes_nested_under_it() {
+    let dir = TempDir::new("http-tags-notes");
+    dir.write("A.md", "# The A Note\n\n#project/memberberry\n");
+    dir.write("B.md", "# B\n\n#unrelated\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/tags/project");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("\"path\":\"A.md\""), "{body}");
+    assert!(body.contains("The A Note"), "the title travels: {body}");
+    assert!(!body.contains("B.md"), "{body}");
+}
+
+#[test]
+fn a_nested_tag_is_asked_for_with_a_slash_encoded_or_not() {
+    // why: asserted rather than assumed, exactly as for a note path. A client reaching for
+    // `encodeURIComponent` on the whole tag sends `%2F`, and a wrong guess here is an empty
+    // pane rather than an error.
+    let dir = TempDir::new("http-tags-encoded");
+    dir.write("A.md", "# A\n\n#project/memberberry\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for route in [
+        "/api/v1/vaults/v/tags/project/memberberry",
+        "/api/v1/vaults/v/tags/project%2Fmemberberry",
+        "/api/v1/vaults/v/tags/Project",
+    ] {
+        let (status, body) = server.get(route);
+        assert!(is_ok(&status), "{route}: {status}");
+        assert!(body.contains("A.md"), "{route}: {body}");
+    }
+}
+
+#[test]
+fn tags_follow_an_edit_made_outside_the_application() {
+    // C2 and §3.4: a tag added in Obsidian reaches the pane through the maintenance tick.
+    let dir = TempDir::new("http-tags-edit");
+    dir.write("A.md", "# A\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/tags");
+    assert!(is_ok(&status), "{status}");
+    assert!(!body.contains("later"), "{body}");
+
+    dir.write("A.md", "# A\n\n#later\n");
+    server.tick();
+
+    let (_, body) = server.get("/api/v1/vaults/v/tags");
+    assert!(body.contains("\"key\":\"later\""), "{body}");
+}
+
+#[test]
+fn tags_are_never_cached() {
+    // Counts and note titles, filtered per user. A shared cache would serve one user's
+    // filtered view to another.
+    let dir = TempDir::new("http-tags-cache");
+    dir.write("A.md", "# A\n\n#tag\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    for route in ["/api/v1/vaults/v/tags", "/api/v1/vaults/v/tags/tag"] {
+        let headers = server.headers(route).to_lowercase();
+        assert!(
+            headers.contains("cache-control: no-store"),
+            "{route}: {headers}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------- transclusion
 
 /// A vault with two same-named notes, a section, and an anchored block.

@@ -19,11 +19,13 @@
   import NoteTree from "./NoteTree.svelte";
   import PaneTree from "./PaneTree.svelte";
   import Sidebar from "./Sidebar.svelte";
+  import TagPane from "./TagPane.svelte";
   import { BacklinkView } from "./backlinks.svelte.js";
   import { Bookmarks } from "./bookmarks.svelte.js";
   import type { NoteBootstrap } from "./bootstrap.js";
   import type { fetchVaults } from "./catalog.js";
   import { NoteCatalog } from "./note-catalog.svelte.js";
+  import { TagView } from "./tags.svelte.js";
   import type { Platform } from "./hotkeys.js";
   import { type SwipeStart, swipeProgress, swipeStart } from "./gestures.js";
   import { type LayoutMode, currentLayoutMode, watchLayoutMode } from "./layout.js";
@@ -60,6 +62,8 @@
     readonly bookmarks?: Bookmarks | undefined;
     /** The backlinks of the focused note. Supplied by a test; built from the session otherwise. */
     readonly backlinks?: BacklinkView | undefined;
+    /** The vault's tags. Supplied by a test; built from the session otherwise. */
+    readonly tags?: TagView | undefined;
     /** How a wikilink is resolved to a note. Injectable so a test needs no server. */
     readonly resolveLink?: typeof resolveNote | undefined;
   }
@@ -77,6 +81,7 @@
     catalog: suppliedCatalog,
     bookmarks: suppliedBookmarks,
     backlinks: suppliedBacklinks,
+    tags: suppliedTags,
     resolveLink,
   }: Props = $props();
 
@@ -99,6 +104,9 @@
   );
   const backlinks = untrack(
     () => suppliedBacklinks ?? new BacklinkView({ vault: session?.vault ?? "local-demo" }),
+  );
+  const tags = untrack(
+    () => suppliedTags ?? new TagView({ vault: session?.vault ?? "local-demo" }),
   );
 
   // Seeded synchronously, then kept current by the watcher. Starting from a default and
@@ -268,6 +276,7 @@
       activeNote={store.activeTab?.note}
       onopen={(path) => store.open(path)}
     />
+    <TagPane view={tags} onopen={(path) => store.open(path)} />
   </Sidebar>
 
   <main class="workspace-main" aria-label="Open notes">

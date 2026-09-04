@@ -190,6 +190,24 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
 .tree-bookmark[aria-pressed="true"] { color: var(--accent-primary); }
 .tree-bookmark:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); border-radius: var(--radius-sm); }
 
+/* ---------------------------------------------------------------- tag pane (SPEC 9.3)
+
+   Reuses the tree's row, heading and empty-state classes for the reason the backlinks panel
+   does: two panels in one sidebar that style themselves separately end up looking like two
+   applications. What is new here is the twisty, which is a control of its own because
+   selecting a tag and opening its children are two different intentions. */
+
+.tag-row-frame { display: flex; align-items: center; padding-left: calc(var(--tree-depth, 0) * var(--tree-indent)); }
+.tag-row-frame > .tree-row { --tree-depth: 0; }
+.tag-twisty { flex: 0 0 auto; width: var(--space-6); min-height: var(--tree-row-height); padding: 0; border: 0; border-radius: var(--radius-sm); color: var(--text-muted); background: none; font: var(--text-2xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.tag-twisty:hover { color: var(--text-primary); }
+.tag-twisty:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+/* A leaf keeps the column so labels line up down the pane, without becoming a control. */
+.tag-twisty.is-leaf { cursor: default; }
+.tag-count { flex: 0 0 auto; color: var(--text-muted); font-weight: var(--weight-medium); }
+.tag-notes { display: flex; flex-direction: column; }
+.tag-note-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+
 /* ---------------------------------------------------------------- backlinks (SPEC 9.5)
 
    Reuses the tree's row, heading and empty-state classes rather than restating them: both
@@ -296,7 +314,9 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
 .sidebar-toggle:hover { color: var(--text-primary); background: var(--surface-hover); }
 .sidebar-toggle:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
 .sidebar-toggle-icon { font-size: var(--text-sm); }
-.sidebar { width: var(--sidebar-width); min-height: 0; overflow: auto; padding: var(--space-5); }
+/* A column, so two panels in one sidebar are spaced by the same rule that spaces the
+   sections inside one of them — the tag pane sits under the note tree, not against it. */
+.sidebar { display: flex; flex-direction: column; gap: var(--space-6); width: var(--sidebar-width); min-height: 0; overflow: auto; padding: var(--space-5); }
 .sidebar-placeholder { margin: 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
 /* Collapsed: the toggle stays, the panel goes. The label is dropped rather than the button,
    so the control that reopens it is still reachable — including by keyboard. */
@@ -416,4 +436,9 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
   /* A finger, not a cursor (§8.3): the toggle is the whole edge strip. */
   .sidebar-toggle { min-width: var(--touch-target-min); min-height: var(--touch-target-min); justify-content: center; }
   .sidebar-toggle-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  /* §20.3's floor applies to the tag pane's controls. The twisty is a 16px glyph next to a
+     row that does something else entirely, so on a phone it is the one thing here a finger
+     can miss into. Growing it grows the row rather than overlapping the row below. */
+  .tag-twisty { width: var(--touch-target-min); min-height: var(--touch-target-min); }
+  .tag-row, .tree-row.is-tagged { min-height: var(--touch-target-min); }
 }

@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use crate::Error;
 
 /// Bumped whenever the DDL below changes. A mismatch rebuilds; it never migrates.
-pub(crate) const VERSION: i32 = 1;
+pub(crate) const VERSION: i32 = 2;
 
 /// Every table the reader's views are built over.
 ///
@@ -83,10 +83,14 @@ CREATE TABLE tags (
     tag        TEXT    NOT NULL,
     -- One row per prefix of a nested tag, so `#project/mb/spec` answers a query for
     -- `#project` without a LIKE scan (§9.3). The full tag is also one of its own prefixes.
-    tag_prefix TEXT    NOT NULL
+    tag_prefix TEXT    NOT NULL,
+    -- The prefix folded to NFC and lowercase, which is the tag's *identity*: `#Project` and
+    -- `#project` are one tag with one count (§9.3). `tag_prefix` keeps the spelling so the
+    -- pane can show a tag as somebody wrote it.
+    prefix_key TEXT    NOT NULL
 ) STRICT;
 
-CREATE INDEX tags_prefix ON tags(tag_prefix);
+CREATE INDEX tags_prefix ON tags(prefix_key);
 CREATE INDEX tags_note ON tags(note_id);
 
 CREATE TABLE blocks (

@@ -25,8 +25,20 @@ pub(crate) const RANK: &str = "mb_link_rank";
 /// wikilink and `Ç` from a directory listing are different bytes for the same character.
 /// Lowercase because `[[roadmap]]` is expected to find `Roadmap.md`, as it does in Obsidian.
 pub(crate) fn fold(value: &str) -> String {
-    let trimmed = value.trim().trim_end_matches(".md");
-    trimmed.nfc().collect::<String>().to_lowercase()
+    fold_case(value.trim().trim_end_matches(".md"))
+}
+
+/// Folds a tag into the form the tag pane groups on (§9.3).
+///
+/// The same case rule as [`fold`] and deliberately *not* the same trimming: a tag is not a
+/// filename, so `#notes.md` is a tag whose last three characters are part of its name. One
+/// folding rule with one documented difference, rather than two rules that drift.
+pub(crate) fn fold_tag(value: &str) -> String {
+    fold_case(value)
+}
+
+fn fold_case(value: &str) -> String {
+    value.nfc().collect::<String>().to_lowercase()
 }
 
 /// How near two notes are: the number of leading directory segments they share.
@@ -81,6 +93,17 @@ mod tests {
     fn folding_ignores_case_the_md_suffix_and_surrounding_space() {
         assert_eq!(fold("  Roadmap.md "), "roadmap");
         assert_eq!(fold("Projects/Roadmap"), "projects/roadmap");
+    }
+
+    #[test]
+    fn a_tag_keeps_a_trailing_md_that_a_filename_would_lose() {
+        assert_eq!(fold_tag("Notes.md"), "notes.md");
+        assert_eq!(fold("Notes.md"), "notes");
+    }
+
+    #[test]
+    fn a_tag_folds_case_and_composition_exactly_as_a_name_does() {
+        assert_eq!(fold_tag("Projekt/Café"), fold_tag("projekt/Cafe\u{301}"));
     }
 
     #[test]
