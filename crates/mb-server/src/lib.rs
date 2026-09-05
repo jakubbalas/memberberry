@@ -14,6 +14,7 @@ pub mod config;
 pub mod http;
 pub mod indexing;
 pub mod invites;
+pub mod rename;
 pub mod repository;
 pub mod sync;
 pub mod titles;

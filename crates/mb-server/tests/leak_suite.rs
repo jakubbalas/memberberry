@@ -732,3 +732,76 @@ fn e16_tag_counts_never_include_a_note_the_viewer_cannot_read() {
         vec!["Open.md".to_string()]
     );
 }
+
+/// E14: a rename rewrites what the actor cannot see, and says nothing about it.
+///
+/// The privilege in §6.6 is real — the rewrite reaches notes outside the actor's readable
+/// set on purpose — so what has to be tested is the seam between "it did the work" and "it
+/// admitted to the work". Three claims, and each fails independently:
+///
+/// 1. a note the actor cannot read *is* repointed, because §6.6 says a broken link is worse;
+/// 2. the reply counts only the notes they can read, because a count is a claim about how
+///    many notes exist (§6.5, the same argument as E16's tag counts);
+/// 3. a note they cannot read cannot be renamed, and the refusal is the one a missing note
+///    gets — so a rename is not an oracle for which notes are there.
+#[test]
+fn e14_a_privileged_rewrite_never_reports_what_it_reached() {
+    let dir = TempDir::new("leak-rename");
+    dir.write("Roadmap.md", "# Roadmap\n");
+    dir.write("Open.md", "See [[Roadmap]].\n");
+    dir.write(
+        "Private/Salary.md",
+        "Budget in [[Roadmap]] and [[Roadmap]].\n",
+    );
+    dir.write("Private/Board.md", "Also [[Roadmap]].\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"editor\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let sync = mb_server::sync::SyncRegistry::default();
+    let bob = Username::parse("bob").expect("username");
+
+    // Bob may not read `Private/`, so it does not exist for him — including as a rename
+    // target, and including in a way that would tell him apart from a note nobody wrote.
+    let rename =
+        mb_server::rename::Rename::new(&vault, access.policy(), bob.clone(), &index, &sync, None);
+    for probe in ["Private/Salary.md", "Private/NeverExisted.md"] {
+        assert!(
+            matches!(
+                rename.note(probe, "Pay.md"),
+                Err(mb_server::rename::RenameError::Denied)
+            ),
+            "{probe} must answer as a note that is not there"
+        );
+    }
+    assert!(dir.path().join("Private/Salary.md").exists());
+
+    let renamed = rename
+        .note("Roadmap.md", "Plan.md")
+        .expect("bob may rename this one");
+    assert_eq!(
+        (renamed.notes, renamed.references),
+        (1, 1),
+        "the reply counted a note bob cannot read: it must describe only his own vault"
+    );
+    for hidden in ["Private/Salary.md", "Private/Board.md"] {
+        let rewritten = std::fs::read_to_string(dir.path().join(hidden)).expect("the hidden note");
+        assert!(
+            !rewritten.contains("[[Roadmap]]"),
+            "{hidden} was left with a broken link, which §6.6 exists to prevent"
+        );
+    }
+}

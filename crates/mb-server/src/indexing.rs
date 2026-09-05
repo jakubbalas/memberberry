@@ -103,7 +103,7 @@ impl IndexRegistry {
                 continue;
             };
             let outcome = match changed {
-                Changes::All => sweep(vault, &mut index),
+                Changes::All => reconcile(vault, &mut index),
                 Changes::Only(paths) => touched(vault, &mut index, paths.iter()),
             };
             if let Err(error) = outcome {
@@ -115,7 +115,18 @@ impl IndexRegistry {
 }
 
 /// Reconciles the whole vault: stamp everything, re-read what changed, drop what is gone.
-fn sweep(vault: &Vault, index: &mut Index) -> Result<(), String> {
+///
+/// Public because a rename has to bring the index in step *synchronously* — it reads the
+/// link graph to decide what to rewrite, and again afterwards so backlinks and the tag tree
+/// agree with the files it just moved. Everything else reaches this through
+/// [`IndexRegistry::maintain`] on the maintenance tick.
+///
+/// Blocking: parses every changed note.
+///
+/// # Errors
+///
+/// Returns a human-readable description of what could not be reconciled.
+pub fn reconcile(vault: &Vault, index: &mut Index) -> Result<(), String> {
     let notes = vault
         .notes()
         .map_err(|error| format!("listing notes: {error}"))?;

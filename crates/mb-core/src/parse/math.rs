@@ -111,6 +111,20 @@ pub fn mask(src: &str, options: Options) -> (String, Table) {
     mask_except(src, options, &[])
 }
 
+/// Byte ranges of `src` that are inline maths, delimiters included.
+///
+/// For [`crate::rewrite`], which walks the source rather than the masked string and has to
+/// know which parts of it the inline scanner will never look inside. Asking here rather
+/// than re-deriving it is the same rule the rest of this module lives by: one answer to
+/// "where is the maths", or the two disagree and a file rewrites itself.
+#[must_use]
+pub fn spans(src: &str, options: Options) -> Vec<Range<usize>> {
+    if !src.contains('$') {
+        return Vec::new();
+    }
+    find_spans(src, &Structure::of(src, options))
+}
+
 /// As [`mask`], but leaves spans starting at any offset in `skip` alone.
 #[must_use]
 pub fn mask_except(src: &str, options: Options, skip: &[usize]) -> (String, Table) {

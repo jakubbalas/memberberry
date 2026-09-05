@@ -51,7 +51,14 @@ export function scratchNote(purpose: string, project: string): string {
 }
 
 /** One note per (editing test, viewport). The name is the test's, so a clash is visible. */
-const SCRATCH_PURPOSES: readonly string[] = ["slash-menu", "task-toggle", "outline"];
+const SCRATCH_PURPOSES: readonly string[] = [
+  "slash-menu",
+  "task-toggle",
+  "outline",
+  // A rename moves a file and rewrites another one, so it needs both ends to itself (§6.6).
+  "rename",
+  "rename-source",
+];
 const SCRATCH_PROJECTS: readonly string[] = ["desktop", "mobile"];
 
 const SCRATCH_BODY = "# Scratch\n\nA note this test may edit.\n\n- [ ] Ship the workspace shell \u{1F4C5} 2026-09-30 \u{23EB}\n";
@@ -83,9 +90,24 @@ const OUTLINE_BODY = [
   ...Array.from({ length: 40 }, (_, line) => `Beta line ${line + 1}.\n`),
 ].join("\n");
 
-/** The body one scratch note is provisioned with. */
-function scratchBody(purpose: string): string {
-  return purpose === "outline" ? OUTLINE_BODY : SCRATCH_BODY;
+/**
+ * The body one scratch note is provisioned with.
+ *
+ * `project` matters for the rename pair only, and it matters a lot: the link has to name the
+ * note *this* viewport will rename, or the desktop run rewrites the mobile run's fixture.
+ */
+function scratchBody(purpose: string, project: string): string {
+  if (purpose === "outline") return OUTLINE_BODY;
+  if (purpose === "rename") {
+    return "# Rename scratch\n\nA note this test may rename.\n";
+  }
+  if (purpose === "rename-source") {
+    // Two references, one plain and one embed, so the E2E assertion covers both kinds the
+    // rewrite has to follow (§9.2). The bare name is unique in the vault, which is what
+    // makes the rewritten link a bare name rather than a path (§6.6).
+    return `# Rename source\n\nSee [[rename.${project}]] for the plan.\n\n![[rename.${project}]]\n`;
+  }
+  return SCRATCH_BODY;
 }
 
 /** Notes the suite can rely on being present. Kept small and canonical on purpose. */
@@ -136,7 +158,8 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(
     SCRATCH_PURPOSES.flatMap((purpose) =>
       SCRATCH_PROJECTS.map(
-        (project) => [`Scratch/${purpose}.${project}.md`, scratchBody(purpose)] as const,
+        (project) =>
+          [`Scratch/${purpose}.${project}.md`, scratchBody(purpose, project)] as const,
       ),
     ),
   ),

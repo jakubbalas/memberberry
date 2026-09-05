@@ -182,6 +182,20 @@ impl TestServer {
         )
     }
 
+    /// Issues a POST with a JSON body.
+    fn post_json(&self, path: &str, headers: &str, body: &str) -> (String, String) {
+        self.request(
+            "POST",
+            path,
+            &format!(
+                "{}{headers}Content-Type: application/json\r\nContent-Length: {}\r\n",
+                self.default_headers,
+                body.len()
+            ),
+            body,
+        )
+    }
+
     /// Issues a PUT with a JSON body and the given extra headers.
     fn put_json(&self, path: &str, headers: &str, body: &str) -> (String, String) {
         self.request(
@@ -2923,4 +2937,177 @@ fn backlinks_follow_an_edit_made_outside_the_application() {
     server.tick();
     let (_, body) = server.get(route);
     assert!(!body.contains("B.md"), "{body}");
+}
+
+// ---------------------------------------------------------------------- rename
+
+#[test]
+fn renaming_a_note_over_http_moves_it_and_repoints_its_links() {
+    let dir = TempDir::new("http-rename");
+    dir.write("Roadmap.md", "# Roadmap\n");
+    dir.write("One.md", "See [[Roadmap]].\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/rename",
+        "",
+        r#"{"kind":"note","from":"Roadmap.md","to":"Plan.md"}"#,
+    );
+    assert!(is_ok(&status), "{status} {body}");
+    assert!(body.contains("\"to\":\"Plan.md\""), "{body}");
+    assert!(body.contains("\"notes\":1"), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("One.md")).expect("One.md"),
+        "See [[Plan]].\n"
+    );
+    // The route sweeps the index itself, so the very next request already agrees.
+    let (_, body) = server.get("/api/v1/vaults/v/backlinks/Plan.md");
+    assert!(body.contains("One.md"), "{body}");
+}
+
+#[test]
+fn renaming_a_tag_over_http_rewrites_the_notes_that_carry_it() {
+    let dir = TempDir::new("http-rename-tag");
+    dir.write("One.md", "A #project/mb note.\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/rename",
+        "",
+        r#"{"kind":"tag","from":"project","to":"work"}"#,
+    );
+    assert!(is_ok(&status), "{status} {body}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("One.md")).expect("One.md"),
+        "A #work/mb note.\n"
+    );
+    let (_, body) = server.get("/api/v1/vaults/v/tags");
+    assert!(body.contains("work/mb"), "{body}");
+    assert!(!body.contains("project"), "{body}");
+}
+
+#[test]
+fn a_rename_a_caller_may_not_do_answers_exactly_as_an_unknown_vault_does() {
+    // E14 and §6.5. Four probes that differ in every way an attacker cares about — a note
+    // that is there but unreadable, one that is not there, a vault this caller is not in,
+    // and a vault that does not exist — and one indistinguishable reply.
+    let dir = TempDir::new("http-rename-denied");
+    dir.write("Private/Salary.md", "# Salary\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"editor\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("editor");
+    let token = auth.create_session(bob.id, 4_102_444_800).expect("session");
+    let bob_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&token).expect("sign cookie")
+    );
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+
+    let probes = [
+        (
+            "/api/v1/vaults/v/rename",
+            r#"{"kind":"note","from":"Private/Salary.md","to":"Pay.md"}"#,
+        ),
+        (
+            "/api/v1/vaults/v/rename",
+            r#"{"kind":"note","from":"Private/Absent.md","to":"Pay.md"}"#,
+        ),
+        (
+            "/api/v1/vaults/nope/rename",
+            r#"{"kind":"note","from":"A.md","to":"B.md"}"#,
+        ),
+        (
+            "/api/v1/vaults/v/rename",
+            r#"{"kind":"tag","from":"anything","to":"work"}"#,
+        ),
+    ];
+    for (route, payload) in probes {
+        let (status, body) = server.post_json(route, &bob_header, payload);
+        assert!(status.contains("404"), "{route} answered {status}");
+        assert_eq!(body, "{}", "{route} said more than nothing: {body}");
+    }
+    assert!(
+        dir.path().join("Private/Salary.md").exists(),
+        "no probe may move a note"
+    );
+}
+
+#[test]
+fn an_unauthenticated_rename_is_refused() {
+    let dir = TempDir::new("http-rename-anon");
+    dir.write("Roadmap.md", "# Roadmap\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let payload = r#"{"kind":"note","from":"Roadmap.md","to":"P.md"}"#;
+    // `request` rather than `post_json`, because this one must carry no session cookie.
+    let (status, _) = server.request(
+        "POST",
+        "/api/v1/vaults/v/rename",
+        &format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            payload.len()
+        ),
+        payload,
+    );
+    assert!(status.contains("404"), "{status}");
+    assert!(dir.path().join("Roadmap.md").exists());
+}
+
+#[test]
+fn a_rename_onto_an_existing_note_reports_what_the_caller_asked_for() {
+    // The only detail a refusal may repeat is the name the caller sent, which they already
+    // know. That is what separates this 400 from the 404 above.
+    let dir = TempDir::new("http-rename-conflict");
+    dir.write("Roadmap.md", "# Roadmap\n");
+    dir.write("Plan.md", "# Plan\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/rename",
+        "",
+        r#"{"kind":"note","from":"Roadmap.md","to":"Plan.md"}"#,
+    );
+    assert!(status.contains("400"), "{status} {body}");
+    assert!(body.contains("Plan.md"), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Plan.md")).expect("Plan.md"),
+        "# Plan\n"
+    );
+}
+
+#[test]
+fn a_rename_body_that_is_not_a_rename_is_refused_without_touching_the_vault() {
+    let dir = TempDir::new("http-rename-garbage");
+    dir.write("Roadmap.md", "# Roadmap\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    for payload in [
+        "{}",
+        r#"{"kind":"folder","from":"a","to":"b"}"#,
+        r#"{"kind":"note","from":"Roadmap.md"}"#,
+        "not json at all",
+    ] {
+        let (status, _) = server.post_json("/api/v1/vaults/v/rename", "", payload);
+        assert!(
+            status.contains("400") || status.contains("422"),
+            "{payload} answered {status}"
+        );
+    }
+    assert!(dir.path().join("Roadmap.md").exists());
 }

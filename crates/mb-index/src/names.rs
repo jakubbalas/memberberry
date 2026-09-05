@@ -11,7 +11,6 @@
 
 use rusqlite::Connection;
 use rusqlite::functions::FunctionFlags;
-use unicode_normalization::UnicodeNormalization;
 
 use crate::Error;
 
@@ -20,25 +19,16 @@ pub(crate) const RANK: &str = "mb_link_rank";
 
 /// Folds a name or path into the form links are matched on.
 ///
-/// NFC because the two sides come from different places — the target from note text, the
-/// name from a filesystem path — and macOS hands back decomposed filenames, so `Ç` from a
-/// wikilink and `Ç` from a directory listing are different bytes for the same character.
-/// Lowercase because `[[roadmap]]` is expected to find `Roadmap.md`, as it does in Obsidian.
+/// `mb-core` owns the rule ([`mb_core::names::fold_name`]): the same folding decides which
+/// links a rename rewrites (§6.6), and two copies of it are two answers to "is `[[roadmap]]`
+/// a link to `Roadmap.md`". Re-exported here so the SQL in this crate reads as one thing.
 pub(crate) fn fold(value: &str) -> String {
-    fold_case(value.trim().trim_end_matches(".md"))
+    mb_core::names::fold_name(value)
 }
 
 /// Folds a tag into the form the tag pane groups on (§9.3).
-///
-/// The same case rule as [`fold`] and deliberately *not* the same trimming: a tag is not a
-/// filename, so `#notes.md` is a tag whose last three characters are part of its name. One
-/// folding rule with one documented difference, rather than two rules that drift.
 pub(crate) fn fold_tag(value: &str) -> String {
-    fold_case(value)
-}
-
-fn fold_case(value: &str) -> String {
-    value.nfc().collect::<String>().to_lowercase()
+    mb_core::names::fold_tag(value)
 }
 
 /// How near two notes are: the number of leading directory segments they share.
@@ -88,29 +78,6 @@ pub(crate) fn register(conn: &Connection) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn folding_ignores_case_the_md_suffix_and_surrounding_space() {
-        assert_eq!(fold("  Roadmap.md "), "roadmap");
-        assert_eq!(fold("Projects/Roadmap"), "projects/roadmap");
-    }
-
-    #[test]
-    fn a_tag_keeps_a_trailing_md_that_a_filename_would_lose() {
-        assert_eq!(fold_tag("Notes.md"), "notes.md");
-        assert_eq!(fold("Notes.md"), "notes");
-    }
-
-    #[test]
-    fn a_tag_folds_case_and_composition_exactly_as_a_name_does() {
-        assert_eq!(fold_tag("Projekt/Café"), fold_tag("projekt/Cafe\u{301}"));
-    }
-
-    #[test]
-    fn folding_composes_a_decomposed_name() {
-        // "Cafe\u{301}" is what a macOS directory listing gives for a note called "Café".
-        assert_eq!(fold("Cafe\u{301}"), fold("Café"));
-    }
 
     #[test]
     fn a_missing_path_is_maximally_far() {

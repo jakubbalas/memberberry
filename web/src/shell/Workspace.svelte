@@ -29,6 +29,7 @@
   import { OUTLINE_EVENT, type OutlineDetail } from "../editor/outline.js";
   import { fromVisiblePane } from "./outline.js";
   import { OutlineView } from "./outline.svelte.js";
+  import type { renameNote as renameNoteRequest, renameTag as renameTagRequest } from "./rename.js";
   import { TagView } from "./tags.svelte.js";
   import type { Platform } from "./hotkeys.js";
   import { type SwipeStart, swipeProgress, swipeStart } from "./gestures.js";
@@ -72,6 +73,9 @@
     readonly outline?: OutlineView | undefined;
     /** How a wikilink is resolved to a note. Injectable so a test needs no server. */
     readonly resolveLink?: typeof resolveNote | undefined;
+    /** How a rename is sent (§6.6). Injectable so a test needs no server. */
+    readonly renameNote?: typeof renameNoteRequest | undefined;
+    readonly renameTag?: typeof renameTagRequest | undefined;
   }
 
   const {
@@ -90,6 +94,8 @@
     tags: suppliedTags,
     outline: suppliedOutline,
     resolveLink,
+    renameNote,
+    renameTag,
   }: Props = $props();
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
@@ -327,6 +333,9 @@
 <CommandCenter
   {store}
   {catalog}
+  {tags}
+  {renameNote}
+  {renameTag}
   vault={vaultSlug}
   {layout}
   {target}

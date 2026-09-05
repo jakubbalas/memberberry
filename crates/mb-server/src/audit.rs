@@ -11,7 +11,11 @@ use serde::Serialize;
 /// One security-relevant event written to `audit.log`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AuditEvent<'a> {
-    /// UTC timestamp supplied by the operation boundary in RFC 3339 form.
+    /// When the operation happened, as seconds since the Unix epoch — see [`unix_seconds`],
+    /// which every caller uses so one record cannot be stamped differently from the next.
+    ///
+    /// A string rather than a number because the format is a log format, not a wire type:
+    /// moving to RFC 3339 later changes what is written and nothing that reads this struct.
     pub timestamp: &'a str,
     /// Authenticated username, when an actor exists.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,6 +66,19 @@ pub enum AuditResult {
     Denied,
     /// The operation failed for a non-authorization reason.
     Failure,
+}
+
+/// Seconds since the Unix epoch, as every audit record stamps itself.
+///
+/// Here rather than in each caller so one operation cannot record a different clock from
+/// the next. A clock before the epoch reads as zero rather than failing the operation that
+/// was being logged.
+#[must_use]
+pub fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 /// Append-only, size-rotated audit log writer.

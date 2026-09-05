@@ -7,9 +7,15 @@
   What lives here is *wiring* — which list fills the palette and what Enter does. The parts
   worth testing on their own are already elsewhere: `commands.ts` resolves bindings,
   `fuzzy.ts` ranks, `catalog.ts` fetches, and `Palette.svelte` handles the keyboard.
+
+  Rename (§6.6) is here for the same reason the three switchers are: it is a command, and
+  §8.4 says the palette is over *every* registered command. It is deliberately **not** a
+  button on a note-tree row — the tree is one tab stop with `aria-activedescendant`, and a
+  control per row would turn four hundred notes into eight hundred tab stops.
 -->
 <script lang="ts">
   import Palette, { type PaletteItem } from "./Palette.svelte";
+  import RenamePrompt from "./RenamePrompt.svelte";
   import { type VaultSummary, fetchVaults, noteHint, noteLabel } from "./catalog.js";
   import {
     type Command,
@@ -21,6 +27,14 @@
   import type { LayoutMode } from "./layout.js";
   import { splitLimitFor } from "./layout.js";
   import type { NoteCatalog } from "./note-catalog.svelte.js";
+  import {
+    noteNameOf,
+    notePathFor,
+    renameNote as renameNoteRequest,
+    renameTag as renameTagRequest,
+    renamedMessage,
+  } from "./rename.js";
+  import type { TagView } from "./tags.svelte.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { groups } from "./workspace.js";
 
@@ -28,6 +42,8 @@
     readonly store: WorkspaceStore;
     /** The vault's readable notes, shared with the tree so the list is fetched once. */
     readonly catalog: NoteCatalog;
+    /** The tag tree, shared with the pane — a tag rename acts on whichever node it selected. */
+    readonly tags: TagView;
     readonly vault: string;
     readonly layout: LayoutMode;
     /** Where the shell listens for hotkeys. Injectable so a test need not use `window`. */
@@ -45,11 +61,15 @@
     readonly loadVaults?: typeof fetchVaults | undefined;
     /** Called to move to another vault. Defaults to a real navigation. */
     readonly onvault?: ((slug: string) => void) | undefined;
+    /** Injectable for tests; default to the real HTTP calls. */
+    readonly renameNote?: typeof renameNoteRequest | undefined;
+    readonly renameTag?: typeof renameTagRequest | undefined;
   }
 
   const {
     store,
     catalog,
+    tags,
     vault,
     layout,
     target,
@@ -57,13 +77,27 @@
     platform,
     loadVaults = fetchVaults,
     onvault,
+    renameNote = renameNoteRequest,
+    renameTag = renameTagRequest,
   }: Props = $props();
 
   type Mode = "commands" | "notes" | "vaults";
 
+  /** What the rename prompt is currently asking about. `undefined` means it is closed. */
+  interface Renaming {
+    readonly kind: "note" | "tag";
+    /** The note path or the tag key the rename acts on. */
+    readonly from: string;
+    readonly initial: string;
+  }
+
   let mode = $state<Mode | undefined>(undefined);
   let query = $state("");
   let vaults = $state<readonly VaultSummary[]>([]);
+  let renaming = $state<Renaming | undefined>(undefined);
+  let renameBusy = $state(false);
+  let renameError = $state<string | undefined>(undefined);
+  let renameNotice = $state("");
 
   function openPalette(next: Mode): void {
     mode = next;
@@ -83,6 +117,54 @@
   }
 
   const canSplit = $derived(groups(store.current.root).length <= splitLimitFor(layout));
+
+  function ask(next: Renaming): void {
+    dismiss();
+    renameError = undefined;
+    renameNotice = "";
+    renaming = next;
+  }
+
+  /**
+   * Sends the rename, then puts the workspace back where it belongs.
+   *
+   * Every tab showing the renamed note is moved, not only the one it was asked from: two
+   * panes over one note is an ordinary split, and leaving the other pointed at a path that
+   * no longer exists would render an error beside a working editor.
+   */
+  async function confirmRename(typed: string): Promise<void> {
+    const subject = renaming;
+    if (subject === undefined) return;
+    const to = subject.kind === "note" ? notePathFor(subject.from, typed) : typed.trim();
+    if (to === undefined || to === "") {
+      renameError = "That is not a usable name.";
+      return;
+    }
+    renameBusy = true;
+    renameError = undefined;
+    const result =
+      subject.kind === "note"
+        ? await renameNote(vault, subject.from, to)
+        : await renameTag(vault, subject.from, to);
+    renameBusy = false;
+    if ("refused" in result) {
+      renameError = result.refused;
+      return;
+    }
+    renaming = undefined;
+    renameNotice = renamedMessage(result.ok);
+    if (subject.kind === "note") {
+      for (const tab of store.tabs) {
+        if (tab.note === subject.from) store.navigate(tab.id, result.ok.to);
+      }
+      void catalog.refresh();
+    } else {
+      // Deselected rather than re-selected under its new key: the key is folded server-side
+      // (§9.3), so guessing it here would be a second copy of that rule.
+      tags.select(undefined);
+    }
+    void tags.refresh();
+  }
 
   /**
    * Everything the palette can run.
@@ -164,6 +246,30 @@
       run: () => {
         const active = store.activeTab;
         if (active !== undefined) store.forward(active.id);
+      },
+    },
+    {
+      id: "note.rename",
+      title: "Rename note…",
+      group: "Note",
+      enabled: () => store.activeTab !== undefined,
+      run: () => {
+        const active = store.activeTab;
+        if (active !== undefined) {
+          ask({ kind: "note", from: active.note, initial: noteNameOf(active.note) });
+        }
+      },
+    },
+    {
+      id: "tag.rename",
+      title: "Rename the selected tag…",
+      group: "Note",
+      enabled: () => tags.selected !== undefined,
+      run: () => {
+        const selected = tags.selected;
+        if (selected !== undefined) {
+          ask({ kind: "tag", from: selected, initial: selected });
+        }
       },
     },
     {
@@ -271,6 +377,26 @@
     vaults: { title: "Switch vault", placeholder: "Search vaults…", empty: "No vault matches." },
   };
 </script>
+
+<RenamePrompt
+  open={renaming !== undefined}
+  title={renaming?.kind === "tag" ? "Rename tag" : "Rename note"}
+  subject={renaming?.kind === "tag" ? `#${renaming.from}` : (renaming?.from ?? "")}
+  label={renaming?.kind === "tag" ? "New tag" : "New name"}
+  initial={renaming?.initial ?? ""}
+  busy={renameBusy}
+  error={renameError}
+  onsubmit={(name) => void confirmRename(name)}
+  ondismiss={() => {
+    renaming = undefined;
+    renameBusy = false;
+    renameError = undefined;
+  }}
+/>
+
+<!-- Announced rather than shown as a toast: the one thing a rename has to say is what it
+     did, and a status region says it to a screen reader too. -->
+<p class="rename-notice" role="status" aria-live="polite">{renameNotice}</p>
 
 <Palette
   open={mode !== undefined}

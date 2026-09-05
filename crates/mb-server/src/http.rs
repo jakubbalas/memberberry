@@ -14,12 +14,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
@@ -29,6 +29,7 @@ use mb_core::html::Urls;
 use crate::audit::{AuditAction, AuditEvent, AuditLog, AuditResult};
 use crate::bookmarks::BookmarkStore;
 use crate::indexing::IndexRegistry;
+use crate::rename::{Rename, RenameError};
 use crate::repository::AuthorizedVault;
 use crate::sync::{Announcement, ClientFrame, ConnectionId, ServerFrame, SyncRegistry, Wire};
 use crate::titles::{NoteSummary, TitleCache};
@@ -313,6 +314,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/vaults/{slug}/tags", get(tag_index))
         .route("/api/v1/vaults/{slug}/tags/{*prefix}", get(tagged_notes))
+        .route(
+            "/api/v1/vaults/{slug}/rename",
+            post(rename)
+                // A rename body is two names. Bounded before the handler so an
+                // authenticated member cannot make the server buffer a megabyte of them.
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
         .route("/api/v1/vaults/{slug}/embed/{*target}", get(note_embed))
         .route("/api/v1/vaults/{slug}/resolve/{*target}", get(note_resolve))
         .route(
@@ -925,6 +933,115 @@ struct TaggedNotesResponse {
 struct TaggedNote {
     path: String,
     title: Option<String>,
+}
+
+/// What the client asks a rename to do. `kind` decides which of §6.6's two mechanisms runs.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RenameRequest {
+    /// `from` is anything a link can name; `to` is a vault-relative path ending in `.md`.
+    Note { from: String, to: String },
+    /// `from` is a tag or a tag prefix; every tag nested under it moves with it (§9.3).
+    Tag { from: String, to: String },
+}
+
+#[derive(Debug, serde::Serialize)]
+struct RenameResponse {
+    /// The new path, or the new tag.
+    to: String,
+    /// Readable notes whose references were rewritten — see the note on counts below.
+    notes: usize,
+    /// References rewritten in those notes.
+    references: usize,
+}
+
+/// `POST /api/v1/vaults/{slug}/rename` — rename a note or a tag, links included (§6.6).
+///
+/// Enforcement point **E14**, and the only route whose work reaches outside the caller's
+/// readable set. `rename.rs` argues why that is allowed and what keeps it contained; the
+/// three things this route is responsible for are:
+///
+/// - **One denial.** A vault the caller is not in, a note they cannot read, a note that is
+///   not there and a note they may read but not write are one `404` with an empty body —
+///   the same `workspace_denied` every other content route answers with (§6.5).
+/// - **The counts are the caller's own.** `notes` and `references` count only notes this
+///   caller can read. The rewrite may well have touched more; how many more is a fact about
+///   notes that do not exist for them, so it goes to the audit log and not into this reply.
+/// - **The work is blocking.** It walks the vault, reads every linking note and sweeps the
+///   index twice, so it runs on a blocking thread rather than stalling the runtime.
+async fn rename(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<RenameRequest>,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(user) = state.vault_user(vault.slug(), &headers) else {
+        return workspace_denied();
+    };
+    let Some(index) = state.indexes.get(vault) else {
+        return server_error(&Error::Config("no index for this vault".to_string()));
+    };
+    let worker = Arc::clone(&state);
+    let slug = vault.slug().clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let Some(vault) = worker.vault(slug.as_str()) else {
+            return Err(RenameError::Denied);
+        };
+        let rename = Rename::new(
+            vault,
+            &access,
+            user,
+            &index,
+            worker.sync_registry(),
+            worker.audit_log(),
+        );
+        match request {
+            RenameRequest::Note { from, to } => rename.note(&from, &to),
+            RenameRequest::Tag { from, to } => rename.tag(&from, &to),
+        }
+    })
+    .await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    match outcome {
+        Ok(renamed) => json_no_store(&RenameResponse {
+            to: renamed.to,
+            notes: renamed.notes,
+            references: renamed.references,
+        }),
+        Err(RenameError::Denied) => workspace_denied(),
+        // The name in these two came from the caller, so repeating it reveals nothing they
+        // did not already send.
+        Err(error @ (RenameError::InvalidName(_) | RenameError::Exists(_))) => {
+            rename_refused(StatusCode::BAD_REQUEST, &error.to_string())
+        }
+        Err(error @ RenameError::Unverified) => {
+            rename_refused(StatusCode::CONFLICT, &error.to_string())
+        }
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
+/// A refusal the caller can act on, as JSON — this route's client is script, not a browser.
+fn rename_refused(status: StatusCode, message: &str) -> Response {
+    let body = serde_json::json!({ "error": message }).to_string();
+    (
+        status,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// `GET /api/v1/vaults/{slug}/tags` — the tag tree with per-node counts (§9.3).
@@ -1712,7 +1829,7 @@ impl AppState {
         let targets: [String; 0] = [];
         audit
             .append(&AuditEvent {
-                timestamp: &unix_seconds().to_string(),
+                timestamp: &crate::audit::unix_seconds().to_string(),
                 actor: Some(actor),
                 source_ip: None,
                 vault: None,
@@ -1721,6 +1838,16 @@ impl AppState {
                 result,
             })
             .map_err(|error| Error::Auth(format!("writing audit log: {error}")))
+    }
+
+    /// The process's document rooms, for an operation that has to close one (§6.6).
+    fn sync_registry(&self) -> &SyncRegistry {
+        &self.security.sync
+    }
+
+    /// The audit writer, when this deployment has one.
+    fn audit_log(&self) -> Option<&AuditLog> {
+        self.security.audit.as_ref()
     }
 
     fn authenticated_user(&self, headers: &HeaderMap) -> Option<Username> {

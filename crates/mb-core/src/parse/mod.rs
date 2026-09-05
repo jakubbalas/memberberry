@@ -40,13 +40,26 @@ pub fn document(input: &str) -> Document {
     })
 }
 
-/// Parses note body Markdown, without frontmatter.
+/// The CommonMark extensions Memberberry's parser runs with.
+///
+/// Shared with [`crate::rewrite`] rather than written twice: a rewriter that asked
+/// `pulldown-cmark` a slightly different question would disagree with the parser about
+/// where a code block ends, and the whole point of it is that it cannot.
+///
+/// ENABLE_MATH is deliberately absent — see [`blocks`].
 #[must_use]
-pub fn blocks(body: &str) -> Vec<Block> {
+pub fn options() -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
+    options
+}
+
+/// Parses note body Markdown, without frontmatter.
+#[must_use]
+pub fn blocks(body: &str) -> Vec<Block> {
+    let options = options();
     // ENABLE_MATH is deliberately NOT set. pulldown-cmark's display-math handling swallows
     // every block after a `$$` fence inside a list item or blockquote — silently losing user
     // content, which C2 forbids. A code fence in the same position is fine, so this is

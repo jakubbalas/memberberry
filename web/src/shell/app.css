@@ -269,6 +269,32 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
 .palette-match { color: inherit; background: var(--match-highlight); border-radius: var(--radius-sm); }
 .palette-hint { flex: 0 0 auto; max-width: 45%; overflow: hidden; color: var(--text-muted); font: var(--text-2xs)/var(--leading-flat) var(--font-ui); text-overflow: ellipsis; white-space: nowrap; }
 
+/* ------------------------------------------------------- rename prompt (SPEC 6.6)
+
+   A `<dialog>` for the same reason the palette is one. The warning is not decoration: a
+   rename rewrites links in notes the person doing it may not be able to read, and this is
+   the only place that is ever said, because the audit log has no UI (§6.9). */
+
+.rename-prompt { width: min(var(--palette-width), calc(100vw - var(--space-8))); max-width: 100%; margin: 15vh auto auto; padding: 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-primary); background: var(--surface-note); box-shadow: var(--shadow-lg); }
+.rename-prompt::backdrop { background: color-mix(in srgb, var(--text-primary) 35%, transparent); }
+.rename-body { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-5); }
+.rename-title { margin: 0; font: var(--weight-bold) var(--text-md)/var(--leading-snug) var(--font-ui); }
+.rename-subject { margin: 0; overflow: hidden; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.rename-field { display: flex; flex-direction: column; gap: var(--space-2); }
+.rename-label { color: var(--text-muted); font: var(--weight-medium) var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.rename-input { min-height: var(--touch-target-min); padding: var(--space-3) var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-sunken); font: var(--text-sm)/var(--leading-flat) var(--font-ui); }
+.rename-input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
+.rename-warning { margin: 0; color: var(--text-muted); font: var(--text-2xs)/var(--leading-snug) var(--font-ui); }
+.rename-error { margin: 0; color: var(--state-danger); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.rename-actions { display: flex; justify-content: flex-end; gap: var(--space-3); }
+.rename-cancel, .rename-confirm { min-height: var(--touch-target-min); padding: var(--space-3) var(--space-5); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); cursor: pointer; font: var(--weight-medium) var(--text-sm)/var(--leading-flat) var(--font-ui); }
+.rename-cancel { color: var(--text-primary); background: var(--surface-raised); }
+.rename-confirm { color: var(--surface-note); border-color: transparent; background: var(--accent-primary); }
+.rename-cancel:disabled, .rename-confirm:disabled { opacity: .55; cursor: default; }
+/* Announced, not shown: the message is for a screen reader as much as for a sighted user,
+   and a toast that steals a corner of the workspace is worse than a line nobody has to read. */
+.rename-notice { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; border: 0; clip-path: inset(50%); white-space: nowrap; }
+
 /* The editor's own mobile rules share the §8.3 breakpoint rather than having their own.
    They used to switch at 40rem, so between 640px and 768px the toolbar floated as if on a
    phone while the desktop shell was showing — two breakpoints that had no reason to differ

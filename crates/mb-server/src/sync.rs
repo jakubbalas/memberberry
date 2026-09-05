@@ -457,6 +457,33 @@ impl SyncRegistry {
             .collect()
     }
 
+    /// Flushes and closes the room for one note, so its file can be moved (§6.6).
+    ///
+    /// Returns whether a room was open. A rename must do this **before** it touches the
+    /// file: a coordinator holds an absolute path and a debounced write, so a note renamed
+    /// underneath one would either error on every maintenance tick or — worse — have the
+    /// pending write recreate the file at the old name, resurrecting the note that was just
+    /// renamed away.
+    ///
+    /// Subscribers are not told. There is no frame for "this note is now called something
+    /// else" and inventing one is §7.1's business, not §6.6's; a client that keeps editing
+    /// the old name gets the same neutral `not_found` a deleted note gives, and reopening
+    /// it at the new name is what the client that asked for the rename does.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the registry lock is poisoned or the final Markdown write fails — in which
+    /// case the caller must not proceed, because the file it is about to move is stale.
+    pub fn close(&self, vault: &Vault, identity: &str) -> Result<bool, SyncError> {
+        let mut rooms = self.rooms()?;
+        let key = format!("{}:{identity}", vault.slug());
+        if !rooms.contains_key(&key) {
+            return Ok(false);
+        }
+        release(&mut rooms, &key)?;
+        Ok(true)
+    }
+
     /// Performs the timer-driven part of the write and external-change paths for open notes.
     ///
     /// A due Markdown write is flushed for every open note — that is driven by the clock,
@@ -729,6 +756,39 @@ impl NoteCoordinator {
     }
 }
 
+/// Moves a note's CRDT sidecar and last-write marker to follow a rename (§6.6).
+///
+/// why: the sidecar is named from a hash of the note's identity, so a renamed note would
+/// otherwise open against a fresh document — losing the editing history — while the old
+/// sidecar stayed behind and was picked up by whatever note was created at the old path
+/// next, resurrecting content that had been renamed away. Moving it keeps both from
+/// happening, and the marker moves with it so the recovery check in
+/// [`NoteCoordinator::recover_unflushed_markdown`] still recognises the file.
+///
+/// Absent derived state is not an error: `rm -rf .memberberry/` must leave a working vault
+/// (invariant I1, §22.4), so there may simply be nothing to move.
+///
+/// # Errors
+///
+/// Fails only if a sidecar exists and cannot be moved.
+pub fn relocate_sidecar(vault_root: &Path, from: &str, to: &str) -> Result<(), SyncError> {
+    let old = sidecar_path(vault_root, from);
+    let new = sidecar_path(vault_root, to);
+    for (old, new) in [(marker_path(&old), marker_path(&new)), (old, new)] {
+        if !old.exists() {
+            continue;
+        }
+        if let Some(parent) = new.parent() {
+            fs::create_dir_all(parent).map_err(|source| SyncError::Write {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        fs::rename(&old, &new).map_err(|source| SyncError::Write { path: old, source })?;
+    }
+    Ok(())
+}
+
 fn sidecar_path(vault_root: &Path, relative: &str) -> PathBuf {
     let mut name = String::with_capacity(68);
     for byte in content_hash(relative.as_bytes()) {
@@ -773,7 +833,15 @@ fn decode_update(update: &[u8]) -> Result<Update, SyncError> {
     Update::decode_v1(update).map_err(|error| SyncError::Update(error.to_string()))
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {
+/// Writes `bytes` to `path` via a temporary file in the same directory.
+///
+/// Shared with [`crate::rename`]: a rename rewrites notes this module also writes, and a
+/// second write implementation would be a second set of crash semantics for one file.
+///
+/// # Errors
+///
+/// Fails if the temporary file cannot be written or moved into place.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())

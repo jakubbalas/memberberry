@@ -16,6 +16,8 @@ import { Bookmarks } from "./bookmarks.svelte.js";
 import type { NoteSummary, VaultSummary } from "./catalog.js";
 import { NoteCatalog } from "./note-catalog.svelte.js";
 import type { NoteSurface, OpenNoteSurfaceOptions } from "./note-surface.js";
+import type { renameNote as renameNoteRequest, renameTag as renameTagRequest } from "./rename.js";
+import { TagView } from "./tags.svelte.js";
 import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
 
@@ -71,6 +73,9 @@ function render(
   options: {
     notes?: readonly string[];
     onvault?: (slug: string) => void;
+    renameNote?: typeof renameNoteRequest;
+    renameTag?: typeof renameTagRequest;
+    tags?: TagView;
   } = {},
 ) {
   const ids = sessionIds();
@@ -96,6 +101,9 @@ function render(
       }),
       loadVaults: async () => VAULTS,
       ...(options.onvault === undefined ? {} : { onvault: options.onvault }),
+      ...(options.renameNote === undefined ? {} : { renameNote: options.renameNote }),
+      ...(options.renameTag === undefined ? {} : { renameTag: options.renameTag }),
+      ...(options.tags === undefined ? {} : { tags: options.tags }),
     },
   });
   return { store, teardown: () => unmount(app) };
@@ -428,6 +436,200 @@ describe("the palette keyboard", () => {
       // The label is the *title*, "Product roadmap" — so the highlight lands on "road" in
       // "roadmap", not on the "ro" of "Product" that a purely greedy matcher would pick.
       expect(target.querySelector(".palette-match")?.textContent).toBe("road");
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("rename (SPEC 6.6)", () => {
+  const prompt = (): HTMLDialogElement | null => target.querySelector("dialog.rename-prompt");
+  const nameField = (): HTMLInputElement | null => target.querySelector(".rename-input");
+  const notice = (): string => target.querySelector(".rename-notice")?.textContent?.trim() ?? "";
+
+  /** Opens the palette and runs the command with this title. */
+  async function run(title: string): Promise<void> {
+    shortcut("P", { shiftKey: true });
+    await flush();
+    const option = options().find((entry) => entry.textContent?.trim().startsWith(title));
+    if (option === undefined) {
+      throw new Error(`no palette entry for ${title}; saw ${labels().join(", ")}`);
+    }
+    option.click();
+    await flush();
+  }
+
+  async function submit(name: string): Promise<void> {
+    const field = nameField();
+    if (field === null) throw new Error("the prompt should have an input");
+    field.value = name;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    target.querySelector<HTMLFormElement>(".rename-body")?.requestSubmit();
+    await flush();
+    await flush();
+  }
+
+  it("prefills the open note's name and sends the path its folder implies", async () => {
+    const calls: Array<readonly [string, string, string]> = [];
+    const { teardown } = render({
+      notes: ["Projects/Roadmap.md"],
+      renameNote: async (vault, from, to) => {
+        calls.push([vault, from, to]);
+        return { ok: { to, notes: 2, references: 3 } };
+      },
+    });
+    try {
+      await flush();
+      await run("Rename note…");
+      expect(prompt()?.open).toBe(true);
+      // Prefilled with the *name*, not the path: nobody retypes the folder to rename a note.
+      expect(nameField()?.value).toBe("Roadmap");
+      await submit("Plan");
+      expect(calls).toEqual([["personal", "Projects/Roadmap.md", "Projects/Plan.md"]]);
+      expect(prompt()?.open).toBe(false);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("moves every tab showing the renamed note, not only the one it was asked from", async () => {
+    // Two panes over one note is an ordinary split. Leaving the other pointed at a path that
+    // no longer exists would render an error beside a working editor.
+    const { store, teardown } = render({
+      notes: ["Projects/Roadmap.md"],
+      renameNote: async (_vault, _from, to) => ({ ok: { to, notes: 0, references: 0 } }),
+    });
+    try {
+      await flush();
+      store.split(store.focusedGroup, "vertical", "Projects/Roadmap.md");
+      await flush();
+      expect(store.tabs.filter((tab) => tab.note === "Projects/Roadmap.md")).toHaveLength(2);
+      await run("Rename note…");
+      await submit("Plan");
+      expect(store.tabs.map((tab) => tab.note)).toEqual([
+        "Projects/Plan.md",
+        "Projects/Plan.md",
+      ]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("says what the count means, and keeps the prompt open on a refusal", async () => {
+    const { teardown } = render({
+      notes: ["Welcome.md"],
+      renameNote: async () => ({ refused: "That name is taken." }),
+    });
+    try {
+      await flush();
+      await run("Rename note…");
+      await submit("Plan");
+      expect(target.querySelector(".rename-error")?.textContent).toBe("That name is taken.");
+      expect(prompt()?.open).toBe(true);
+      expect(notice()).toBe("");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("reports the count as notes the user can see", async () => {
+    const { teardown } = render({
+      notes: ["Welcome.md"],
+      renameNote: async (_vault, _from, to) => ({ ok: { to, notes: 2, references: 3 } }),
+    });
+    try {
+      await flush();
+      await run("Rename note…");
+      await submit("Plan");
+      expect(notice()).toBe("Renamed to Plan.md. Updated 3 references in 2 notes you can see.");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("refuses a name that is not one without asking the server", async () => {
+    // Both paths, because they reject for different reasons: a note name goes through
+    // `notePathFor`, and a tag has only its own emptiness to be caught by.
+    let asked = 0;
+    const tags = new TagView({
+      vault: "personal",
+      load: async () => [{ tag: "project", key: "project", notes: 1 }],
+      loadNotes: async () => ({ tag: "project", notes: [] }),
+    });
+    const { teardown } = render({
+      notes: ["Welcome.md"],
+      tags,
+      renameNote: async (_vault, _from, to) => {
+        asked += 1;
+        return { ok: { to, notes: 0, references: 0 } };
+      },
+      renameTag: async (_vault, _from, to) => {
+        asked += 1;
+        return { ok: { to, notes: 0, references: 0 } };
+      },
+    });
+    try {
+      await flush();
+      await run("Rename note…");
+      await submit("   ");
+      expect(asked).toBe(0);
+      expect(target.querySelector(".rename-error")?.textContent).toBe("That is not a usable name.");
+
+      target.querySelector<HTMLButtonElement>(".rename-cancel")?.click();
+      await flush();
+      tags.select("project");
+      await flush();
+      await run("Rename the selected tag");
+      await submit("   ");
+      expect(asked).toBe(0);
+      expect(target.querySelector(".rename-error")?.textContent).toBe("That is not a usable name.");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("renames whichever tag the pane has selected, and deselects it afterwards", async () => {
+    // Deselected rather than re-selected under its new key: the key is folded server-side
+    // (§9.3), so guessing it in the client would be a second copy of that rule.
+    const calls: Array<readonly [string, string]> = [];
+    const tags = new TagView({
+      vault: "personal",
+      load: async () => [{ tag: "project", key: "project", notes: 2 }],
+      loadNotes: async () => ({ tag: "project", notes: [] }),
+    });
+    const { teardown } = render({
+      tags,
+      renameTag: async (_vault, from, to) => {
+        calls.push([from, to]);
+        return { ok: { to, notes: 2, references: 2 } };
+      },
+    });
+    try {
+      await flush();
+      tags.select("project");
+      await flush();
+      await run("Rename the selected tag");
+      expect(nameField()?.value).toBe("project");
+      await submit("work");
+      expect(calls).toEqual([["project", "work"]]);
+      expect(tags.selected).toBeUndefined();
+    } finally {
+      teardown();
+    }
+  });
+
+  it("offers no rename when nothing is open, and no tag rename when none is selected", async () => {
+    const { teardown } = render();
+    try {
+      await flush();
+      shortcut("P", { shiftKey: true });
+      await flush();
+      const disabled = options()
+        .filter((option) => option.getAttribute("aria-disabled") === "true")
+        .map((option) => option.textContent?.trim() ?? "");
+      expect(disabled).toContain("Rename note…");
+      expect(disabled.some((label) => label.startsWith("Rename the selected tag"))).toBe(true);
     } finally {
       teardown();
     }
