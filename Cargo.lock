@@ -884,6 +884,7 @@ name = "mb-index"
 version = "0.1.0"
 dependencies = [
  "mb-core",
+ "proptest",
  "rusqlite",
  "sha2",
  "thiserror",

@@ -41,6 +41,7 @@
 #[cfg(test)]
 mod testing;
 
+mod graph;
 mod names;
 mod read;
 mod readable;
@@ -51,6 +52,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+pub use graph::{Graph, GraphEdge, GraphNode, MAX_HOPS, MAX_NEIGHBOURHOOD};
 pub use read::{Backlink, BacklinkGroup, Reader, TagNode, Target};
 pub use write::{Changed, NoteInput, Plan, Stamp};
 

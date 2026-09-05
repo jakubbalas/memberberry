@@ -138,6 +138,16 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
     + "Gone: ![[Embeds/Nothing At All]]\n",
   // A note that embeds itself. §9.2 requires this to render as a link rather than to hang.
   "Embeds/Cycle.md": "# Cycling\n\n![[Embeds/Cycle]]\n",
+  // Local-graph fixtures (§9.4). Read-only, in their own folder and linking only each other,
+  // so a one-hop and a two-hop picture of `Graph/Hub.md` are exactly these notes however many
+  // fixtures a later milestone adds elsewhere. `Graph/Missing` is deliberately never written:
+  // it is the ghost, and the picture has to draw it the way it would draw a note the reader
+  // may not see (§6.5). Nothing here embeds anything, so opening one makes no request that
+  // can 404 — which is what the graph spec needs in order to assert that *no* request failed
+  // while it was drawing.
+  "Graph/Hub.md": "# Graph hub\n\nOn to [[Graph/Near]], and one day [[Graph/Missing]].\n",
+  "Graph/Near.md": "# Graph near\n\nFurther out lies [[Graph/Far]].\n",
+  "Graph/Far.md": "# Graph far\n\nTwo links from the hub, and nothing leads onward.\n",
   // The outline fixture (§9.5), read-only: three of the four outline tests only look at it,
   // and the fourth reorders sections and therefore takes its own scratch copy. `fullyParallel`
   // means those would otherwise race over the same bytes.

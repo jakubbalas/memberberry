@@ -312,6 +312,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/vaults/{slug}/backlinks/{*note}",
             get(note_backlinks),
         )
+        .route("/api/v1/vaults/{slug}/graph/{*note}", get(note_graph))
         .route("/api/v1/vaults/{slug}/tags", get(tag_index))
         .route("/api/v1/vaults/{slug}/tags/{*prefix}", get(tagged_notes))
         .route(
@@ -901,6 +902,119 @@ async fn note_backlinks(
         body,
     )
         .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct GraphQuery {
+    /// How far to walk, 1–3 (§9.4). Clamped by `mb-index` rather than rejected: a bad value
+    /// in a sidebar control is a picture the user did not ask for, not an error to show them.
+    #[serde(default)]
+    hops: Option<u8>,
+}
+
+#[derive(serde::Serialize)]
+struct GraphResponse {
+    /// The canonical identity the graph was drawn for, so the client can tell that its
+    /// request for `Roadmap` landed on `Projects/Roadmap.md`.
+    note: String,
+    /// The walk actually performed, after clamping — the control shows this, not what it
+    /// asked for.
+    hops: u8,
+    /// Whether the node cap cut the neighbourhood short (§9.4's "showing 2,000 of 10,431").
+    truncated: bool,
+    nodes: Vec<GraphNodeEntry>,
+    edges: Vec<GraphEdgeEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct GraphNodeEntry {
+    /// `n:<path>` or `g:<name>` — unique in this graph, and what an edge names.
+    key: String,
+    /// `None` for a ghost, which has no note behind it (§6.5 makes unreadable and absent
+    /// one state, so the client is not told which it is looking at).
+    path: Option<String>,
+    label: String,
+    hop: u8,
+}
+
+#[derive(serde::Serialize)]
+struct GraphEdgeEntry {
+    source: String,
+    target: String,
+    embed: bool,
+}
+
+/// `GET /api/v1/vaults/{slug}/graph/{note}` — the local graph (§9.4).
+///
+/// Enforcement point **E9**, and the same three filters as [`note_backlinks`]: membership
+/// plus a readable origin through `AuthorizedVault` (E1), a `Reader` built from the live
+/// ACL so every node comes from the readable set (E5), and resolution against readable
+/// candidates only — so an edge into a note this caller cannot see is never formed.
+///
+/// What that leaves is a **ghost**: a link whose target resolves to nothing. §6.5 requires
+/// an unreadable note and one nobody has written to be the same state, so they are the same
+/// node, carrying the name the *source* note spells — text the caller can already read,
+/// since an unreadable source has no node at all.
+///
+/// An origin the caller cannot read answers exactly as a missing one does.
+async fn note_graph(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, note)): AxumPath<(String, String)>,
+    Query(query): Query<GraphQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(user) = state.vault_user(vault.slug(), &headers) else {
+        return workspace_denied();
+    };
+    let view = AuthorizedVault::new(vault, &access, user.clone());
+    let Ok(identity) = view.identity(&note) else {
+        return workspace_denied();
+    };
+    let Some(index) = state.indexes.get(vault) else {
+        return server_error(&Error::Config("no index for this vault".to_string()));
+    };
+    let Ok(mut index) = index.lock() else {
+        return server_error(&Error::Config("the index lock is poisoned".to_string()));
+    };
+    let hops = query.hops.unwrap_or(1).clamp(1, mb_index::MAX_HOPS);
+    let graph = match index
+        .reader(&access, &user)
+        .and_then(|reader| reader.neighbourhood(&identity, hops))
+    {
+        Ok(graph) => graph,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+
+    json_no_store(&GraphResponse {
+        note: identity,
+        hops,
+        truncated: graph.truncated,
+        nodes: graph
+            .nodes
+            .into_iter()
+            .map(|node| GraphNodeEntry {
+                key: node.key,
+                path: node.path,
+                label: node.label,
+                hop: node.hop,
+            })
+            .collect(),
+        edges: graph
+            .edges
+            .into_iter()
+            .map(|edge| GraphEdgeEntry {
+                source: edge.source,
+                target: edge.target,
+                embed: edge.embed,
+            })
+            .collect(),
+    })
 }
 
 #[derive(serde::Serialize)]

@@ -16,12 +16,14 @@
   import Backlinks from "./Backlinks.svelte";
   import CommandCenter from "./CommandCenter.svelte";
   import MobileMain from "./MobileMain.svelte";
+  import LocalGraph from "./LocalGraph.svelte";
   import NoteTree from "./NoteTree.svelte";
   import Outline from "./Outline.svelte";
   import PaneTree from "./PaneTree.svelte";
   import Sidebar from "./Sidebar.svelte";
   import TagPane from "./TagPane.svelte";
   import { BacklinkView } from "./backlinks.svelte.js";
+  import { GraphView } from "./graph.svelte.js";
   import { Bookmarks } from "./bookmarks.svelte.js";
   import type { NoteBootstrap } from "./bootstrap.js";
   import type { fetchVaults } from "./catalog.js";
@@ -69,6 +71,8 @@
     readonly backlinks?: BacklinkView | undefined;
     /** The vault's tags. Supplied by a test; built from the session otherwise. */
     readonly tags?: TagView | undefined;
+    /** The focused note's neighbourhood. Supplied by a test; built from the session otherwise. */
+    readonly graph?: GraphView | undefined;
     /** The open note's headings. Supplied by a test; built here otherwise. */
     readonly outline?: OutlineView | undefined;
     /** How a wikilink is resolved to a note. Injectable so a test needs no server. */
@@ -92,6 +96,7 @@
     bookmarks: suppliedBookmarks,
     backlinks: suppliedBacklinks,
     tags: suppliedTags,
+    graph: suppliedGraph,
     outline: suppliedOutline,
     resolveLink,
     renameNote,
@@ -120,6 +125,9 @@
   );
   const tags = untrack(
     () => suppliedTags ?? new TagView({ vault: session?.vault ?? "local-demo" }),
+  );
+  const graph = untrack(
+    () => suppliedGraph ?? new GraphView({ vault: session?.vault ?? "local-demo" }),
   );
   // Fetches nothing, so unlike the three above it costs nothing to build and needs no
   // session: the headings arrive from whichever editor is mounted.
@@ -317,7 +325,7 @@
     label="Context"
     collapsed={collapsed.right}
     ontoggle={() => toggle("right")}
-    awaiting="the local graph in M8"
+    awaiting="tasks in M14"
   >
     <Outline view={outline} note={store.activeTab?.note} />
     <Backlinks
@@ -325,6 +333,7 @@
       note={store.activeTab?.note}
       onopen={(path) => store.open(path)}
     />
+    <LocalGraph view={graph} note={store.activeTab?.note} onopen={(path) => store.open(path)} />
   </Sidebar>
 </div>
 

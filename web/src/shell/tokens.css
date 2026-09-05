@@ -155,17 +155,29 @@
   --editor-min-height: 25rem;
   --editor-panel-min-height: 32rem;
 
-  /* ---------------------------------------------------------------- presence (SPEC §7.5) */
+  /* ------------------------------------------------- colour: categorical series (SPEC §20.1) */
   /* Six hues, each checked for >= 4.5:1 against --surface-note in this theme and
-     distinguishable from one another under the common forms of colour blindness. A user's
-     colour is chosen from these by hashing their username, so the same person is the same
-     colour on every device. */
-  --presence-0: #b03a2e;
-  --presence-1: #0f6e7a;
-  --presence-2: #4a56a6;
-  --presence-3: #8a5107;
-  --presence-4: #2f6b39;
-  --presence-5: #8f3468;
+     distinguishable from one another under the common forms of colour blindness. Anything
+     that has to tell apart a handful of things with no inherent order picks from this one
+     series — a person in the presence layer (§7.5), a folder in the graph (§9.4) — so two
+     such features never arrive with two palettes that clash on the same screen. */
+  --series-0: #b03a2e;
+  --series-1: #0f6e7a;
+  --series-2: #4a56a6;
+  --series-3: #8a5107;
+  --series-4: #2f6b39;
+  --series-5: #8f3468;
+
+  /* ---------------------------------------------------------------- presence (SPEC §7.5) */
+  /* A user's colour is chosen from the series above by hashing their username, so the same
+     person is the same colour on every device. Aliases rather than values, so a theme can
+     still re-declare these six alone and recolour presence without touching anything else. */
+  --presence-0: var(--series-0);
+  --presence-1: var(--series-1);
+  --presence-2: var(--series-2);
+  --presence-3: var(--series-3);
+  --presence-4: var(--series-4);
+  --presence-5: var(--series-5);
   /* Text drawn on top of a presence hue. */
   --presence-label: #fffdf8;
   /* Set per element by the shell to one of the six above. The default is a real colour so a
@@ -210,12 +222,12 @@
     --state-danger: #f2a09a;
 
     /* Lightened for the dark surface: the light-theme hues fall below 4.5:1 here. */
-    --presence-0: #f08b7d;
-    --presence-1: #5fc7d4;
-    --presence-2: #9aa4ef;
-    --presence-3: #dfa54a;
-    --presence-4: #7cc98a;
-    --presence-5: #e58ab9;
+    --series-0: #f08b7d;
+    --series-1: #5fc7d4;
+    --series-2: #9aa4ef;
+    --series-3: #dfa54a;
+    --series-4: #7cc98a;
+    --series-5: #e58ab9;
     --presence-label: #18231f;
   }
 }

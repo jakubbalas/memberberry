@@ -285,7 +285,19 @@ impl Reader<'_> {
         rows.collect::<Result<_, _>>().map_err(Error::from)
     }
 
-    fn note_id(&self, path: &str) -> Result<Option<i64>, Error> {
+    /// The connection, for the query modules beside this one.
+    ///
+    /// why: `pub(crate)`, and why that does not reopen E5. The property the crate holds is
+    /// that no *caller* can query without a user and an ACL — `Index` exposes no connection
+    /// and `Reader` has no public constructor, so a connection handed out here is one that
+    /// already carries a readable set. What stops a query inside the crate from skipping the
+    /// filter is `tests/no_unfiltered_query.rs`, which scans every read-path module rather
+    /// than only this one, so a new module is covered the day it is written.
+    pub(crate) fn connection(&self) -> &Connection {
+        self.conn
+    }
+
+    pub(crate) fn note_id(&self, path: &str) -> Result<Option<i64>, Error> {
         let mut statement = self
             .conn
             .prepare_cached("SELECT id FROM v_notes WHERE path = ?1")?;

@@ -17,5 +17,12 @@ sha2 = "0.10"
 thiserror = "2"
 unicode-normalization = "0.1"
 
+[dev-dependencies]
+# why: the graph query has invariants a table of examples cannot cover — every edge's
+# endpoints are nodes, a node's hop is its true distance, and an n-hop graph contains an
+# (n-1)-hop one. Those are statements about *every* link structure, which is what a
+# generator is for (`AGENTS.md` §2.2).
+proptest = "1"
+
 [lints]
 workspace = true

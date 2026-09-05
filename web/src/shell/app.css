@@ -243,6 +243,54 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
 .backlink-badge { flex: 0 0 auto; padding: 0 var(--space-2); border-radius: var(--radius-sm); color: var(--accent-primary); background: var(--surface-hover); font: var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui); }
 .backlinks-count { flex: 0 0 auto; color: var(--text-muted); font-weight: var(--weight-medium); }
 
+/* ---------------------------------------------------------------- local graph (SPEC 9.4)
+
+   Concentric rings in an SVG that scales with the sidebar: `graph-layout.ts` works in a
+   200x200 space and the `viewBox` maps it onto whatever width the panel has, so nothing here
+   depends on a measured pixel. Colour is by folder, from the categorical series — the same
+   six hues presence draws from, for the reason the contract gives. */
+
+.graph-panel { display: flex; flex-direction: column; gap: var(--space-4); }
+.graph-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.graph-hops { display: flex; gap: var(--space-1); padding: var(--space-1); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.graph-hop { min-width: var(--space-7); padding: var(--space-1) var(--space-3); border: none; border-radius: var(--radius-sm); color: var(--text-muted); background: none; font: var(--weight-medium) var(--text-2xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.graph-hop[aria-checked="true"] { color: var(--surface-note); background: var(--accent-primary); }
+.graph-hop:hover:not([aria-checked="true"]) { background: var(--surface-hover); }
+
+.graph-canvas { width: 100%; aspect-ratio: 1; border-radius: var(--radius-md); background: var(--surface-sunken); }
+.graph-canvas:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+
+.graph-edge { stroke: var(--border-subtle); stroke-width: 0.6; }
+/* A transclusion is a copy of the target on that page, not only a mention (SPEC 9.2). Dashed
+   rather than a second colour: colour is already saying which folder a node is in. */
+.graph-edge.is-embed { stroke-dasharray: 2 2; stroke-width: 1; }
+.graph-arrowhead { fill: var(--border-subtle); }
+
+.graph-node { cursor: pointer; }
+/* Transparent rather than absent: `fill: none` takes no pointer events, which is the whole
+   point of this circle. Sized by the layout so two never overlap. */
+.graph-hit { fill: transparent; }
+.graph-dot { fill: var(--text-muted); stroke: var(--surface-sunken); stroke-width: 1; }
+.graph-node[data-folder="0"] .graph-dot { fill: var(--series-0); }
+.graph-node[data-folder="1"] .graph-dot { fill: var(--series-1); }
+.graph-node[data-folder="2"] .graph-dot { fill: var(--series-2); }
+.graph-node[data-folder="3"] .graph-dot { fill: var(--series-3); }
+.graph-node[data-folder="4"] .graph-dot { fill: var(--series-4); }
+.graph-node[data-folder="5"] .graph-dot { fill: var(--series-5); }
+/* The note the panel is about, and the only ring-0 node: outlined so it reads as the subject
+   rather than as one more dot that happens to be in the middle. */
+.graph-node.is-origin .graph-dot { fill: var(--accent-primary); stroke: var(--surface-note); stroke-width: 1.5; }
+/* A ghost is a note that is not there: hollow, because a filled dot claims something exists. */
+.graph-node.is-ghost .graph-dot { fill: none; stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 2 1.5; }
+.graph-node.is-active .graph-dot { stroke: var(--focus-ring); stroke-width: 2; }
+/* why: a raw user-unit size rather than a --text-* token. Inside a scaled `viewBox` a `rem`
+   is a fixed pixel size that does not follow the picture, so a label sized from the contract
+   would grow relative to the graph as the sidebar narrows. Lengths are not the part of the
+   contract SPEC 20.2 makes a public API; colours are, and every colour here is a token. */
+.graph-label { fill: var(--text-muted); font: var(--weight-medium) 7px/var(--leading-flat) var(--font-ui); pointer-events: none; }
+.graph-node.is-origin .graph-label, .graph-node.is-active .graph-label { fill: var(--text-primary); }
+.graph-note { margin: 0; color: var(--text-muted); font: var(--text-2xs)/var(--leading-snug) var(--font-ui); }
+
 .breadcrumbs { flex: 0 0 auto; padding: var(--space-2) var(--space-5); border-bottom: 1px solid var(--border-subtle); background: var(--surface-canvas); }
 .breadcrumb-list { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; padding: 0; list-style: none; color: var(--text-muted); font: var(--text-2xs)/var(--leading-flat) var(--font-ui); }
 .breadcrumb + .breadcrumb::before { content: "/"; margin-right: var(--space-2); color: var(--border-subtle); }

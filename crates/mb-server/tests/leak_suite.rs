@@ -549,6 +549,89 @@ fn e8_backlinks_name_no_note_the_viewer_cannot_read() {
     );
 }
 
+/// E9: a graph is a picture of a vault, and every dot in it is a note that exists.
+///
+/// The disclosure a graph makes is *shape*: a node the viewer cannot read names it, an edge
+/// into one says it is there, and a dot with no label still says a note is at the end of
+/// that line. So the assertion is in two halves, because either alone passes against a
+/// broken implementation of the other — no node names an unreadable note, **and** the link
+/// into one draws exactly what a link into a note nobody has written draws.
+#[test]
+fn e9_a_graph_draws_no_note_the_viewer_cannot_read() {
+    let dir = TempDir::new("leak-graph");
+    dir.write("Shared.md", "# Shared\n\nSee [[Never]].\n");
+    dir.write(
+        "Private/Salary.md",
+        "# Salary Review\n\nCosting for [[Shared]], and [[Private/Deeper]].\n",
+    );
+    dir.write("Private/Deeper.md", "# Deeper\n");
+    dir.write("Open.md", "# Open\n\nAlso about [[Shared]].\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let mut index = index.lock().expect("index lock");
+    let alice = Username::parse("alice").expect("username");
+    let reader = index
+        .reader(access.policy(), &alice)
+        .expect("a reader for alice");
+
+    // Three hops out of a note two links from everything private: nothing private is drawn,
+    // named, or reachable through.
+    let graph = reader.neighbourhood("Shared.md", 3).expect("neighbourhood");
+    let drawn: Vec<&str> = graph.nodes.iter().map(|node| node.key.as_str()).collect();
+    assert_eq!(
+        drawn,
+        vec!["n:Shared.md", "g:never", "n:Open.md"],
+        "the graph drew something alice cannot read"
+    );
+    for node in &graph.nodes {
+        assert!(!node.label.contains("Salary"), "a denied title: {node:?}");
+        assert!(!node.label.contains("Deeper"), "a denied title: {node:?}");
+    }
+    for edge in &graph.edges {
+        assert!(
+            !edge.source.contains("Private") && !edge.target.contains("Private"),
+            "an edge into a denied note: {edge:?}"
+        );
+    }
+
+    // The private note has no graph of its own, and answers exactly as a note nobody wrote.
+    assert_eq!(
+        reader
+            .neighbourhood("Private/Salary.md", 3)
+            .expect("neighbourhood"),
+        reader
+            .neighbourhood("Private/Never.md", 3)
+            .expect("neighbourhood")
+    );
+
+    // The half a filtered node list cannot catch. `[[Shared]]` written inside a note alice
+    // cannot read is *absent*; `[[Never]]` naming a note nobody wrote is a **ghost**. If an
+    // unreadable target were ever drawn as a ghost from a readable source, the picture would
+    // report the note's existence while claiming it does not exist — so the two have to be
+    // the same shape, which is what comparing them proves.
+    let ghosts: Vec<&str> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.path.is_none())
+        .map(|node| node.label.as_str())
+        .collect();
+    assert_eq!(ghosts, vec!["Never"]);
+}
+
 /// E7: a transclusion resolves against the caller's readable set, so an unreadable target
 /// is not a candidate — and a nearer unreadable note does not shadow a readable one.
 #[test]

@@ -153,7 +153,11 @@ export const PENDING: readonly Pending[] = [
     id: "graph-fps",
     metric: "Graph frame rate",
     blockedBy: "M8",
-    reason: "there is no graph view",
+    reason:
+      "the local graph landed with M8 and does not exercise this row: the budget is written " +
+      "for the global graph — 10k nodes, WebGL, a force layout in a worker — and a sidebar " +
+      "picture of forty nodes laid out by arithmetic would answer it with a number that " +
+      "looks like compliance without being it",
   },
   {
     id: "peak-memory",

@@ -2274,6 +2274,224 @@ fn backlinks_accept_a_note_path_with_its_separators_encoded() {
     assert!(body.contains("Q3.md"), "{body}");
 }
 
+// ------------------------------------------------------------------------ graph
+
+#[test]
+fn the_local_graph_draws_the_neighbourhood_of_a_note() {
+    // §9.4. One request, one picture: the origin, what it links to, what links to it, and
+    // the edges between those — in the direction each link points.
+    let dir = TempDir::new("http-graph");
+    dir.write("Projects/Roadmap.md", "# Roadmap\n\nsee [[Q3]]\n");
+    dir.write("Q3.md", "# Q3\n\nand ![[Notes]]\n");
+    dir.write("Notes.md", "# Notes\n");
+    dir.write("Inbound.md", "# Inbound\n\nlinks to [[Roadmap]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/graph/Projects/Roadmap.md?hops=1");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("\"note\":\"Projects/Roadmap.md\""), "{body}");
+    assert!(body.contains("\"hops\":1"), "{body}");
+    assert!(body.contains("\"key\":\"n:Q3.md\""), "{body}");
+    assert!(body.contains("\"key\":\"n:Inbound.md\""), "{body}");
+    assert!(
+        !body.contains("n:Notes.md"),
+        "a note two hops away is not in a one-hop graph: {body}"
+    );
+    assert!(
+        body.contains("\"source\":\"n:Inbound.md\",\"target\":\"n:Projects/Roadmap.md\""),
+        "an inbound edge keeps its direction: {body}"
+    );
+    assert!(body.contains("\"truncated\":false"), "{body}");
+}
+
+#[test]
+fn a_second_hop_is_asked_for_by_the_query_string() {
+    let dir = TempDir::new("http-graph-hops");
+    dir.write("A.md", "# A\n\n[[B]]\n");
+    dir.write("B.md", "# B\n\n[[C]]\n");
+    dir.write("C.md", "# C\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (_, one) = server.get("/api/v1/vaults/v/graph/A.md?hops=1");
+    assert!(!one.contains("n:C.md"), "{one}");
+    let (status, two) = server.get("/api/v1/vaults/v/graph/A.md?hops=2");
+    assert!(is_ok(&status), "{status}");
+    assert!(two.contains("n:C.md"), "{two}");
+    assert!(two.contains("\"hops\":2"), "{two}");
+}
+
+#[test]
+fn an_out_of_range_hop_count_is_clamped_rather_than_refused() {
+    // A sidebar control that sends a bad number should draw the nearest picture it can, and
+    // the reply says which one it drew — the control shows that, not what it asked for.
+    let dir = TempDir::new("http-graph-clamp");
+    dir.write("A.md", "# A\n\n[[B]]\n");
+    dir.write("B.md", "# B\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for (asked, drawn) in [("0", 1), ("99", 3)] {
+        let (status, body) = server.get(&format!("/api/v1/vaults/v/graph/A.md?hops={asked}"));
+        assert!(is_ok(&status), "hops={asked}: {status}");
+        assert!(
+            body.contains(&format!("\"hops\":{drawn}")),
+            "hops={asked}: {body}"
+        );
+    }
+    // A number out of range is a control that needs clamping; a value that is not a number
+    // is a caller nothing here sends, and gets told so rather than quietly drawn a picture.
+    // `?hops=` is in the second group and not the first: an empty value is not an absent
+    // one, and omitting the parameter is what a client does when it has nothing to say.
+    for asked in ["lots", ""] {
+        let (status, _) = server.get(&format!("/api/v1/vaults/v/graph/A.md?hops={asked}"));
+        assert!(!is_ok(&status), "hops={asked}: {status}");
+    }
+}
+
+#[test]
+fn the_graph_defaults_to_one_hop_when_nothing_is_asked() {
+    let dir = TempDir::new("http-graph-default");
+    dir.write("A.md", "# A\n\n[[B]]\n");
+    dir.write("B.md", "# B\n\n[[C]]\n");
+    dir.write("C.md", "# C\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/graph/A.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        body.contains("\"hops\":1") && !body.contains("n:C.md"),
+        "{body}"
+    );
+}
+
+#[test]
+fn the_graph_resolves_a_wikilink_name_to_the_note_it_means() {
+    let dir = TempDir::new("http-graph-name");
+    dir.write("Projects/Roadmap.md", "# Roadmap\n");
+    dir.write("Q3.md", "see [[Roadmap]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for route in [
+        "/api/v1/vaults/v/graph/Projects/Roadmap.md",
+        "/api/v1/vaults/v/graph/Roadmap",
+        "/api/v1/vaults/v/graph/Projects%2FRoadmap.md",
+    ] {
+        let (status, body) = server.get(route);
+        assert!(is_ok(&status), "{route}: {status}");
+        assert!(
+            body.contains("\"note\":\"Projects/Roadmap.md\"") && body.contains("n:Q3.md"),
+            "{route}: {body}"
+        );
+    }
+}
+
+#[test]
+fn a_link_to_a_note_nobody_wrote_is_a_ghost_node() {
+    let dir = TempDir::new("http-graph-ghost");
+    dir.write("A.md", "# A\n\n[[Someday]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/graph/A.md");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("\"key\":\"g:someday\""), "{body}");
+    assert!(
+        body.contains("\"path\":null"),
+        "a ghost has no path: {body}"
+    );
+    assert!(body.contains("\"label\":\"Someday\""), "{body}");
+}
+
+#[test]
+fn the_graph_names_only_notes_the_caller_can_read() {
+    // E9, at the route. The index suite covers the query against hand-built policies; this
+    // is the same point through a real `access.toml` and a real index.
+    let dir = TempDir::new("http-graph-acl");
+    dir.write("Projects/Roadmap.md", "# The Roadmap\n");
+    dir.write("Public.md", "# Public\n\nsee [[Roadmap]]\n");
+    dir.write("Private/Salary.md", "# Salary Review\n\nsee [[Roadmap]]\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let charlie = auth
+        .create_user(mb_auth::NewUser {
+            username: "charlie",
+            display_name: "Charlie",
+            password: "correct horse battery staple",
+        })
+        .expect("non-member");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let charlie_header = header(charlie.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+    let route = "/api/v1/vaults/v/graph/Projects/Roadmap.md";
+
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("n:Private/Salary.md"), "{body}");
+
+    let (status, body) = server.get_with_headers(route, &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("n:Public.md"), "{body}");
+    assert!(!body.contains("Salary"), "a denied note was named: {body}");
+    assert!(!body.contains("Private"), "nor its folder: {body}");
+
+    // An origin bob cannot read answers the way a missing note does, and so do a non-member,
+    // an anonymous caller and an unknown vault.
+    let (status, body) =
+        server.get_with_headers("/api/v1/vaults/v/graph/Private/Salary.md", &bob_header);
+    assert!(is_not_found(&status), "{status}");
+    assert!(!body.contains("Roadmap"), "{body}");
+    let (status, _) = server.get_with_headers(route, &charlie_header);
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.request("GET", route, "", "");
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.get_with_headers(
+        "/api/v1/vaults/nope/graph/Projects/Roadmap.md",
+        &alice_header,
+    );
+    assert!(is_not_found(&status), "{status}");
+}
+
+#[test]
+fn a_graph_is_never_cached() {
+    // Note titles and the shape of somebody's vault. Nothing between here and the browser
+    // should keep a copy, and a cached graph would outlive the permission that allowed it.
+    let dir = TempDir::new("http-graph-cache");
+    dir.write("A.md", "# A\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let headers = server.headers("/api/v1/vaults/v/graph/A.md");
+    assert!(
+        headers.to_lowercase().contains("cache-control: no-store"),
+        "{headers}"
+    );
+}
+
 // ------------------------------------------------------------------------ tags
 
 #[test]
