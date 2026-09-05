@@ -33,6 +33,8 @@ A change is done only when **every** box is true. Not most.
 - [ ] **If it touches a read path: a permission test proving it filters** (§3)
 - [ ] **If it adds an enforcement point: added to `SPEC.md` §6.4 and to the leak suite**
 - [ ] `make check` passes clean — fmt, clippy `-D warnings`, tests, types, lint
+- [ ] **If it touches anything a user sees: `make e2e` passes** (§5.2). `make check` does not
+      open a browser, and a green unit suite has already shipped a page nobody could use
 - [ ] No new `unwrap`/`expect`/`panic!` in library code (§4.2)
 - [ ] No `any` in TypeScript, no `@ts-ignore` (§4.3)
 - [ ] Public items documented; non-obvious decisions carry a `// why:` comment
@@ -291,6 +293,39 @@ download makes it too slow for the inner loop, and because they answer different
 `check` says the code is correct, `e2e` says the page works. CI runs both. **If your change
 touches anything a user sees, `make check` alone is not evidence** — that combination has
 already shipped an application nobody could log into (§2.3).
+
+### 5.2 Test cadence
+
+Three tiers. The question is not how *often* to open a browser — a clean full run is about a
+minute — but how *much* to run in it, and *when*.
+
+| When | What | Cost |
+|---|---|---|
+| Every edit | `make test-fast` | seconds |
+| **The first time new UI renders anything**, and after any change to CSS, pointer behaviour or layout | one spec: `npm --prefix web run build && npx playwright test e2e/<name>.spec.ts` | ~30s |
+| Before done, and before a commit | `make e2e` | ~1 min (37s of tests plus incremental builds) |
+
+Two rules attached to the middle row, both learned expensively:
+
+- **Rebuild first, every time.** `npx playwright test` does not build. Without the rebuild it
+  drives the last bundle you made rather than the code you just wrote, and the failure looks
+  exactly like a bug in the feature — a click that "does not work" on an element that is not
+  in the page yet. If you are not going to remember, run `make e2e` instead; it builds.
+- **Run one spec, not the suite.** A broken interaction costs a 30s timeout per attempt and
+  Playwright retries, so the cost of a red run is nothing like the cost of a green one: four
+  unreachable click targets once turned a 37-second suite into ten minutes and 23 failures,
+  most of them unrelated specs timing out under the load.
+
+**The middle row is about ordering, not thoroughness.** The local graph (§9.4) was built
+complete — query, route, client, layout, component, every unit test, twelve mutation probes —
+before a browser saw any of it, and the browser then found that an SVG element with
+`fill: none` takes no pointer events at all. That is a design constraint rather than a bug: it
+changed what the component had to render, and the work written before it had to be revisited.
+**Open a browser when a thing first draws, not when it is finished.**
+
+**Skip the browser for a change with no UI delta.** A query, a route, a permission filter: the
+Rust suite and the leak suite cover those completely, and Playwright adds a minute and no
+information.
 
 ---
 
