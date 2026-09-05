@@ -139,6 +139,59 @@ impl Date {
     pub fn day(self) -> u8 {
         self.day
     }
+
+    /// The calendar date a Unix millisecond timestamp falls on, in UTC.
+    ///
+    /// What turns a UUIDv7's embedded timestamp into a date the graph's creation scrubber
+    /// can filter on (`SPEC.md` §9.4, §4.3). UTC rather than local time: a note's identity
+    /// is the same string everywhere, so the date read out of it has to be too — a reader
+    /// in Auckland and one in Lisbon must not disagree about which day a note was created.
+    ///
+    /// Here rather than from a date crate because this module already owns every other piece
+    /// of calendar arithmetic in the project, and because `mb-core` compiles to wasm, where
+    /// a dependency that reaches for the system clock cannot follow (`AGENTS.md` §4.2).
+    ///
+    /// The `Option` is [`Date::new`]'s rather than a range check: every `i64` millisecond
+    /// value lands on a real calendar date inside [`i32`]'s years — `i64::MAX` is only about
+    /// 292 million years out — so `None` is unreachable here, and the two tests at the
+    /// extremes say what it answers instead.
+    #[must_use]
+    pub fn from_unix_millis(millis: i64) -> Option<Self> {
+        // why: floor division rather than truncation. `-1 / 86_400_000` is `0` in Rust, so a
+        // timestamp one second before the epoch would land on 1970-01-01 rather than on the
+        // day before it.
+        let (year, month, day) = civil_from_days(millis.div_euclid(86_400_000));
+        Self::new(
+            i32::try_from(year).ok()?,
+            u8::try_from(month).ok()?,
+            u8::try_from(day).ok()?,
+        )
+    }
+}
+
+/// The proleptic Gregorian date `days` after 1970-01-01, after Howard Hinnant's `chrono`
+/// algorithms.
+///
+/// Kept in the reference formulation rather than rewritten to taste, so it can be checked
+/// against the paper it comes from instead of re-derived. Returns `(year, month, day)` with
+/// month in `1..=12` and day in `1..=31` — as `i64`, because narrowing belongs at the
+/// boundary where [`Date::new`] validates rather than inside the arithmetic.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let days = days + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_position = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_position + 2) / 5 + 1;
+    let month = if month_position < 10 {
+        month_position + 3
+    } else {
+        month_position - 9
+    };
+    (year + i64::from(month <= 2), month, day)
 }
 
 impl fmt::Display for Date {

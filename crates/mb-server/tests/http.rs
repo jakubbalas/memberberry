@@ -2492,6 +2492,184 @@ fn a_graph_is_never_cached() {
     );
 }
 
+#[test]
+fn the_whole_vault_graph_draws_every_readable_note() {
+    // §9.4's other half. No origin and no hops: every note is a node, including one nothing
+    // links to, and the edges are indices into the node list rather than keys.
+    let dir = TempDir::new("http-vault-graph");
+    dir.write("Projects/Roadmap.md", "# Roadmap\n\nsee [[Q3]]\n");
+    dir.write("Q3.md", "# Q3\n\nand ![[Nowhere]]\n");
+    dir.write("Alone.md", "# Alone\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/graph");
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        body.contains("\"total\":4"),
+        "three notes and a ghost: {body}"
+    );
+    assert!(body.contains("\"truncated\":false"), "{body}");
+    assert!(body.contains("\"key\":\"n:Alone.md\""), "{body}");
+    assert!(body.contains("\"key\":\"g:nowhere\""), "{body}");
+    // Sorted by key: g:nowhere, n:Alone.md, n:Projects/Roadmap.md, n:Q3.md. Roadmap links to
+    // Q3 as a plain link, and Q3 embeds the ghost.
+    assert!(
+        body.contains("\"edges\":[2,3,0,3,0,1]"),
+        "edges are index triples, embeds flagged: {body}"
+    );
+}
+
+#[test]
+fn a_whole_vault_node_carries_what_the_picture_is_drawn_from() {
+    // Degree, word count, creation date and tags — §9.4 sizes, colours, filters and scrubs
+    // by these, and all four have to survive the wire.
+    let dir = TempDir::new("http-vault-graph-node");
+    dir.write(
+        "A.md",
+        "---\ncreated: 2026-08-28\n---\n\n# A\n\n#project/mb one two [[B]]\n",
+    );
+    dir.write("B.md", "# B\n\nback to [[A]]\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/graph");
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        body.contains(
+            "{\"key\":\"n:A.md\",\"path\":\"A.md\",\"label\":\"A\",\"degree\":2,\"words\":3,\
+             \"created\":\"2026-08-28\",\"tags\":[\"project/mb\"]}"
+        ),
+        "{body}"
+    );
+}
+
+#[test]
+fn the_whole_vault_graph_is_capped_by_the_query_string_and_says_so() {
+    // §9.4's honest mobile cap: the client asks for a number of nodes, and the reply says
+    // how many there were so the picture can print "showing 2 of 4".
+    let dir = TempDir::new("http-vault-graph-cap");
+    dir.write("Hub.md", "# Hub\n\n[[A]] [[B]] [[C]]\n");
+    dir.write("A.md", "# A\n");
+    dir.write("B.md", "# B\n");
+    dir.write("C.md", "# C\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/graph?limit=2");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("\"total\":4"), "{body}");
+    assert!(body.contains("\"truncated\":true"), "{body}");
+    assert!(
+        body.contains("\"key\":\"n:Hub.md\""),
+        "the hub survives: {body}"
+    );
+    assert_eq!(
+        body.matches("\"key\"").count(),
+        2,
+        "two nodes were asked for: {body}"
+    );
+}
+
+#[test]
+fn a_limit_that_is_not_a_number_is_refused_rather_than_guessed_at() {
+    // The same answer the hop count gives: no client of ours sends this, and a server that
+    // silently substituted a default would hide the bug in the one that did.
+    let dir = TempDir::new("http-vault-graph-limit");
+    dir.write("A.md", "# A\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for asked in ["all", "-1", "2.5", ""] {
+        let (status, _) = server.get(&format!("/api/v1/vaults/v/graph?limit={asked}"));
+        assert!(!is_ok(&status), "limit={asked} was accepted: {status}");
+    }
+    let (status, _) = server.get("/api/v1/vaults/v/graph");
+    assert!(is_ok(&status), "an absent limit is not a bad one: {status}");
+}
+
+#[test]
+fn the_whole_vault_graph_names_only_notes_the_caller_can_read() {
+    // E9 at the route, for the query with no origin: a non-member must not learn the vault
+    // exists, and a member must not learn about a note they cannot read — including from
+    // the count, which is over the readable set.
+    let dir = TempDir::new("http-vault-graph-acl");
+    dir.write("Public.md", "# Public\n\nsee [[Private/Salary]]\n");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let charlie = auth
+        .create_user(mb_auth::NewUser {
+            username: "charlie",
+            display_name: "Charlie",
+            password: "correct horse battery staple",
+        })
+        .expect("non-member");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let charlie_header = header(charlie.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let server = TestServer::start(state);
+    let route = "/api/v1/vaults/v/graph";
+
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("n:Private/Salary.md"), "{body}");
+    assert!(body.contains("\"total\":2"), "{body}");
+
+    let (status, body) = server.get_with_headers(route, &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("n:Public.md"), "{body}");
+    assert!(!body.contains("Salary Review"), "a denied title: {body}");
+    assert!(
+        body.contains("\"total\":2"),
+        "one note and the ghost its link becomes: {body}"
+    );
+
+    // A non-member, an anonymous caller and an unknown vault all answer the same way.
+    let (status, _) = server.get_with_headers(route, &charlie_header);
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.request("GET", route, "", "");
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.get_with_headers("/api/v1/vaults/nope/graph", &alice_header);
+    assert!(is_not_found(&status), "{status}");
+}
+
+#[test]
+fn a_whole_vault_graph_is_never_cached() {
+    let dir = TempDir::new("http-vault-graph-cache");
+    dir.write("A.md", "# A\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let headers = server.headers("/api/v1/vaults/v/graph");
+    assert!(
+        headers.to_lowercase().contains("cache-control: no-store"),
+        "{headers}"
+    );
+}
+
 // ------------------------------------------------------------------------ tags
 
 #[test]

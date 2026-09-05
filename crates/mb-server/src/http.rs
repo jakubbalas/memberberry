@@ -10,7 +10,7 @@
 //! listing helper in this module, and adding one would be the bug §6.4 enumerates
 //! enforcement points to prevent.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -312,6 +312,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/vaults/{slug}/backlinks/{*note}",
             get(note_backlinks),
         )
+        .route("/api/v1/vaults/{slug}/graph", get(vault_graph))
         .route("/api/v1/vaults/{slug}/graph/{*note}", get(note_graph))
         .route("/api/v1/vaults/{slug}/tags", get(tag_index))
         .route("/api/v1/vaults/{slug}/tags/{*prefix}", get(tagged_notes))
@@ -1017,6 +1018,126 @@ async fn note_graph(
     })
 }
 
+#[derive(serde::Deserialize)]
+struct VaultGraphQuery {
+    /// The most nodes to draw, highest degree first — §9.4's "showing 2,000 of 10,431".
+    ///
+    /// Absent means as many as `mb-index` will give, which is `MAX_VAULT_GRAPH`. The client
+    /// chooses it because the cap is a device question: §9.4 caps the *phone* honestly, and
+    /// which device is asking is not something the server should be inferring from a header.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(serde::Serialize)]
+struct VaultGraphResponse {
+    /// How many nodes the readable vault has, before the cap.
+    total: usize,
+    truncated: bool,
+    nodes: Vec<VaultNodeEntry>,
+    /// Edges as flat triples: source index, target index, `1` for an embed and `0` for a
+    /// link — indices into `nodes` rather than keys.
+    ///
+    /// why: this is the one payload in the project written for size rather than for reading.
+    /// A vault of ten thousand notes carries tens of thousands of edges, and as objects
+    /// naming their endpoints by key that is megabytes of repeated path strings; as triples
+    /// it is a few hundred kilobytes that the client reads straight into a `Uint32Array` and
+    /// transfers to the layout worker without allocating an object per edge (§21.2's graph
+    /// row, and §21.3's rule about the main thread). The cost is a format that has to be
+    /// validated rather than trusted, which `web/src/shell/vault-graph.ts` does.
+    edges: Vec<u32>,
+}
+
+#[derive(serde::Serialize)]
+struct VaultNodeEntry {
+    /// `n:<path>` or `g:<name>` — unique in this graph, and what an edge's index names.
+    key: String,
+    /// `None` for a ghost, which has no note behind it (§6.5).
+    path: Option<String>,
+    label: String,
+    /// Edges touching this node in the whole vault, not in the drawn picture (§9.4).
+    degree: u32,
+    /// Words in the note, `0` for a ghost — §9.4's other node size.
+    words: u32,
+    /// `YYYY-MM-DD` for the creation scrubber, or `None` when the note says nothing.
+    created: Option<String>,
+    /// The note's full tags, folded — a prefix filter is a string prefix on the client.
+    tags: Vec<String>,
+}
+
+/// `GET /api/v1/vaults/{slug}/graph` — the whole-vault graph (§9.4).
+///
+/// Enforcement point **E9**, and the same story as [`note_graph`] with one difference worth
+/// stating: there is no note in the path, so there is nothing to resolve and nothing whose
+/// absence could be informative. Membership is checked by [`vault_query`] and the readable
+/// set does the rest — a member who may read nothing gets an empty graph, which is what a
+/// vault of notes they cannot read looks like from where they stand (§6.5).
+///
+/// The cap is honest rather than silent: `total` is the readable node count *before* it, so
+/// the picture can say "showing 2,000 of 10,431" — a count over the readable set, never over
+/// the vault.
+async fn vault_graph(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    Query(query): Query<VaultGraphQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((access, user, index)) = vault_query(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(mut index) = index.lock() else {
+        return server_error(&Error::Config("the index lock is poisoned".to_string()));
+    };
+    let graph = match index
+        .reader(&access, &user)
+        .and_then(|reader| reader.vault_graph(query.limit))
+    {
+        Ok(graph) => graph,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+
+    let positions: HashMap<&str, u32> = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(at, node)| u32::try_from(at).ok().map(|at| (node.key.as_str(), at)))
+        .collect();
+    let mut edges: Vec<u32> = Vec::with_capacity(graph.edges.len() * 3);
+    for edge in &graph.edges {
+        // why: by construction both ends are nodes — `mb-index` builds an edge's endpoints
+        // out of the node set itself and a property test holds it. Dropping rather than
+        // asserting because the wire format cannot express a dangling index: an edge naming
+        // a node that is not there would be read as an edge to whichever node landed at that
+        // position, which is worse than a missing line.
+        let (Some(source), Some(target)) = (
+            positions.get(edge.source.as_str()),
+            positions.get(edge.target.as_str()),
+        ) else {
+            continue;
+        };
+        edges.extend_from_slice(&[*source, *target, u32::from(edge.embed)]);
+    }
+
+    json_no_store(&VaultGraphResponse {
+        total: graph.total,
+        truncated: graph.truncated,
+        nodes: graph
+            .nodes
+            .into_iter()
+            .map(|node| VaultNodeEntry {
+                key: node.key,
+                path: node.path,
+                label: node.label,
+                degree: node.degree,
+                words: node.words,
+                created: node.created,
+                tags: node.tags,
+            })
+            .collect(),
+        edges,
+    })
+}
+
 #[derive(serde::Serialize)]
 struct TagIndexResponse {
     tags: Vec<TagEntry>,
@@ -1172,7 +1293,7 @@ async fn tag_index(
     AxumPath(slug): AxumPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Some((access, user, index)) = tag_query(&state, &slug, &headers) else {
+    let Some((access, user, index)) = vault_query(&state, &slug, &headers) else {
         return workspace_denied();
     };
     let Ok(mut index) = index.lock() else {
@@ -1213,7 +1334,7 @@ async fn tagged_notes(
     AxumPath((slug, prefix)): AxumPath<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let Some((access, user, index)) = tag_query(&state, &slug, &headers) else {
+    let Some((access, user, index)) = vault_query(&state, &slug, &headers) else {
         return workspace_denied();
     };
     let Ok(mut index) = index.lock() else {
@@ -1239,13 +1360,13 @@ async fn tagged_notes(
     json_no_store(&body)
 }
 
-/// The ACL, user and index a tag query needs, or `None` if it is denied (E16).
+/// The ACL, user and index a whole-vault query needs, or `None` if it is denied.
 ///
-/// Membership is checked here rather than per note: a tag question is about the vault, so
-/// there is no path to resolve, and without this a non-member would learn the vault exists
-/// from an empty list. The readable set does the rest — a member with access to nothing sees
-/// no tags for the same reason they see no notes.
-fn tag_query(
+/// Membership is checked here rather than per note: a question about a vault's tags (E16)
+/// or its shape (E9) has no path to resolve, and without this a non-member would learn the
+/// vault exists from an empty answer. The readable set does the rest — a member with access
+/// to nothing sees nothing, for the same reason they see no notes.
+fn vault_query(
     state: &AppState,
     slug: &str,
     headers: &HeaderMap,

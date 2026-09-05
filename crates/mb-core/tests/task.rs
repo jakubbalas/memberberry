@@ -80,6 +80,80 @@ fn an_impossible_calendar_date_is_unrepresentable() {
     assert_eq!(Date::parse("2026-02-30"), None);
 }
 
+/// The day `Date::from_unix_millis` should answer for, spelled out.
+fn at(millis: i64) -> String {
+    Date::from_unix_millis(millis).map_or_else(|| "none".to_string(), |d| d.to_string())
+}
+
+#[test]
+fn the_unix_epoch_is_the_first_of_january_1970() {
+    assert_eq!(at(0), "1970-01-01");
+    assert_eq!(at(86_399_999), "1970-01-01", "the last millisecond of it");
+    assert_eq!(at(86_400_000), "1970-01-02");
+}
+
+#[test]
+fn a_timestamp_before_the_epoch_is_the_day_before_it() {
+    // why: this is the floor-division case. Rust truncates towards zero, so a naive
+    // division puts every negative timestamp on 1970-01-01.
+    assert_eq!(at(-1), "1969-12-31");
+    assert_eq!(at(-86_400_000), "1969-12-31");
+    assert_eq!(at(-86_400_001), "1969-12-30");
+}
+
+#[test]
+fn the_century_leap_year_rules_hold() {
+    // 2000 is a leap year, 1900 is not — the case that catches an algorithm using only
+    // "divisible by four".
+    assert_eq!(at(951_782_400_000), "2000-02-29");
+    assert_eq!(at(-2_203_977_600_000), "1900-02-28");
+    assert_eq!(at(-2_203_891_200_000), "1900-03-01");
+}
+
+#[test]
+fn a_uuid_v7_timestamp_reads_as_the_day_it_was_minted() {
+    // 2026-09-05T12:34:56.789Z — the shape §4.3's `id` carries, at millisecond precision.
+    assert_eq!(at(1_788_611_696_789), "2026-09-05");
+}
+
+#[test]
+fn the_extremes_of_an_i64_still_land_on_a_calendar_date() {
+    // why: this is what makes `from_unix_millis` total. `i64` milliseconds reach about
+    // 292 million years either side of the epoch, which is inside the years a `Date` holds,
+    // so there is no input for which it answers `None` — and none on which the arithmetic
+    // overflows, which is what a debug build would catch here.
+    assert_eq!(at(i64::MAX), "292278994-08-17");
+    assert_eq!(at(i64::MIN), "-292275055-05-16");
+}
+
+#[test]
+fn every_day_of_a_four_hundred_year_cycle_advances_by_exactly_one() {
+    // why: an independent check rather than a round-trip through an inverse this module
+    // does not have. If consecutive days always advance the calendar by one — rolling the
+    // month when the month ends and the year when December does — then the mapping is the
+    // Gregorian calendar, and a leap-year rule that is off by a day cannot survive it.
+    // 400 years is the full leap cycle, so 1800-2200 covers both century rules.
+    let start = Date::new(1800, 1, 1).expect("valid").to_string();
+    let mut millis = -5_364_662_400_000_i64;
+    assert_eq!(at(millis), start, "the walk starts where it means to");
+
+    let (mut year, mut month, mut day) = (1800_i32, 1_u8, 1_u8);
+    for _ in 0..146_097 {
+        millis += 86_400_000;
+        let next = Date::new(year, month, day + 1)
+            .or_else(|| Date::new(year, month + 1, 1))
+            .or_else(|| Date::new(year + 1, 1, 1))
+            .expect("some following day exists");
+        (year, month, day) = (next.year(), next.month(), next.day());
+        assert_eq!(
+            at(millis),
+            next.to_string(),
+            "the day after {year}-{month}-{day} disagrees"
+        );
+    }
+    assert_eq!(at(millis), "2200-01-01", "400 years later to the day");
+}
+
 #[test]
 fn month_lengths_are_right_including_leap_years() {
     for (m, len) in [

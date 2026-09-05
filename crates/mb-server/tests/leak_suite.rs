@@ -632,6 +632,138 @@ fn e9_a_graph_draws_no_note_the_viewer_cannot_read() {
     assert_eq!(ghosts, vec!["Never"]);
 }
 
+/// E9: the whole-vault picture is a picture of the vault *this viewer has*.
+///
+/// The neighbourhood above is bounded by an origin and a hop count, so most of a vault is
+/// out of its picture for reasons that have nothing to do with permissions. The whole-vault
+/// query has no such excuse: every readable note is a node, so a note that leaks here leaks
+/// in the one place a viewer would notice a gap. What it must not disclose is the same list
+/// as ever — no node, no title, no edge, no tag, and no *count*, because "showing 3 of 5"
+/// answers the question the invisibility rule exists to refuse (§6.5).
+#[test]
+fn e9_a_whole_vault_graph_draws_no_note_the_viewer_cannot_read() {
+    let dir = TempDir::new("leak-vault-graph");
+    dir.write("Shared.md", "# Shared\n\nSee [[Never]].\n");
+    dir.write(
+        "Private/Salary.md",
+        "# Salary Review\n\n#compensation\n\nCosting for [[Shared]].\n",
+    );
+    dir.write("Private/Deeper.md", "# Deeper\n\nSee [[Private/Salary]].\n");
+    // The two links that have to draw the same thing: one names a note alice cannot read,
+    // the other names a note nobody has written.
+    dir.write(
+        "Open.md",
+        "# Open\n\nAbout [[Shared]], [[Private/Salary]] and [[Nowhere]].\n",
+    );
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let mut index = index.lock().expect("index lock");
+    let alice = Username::parse("alice").expect("username");
+    let reader = index
+        .reader(access.policy(), &alice)
+        .expect("a reader for alice");
+
+    let graph = reader.vault_graph(None).expect("vault graph");
+    let drawn: Vec<&str> = graph.nodes.iter().map(|node| node.key.as_str()).collect();
+    assert_eq!(
+        drawn,
+        vec![
+            "g:never",
+            "g:nowhere",
+            "g:private/salary",
+            "n:Open.md",
+            "n:Shared.md"
+        ],
+        "the graph drew something alice cannot read"
+    );
+    assert_eq!(
+        graph.total, 5,
+        "the count is over the readable set, or it is a way of asking how many notes exist"
+    );
+
+    // A ghost is a name a readable note spells, so `g:private/salary` says nothing alice
+    // cannot already read in `Open.md`. What must never appear is anything only the note
+    // itself knows: its title, its tags, and the fact that it is a note at all — which is
+    // why every ghost has to look identical whatever is behind it.
+    for node in &graph.nodes {
+        assert!(!node.label.contains("Salary Review"), "a title: {node:?}");
+        assert!(!node.label.contains("Deeper"), "a denied note: {node:?}");
+        assert!(
+            !node.tags.iter().any(|tag| tag == "compensation"),
+            "a denied note's tag: {node:?}"
+        );
+        assert!(
+            node.path
+                .as_deref()
+                .is_none_or(|path| !path.contains("Private")),
+            "a denied path: {node:?}"
+        );
+    }
+    let unreadable = graph
+        .nodes
+        .iter()
+        .find(|node| node.key == "g:private/salary")
+        .expect("the unreadable target");
+    let unwritten = graph
+        .nodes
+        .iter()
+        .find(|node| node.key == "g:nowhere")
+        .expect("the unwritten target");
+    assert_eq!(
+        (
+            unreadable.path.as_deref(),
+            unreadable.degree,
+            unreadable.words,
+            unreadable.created.as_deref(),
+            unreadable.tags.as_slice(),
+        ),
+        (
+            unwritten.path.as_deref(),
+            unwritten.degree,
+            unwritten.words,
+            unwritten.created.as_deref(),
+            unwritten.tags.as_slice(),
+        ),
+        "a link into a note alice cannot read must draw exactly what a link into a note \
+         nobody has written draws — anything else reports that the note is there"
+    );
+
+    // `Private/Deeper` links to `Private/Salary`, so an unfiltered link query would draw an
+    // edge between two notes alice cannot see.
+    for edge in &graph.edges {
+        assert!(
+            edge.source == "n:Open.md" || edge.source == "n:Shared.md",
+            "an edge out of a denied note: {edge:?}"
+        );
+    }
+
+    // A cap must not be a channel either: asking for one node still reports five, and the
+    // one it keeps is a readable note.
+    let capped = reader.vault_graph(Some(1)).expect("capped vault graph");
+    assert_eq!(capped.total, 5);
+    assert!(capped.truncated);
+    assert_eq!(capped.nodes.len(), 1);
+    assert_eq!(
+        capped.nodes.first().map(|node| node.key.as_str()),
+        Some("n:Open.md"),
+        "the highest degree"
+    );
+}
+
 /// E7: a transclusion resolves against the caller's readable set, so an unreadable target
 /// is not a candidate — and a nearer unreadable note does not shadow a readable one.
 #[test]
