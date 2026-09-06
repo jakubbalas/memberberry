@@ -6,6 +6,11 @@ import { defineConfig } from "vite";
 // confusing five minutes when the server's links stop matching.
 export default defineConfig({
   plugins: [svelte()],
+
+  // why: the manifest is what tells the performance harness which chunks a first visit
+  // actually downloads. §21.2 budgets the *initial* JS, and from M8's graph onwards not every
+  // chunk is initial — see `perf/bundle.ts`.
+  build: { manifest: true },
   server: { port: 9011, strictPort: true },
   preview: { port: 9011, strictPort: true },
 
@@ -38,6 +43,13 @@ export default defineConfig({
       exclude: [
         "src/wasm/**",
         "src/main.ts",
+        // The WebGL renderer and the worker's `onmessage`, for the reason `measure.ts` below
+        // is excluded: both are boundaries rather than decisions. jsdom has no WebGL and no
+        // worker scope, and a mock of either would test the mock (AGENTS.md §2.3). What
+        // exercises them is `make e2e`, which reads the rendered pixels back out of the
+        // canvas — see `web/e2e/global-graph.spec.ts`.
+        "src/shell/graph-gl.ts",
+        "src/shell/graph-worker.ts",
         "perf/run.ts",
         "perf/measure.ts",
         "perf/server.ts",

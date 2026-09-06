@@ -374,6 +374,9 @@ pub struct VaultNode {
     pub path: Option<String>,
     /// A note's title or filename, a ghost's target as the linking note spells it.
     pub label: String,
+    /// The note's frontmatter `icon`, which §4.2 says renders on a graph node. `None` for a
+    /// ghost, which has no note to have one.
+    pub icon: Option<String>,
     /// Edges touching this node **in the whole vault**, not in the drawn picture.
     ///
     /// The cap is applied to this number, so it has to be the vault's — a degree counted
@@ -409,6 +412,7 @@ struct NoteRow {
     id: i64,
     path: String,
     title: Option<String>,
+    icon: Option<String>,
     words: u32,
     created: Option<String>,
     uuid: Option<String>,
@@ -490,6 +494,7 @@ impl Reader<'_> {
             nodes.push(VaultNode {
                 degree: degree.get(&key).copied().unwrap_or(0),
                 label: label_of(&note.path, note.title.as_deref()),
+                icon: note.icon,
                 words: note.words,
                 created: created_date(note.created.as_deref(), note.uuid.as_deref()),
                 tags: tags.remove(&note.id).unwrap_or_default(),
@@ -504,6 +509,7 @@ impl Reader<'_> {
                 key,
                 path: None,
                 label,
+                icon: None,
                 words: 0,
                 created: None,
                 tags: Vec::new(),
@@ -539,7 +545,7 @@ impl Reader<'_> {
     /// Every readable note, with the columns a node is drawn from.
     fn all_notes(&self) -> Result<Vec<NoteRow>, Error> {
         let mut statement = self.connection().prepare_cached(
-            "SELECT n.id, n.path, n.title, n.word_count, n.created, n.uuid
+            "SELECT n.id, n.path, n.title, n.icon, n.word_count, n.created, n.uuid
              FROM v_notes n
              ORDER BY n.path",
         )?;
@@ -548,9 +554,10 @@ impl Reader<'_> {
                 id: row.get(0)?,
                 path: row.get(1)?,
                 title: row.get(2)?,
-                words: u32::try_from(row.get::<_, i64>(3)?).unwrap_or(u32::MAX),
-                created: row.get(4)?,
-                uuid: row.get(5)?,
+                icon: row.get(3)?,
+                words: u32::try_from(row.get::<_, i64>(4)?).unwrap_or(u32::MAX),
+                created: row.get(5)?,
+                uuid: row.get(6)?,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Error::from)

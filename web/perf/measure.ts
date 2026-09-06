@@ -30,7 +30,7 @@ const SWITCHER = 'dialog.palette[aria-label="Open a note"]';
 const SWITCHER_INPUT = `${SWITCHER} .palette-input`;
 
 /** How many times each scenario runs. Enough for a p95 to mean something, few enough to run. */
-const REPEATS = { coldStart: 5, openNote: 12, keystrokes: 60, switcher: 12 } as const;
+const REPEATS = { coldStart: 5, openNote: 12, keystrokes: 60, switcher: 12, graphFrames: 90 } as const;
 
 /**
  * Fewest samples a browser measurement may be reported from.
@@ -608,6 +608,86 @@ async function keystrokes(page: Page): Promise<{ toPaint: number[]; interactions
 }
 
 /**
+ * Frame time while the global graph is being moved (§21.2's graph row, §9.4).
+ *
+ * **What this measures, and what it does not.** The budget is a *sustained* frame rate over
+ * a whole vault, so the picture has to be doing work on every frame — an idle canvas paints
+ * nothing and would report a perfect 16 ms whatever the renderer cost. So this drives a wheel
+ * event from inside an animation-frame loop: every frame changes the camera, which redraws
+ * every node and every edge, and the interval between frames is what that costs. It does
+ * **not** measure the force layout, which runs in a worker and is finished by the time this
+ * starts — that is deliberate, because §21.2 budgets the frame rate of the picture rather
+ * than how long it takes to settle.
+ *
+ * The zoom reverses every twenty frames so the camera stays in the middle of its range: run
+ * one way for long enough and every node is off screen, which is a cheap frame that flatters
+ * the number.
+ *
+ * The node count is the application's own: §9.4 caps a phone at the top 2,000 by degree and
+ * gives a desktop the whole vault, which is exactly what §21.2 budgets the two columns at.
+ * The count actually drawn is returned so the report can say which it measured.
+ */
+async function graphFrames(page: Page): Promise<{ samples: number[]; nodes: number }> {
+  await settle(page);
+  // The scenario before this one drives the quick switcher, and a palette left open would
+  // swallow the hotkey below.
+  await page.keyboard.press("Escape");
+  await settle(page);
+  // The command palette's binding rather than a click: the graph has no chrome outside it,
+  // and this is the path §8.4 registers (`Mod+Shift+G`).
+  await page.keyboard.press("ControlOrMeta+Shift+G");
+  const surface = page.locator(".graph-view-surface");
+  await surface.waitFor({ state: "visible", timeout: 60_000 });
+
+  // Wait for the layout to stop moving. `data-nodes` is the drawn count; the settled state is
+  // what stops the picture from being measured mid-flight, when the worker is still posting.
+  await page.waitForFunction(
+    () => document.querySelector(".graph-view-surface")?.getAttribute("data-nodes") !== "0",
+    undefined,
+    { timeout: 120_000 },
+  );
+  await page.waitForTimeout(4_000);
+  const nodes = Number.parseInt(
+    (await surface.getAttribute("data-nodes")) ?? "0",
+    10,
+  );
+
+  const samples = await page.evaluate(async (frames: number) => {
+    const surfaceElement = document.querySelector(".graph-view-surface");
+    if (surfaceElement === null) return [];
+    const box = surfaceElement.getBoundingClientRect();
+    const middleX = box.left + box.width / 2;
+    const middleY = box.top + box.height / 2;
+    const intervals: number[] = [];
+    return new Promise<number[]>((resolve) => {
+      let previous = performance.now();
+      let count = 0;
+      const step = (now: number): void => {
+        // The first interval spans whatever the page was doing before this started.
+        if (count > 0) intervals.push(now - previous);
+        previous = now;
+        count += 1;
+        surfaceElement.dispatchEvent(
+          new WheelEvent("wheel", {
+            deltaY: count % 40 < 20 ? 40 : -40,
+            clientX: middleX,
+            clientY: middleY,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        if (count <= frames) requestAnimationFrame(step);
+        else resolve(intervals);
+      };
+      requestAnimationFrame(step);
+    });
+  }, REPEATS.graphFrames);
+
+  await page.keyboard.press("Escape");
+  return { samples, nodes };
+}
+
+/**
  * Quick-switcher results over 10k notes (§21.2).
  *
  * The switcher fetches the note index once when first opened and ranks client-side after
@@ -766,6 +846,9 @@ export async function measureDevice(
   await settle(page);
   const switcher = await quickSwitcher(page);
   report(profile, "quick switcher");
+  await settle(page);
+  const graph = await graphFrames(page);
+  report(profile, "graph frame time");
   await context.close();
 
   if (problems.length > 0) {
@@ -821,6 +904,15 @@ export async function measureDevice(
           ? ""
           : `. ${switcher.skipped.length} of ${REPEATS.switcher} samples were lost: ` +
             `${switcher.skipped[0] ?? ""}`),
+    },
+    {
+      id: "graph-fps",
+      samples: graph.samples,
+      reduce: "p95",
+      caveat:
+        `${graph.nodes} nodes drawn, redrawn on every frame by a wheel event dispatched from ` +
+        "an animation-frame loop. Frame *time*, not rate: 30 fps is 33.3 ms. It does not " +
+        "include the force layout, which is finished before this starts and runs in a worker",
     },
   ];
 

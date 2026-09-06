@@ -2526,7 +2526,7 @@ fn a_whole_vault_node_carries_what_the_picture_is_drawn_from() {
     let dir = TempDir::new("http-vault-graph-node");
     dir.write(
         "A.md",
-        "---\ncreated: 2026-08-28\n---\n\n# A\n\n#project/mb one two [[B]]\n",
+        "---\ncreated: 2026-08-28\nicon: 🗺️\n---\n\n# A\n\n#project/mb one two [[B]]\n",
     );
     dir.write("B.md", "# B\n\nback to [[A]]\n");
     let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
@@ -2535,8 +2535,8 @@ fn a_whole_vault_node_carries_what_the_picture_is_drawn_from() {
     assert!(is_ok(&status), "{status}");
     assert!(
         body.contains(
-            "{\"key\":\"n:A.md\",\"path\":\"A.md\",\"label\":\"A\",\"degree\":2,\"words\":3,\
-             \"created\":\"2026-08-28\",\"tags\":[\"project/mb\"]}"
+            "{\"key\":\"n:A.md\",\"path\":\"A.md\",\"label\":\"A\",\"icon\":\"🗺️\",\
+             \"degree\":2,\"words\":3,\"created\":\"2026-08-28\",\"tags\":[\"project/mb\"]}"
         ),
         "{body}"
     );

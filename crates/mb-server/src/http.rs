@@ -1055,6 +1055,8 @@ struct VaultNodeEntry {
     /// `None` for a ghost, which has no note behind it (§6.5).
     path: Option<String>,
     label: String,
+    /// The note's frontmatter `icon` (§4.2), drawn on the node above §9.4's zoom threshold.
+    icon: Option<String>,
     /// Edges touching this node in the whole vault, not in the drawn picture (§9.4).
     degree: u32,
     /// Words in the note, `0` for a ghost — §9.4's other node size.
@@ -1128,6 +1130,7 @@ async fn vault_graph(
                 key: node.key,
                 path: node.path,
                 label: node.label,
+                icon: node.icon,
                 degree: node.degree,
                 words: node.words,
                 created: node.created,

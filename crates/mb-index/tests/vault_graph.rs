@@ -185,6 +185,20 @@ fn a_note_carries_its_word_count() {
 }
 
 #[test]
+fn a_note_carries_its_icon_for_the_node_to_wear() {
+    // §4.2 says the frontmatter `icon` renders on a graph node, and §9.4 draws it above the
+    // zoom threshold. A ghost has no note, so it has no icon either.
+    let graph = vault_of(&[("A.md", "---\nicon: \"\u{1f5fa}\"\n---\n\n[[Someday]]\n")]);
+    assert_eq!(node(&graph, "n:A.md").icon.as_deref(), Some("\u{1f5fa}"));
+    assert_eq!(node(&graph, "g:someday").icon, None);
+}
+
+#[test]
+fn a_note_with_no_icon_wears_none() {
+    assert_eq!(vault_of(&[("A.md", "# A\n")]).nodes[0].icon, None);
+}
+
+#[test]
 fn a_frontmatter_created_date_is_what_the_scrubber_gets() {
     let graph = vault_of(&[("A.md", "---\ncreated: 2026-08-28\n---\n\n# A\n")]);
     assert_eq!(

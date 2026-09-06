@@ -95,6 +95,18 @@ export const BUDGETS: readonly Budget[] = [
     desktop: 50,
   },
   {
+    // why: time rather than rate. §21.2 writes this row as "≥ 30 fps", and every other number
+    // in this file is one where lower is better — a harness with two comparison directions is
+    // a harness with a branch that can be wrong about which way a budget runs. 30 fps is a
+    // frame every 33.3 ms, so that is the number, and §21.2 says so.
+    id: "graph-fps",
+    metric: "Graph frame time, whole vault (30 fps = 33.3 ms)",
+    unit: "ms",
+    mobile: 33.3,
+    desktop: 33.3,
+    note: "p95, while the camera moves every frame; mobile is capped to 2,000 nodes (§9.4)",
+  },
+  {
     id: "critical-bundle-gzip",
     metric: "Initial JS + WASM, gzip (excl. lazy Excalidraw)",
     unit: "bytes",
@@ -148,16 +160,6 @@ export const PENDING: readonly Pending[] = [
     metric: "Client search index, 10k notes",
     blockedBy: "M9",
     reason: "there is no client index to size",
-  },
-  {
-    id: "graph-fps",
-    metric: "Graph frame rate",
-    blockedBy: "M8",
-    reason:
-      "the local graph landed with M8 and does not exercise this row: the budget is written " +
-      "for the global graph — 10k nodes, WebGL, a force layout in a worker — and a sidebar " +
-      "picture of forty nodes laid out by arithmetic would answer it with a number that " +
-      "looks like compliance without being it",
   },
   {
     id: "peak-memory",

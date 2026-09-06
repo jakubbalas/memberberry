@@ -32,6 +32,11 @@ export interface VaultGraphNode {
    */
   readonly path: string | null;
   readonly label: string;
+  /**
+   * The note's frontmatter `icon` (§4.2), or `null` — drawn on the node above §9.4's zoom
+   * threshold, where there is room for it and few enough nodes to draw it for.
+   */
+  readonly icon: string | null;
   /** Edges touching this node in the whole vault, not in the drawn picture (§9.4). */
   readonly degree: number;
   /** Words in the note; `0` for a ghost. §9.4's other node size. */
@@ -157,6 +162,7 @@ function readNode(entry: unknown): VaultGraphNode | undefined {
   const key = record["key"];
   const path = record["path"];
   const label = record["label"];
+  const icon = record["icon"];
   const degree = record["degree"];
   const words = record["words"];
   const created = record["created"];
@@ -164,6 +170,7 @@ function readNode(entry: unknown): VaultGraphNode | undefined {
   if (typeof key !== "string" || key === "") return undefined;
   if (path !== null && path !== undefined && typeof path !== "string") return undefined;
   if (typeof label !== "string") return undefined;
+  if (icon !== null && icon !== undefined && typeof icon !== "string") return undefined;
   if (!isCount(degree) || !isCount(words)) return undefined;
   if (created !== null && created !== undefined && typeof created !== "string") return undefined;
   if (!Array.isArray(tags)) return undefined;
@@ -171,6 +178,7 @@ function readNode(entry: unknown): VaultGraphNode | undefined {
     key,
     path: typeof path === "string" ? path : null,
     label,
+    icon: typeof icon === "string" ? icon : null,
     degree,
     words,
     created: typeof created === "string" ? created : null,

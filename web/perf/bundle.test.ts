@@ -88,6 +88,103 @@ describe("measuring the critical-path bundle", () => {
     expect(measured.excluded).toEqual(["assets/excalidraw-island.js"]);
   });
 
+  /** A Vite manifest, as `build.manifest` writes one. */
+  function manifest(chunks: Record<string, unknown>): void {
+    mkdirSync(join(dist, ".vite"), { recursive: true });
+    writeFileSync(join(dist, ".vite", "manifest.json"), JSON.stringify(chunks));
+  }
+
+  it("counts a chunk the entry imports statically", () => {
+    mkdirSync(join(dist, "assets"), { recursive: true });
+    writeFileSync(join(dist, "assets", "index.js"), compressible(4_000));
+    writeFileSync(join(dist, "assets", "shared.js"), compressible(2_000));
+    manifest({
+      "index.html": { file: "assets/index.js", isEntry: true, imports: ["_shared.js"] },
+      "_shared.js": { file: "assets/shared.js" },
+    });
+
+    const measured = measureBundle(dist);
+
+    expect(measured.assets.map((a) => a.name).sort()).toEqual([
+      "assets/index.js",
+      "assets/shared.js",
+    ]);
+    expect(measured.excluded).toEqual([]);
+  });
+
+  it("excludes a chunk nothing eager imports, and says that it did", () => {
+    // §21.2 budgets the *initial* download. M8's graph is behind a command most sessions
+    // never run, so charging the critical path for it would make the budget describe a
+    // download nobody performs — and an exclusion that was silent would be worse than
+    // either number.
+    mkdirSync(join(dist, "assets"), { recursive: true });
+    writeFileSync(join(dist, "assets", "index.js"), compressible(4_000));
+    writeFileSync(join(dist, "assets", "graph.js"), compressible(6_000));
+    manifest({
+      "index.html": { file: "assets/index.js", isEntry: true, dynamicImports: ["src/graph.ts"] },
+      "src/graph.ts": { file: "assets/graph.js" },
+    });
+
+    const measured = measureBundle(dist);
+
+    expect(measured.assets.map((a) => a.name)).toEqual(["assets/index.js"]);
+    expect(measured.excluded).toEqual(["assets/graph.js"]);
+  });
+
+  it("follows static imports through a chunk that is also dynamically imported", () => {
+    // A module shared between the shell and the graph is on the critical path because the
+    // shell needs it, whatever else also asks for it.
+    mkdirSync(join(dist, "assets"), { recursive: true });
+    writeFileSync(join(dist, "assets", "index.js"), compressible(4_000));
+    writeFileSync(join(dist, "assets", "shared.js"), compressible(1_000));
+    writeFileSync(join(dist, "assets", "graph.js"), compressible(6_000));
+    manifest({
+      "index.html": {
+        file: "assets/index.js",
+        isEntry: true,
+        imports: ["_shared.js"],
+        dynamicImports: ["src/graph.ts"],
+      },
+      "_shared.js": { file: "assets/shared.js" },
+      "src/graph.ts": { file: "assets/graph.js", imports: ["_shared.js"] },
+    });
+
+    const measured = measureBundle(dist);
+
+    expect(measured.assets.map((a) => a.name).sort()).toEqual([
+      "assets/index.js",
+      "assets/shared.js",
+    ]);
+  });
+
+  it("counts a wasm module the entry pulls in as an asset", () => {
+    // `new URL('…wasm', import.meta.url)` lands in the manifest's `assets` rather than its
+    // `imports`, and it is 356 KB of the critical path — the one asset the budget is mostly
+    // made of (§21.1).
+    mkdirSync(join(dist, "assets"), { recursive: true });
+    writeFileSync(join(dist, "assets", "index.js"), compressible(1_000));
+    writeFileSync(join(dist, "assets", "mb_bg.wasm"), compressible(8_000));
+    manifest({
+      "index.html": { file: "assets/index.js", isEntry: true, assets: ["assets/mb_bg.wasm"] },
+    });
+
+    expect(measureBundle(dist).assets.map((a) => a.name)).toEqual([
+      "assets/mb_bg.wasm",
+      "assets/index.js",
+    ]);
+  });
+
+  it("counts everything when there is no manifest to split it by", () => {
+    // The safe direction to be wrong in: a build that cannot say what is lazy is charged for
+    // all of it, rather than reporting a smaller number nobody can check.
+    mkdirSync(join(dist, "assets"), { recursive: true });
+    writeFileSync(join(dist, "assets", "index.js"), compressible(4_000));
+    writeFileSync(join(dist, "assets", "other.js"), compressible(2_000));
+
+    expect(measureBundle(dist).assets).toHaveLength(2);
+    expect(measureBundle(dist).excluded).toEqual([]);
+  });
+
   it("refuses a missing build rather than reporting a passing zero", () => {
     expect(() => measureBundle(join(dist, "nope"))).toThrow(/not a directory/);
   });

@@ -61,6 +61,8 @@
     readonly loadVaults?: typeof fetchVaults | undefined;
     /** Called to move to another vault. Defaults to a real navigation. */
     readonly onvault?: ((slug: string) => void) | undefined;
+    /** Opens the whole-vault graph (§9.4). Absent in a shell that has no graph to show. */
+    readonly ongraph?: (() => void) | undefined;
     /** Injectable for tests; default to the real HTTP calls. */
     readonly renameNote?: typeof renameNoteRequest | undefined;
     readonly renameTag?: typeof renameTagRequest | undefined;
@@ -77,6 +79,7 @@
     platform,
     loadVaults = fetchVaults,
     onvault,
+    ongraph,
     renameNote = renameNoteRequest,
     renameTag = renameTagRequest,
   }: Props = $props();
@@ -271,6 +274,17 @@
           ask({ kind: "tag", from: selected, initial: selected });
         }
       },
+    },
+    {
+      id: "graph.open",
+      title: "Open the graph",
+      group: "Navigation",
+      binding: "Mod+Shift+g",
+      // Absent rather than disabled when there is nothing to open: a local-only replica has
+      // no route to answer for a vault (§9.4), and a permanently greyed-out row in the
+      // palette teaches a reader that the feature is broken rather than that it is elsewhere.
+      enabled: () => ongraph !== undefined,
+      run: () => ongraph?.(),
     },
     {
       id: "note.toggleMode",

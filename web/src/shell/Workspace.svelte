@@ -24,6 +24,10 @@
   import TagPane from "./TagPane.svelte";
   import { BacklinkView } from "./backlinks.svelte.js";
   import { GraphView } from "./graph.svelte.js";
+  import type { VaultGraphView } from "./vault-graph.svelte.js";
+
+  /** The lazily imported graph pane, held as a value so it can be rendered when it lands. */
+  type GlobalGraphComponent = typeof import("./GlobalGraph.svelte").default;
   import { Bookmarks } from "./bookmarks.svelte.js";
   import type { NoteBootstrap } from "./bootstrap.js";
   import type { fetchVaults } from "./catalog.js";
@@ -73,6 +77,8 @@
     readonly tags?: TagView | undefined;
     /** The focused note's neighbourhood. Supplied by a test; built from the session otherwise. */
     readonly graph?: GraphView | undefined;
+    /** The whole-vault graph (§9.4). Injectable for tests, like the panels above. */
+    readonly vaultGraph?: VaultGraphView | undefined;
     /** The open note's headings. Supplied by a test; built here otherwise. */
     readonly outline?: OutlineView | undefined;
     /** How a wikilink is resolved to a note. Injectable so a test needs no server. */
@@ -97,6 +103,7 @@
     backlinks: suppliedBacklinks,
     tags: suppliedTags,
     graph: suppliedGraph,
+    vaultGraph: suppliedVaultGraph,
     outline: suppliedOutline,
     resolveLink,
     renameNote,
@@ -129,6 +136,34 @@
   const graph = untrack(
     () => suppliedGraph ?? new GraphView({ vault: session?.vault ?? "local-demo" }),
   );
+  /**
+   * The graph, loaded the first time somebody asks for it.
+   *
+   * why: a dynamic import. The renderer, the force layout, the quadtree and the filters are
+   * the largest thing in the shell and most sessions never open the graph, so putting them
+   * on the critical path would spend §21.1's already-breached bundle budget on a feature
+   * behind a command. The worker is a chunk of its own for the same reason.
+   *
+   * The mobile cap is decided once, here: §9.4 caps a phone to the top N nodes by degree, and
+   * which device this is cannot change under a mounted shell any more than the session can.
+   */
+  let vaultGraph = $state<VaultGraphView | undefined>(untrack(() => suppliedVaultGraph));
+  let GraphPane = $state<GlobalGraphComponent | undefined>();
+  let showGraph = $state(false);
+
+  async function openGraph(): Promise<void> {
+    const [pane, state, wire] = await Promise.all([
+      import("./GlobalGraph.svelte"),
+      import("./vault-graph.svelte.js"),
+      import("./vault-graph.js"),
+    ]);
+    GraphPane = pane.default;
+    vaultGraph ??= new state.VaultGraphView({
+      vault: session?.vault ?? "local-demo",
+      ...(currentLayoutMode() === "mobile" ? { limit: wire.MOBILE_NODE_CAP } : {}),
+    });
+    showGraph = true;
+  }
   // Fetches nothing, so unlike the three above it costs nothing to build and needs no
   // session: the headings arrive from whichever editor is mounted.
   const outline = untrack(() => suppliedOutline ?? new OutlineView());
@@ -313,6 +348,18 @@
   </Sidebar>
 
   <main class="workspace-main" aria-label="Open notes">
+    {#if showGraph && vaultGraph !== undefined && GraphPane !== undefined}
+      <!-- Over the panes rather than inside one: a graph is a view of the *vault*, and the
+           workspace model (§8.1) holds notes in tabs. Recorded in §9.4 with what it costs. -->
+      <GraphPane
+        view={vaultGraph}
+        onopen={(path) => {
+          showGraph = false;
+          store.open(path);
+        }}
+        onclose={() => (showGraph = false)}
+      />
+    {/if}
     {#if layout === "mobile"}
       <MobileMain {store} {session} {open} {titleOf} />
     {:else}
@@ -352,4 +399,5 @@
   {platform}
   {loadVaults}
   {onvault}
+  ongraph={() => void openGraph()}
 />
