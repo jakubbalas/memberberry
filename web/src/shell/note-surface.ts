@@ -13,6 +13,7 @@
  */
 
 import { Editor, type Extensions } from "@tiptap/core";
+import { encodeStateAsUpdate, type Doc } from "yjs";
 
 import type { ConnectionStatus, LocalPersistenceFactory } from "../editor/collaboration.js";
 import { mountEditorShell } from "../editor/editor-shell.js";
@@ -78,6 +79,49 @@ export interface NoteSurface {
    * Idempotent: calling it again returns the same promise rather than tearing down twice.
    */
   destroy(): Promise<void>;
+}
+
+interface ResidencyOptions {
+  readonly bootstrap: NoteBootstrap;
+  readonly replica: Replica;
+  readonly collaboration: { readonly document: Doc };
+  readonly connection: ConnectionStatus | undefined;
+}
+
+/**
+ * Keeps §7.2's bookkeeping for one open note up to date.
+ *
+ * Two facts, written at different times for the same reason: a tab is usually closed by
+ * being closed, not by the pane unmounting.
+ *
+ * - **Unsent changes are recorded the moment there are any**, from the transport's own
+ *   count. This is the flag eviction refuses to cross, and a flag only written on teardown
+ *   would be missing from exactly the session that produced it — the one that ended with the
+ *   browser being quit on a train.
+ * - **The size is measured when the pane closes**, because it costs a serialization of the
+ *   document and nothing needs it before then. A note that never gets measured reads as
+ *   zero bytes, which the note half of §7.2's cap still catches.
+ *
+ * The sweep runs once, on open: it is the moment a new body has just been added.
+ */
+function trackResidency(options: ResidencyOptions): { settle(): Promise<void> } {
+  const { bootstrap, replica } = options;
+  let dirty: boolean | undefined;
+  const unsubscribe = options.connection?.subscribe((state) => {
+    const next = state.pending > 0;
+    if (next === dirty) return;
+    dirty = next;
+    void replica.measured(bootstrap.vault, bootstrap.note, { dirty: next });
+  });
+  void replica.evict(bootstrap.vault);
+  return {
+    settle: async (): Promise<void> => {
+      unsubscribe?.();
+      await replica.measured(bootstrap.vault, bootstrap.note, {
+        bytes: encodeStateAsUpdate(options.collaboration.document).byteLength,
+      });
+    },
+  };
 }
 
 interface WaitingOptions {
@@ -239,6 +283,13 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     await replica.opened(bootstrap.vault, bootstrap.note);
   }
 
+  // §7.2's cap. After the pane is up and not awaited: nothing on screen depends on it, and a
+  // reader opening a note should not wait for a sweep over five hundred records.
+  const accounting =
+    bootstrap === undefined || replica === undefined
+      ? undefined
+      : trackResidency({ bootstrap, replica, collaboration, connection: collaboration.connection });
+
   let closing: Promise<void> | undefined;
   return {
     destroy: (): Promise<void> => {
@@ -246,6 +297,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
       // Tiptap throws if destroyed twice. Caching the promise makes the second call a no-op
       // that still resolves when teardown actually finished.
       closing ??= (async () => {
+        await accounting?.settle();
         waiting?.destroy();
         shell.destroy();
         await editor.destroy();

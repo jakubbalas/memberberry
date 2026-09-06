@@ -61,39 +61,39 @@ describe("the metadata replica", () => {
 
 describe("resident bodies", () => {
   it("records which notes this device holds, and when", async () => {
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 10 });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 10, bytes: 0, dirty: false });
     expect(await store.residents("personal")).toEqual([
-      { vault: "personal", note: "One.md", openedAt: 10 },
+      { vault: "personal", note: "One.md", openedAt: 10, bytes: 0, dirty: false },
     ]);
   });
 
   it("updates a note it already holds rather than duplicating it", async () => {
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 10 });
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 20 });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 10, bytes: 0, dirty: false });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 20, bytes: 0, dirty: false });
     expect(await store.residents("personal")).toEqual([
-      { vault: "personal", note: "One.md", openedAt: 20 },
+      { vault: "personal", note: "One.md", openedAt: 20, bytes: 0, dirty: false },
     ]);
   });
 
   it("tells apart two notes whose joined key would collide", async () => {
     // The reason the key is a pair. A note path may contain any character, so `<vault>:<note>`
     // is one filename away from two notes sharing a record.
-    await store.putResident({ vault: "a", note: "b:c.md", openedAt: 1 });
-    await store.putResident({ vault: "a:b", note: "c.md", openedAt: 2 });
-    expect(await store.residents("a")).toEqual([{ vault: "a", note: "b:c.md", openedAt: 1 }]);
-    expect(await store.residents("a:b")).toEqual([{ vault: "a:b", note: "c.md", openedAt: 2 }]);
+    await store.putResident({ vault: "a", note: "b:c.md", openedAt: 1, bytes: 0, dirty: false });
+    await store.putResident({ vault: "a:b", note: "c.md", openedAt: 2, bytes: 0, dirty: false });
+    expect(await store.residents("a")).toEqual([{ vault: "a", note: "b:c.md", openedAt: 1, bytes: 0, dirty: false }]);
+    expect(await store.residents("a:b")).toEqual([{ vault: "a:b", note: "c.md", openedAt: 2, bytes: 0, dirty: false }]);
   });
 
   it("forgets one", async () => {
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1 });
-    await store.putResident({ vault: "personal", note: "Two.md", openedAt: 2 });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1, bytes: 0, dirty: false });
+    await store.putResident({ vault: "personal", note: "Two.md", openedAt: 2, bytes: 0, dirty: false });
     await store.deleteResident("personal", "One.md");
     expect((await store.residents("personal")).map((body) => body.note)).toEqual(["Two.md"]);
   });
 
   it("lists only the vault it was asked about", async () => {
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1 });
-    await store.putResident({ vault: "work", note: "Two.md", openedAt: 2 });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1, bytes: 0, dirty: false });
+    await store.putResident({ vault: "work", note: "Two.md", openedAt: 2, bytes: 0, dirty: false });
     expect((await store.residents("personal")).map((body) => body.note)).toEqual(["One.md"]);
   });
 });
@@ -134,10 +134,10 @@ describe("forgetting a vault", () => {
   it("removes its metadata and every resident record, and nothing else", async () => {
     // What a revoked vault gets (§6.7). Another vault's replica is not this vault's business.
     await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1 });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1, bytes: 0, dirty: false });
     await store.putPin({ vault: "personal", note: "One.md" });
     await store.putNotes("work", [{ path: "Two.md", title: "Two" }]);
-    await store.putResident({ vault: "work", note: "Two.md", openedAt: 2 });
+    await store.putResident({ vault: "work", note: "Two.md", openedAt: 2, bytes: 0, dirty: false });
     await store.putPin({ vault: "work", note: "Two.md" });
 
     await store.deleteVault("personal");

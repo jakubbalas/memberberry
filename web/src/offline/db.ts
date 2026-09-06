@@ -27,6 +27,23 @@ export interface ResidentBody {
   readonly note: string;
   /** Epoch milliseconds, for §7.2's resident-body LRU. */
   readonly openedAt: number;
+  /**
+   * The document's size when it was last measured, in bytes.
+   *
+   * Approximate on purpose: it is the encoded Y update, measured when a pane closes, and it
+   * is what the 50 MB half of §7.2's cap is counted against. A record written before this
+   * field existed reads as `0`, which makes that note look free — the note count is the
+   * other half of the cap and catches it.
+   */
+  readonly bytes: number;
+  /**
+   * Whether this note has changes the server has not seen.
+   *
+   * §7.2: eviction never touches a note with unsynced changes. Deleting one would delete the
+   * only copy of somebody's writing, so this is the flag that has to be right even when
+   * everything else about the LRU is approximate.
+   */
+  readonly dirty: boolean;
 }
 
 /** The subset of IndexedDB this module needs, so a test can supply its own. */
@@ -45,6 +62,8 @@ export interface OfflineStore {
   getNotes(vault: string): Promise<readonly ReplicatedNote[] | undefined>;
   /** Records that a note's body is resident, and when it was last opened. */
   putResident(body: ResidentBody): Promise<void>;
+  /** One note's record, or `undefined` if this device does not hold it. */
+  getResident(vault: string, note: string): Promise<ResidentBody | undefined>;
   /** Every resident body for a vault. */
   residents(vault: string): Promise<readonly ResidentBody[]>;
   /** Forgets one body's bookkeeping. Deleting the document itself is `replica.ts`. */
@@ -114,6 +133,10 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
     },
     async putResident(body: ResidentBody): Promise<void> {
       await promised(transaction(BODIES, "readwrite").put({ ...body }));
+    },
+    async getResident(vault: string, note: string): Promise<ResidentBody | undefined> {
+      const record: unknown = await promised(transaction(BODIES, "readonly").get([vault, note]));
+      return readResident(record)[0];
     },
     async residents(vault: string): Promise<readonly ResidentBody[]> {
       const records: unknown = await promised(
@@ -190,7 +213,18 @@ function readPin(record: unknown): PinnedNote[] {
 
 function readResident(record: unknown): ResidentBody[] {
   if (typeof record !== "object" || record === null) return [];
-  const { vault, note, openedAt } = record as Record<string, unknown>;
+  const { vault, note, openedAt, bytes, dirty } = record as Record<string, unknown>;
   if (typeof vault !== "string" || typeof note !== "string") return [];
-  return [{ vault, note, openedAt: typeof openedAt === "number" ? openedAt : 0 }];
+  return [
+    {
+      vault,
+      note,
+      openedAt: typeof openedAt === "number" ? openedAt : 0,
+      bytes: typeof bytes === "number" ? bytes : 0,
+      // Anything that is not an explicit `false` is treated as dirty. A record from before
+      // this field existed might hold unsent changes and nothing here can tell; refusing to
+      // evict it costs one note's worth of quota, and evicting it costs somebody's writing.
+      dirty: dirty !== false,
+    },
+  ];
 }

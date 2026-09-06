@@ -18,6 +18,8 @@ export function stubReplica(overrides: Partial<Replica> = {}): Replica {
     isResident: async () => false,
     metadata: async () => undefined,
     opened: async () => undefined,
+    measured: async () => undefined,
+    evict: async () => [],
     pinned: async () => [],
     setPinned: async () => undefined,
     ...overrides,

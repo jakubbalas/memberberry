@@ -16,6 +16,7 @@
 
 import { persistenceName } from "../editor/collaboration.js";
 import type { Factory, OfflineStore, PinnedNote, ReplicatedNote, ResidentBody } from "./db.js";
+import { DEFAULT_CAPS, evictable, type ResidentCaps } from "./eviction.js";
 
 /** What the server's note index said — or failed to say. */
 export type CatalogAnswer =
@@ -26,6 +27,12 @@ export type CatalogAnswer =
   /** No answer at all: offline, or a server that failed. */
   | { readonly kind: "unreachable" };
 
+/** What is known about a resident body now. Absent fields are left as they were. */
+export interface ResidentPatch {
+  readonly bytes?: number;
+  readonly dirty?: boolean;
+}
+
 /** Deletes a Y document's own IndexedDB database. */
 export type DropBody = (vault: string, note: string) => Promise<void>;
 
@@ -34,6 +41,8 @@ export interface ReplicaOptions {
   readonly dropBody: DropBody;
   /** Injectable for tests; defaults to the wall clock. */
   readonly now?: () => number;
+  /** §7.2's resident-body caps. Injectable for tests; the defaults are the spec's. */
+  readonly caps?: ResidentCaps;
 }
 
 export interface Replica {
@@ -51,6 +60,21 @@ export interface Replica {
   metadata(vault: string, note: string): Promise<ReplicatedNote | undefined>;
   /** Records that a note's body is here, and that it was just opened. */
   opened(vault: string, note: string): Promise<void>;
+  /**
+   * Records what a note now weighs, or whether it has changes the server has not seen.
+   *
+   * Both are what §7.2's cap is decided from, and the second is what stops the cap deleting
+   * the only copy of somebody's writing — so it is written the moment a change goes unsent,
+   * rather than when the pane closes. A pane that is never closed is the normal way a tab
+   * ends.
+   */
+  measured(vault: string, note: string, patch: ResidentPatch): Promise<void>;
+  /**
+   * Brings a vault back under §7.2's caps, dropping the least recently opened bodies.
+   *
+   * Returns what it dropped. Never a pinned note and never one with unsent changes.
+   */
+  evict(vault: string): Promise<readonly string[]>;
   /** The notes this device is keeping offline (§7.2's pinned tier). */
   pinned(vault: string): Promise<readonly string[]>;
   /** Marks a note to keep, or stops keeping it. Idempotent either way. */
@@ -59,6 +83,7 @@ export interface Replica {
 
 export function createReplica(options: ReplicaOptions): Replica {
   const now = options.now ?? Date.now;
+  const caps = options.caps ?? DEFAULT_CAPS;
   return {
     async reconcile(vault, answer): Promise<readonly ReplicatedNote[]> {
       if (answer.kind === "unreachable") {
@@ -97,7 +122,36 @@ export function createReplica(options: ReplicaOptions): Replica {
       return notes?.find((entry) => entry.path === note);
     },
     async opened(vault, note): Promise<void> {
-      await options.store.putResident({ vault, note, openedAt: now() });
+      // Read first, so opening a note does not forget what it weighed or that it has unsent
+      // changes — `putResident` replaces the record rather than merging it.
+      const existing = await options.store.getResident(vault, note);
+      await options.store.putResident({
+        vault,
+        note,
+        openedAt: now(),
+        bytes: existing?.bytes ?? 0,
+        dirty: existing?.dirty ?? false,
+      });
+    },
+    async measured(vault, note, patch): Promise<void> {
+      const existing = await options.store.getResident(vault, note);
+      // Only for a note this device holds. Measuring one it does not would create a record
+      // claiming a body that is not there, and `isResident` would then hide §7.2's state.
+      if (existing === undefined) return;
+      await options.store.putResident({
+        ...existing,
+        ...(patch.bytes === undefined ? {} : { bytes: patch.bytes }),
+        ...(patch.dirty === undefined ? {} : { dirty: patch.dirty }),
+      });
+    },
+    async evict(vault): Promise<readonly string[]> {
+      const pinned = new Set((await options.store.pins(vault)).map((pin) => pin.note));
+      const dropping = evictable(await options.store.residents(vault), pinned, caps);
+      for (const body of dropping) {
+        await options.dropBody(body.vault, body.note);
+        await options.store.deleteResident(body.vault, body.note);
+      }
+      return dropping.map((body) => body.note);
     },
     async pinned(vault): Promise<readonly string[]> {
       return (await options.store.pins(vault)).map((pin: PinnedNote) => pin.note);

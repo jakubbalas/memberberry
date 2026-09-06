@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 import type { Extensions } from "@tiptap/core";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
+import { Doc, applyUpdate, encodeStateAsUpdate } from "yjs";
+
 import type { LocalPersistence } from "../editor/collaboration.js";
 import type { ConnectionState } from "../editor/sync.js";
 import { stubReplica } from "../offline/testing.js";
@@ -384,5 +386,100 @@ describe("a note whose body was never replicated (SPEC §7.2)", () => {
 
     expect(dom.panel.querySelector(".note-not-downloaded")).toBeNull();
     expect(dom.panel.dataset["body"]).toBeUndefined();
+  });
+});
+
+describe("keeping §7.2's bookkeeping", () => {
+  const bootstrap = { vault: "personal", note: "Projects/Roadmap.md", user: "alice" } as const;
+  const location = { protocol: "http:", host: "localhost:9010" } as Location;
+
+  /** A replica that records every call the pane makes about residency. */
+  function accounting() {
+    const patches: Array<{ note: string; bytes?: number; dirty?: boolean }> = [];
+    const evicted: string[] = [];
+    return {
+      patches,
+      evicted,
+      handle: async () =>
+        stubReplica({
+          isResident: async () => true,
+          measured: async (_vault, note, patch) => {
+            patches.push({ note, ...patch });
+          },
+          evict: async (vault) => {
+            evicted.push(vault);
+            return [];
+          },
+        }),
+    };
+  }
+
+  it("sweeps the cap once, when a note opens", async () => {
+    // The moment a new body has just been added, and the only moment that needs a sweep.
+    const store = accounting();
+    const { surface } = await open({ bootstrap, location, replica: store.handle });
+    try {
+      await vi.waitFor(() => expect(store.evicted).toEqual(["personal"]));
+    } finally {
+      await surface.destroy();
+    }
+  });
+
+  it("records unsent changes the moment there are any", async () => {
+    // Not on teardown: a tab is usually closed by being closed, so a flag written only then
+    // would be missing from exactly the session that produced it.
+    const store = accounting();
+    let report: ((state: ConnectionState) => void) | undefined;
+    const { surface } = await open({
+      bootstrap,
+      location,
+      replica: store.handle,
+      createRemoteSync: ((_options, _document, _awareness, onConnectionChange) => {
+        report = onConnectionChange;
+        return {
+          connected: false,
+          pending: 0,
+          synced: false,
+          sendAwareness: () => undefined,
+          destroy: () => undefined,
+        };
+      }) as NonNullable<Parameters<typeof openNoteSurface>[0]["createRemoteSync"]>,
+    });
+    try {
+      report?.({ connected: false, pending: 2, synced: true });
+      await vi.waitFor(() => expect(store.patches).toContainEqual({ note: bootstrap.note, dirty: true }));
+
+      report?.({ connected: true, pending: 0, synced: true });
+      await vi.waitFor(() =>
+        expect(store.patches).toContainEqual({ note: bootstrap.note, dirty: false }),
+      );
+    } finally {
+      await surface.destroy();
+    }
+  });
+
+  it("measures the document when the pane closes", async () => {
+    // Seeded through the persistence stub, which is what a restored local replica is: an
+    // empty document weighs two bytes whatever happens, so a note with something in it is
+    // the only way to tell a measurement from a constant.
+    const seed = new Doc();
+    seed.getText("body").insert(0, "a".repeat(500));
+    const update = encodeStateAsUpdate(seed);
+
+    const store = accounting();
+    const { surface } = await open({
+      bootstrap,
+      location,
+      replica: store.handle,
+      createPersistence: (_name, document) => {
+        applyUpdate(document, update);
+        return { whenSynced: Promise.resolve(), destroy: async () => undefined };
+      },
+    });
+    await surface.destroy();
+
+    const measured = store.patches.find((patch) => patch.bytes !== undefined);
+    expect(measured?.note).toBe(bootstrap.note);
+    expect(measured?.bytes).toBeGreaterThan(500);
   });
 });

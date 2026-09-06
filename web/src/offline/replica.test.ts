@@ -40,8 +40,8 @@ describe("a fresh readable set", () => {
     // The reconnection §6.7 promises. The note left the readable set because an ACL
     // tightened, because it was deleted, or because it was renamed — this cannot tell them
     // apart, and dropping the local copy is right for all three.
-    await store.putResident({ vault: "personal", note: "Secret.md", openedAt: 1 });
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 2 });
+    await store.putResident({ vault: "personal", note: "Secret.md", openedAt: 1, bytes: 0, dirty: false });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 2, bytes: 0, dirty: false });
 
     await replica.reconcile("personal", { kind: "ok", notes: [{ path: "One.md", title: "One" }] });
 
@@ -50,7 +50,7 @@ describe("a fresh readable set", () => {
   });
 
   it("keeps the bodies it still may read", async () => {
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1 });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1, bytes: 0, dirty: false });
     await replica.reconcile("personal", { kind: "ok", notes: [{ path: "One.md", title: "One" }] });
     expect(dropped).toEqual([]);
   });
@@ -98,8 +98,8 @@ describe("a refusal", () => {
 
   it("drops the whole vault: its metadata and every body", async () => {
     await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1 });
-    await store.putResident({ vault: "personal", note: "Two.md", openedAt: 2 });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1, bytes: 0, dirty: false });
+    await store.putResident({ vault: "personal", note: "Two.md", openedAt: 2, bytes: 0, dirty: false });
 
     await replica.reconcile("personal", { kind: "denied" });
 
@@ -124,7 +124,7 @@ describe("no answer at all", () => {
   });
 
   it("keeps every body, because a tunnel is not a revocation", async () => {
-    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1 });
+    await store.putResident({ vault: "personal", note: "One.md", openedAt: 1, bytes: 0, dirty: false });
     await replica.reconcile("personal", { kind: "unreachable" });
     expect(dropped).toEqual([]);
     expect(await store.residents("personal")).toHaveLength(1);
@@ -156,17 +156,100 @@ describe("resident bodies", () => {
   });
 });
 
+describe("the resident-body cap (§7.2)", () => {
+  /** A replica with a two-note cap, so a test can reach it without writing five hundred. */
+  function capped() {
+    return createReplica({
+      store,
+      dropBody: async (vault, note) => {
+        dropped.push(`${vault}/${note}`);
+      },
+      now: () => 1_000,
+      caps: { notes: 2, bytes: 1_000 },
+    });
+  }
+
+  it("drops the least recently opened body and its document", async () => {
+    for (const [note, openedAt] of [["old.md", 1], ["mid.md", 2], ["new.md", 3]] as const) {
+      await store.putResident({ vault: "personal", note, openedAt, bytes: 0, dirty: false });
+    }
+
+    expect(await capped().evict("personal")).toEqual(["old.md"]);
+
+    expect(dropped).toEqual(["personal/old.md"]);
+    expect((await store.residents("personal")).map((body) => body.note).sort()).toEqual([
+      "mid.md",
+      "new.md",
+    ]);
+  });
+
+  it("never drops a pinned note or one with unsent changes", async () => {
+    await store.putResident({ vault: "personal", note: "pinned.md", openedAt: 1, bytes: 0, dirty: false });
+    await store.putResident({ vault: "personal", note: "dirty.md", openedAt: 2, bytes: 0, dirty: true });
+    await store.putResident({ vault: "personal", note: "spare.md", openedAt: 3, bytes: 0, dirty: false });
+    await store.putPin({ vault: "personal", note: "pinned.md" });
+
+    expect(await capped().evict("personal")).toEqual(["spare.md"]);
+  });
+
+  it("evicts nothing while under the cap", async () => {
+    await store.putResident({ vault: "personal", note: "one.md", openedAt: 1, bytes: 0, dirty: false });
+    expect(await capped().evict("personal")).toEqual([]);
+    expect(dropped).toEqual([]);
+  });
+});
+
+describe("measuring a note", () => {
+  it("records what it weighs and whether it has unsent changes", async () => {
+    await replica.opened("personal", "One.md");
+    await replica.measured("personal", "One.md", { bytes: 4_096, dirty: true });
+
+    const [record] = await store.residents("personal");
+    expect(record?.bytes).toBe(4_096);
+    expect(record?.dirty).toBe(true);
+  });
+
+  it("leaves alone what a patch does not name", async () => {
+    await replica.opened("personal", "One.md");
+    await replica.measured("personal", "One.md", { bytes: 4_096, dirty: true });
+    await replica.measured("personal", "One.md", { dirty: false });
+
+    const [record] = await store.residents("personal");
+    expect(record?.bytes).toBe(4_096);
+    expect(record?.dirty).toBe(false);
+  });
+
+  it("survives being opened again without forgetting either", async () => {
+    // `putResident` replaces rather than merges, so opening a note used to reset what it
+    // weighed — and, worse, that it had unsent changes, which is what stops it being evicted.
+    await replica.opened("personal", "One.md");
+    await replica.measured("personal", "One.md", { bytes: 4_096, dirty: true });
+    await replica.opened("personal", "One.md");
+
+    const [record] = await store.residents("personal");
+    expect(record?.bytes).toBe(4_096);
+    expect(record?.dirty).toBe(true);
+  });
+
+  it("does not invent a record for a note this device does not hold", async () => {
+    // One would make `isResident` true, which hides §7.2's "body not downloaded" state
+    // behind an editor with nothing in it.
+    await replica.measured("personal", "Absent.md", { bytes: 10 });
+    expect(await store.residents("personal")).toEqual([]);
+  });
+});
+
 describe("unreadable", () => {
   it("is everything the readable set does not name", () => {
     const residents = [
-      { vault: "v", note: "a.md", openedAt: 1 },
-      { vault: "v", note: "b.md", openedAt: 2 },
+      { vault: "v", note: "a.md", openedAt: 1, bytes: 0, dirty: false },
+      { vault: "v", note: "b.md", openedAt: 2, bytes: 0, dirty: false },
     ];
     expect(unreadable(residents, new Set(["a.md"]))).toEqual([residents[1]]);
   });
 
   it("is everything when the readable set is empty", () => {
-    const residents = [{ vault: "v", note: "a.md", openedAt: 1 }];
+    const residents = [{ vault: "v", note: "a.md", openedAt: 1, bytes: 0, dirty: false }];
     expect(unreadable(residents, new Set())).toEqual(residents);
   });
 });
