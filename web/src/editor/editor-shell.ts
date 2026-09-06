@@ -5,6 +5,7 @@ import type { Doc } from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 
 import type { ConnectionStatus } from "./collaboration.js";
+import type { ConnectionState } from "./sync.js";
 import { PRESENCE_CLIENT_ATTRIBUTE, trackPresenceIdle } from "./presence.js";
 
 import { insertBlock, moveCurrentBlock, runTaskSlashCommand, setHeading, setTaskDue, setTaskPriority, slashCommands, toggleTask } from "./commands.js";
@@ -199,6 +200,29 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
 interface PresenceHandle { destroy(): void; }
 
 /**
+ * What the note header says about the connection, or `undefined` for "nothing worth saying".
+ *
+ * Two promises meet here. §7.5: offline you are alone, and the UI says so rather than
+ * showing stale avatars. §7.4: an offline application says how much is waiting to be sent —
+ * silence and "everything is fine" must not look the same, because the difference between
+ * them is whether the work is anywhere but this device.
+ *
+ * Connected with nothing pending is the only state that says nothing at all. Connected *with*
+ * something pending is the moment between a socket opening and the flush going out; it is
+ * usually too short to read, and leaving it unlabelled would mean the count vanishing before
+ * anything reported it.
+ */
+export function connectionMessage(state: ConnectionState): string | undefined {
+  const changes = `${state.pending} unsent ${state.pending === 1 ? "change" : "changes"}`;
+  if (!state.connected) {
+    return state.pending === 0
+      ? "Offline — you are editing alone"
+      : `Offline — ${changes}, saved on this device`;
+  }
+  return state.pending === 0 ? undefined : `Reconnected — sending ${changes}`;
+}
+
+/**
  * Renders the note header's presence row: who is here, and whether we can see anyone.
  *
  * `role="group"` rather than a bare `div`: an `aria-label` on a generic element is dropped
@@ -216,11 +240,11 @@ function mountPresence(panel: HTMLElement, awareness: Awareness, connection?: Co
   const status = document.createElement("span");
   status.className = "connection-status";
   status.setAttribute("role", "status");
-  const unsubscribe = connection?.subscribe((connected) => {
-    status.dataset["state"] = connected ? "online" : "offline";
-    // §7.5: offline you are alone, and the UI says so rather than showing stale avatars.
-    status.textContent = connected ? "" : "Offline — you are editing alone";
-    status.hidden = connected;
+  const unsubscribe = connection?.subscribe((state) => {
+    status.dataset["state"] = state.connected ? "online" : "offline";
+    const message = connectionMessage(state);
+    status.textContent = message ?? "";
+    status.hidden = message === undefined;
   });
   if (connection !== undefined) header.append(status);
 

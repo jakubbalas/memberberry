@@ -88,7 +88,7 @@ describe("opening a note pane", () => {
     const { surface } = await open({
       createRemoteSync: () => {
         socketRequested = true;
-        return { connected: false, sendAwareness: () => undefined, destroy: () => undefined };
+        return { connected: false, pending: 0, sendAwareness: () => undefined, destroy: () => undefined };
       },
     });
     try {
@@ -106,7 +106,7 @@ describe("opening a note pane", () => {
       location: { protocol: "https:", host: "notes.example" } as Location,
       createRemoteSync: (options) => {
         endpoint = options.endpoint;
-        return { connected: true, sendAwareness: () => undefined, destroy: () => undefined };
+        return { connected: true, pending: 0, sendAwareness: () => undefined, destroy: () => undefined };
       },
     });
     try {
@@ -133,6 +133,7 @@ describe("closing a note pane", () => {
       location: { protocol: "http:", host: "localhost:9010" } as Location,
       createRemoteSync: () => ({
         connected: true,
+        pending: 0,
         sendAwareness: () => undefined,
         destroy: () => {
           destroyed += 1;

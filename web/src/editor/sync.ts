@@ -1,6 +1,6 @@
 /** Permission-aware WebSocket transport for a single persisted Yjs note. */
 
-import { Doc, applyUpdate } from "yjs";
+import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVectorFromUpdate } from "yjs";
 import {
   Awareness,
   applyAwarenessUpdate,
@@ -16,6 +16,18 @@ export const REMOTE_SYNC_ORIGIN = "memberberry:remote-sync";
 const PRESENCE_INTERVAL_MS = 50;
 
 /**
+ * Reconnection backoff (`SPEC.md` §7.4).
+ *
+ * A closed socket is the normal state of an offline-first application, not an error, so it
+ * is retried forever rather than a fixed number of times — a tab left open on a train has to
+ * come back on its own. The cap is what makes "forever" affordable: one attempt every thirty
+ * seconds costs nothing, and it bounds how long a reconnection takes after the network
+ * returns.
+ */
+const RECONNECT_BASE_MS = 1_000;
+const RECONNECT_CAP_MS = 30_000;
+
+/**
  * Binary frame tags. CRDT payloads travel as binary because JSON encodes bytes as an array
  * of decimal numbers — several times the size, plus a per-element parse, on the path a
  * keystroke takes (`SPEC.md` §21). Control frames stay JSON: small, rare, and legible in a
@@ -28,6 +40,8 @@ const BINARY_HEADER_BYTES = 5;
 
 export interface SyncProvider {
   readonly connected: boolean;
+  /** Local changes produced while the socket was not open, and so not yet sent. */
+  readonly pending: number;
   sendAwareness(state: unknown): void;
   destroy(): void;
 }
@@ -38,9 +52,26 @@ export interface CreateSyncProviderOptions {
   readonly note: string;
   readonly document: Doc;
   readonly awareness?: Awareness;
-  readonly socket?: WebSocket;
-  /** Notified whenever the transport's connected state changes. */
-  readonly onConnectionChange?: (connected: boolean) => void;
+  /**
+   * Opens a socket. Called again for every reconnection, which is why this is a factory and
+   * not a socket: a `WebSocket` is single-use, so a transport handed one can connect once.
+   */
+  readonly connect?: () => WebSocket;
+  /**
+   * Where "the network came back" is announced — `globalThis` in a browser.
+   *
+   * Injectable, and read through this narrow type, because this module must not assume a
+   * `window`: it is unit-tested outside a DOM and could move into a worker.
+   */
+  readonly network?: Pick<EventTarget, "addEventListener" | "removeEventListener">;
+  /** Notified whenever the transport's connected state or pending count changes. */
+  readonly onConnectionChange?: (state: ConnectionState) => void;
+}
+
+/** What the transport reports about itself, for a UI that has to say so (§7.4). */
+export interface ConnectionState {
+  readonly connected: boolean;
+  readonly pending: number;
 }
 
 type ControlFrame =
@@ -57,30 +88,41 @@ interface BinaryFrame {
 
 /** Opens a server-authorized sync session. The server remains the permission boundary. */
 export function createSyncProvider(options: CreateSyncProviderOptions): SyncProvider {
-  const socket = options.socket ?? new WebSocket(options.endpoint);
-  socket.binaryType = "arraybuffer";
+  const openSocket = options.connect ?? ((): WebSocket => new WebSocket(options.endpoint));
+  const network = options.network ?? defaultNetwork();
+  let socket: WebSocket | undefined;
   let connected = false;
+  let pending = 0;
+  /** Consecutive failed connections, which is what the backoff grows from. */
+  let attempts = 0;
   let destroyed = false;
   let lastPresence = 0;
   let pendingPresence: unknown | undefined;
   // `ReturnType<typeof setTimeout>` rather than `number`: this module must not assume a
   // `window`, so it can be unit-tested outside a DOM and later moved into a worker.
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let retry: ReturnType<typeof setTimeout> | undefined;
 
+  const announce = (): void => {
+    options.onConnectionChange?.({ connected, pending });
+  };
   const setConnected = (next: boolean): void => {
     if (connected === next) return;
     connected = next;
-    options.onConnectionChange?.(next);
+    announce();
   };
+  const setPending = (next: number): void => {
+    if (pending === next) return;
+    pending = next;
+    announce();
+  };
+  const isOpen = (): boolean =>
+    !destroyed && socket !== undefined && socket.readyState === WebSocket.OPEN;
   const send = (frame: unknown): void => {
-    if (!destroyed && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(frame));
-    }
+    if (isOpen()) socket?.send(JSON.stringify(frame));
   };
   const sendBinary = (bytes: Uint8Array): void => {
-    if (!destroyed && socket.readyState === WebSocket.OPEN) {
-      socket.send(bytes);
-    }
+    if (isOpen()) socket?.send(bytes);
   };
   const sendAwareness = (state: unknown, clients: number[] = []): void => {
     pendingPresence = { state, clients };
@@ -103,11 +145,39 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     }, delay);
   };
   const sendUpdate = (update: Uint8Array, origin: unknown): void => {
-    if (origin !== REMOTE_SYNC_ORIGIN) {
-      sendBinary(encodeBinaryFrame(FRAME_UPDATE, options.vault, options.note, update));
+    if (origin === REMOTE_SYNC_ORIGIN) return;
+    if (!isOpen()) {
+      // why: counted rather than queued. The document itself is the queue — every one of
+      // these is already in the Y doc and, a moment later, in IndexedDB — so keeping the
+      // bytes as well would be a second copy that can disagree with the first. What
+      // reconnecting sends is the difference between this document and the server's, which
+      // is exact however many updates went unsent (§7.4).
+      setPending(pending + 1);
+      return;
     }
+    sendBinary(encodeBinaryFrame(FRAME_UPDATE, options.vault, options.note, update));
+  };
+  /**
+   * Sends whatever the server's state does not already contain.
+   *
+   * This is the reconnect flush, and it is also what makes a *first* connection correct: the
+   * local replica is restored from IndexedDB before the socket opens, so a note edited
+   * offline and then reloaded has changes the server has never seen. Through M5 nothing sent
+   * them — the server answered `subscribe` with its own state, the client merged it, and the
+   * client's own updates stayed on the device forever.
+   *
+   * The difference is computed from the state vector *of the server's own frame*, so it is
+   * exactly what is missing rather than everything this client has.
+   */
+  const flush = (remote: Uint8Array): void => {
+    const missing = encodeStateAsUpdate(options.document, encodeStateVectorFromUpdate(remote));
+    if (hasContent(missing)) {
+      sendBinary(encodeBinaryFrame(FRAME_UPDATE, options.vault, options.note, missing));
+    }
+    setPending(0);
   };
   const onOpen = (): void => {
+    attempts = 0;
     setConnected(true);
     send({ type: "subscribe", vault: options.vault, note: options.note });
   };
@@ -118,6 +188,9 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
       if (frame.tag === FRAME_SYNC || frame.tag === FRAME_UPDATE) {
         applyUpdate(options.document, frame.payload, REMOTE_SYNC_ORIGIN);
       }
+      // The server answers `subscribe` with its whole state, which is the only frame that
+      // says what it does *not* have.
+      if (frame.tag === FRAME_SYNC) flush(frame.payload);
       return;
     }
     if (typeof event.data !== "string") return;
@@ -132,7 +205,76 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
       removeAwarenessStates(options.awareness, frame.clients, REMOTE_SYNC_ORIGIN);
     }
   };
-  const onClose = (): void => { setConnected(false); };
+  const onClose = (): void => {
+    setConnected(false);
+    detach();
+    scheduleReconnect();
+  };
+  const attach = (): void => {
+    if (destroyed) return;
+    const next = openSocket();
+    next.binaryType = "arraybuffer";
+    socket = next;
+    next.addEventListener("open", onOpen);
+    next.addEventListener("message", onMessage);
+    next.addEventListener("close", onClose);
+  };
+  /** Drops the current socket's listeners, so a late event from a dead one cannot act. */
+  const detach = (): void => {
+    socket?.removeEventListener("open", onOpen);
+    socket?.removeEventListener("message", onMessage);
+    socket?.removeEventListener("close", onClose);
+    socket = undefined;
+  };
+  /**
+   * Gives up the socket when the browser says the network has gone.
+   *
+   * why: a socket does not notice a network that disappeared. Nothing is delivered and
+   * nothing is refused — a TCP connection can take minutes to admit it is dead, and until it
+   * does, every `send` succeeds into nowhere. That is the state where this transport is
+   * silently losing edits *while reporting itself connected*, which is worse than being
+   * offline. Closing it deliberately makes the next update count as pending (§7.4) and the
+   * next connection a real one.
+   *
+   * `navigator.onLine` is famously imprecise — a captive portal reads as online, a VM can
+   * read as offline. The cost of believing it wrongly is bounded: a working socket is closed
+   * and reopened immediately after, because the reconnection then succeeds.
+   */
+  const onOffline = (): void => {
+    if (destroyed || socket === undefined) return;
+    const closing = socket;
+    // Detach first, so the close this causes is not also handled as a dropped connection.
+    detach();
+    closing.close();
+    setConnected(false);
+    scheduleReconnect();
+  };
+  /**
+   * Reconnects at once when the browser says the network is back.
+   *
+   * why: without it, the backoff decides how long a returning connection takes. A laptop
+   * closed for an hour wakes up mid-way through a thirty-second window and a user who is
+   * plainly online watches an "Offline" label for half a minute. The backoff is still what
+   * governs a server that is refusing connections, which is the case it exists for.
+   */
+  const onOnline = (): void => {
+    if (destroyed || connected) return;
+    if (retry !== undefined) {
+      clearTimeout(retry);
+      retry = undefined;
+    }
+    attempts = 0;
+    attach();
+  };
+  const scheduleReconnect = (): void => {
+    if (destroyed || retry !== undefined) return;
+    const delay = reconnectDelay(attempts, Math.random);
+    attempts += 1;
+    retry = setTimeout(() => {
+      retry = undefined;
+      attach();
+    }, delay);
+  };
   const onAwareness = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }): void => {
     const changed = [...added, ...updated, ...removed];
     if (changed.length > 0 && options.awareness !== undefined) {
@@ -153,18 +295,20 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     });
     applyAwarenessUpdate(options.awareness, update, REMOTE_SYNC_ORIGIN);
   };
-  socket.addEventListener("open", onOpen);
-  socket.addEventListener("message", onMessage);
-  socket.addEventListener("close", onClose);
+  attach();
+  network?.addEventListener("online", onOnline);
+  network?.addEventListener("offline", onOffline);
   options.document.on("update", sendUpdate);
   options.awareness?.on("update", onAwareness);
 
   return {
     get connected(): boolean { return connected; },
+    get pending(): number { return pending; },
     sendAwareness: (state: unknown): void => { sendAwareness(state); },
     destroy: (): void => {
       if (destroyed) return;
       if (timer !== undefined) clearTimeout(timer);
+      if (retry !== undefined) clearTimeout(retry);
       // Leave the room explicitly so the server releases it now rather than when the socket
       // is noticed to be gone, and so remote cursors for this client vanish at once. Sent
       // before `destroyed` is set, because `send` refuses to write to a destroyed provider.
@@ -172,13 +316,50 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
       destroyed = true;
       options.document.off("update", sendUpdate);
       options.awareness?.off("update", onAwareness);
-      socket.removeEventListener("open", onOpen);
-      socket.removeEventListener("message", onMessage);
-      socket.removeEventListener("close", onClose);
-      socket.close();
+      network?.removeEventListener("online", onOnline);
+      network?.removeEventListener("offline", onOffline);
+      const closing = socket;
+      detach();
+      closing?.close();
       setConnected(false);
     },
   };
+}
+
+/**
+ * The browser's own network events, or nothing outside one.
+ *
+ * `globalThis` rather than `window`, so a worker scope works the same way and a test
+ * environment without either is simply absent rather than a thrown reference.
+ */
+function defaultNetwork(): Pick<EventTarget, "addEventListener" | "removeEventListener"> | undefined {
+  return typeof globalThis.addEventListener === "function" ? globalThis : undefined;
+}
+
+/**
+ * How long to wait before the *n*th reconnection attempt (`SPEC.md` §7.4).
+ *
+ * Exponential with equal jitter: the delay is somewhere in the top half of the doubling
+ * window, so a hundred tabs that lost the same Wi-Fi do not all come back in the same
+ * millisecond, and no attempt is ever immediate — a zero-delay retry against a server that
+ * has just closed the connection is a hot loop, and the most likely reason it closed is the
+ * frame-rate limit (§7.1).
+ */
+export function reconnectDelay(attempt: number, random: () => number): number {
+  const window = Math.min(RECONNECT_BASE_MS * 2 ** Math.max(0, attempt), RECONNECT_CAP_MS);
+  return window / 2 + random() * (window / 2);
+}
+
+/**
+ * Whether a Yjs update carries anything at all.
+ *
+ * An update that adds nothing still encodes to two bytes — a zero count of clients with
+ * structs, and an empty delete set. Sending one would be a wasted frame per reconnection,
+ * and on the server it is a write the note did not need. `sync.test.ts` pins the encoding
+ * rather than trusting this comment.
+ */
+export function hasContent(update: Uint8Array): boolean {
+  return !(update.length === 2 && update[0] === 0 && update[1] === 0);
 }
 
 /** Deterministically assigns accessible collaboration colours from a stable user id. */

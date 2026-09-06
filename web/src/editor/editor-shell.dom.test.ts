@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { load, updateFromMarkdown } from "../notes.js";
 import { createConnectionStatus } from "./collaboration.js";
-import { mountEditorShell } from "./editor-shell.js";
+import { connectionMessage, mountEditorShell } from "./editor-shell.js";
 import { PRESENCE_CLIENT_ATTRIBUTE } from "./presence.js";
 import { createMemberberryExtensions } from "./schema.js";
 import { taskItemView } from "./task-view.js";
@@ -141,10 +141,32 @@ describe("editor shell presence", () => {
     expect(status.textContent).toContain("Offline");
     expect(status.dataset["state"]).toBe("offline");
 
-    connection.set(true);
+    connection.set({ connected: true, pending: 0 });
 
     expect(status.hidden).toBe(true);
     expect(status.dataset["state"]).toBe("online");
+    teardown();
+  });
+
+  it("says how much is waiting to be sent", async () => {
+    // §7.4: an offline application that says nothing about unsent work is one where losing
+    // the device and losing nothing look identical from the outside.
+    const { panel, connection, teardown } = await mount();
+    const status = panel.querySelector<HTMLElement>(".connection-status");
+    if (status === null) throw new Error("connection status missing");
+
+    connection.set({ connected: false, pending: 1 });
+    expect(status.textContent).toBe("Offline — 1 unsent change, saved on this device");
+
+    connection.set({ connected: false, pending: 4 });
+    expect(status.textContent).toBe("Offline — 4 unsent changes, saved on this device");
+
+    connection.set({ connected: true, pending: 4 });
+    expect(status.hidden).toBe(false);
+    expect(status.textContent).toBe("Reconnected — sending 4 unsent changes");
+
+    connection.set({ connected: true, pending: 0 });
+    expect(status.hidden).toBe(true);
     teardown();
   });
 
@@ -573,5 +595,29 @@ describe("what the control strip shows, and when", () => {
 
     expect(before).toBeDefined();
     expect(document.querySelector(".editor-controls")).toBeNull();
+  });
+});
+
+describe("connectionMessage", () => {
+  it("says nothing when there is nothing to say", () => {
+    expect(connectionMessage({ connected: true, pending: 0 })).toBeUndefined();
+  });
+
+  it("keeps §7.5's promise that offline you are alone", () => {
+    expect(connectionMessage({ connected: false, pending: 0 })).toBe("Offline — you are editing alone");
+  });
+
+  it("counts in singular and plural", () => {
+    expect(connectionMessage({ connected: false, pending: 1 })).toContain("1 unsent change,");
+    expect(connectionMessage({ connected: false, pending: 2 })).toContain("2 unsent changes,");
+  });
+
+  it("says where an unsent change is, because that is the part that matters", () => {
+    // Not "unsaved": it *is* saved, in IndexedDB on this device (§7.2). What is true is that
+    // it is nowhere else, and a message that said "unsaved" would send people looking for a
+    // save button that would not help.
+    expect(connectionMessage({ connected: false, pending: 3 })).toBe(
+      "Offline — 3 unsent changes, saved on this device",
+    );
   });
 });

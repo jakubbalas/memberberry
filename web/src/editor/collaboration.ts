@@ -13,7 +13,12 @@ import { Awareness } from "y-protocols/awareness";
 import { yCursorPlugin, ySyncPlugin, yUndoPlugin } from "y-prosemirror";
 
 import { presenceCursorBuilder } from "./presence.js";
-import { createSyncProvider, presenceColor, type SyncProvider } from "./sync.js";
+import {
+  createSyncProvider,
+  presenceColor,
+  type ConnectionState,
+  type SyncProvider,
+} from "./sync.js";
 
 /** The Y.XmlFragment root name defined by the Rust CRDT contract. */
 export const PROSEMIRROR_ROOT = "prosemirror";
@@ -27,16 +32,17 @@ export interface LocalPersistence {
 /** Constructs a persistence provider; injectable so lifecycle behaviour stays unit-testable. */
 export type LocalPersistenceFactory = (name: string, document: Doc) => LocalPersistence;
 
-/** Whether the server transport is reachable, for hosts that want to say so.
+/** What the server transport is doing, for hosts that have to say so.
  *
  * `SPEC.md` §7.5: offline you are alone, and the UI says so rather than showing stale
- * avatars. A note with no server transport has no connection to report, so this is absent
- * for local-only documents rather than permanently claiming "offline".
+ * avatars. §7.4 adds the other half — how many changes are waiting to be sent. A note with
+ * no server transport has no connection to report, so this is absent for local-only
+ * documents rather than permanently claiming "offline".
  */
 export interface ConnectionStatus {
-  readonly connected: boolean;
-  /** Registers a listener and returns its teardown. */
-  subscribe(listener: (connected: boolean) => void): () => void;
+  readonly state: ConnectionState;
+  /** Registers a listener, calls it with the current state, and returns its teardown. */
+  subscribe(listener: (state: ConnectionState) => void): () => void;
 }
 
 /** One locally persisted note document, ready to attach to a Tiptap editor. */
@@ -50,21 +56,21 @@ export interface NoteCollaboration {
 }
 
 /** A mutable connection status plus the setter its transport drives. */
-export function createConnectionStatus(): ConnectionStatus & { set(connected: boolean): void } {
-  const listeners = new Set<(connected: boolean) => void>();
-  let connected = false;
+export function createConnectionStatus(): ConnectionStatus & { set(state: ConnectionState): void } {
+  const listeners = new Set<(state: ConnectionState) => void>();
+  let state: ConnectionState = { connected: false, pending: 0 };
   return {
-    get connected(): boolean {
-      return connected;
+    get state(): ConnectionState {
+      return state;
     },
-    subscribe(listener: (connected: boolean) => void): () => void {
+    subscribe(listener: (state: ConnectionState) => void): () => void {
       listeners.add(listener);
-      listener(connected);
+      listener(state);
       return () => listeners.delete(listener);
     },
-    set(next: boolean): void {
-      if (connected === next) return;
-      connected = next;
+    set(next: ConnectionState): void {
+      if (next.connected === state.connected && next.pending === state.pending) return;
+      state = next;
       for (const listener of listeners) listener(next);
     },
   };
@@ -87,7 +93,7 @@ export interface CreateNoteCollaborationOptions {
     options: RemoteSyncOptions,
     document: Doc,
     awareness: Awareness,
-    onConnectionChange: (connected: boolean) => void,
+    onConnectionChange: (state: ConnectionState) => void,
   ) => SyncProvider;
 }
 
@@ -112,8 +118,8 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
   const whenReady = persistence.whenSynced.then(() => {
     if (options.remoteSync !== undefined) {
       const createRemoteSync = options.createRemoteSync ?? defaultRemoteSync;
-      remote = createRemoteSync(options.remoteSync, document, awareness, (connected) =>
-        status?.set(connected),
+      remote = createRemoteSync(options.remoteSync, document, awareness, (state) =>
+        status?.set(state),
       );
     }
   });
@@ -169,7 +175,7 @@ function defaultRemoteSync(
   options: RemoteSyncOptions,
   document: Doc,
   awareness: Awareness,
-  onConnectionChange: (connected: boolean) => void,
+  onConnectionChange: (state: ConnectionState) => void,
 ): SyncProvider {
   return createSyncProvider({ ...options, document, awareness, onConnectionChange });
 }

@@ -58,6 +58,8 @@ const SCRATCH_PURPOSES: readonly string[] = [
   // A rename moves a file and rewrites another one, so it needs both ends to itself (§6.6).
   "rename",
   "rename-source",
+  // Typed into with the network off, then read off disk once it comes back (§7.4).
+  "offline-edit",
 ];
 const SCRATCH_PROJECTS: readonly string[] = ["desktop", "mobile"];
 

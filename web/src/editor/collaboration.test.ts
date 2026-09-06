@@ -8,6 +8,7 @@ import {
   yjsPlugins,
   type LocalPersistence,
 } from "./collaboration.js";
+import type { ConnectionState } from "./sync.js";
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
@@ -73,7 +74,7 @@ describe("createNoteCollaboration", () => {
 
   it("starts remote sync only after restoration and tears it down with the document", async () => {
     const synced = deferred<void>();
-    const remote = { connected: true, sendAwareness: vi.fn(), destroy: vi.fn() };
+    const remote = { connected: true, pending: 0, sendAwareness: vi.fn(), destroy: vi.fn() };
     const createRemoteSync = vi.fn(() => remote);
     const collaboration = createNoteCollaboration({
       vaultId: "vault",
@@ -98,7 +99,7 @@ describe("createNoteCollaboration", () => {
 
   it("reports the transport's connection so the UI can say you are alone", async () => {
     const synced = deferred<void>();
-    let report: ((connected: boolean) => void) | undefined;
+    let report: ((state: ConnectionState) => void) | undefined;
     const collaboration = createNoteCollaboration({
       vaultId: "vault",
       noteId: "note",
@@ -106,24 +107,33 @@ describe("createNoteCollaboration", () => {
       remoteSync: { endpoint: "ws://localhost/api/v1/sync", vault: "personal", note: "One.md", user: "alice" },
       createRemoteSync: (_options, _document, _awareness, onConnectionChange) => {
         report = onConnectionChange;
-        return { connected: false, sendAwareness: vi.fn(), destroy: vi.fn() };
+        return { connected: false, pending: 0, sendAwareness: vi.fn(), destroy: vi.fn() };
       },
     });
     synced.resolve();
     await collaboration.whenReady;
-    const seen: boolean[] = [];
-    const unsubscribe = collaboration.connection?.subscribe((connected) => seen.push(connected));
+    const seen: ConnectionState[] = [];
+    const unsubscribe = collaboration.connection?.subscribe((state) => seen.push(state));
 
-    report?.(true);
-    report?.(true);
-    report?.(false);
+    report?.({ connected: true, pending: 0 });
+    report?.({ connected: true, pending: 0 });
+    report?.({ connected: false, pending: 0 });
+    // A change to the pending count alone is a change worth reporting: §7.4's indicator says
+    // how much is waiting, and a repeated `connected: false` that carries a new number would
+    // otherwise be swallowed as a no-op transition.
+    report?.({ connected: false, pending: 2 });
 
     // Subscribing replays the current value, then only genuine transitions follow.
-    expect(seen).toEqual([false, true, false]);
-    expect(collaboration.connection?.connected).toBe(false);
+    expect(seen).toEqual([
+      { connected: false, pending: 0 },
+      { connected: true, pending: 0 },
+      { connected: false, pending: 0 },
+      { connected: false, pending: 2 },
+    ]);
+    expect(collaboration.connection?.state).toEqual({ connected: false, pending: 2 });
     unsubscribe?.();
-    report?.(true);
-    expect(seen).toHaveLength(3);
+    report?.({ connected: true, pending: 0 });
+    expect(seen).toHaveLength(4);
     await collaboration.destroy();
   });
 

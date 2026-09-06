@@ -10,8 +10,12 @@
  * server.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type { Page } from "@playwright/test";
 
+import { E2E_VAULT, scratchNote } from "./environment.js";
 import { expect, signIn, test } from "./fixtures.js";
 
 /** Resolves once a service worker is installed, activated and controlling this page. */
@@ -117,4 +121,49 @@ test("a route that needs a server says so rather than failing", async ({ page, c
   // The vault list is server-rendered and has no offline form of itself. Handing it the
   // shell would render an editor over a URL that has never been one (`offlineFallbackFor`).
   await expect(page.getByRole("heading", { name: "You are offline" })).toBeVisible();
+});
+
+test("an edit made offline reaches the server when the network comes back", async ({
+  page,
+  context,
+  failures,
+}, info) => {
+  // The one that matters most in this file, and the bug it was written for is the one M5
+  // shipped: an update produced while the socket was closed was applied locally, persisted to
+  // IndexedDB and *never sent*. The note stayed correct on the device and wrong everywhere
+  // else, silently, forever. Only a browser can produce that sequence — the socket has to
+  // really close and really come back.
+  allowDisconnection(failures);
+  const note = scratchNote("offline-edit", info.project.name);
+
+  await signIn(page);
+  await page.goto(`/v/personal/${note}`);
+  const editor = page.locator(".ProseMirror").first();
+  await expect(editor).toContainText("A note this test may edit");
+
+  await context.setOffline(true);
+  const status = page.locator(".connection-status");
+  await expect(status).toHaveText("Offline — you are editing alone");
+
+  // The middle paragraph rather than the last line: on a phone the editor's control strip is
+  // pinned to the bottom of the viewport and overlays it (`HANDOFF.md`).
+  await editor.getByText("A note this test may edit").click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" Written on a train.");
+
+  // §7.4's count: the difference between "nothing is happening" and "four changes exist only
+  // here" is the whole reason this indicator says a number.
+  await expect(status).toContainText("unsent");
+  await expect(status).toContainText("saved on this device");
+
+  await context.setOffline(false);
+  // Hidden again means connected with nothing left to send — the flush went out. It is a
+  // stronger assertion than "online" because it is the pending count that has to reach zero.
+  await expect(status).toBeHidden({ timeout: 15_000 });
+
+  // C2: the proof is the file a text editor would open, not anything the browser says.
+  const path = join(E2E_VAULT, ...note.split("/"));
+  await expect
+    .poll(() => readFileSync(path, "utf8"), { timeout: 15_000, intervals: [100] })
+    .toContain("Written on a train.");
 });
