@@ -189,7 +189,7 @@ describe("createSyncProvider", () => {
     socket.emit("open", {});
 
     expect(sync.connected).toBe(true);
-    expect(changes).toEqual([{ connected: true, pending: 0 }]);
+    expect(changes).toEqual([{ connected: true, pending: 0, synced: false }]);
     expect(socket.json()[0]).toEqual({ type: "subscribe", vault: "personal", note: "One.md" });
     sync.destroy();
   });
@@ -203,8 +203,8 @@ describe("createSyncProvider", () => {
 
     expect(sync.connected).toBe(false);
     expect(changes).toEqual([
-      { connected: true, pending: 0 },
-      { connected: false, pending: 0 },
+      { connected: true, pending: 0, synced: false },
+      { connected: false, pending: 0, synced: false },
     ]);
     sync.destroy();
   });
@@ -482,7 +482,7 @@ describe("editing with the socket closed (SPEC §7.4)", () => {
     document.getText("body").insert(0, "written on a train");
 
     expect(sync.pending).toBe(1);
-    expect(changes.at(-1)).toEqual({ connected: false, pending: 1 });
+    expect(changes.at(-1)).toEqual({ connected: false, pending: 1, synced: false });
     sync.destroy();
   });
 

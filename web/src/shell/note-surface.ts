@@ -14,9 +14,12 @@
 
 import { Editor, type Extensions } from "@tiptap/core";
 
-import type { LocalPersistenceFactory } from "../editor/collaboration.js";
+import type { ConnectionStatus, LocalPersistenceFactory } from "../editor/collaboration.js";
 import { mountEditorShell } from "../editor/editor-shell.js";
 import { startNoteEditor } from "../editor/note-editor.js";
+import { localReplica } from "../offline/local.js";
+import { notDownloaded } from "../offline/not-downloaded.js";
+import type { Replica } from "../offline/replica.js";
 import { type NoteBootstrap, remoteSyncFor } from "./bootstrap.js";
 
 export interface NoteSurfaceElements {
@@ -51,6 +54,16 @@ export interface OpenNoteSurfaceOptions extends NoteSurfaceElements {
   readonly createRemoteSync?: NonNullable<
     Parameters<typeof startNoteEditor>[0]["createRemoteSync"]
   >;
+  /** Injectable for tests; defaults to this page's replica (§7.2). */
+  readonly replica?: () => Promise<Replica | undefined>;
+  /**
+   * Schedules `run` and returns its cancel. Injectable for tests; defaults to `setTimeout`.
+   *
+   * A cancel closure rather than a timer id, because the id form pushes `clearTimeout` into
+   * the caller and a test's fake id then cancels nothing — which is a test that cannot see
+   * the cancellation it exists to check.
+   */
+  readonly setTimer?: (run: () => void, ms: number) => () => void;
 }
 
 export interface NoteSurface {
@@ -67,6 +80,87 @@ export interface NoteSurface {
   destroy(): Promise<void>;
 }
 
+interface WaitingOptions {
+  readonly resident: boolean;
+  readonly bootstrap: NoteBootstrap;
+  readonly replica: Replica;
+  readonly panel: HTMLElement;
+  readonly connection: ConnectionStatus | undefined;
+  readonly setTimer: (run: () => void, ms: number) => () => void;
+}
+
+/**
+ * How long a body has to arrive before the pane says it has not.
+ *
+ * why: the *first* open of any note online is a note this device does not hold yet, so
+ * without a grace period every one of them would flash "this note has not been downloaded"
+ * for the length of a round trip. The editor is covered from the moment the pane opens
+ * regardless — that part is not cosmetic, it is what stops an empty document being typed
+ * into — so what this delays is only the sentence.
+ */
+const BODY_NOTICE_DELAY_MS = 500;
+
+function defaultTimer(run: () => void, ms: number): () => void {
+  const id = globalThis.setTimeout(run, ms);
+  return () => {
+    globalThis.clearTimeout(id);
+  };
+}
+
+/**
+ * Covers a note whose body has not arrived, and uncovers it when it does (§7.2).
+ *
+ * **The signal is the sync frame, not `navigator.onLine`.** A browser that believes it is
+ * online says nothing about whether this note's body ever came — a server that is refusing
+ * connections, a session that expired, a tab woken from sleep before its socket reconnected
+ * all read as online — and the emulated offline mode a browser test uses does not update
+ * that property across a navigation at all. What "downloaded" means is that the server has
+ * sent this note's state, which is exactly what `ConnectionState.synced` latches (§7.4).
+ *
+ * The editor is mounted underneath rather than skipped, so there is nothing to build twice
+ * when the body lands. It is hidden by `data-body`, which is also what stops it being typed
+ * into: a hidden `contenteditable` cannot take focus, and an empty document that *could* be
+ * typed into would merge those words with the body that arrives on reconnect.
+ */
+function waitingForBody(options: WaitingOptions): { destroy(): void } {
+  const { bootstrap, replica, panel } = options;
+  if (options.resident || options.connection === undefined) {
+    return { destroy: (): void => undefined };
+  }
+  const notice = notDownloaded(bootstrap.note, undefined);
+  // Immediately, and before anything is rendered: this is what hides the editor.
+  panel.dataset["body"] = "waiting";
+  const cancel = options.setTimer(() => panel.append(notice), BODY_NOTICE_DELAY_MS);
+  void replica
+    .metadata(bootstrap.vault, bootstrap.note)
+    .then((metadata) => {
+      // The title arrives from the metadata tier, which is replicated even when the body is
+      // not. Rendered when it resolves rather than awaited, so a slow store never delays the
+      // editor behind it.
+      const heading = notice.querySelector("h2");
+      if (heading !== null && metadata?.title != null) heading.textContent = metadata.title;
+    })
+    .catch(() => undefined);
+
+  const arrived = (): void => {
+    cancel();
+    notice.remove();
+    delete panel.dataset["body"];
+    void replica.opened(bootstrap.vault, bootstrap.note);
+  };
+  const unsubscribe = options.connection.subscribe((state) => {
+    if (state.synced) arrived();
+  });
+  return {
+    destroy: (): void => {
+      cancel();
+      unsubscribe();
+      notice.remove();
+      delete panel.dataset["body"];
+    },
+  };
+}
+
 /** The note a local-only replica edits, when no server said otherwise. */
 export const LOCAL_ONLY = { vault: "local-demo", note: "scratch-note" } as const;
 
@@ -80,6 +174,14 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
   const { bootstrap, surface, panel, status } = options;
   const location = options.location ?? window.location;
   const remoteSync = bootstrap === undefined ? undefined : remoteSyncFor(bootstrap, location);
+  const replica = await (options.replica ?? localReplica)();
+  // §7.2's tiered replication: the body of a note nobody has opened on this device is not
+  // here. Resolved *before* the editor exists, because what it decides is whether there is
+  // anything to type into — see `waitingForBody` below.
+  const resident =
+    bootstrap === undefined || replica === undefined
+      ? true
+      : await replica.isResident(bootstrap.vault, bootstrap.note);
 
   const editor = await startNoteEditor({
     element: surface,
@@ -119,6 +221,24 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     status,
   });
 
+  // A note this device already holds is open now, and the write moves it to the front of
+  // §7.2's LRU. One it does not is *waiting*, and `waiting` is what removes the notice and
+  // records it — when the server sends the body, and not before.
+  const waiting =
+    bootstrap === undefined || replica === undefined
+      ? undefined
+      : waitingForBody({
+          resident,
+          bootstrap,
+          replica,
+          panel,
+          connection: collaboration.connection,
+          setTimer: options.setTimer ?? defaultTimer,
+        });
+  if (resident && bootstrap !== undefined && replica !== undefined) {
+    await replica.opened(bootstrap.vault, bootstrap.note);
+  }
+
   let closing: Promise<void> | undefined;
   return {
     destroy: (): Promise<void> => {
@@ -126,6 +246,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
       // Tiptap throws if destroyed twice. Caching the promise makes the second call a no-op
       // that still resolves when teardown actually finished.
       closing ??= (async () => {
+        waiting?.destroy();
         shell.destroy();
         await editor.destroy();
       })();

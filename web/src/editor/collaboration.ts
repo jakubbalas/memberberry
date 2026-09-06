@@ -58,7 +58,7 @@ export interface NoteCollaboration {
 /** A mutable connection status plus the setter its transport drives. */
 export function createConnectionStatus(): ConnectionStatus & { set(state: ConnectionState): void } {
   const listeners = new Set<(state: ConnectionState) => void>();
-  let state: ConnectionState = { connected: false, pending: 0 };
+  let state: ConnectionState = { connected: false, pending: 0, synced: false };
   return {
     get state(): ConnectionState {
       return state;
@@ -69,7 +69,13 @@ export function createConnectionStatus(): ConnectionStatus & { set(state: Connec
       return () => listeners.delete(listener);
     },
     set(next: ConnectionState): void {
-      if (next.connected === state.connected && next.pending === state.pending) return;
+      if (
+        next.connected === state.connected
+        && next.pending === state.pending
+        && next.synced === state.synced
+      ) {
+        return;
+      }
       state = next;
       for (const listener of listeners) listener(next);
     },

@@ -74,7 +74,7 @@ describe("createNoteCollaboration", () => {
 
   it("starts remote sync only after restoration and tears it down with the document", async () => {
     const synced = deferred<void>();
-    const remote = { connected: true, pending: 0, sendAwareness: vi.fn(), destroy: vi.fn() };
+    const remote = { connected: true, pending: 0, synced: false, sendAwareness: vi.fn(), destroy: vi.fn() };
     const createRemoteSync = vi.fn(() => remote);
     const collaboration = createNoteCollaboration({
       vaultId: "vault",
@@ -107,7 +107,7 @@ describe("createNoteCollaboration", () => {
       remoteSync: { endpoint: "ws://localhost/api/v1/sync", vault: "personal", note: "One.md", user: "alice" },
       createRemoteSync: (_options, _document, _awareness, onConnectionChange) => {
         report = onConnectionChange;
-        return { connected: false, pending: 0, sendAwareness: vi.fn(), destroy: vi.fn() };
+        return { connected: false, pending: 0, synced: false, sendAwareness: vi.fn(), destroy: vi.fn() };
       },
     });
     synced.resolve();
@@ -115,24 +115,24 @@ describe("createNoteCollaboration", () => {
     const seen: ConnectionState[] = [];
     const unsubscribe = collaboration.connection?.subscribe((state) => seen.push(state));
 
-    report?.({ connected: true, pending: 0 });
-    report?.({ connected: true, pending: 0 });
-    report?.({ connected: false, pending: 0 });
+    report?.({ connected: true, pending: 0, synced: false });
+    report?.({ connected: true, pending: 0, synced: false });
+    report?.({ connected: false, pending: 0, synced: false });
     // A change to the pending count alone is a change worth reporting: §7.4's indicator says
     // how much is waiting, and a repeated `connected: false` that carries a new number would
     // otherwise be swallowed as a no-op transition.
-    report?.({ connected: false, pending: 2 });
+    report?.({ connected: false, pending: 2, synced: false });
 
     // Subscribing replays the current value, then only genuine transitions follow.
     expect(seen).toEqual([
-      { connected: false, pending: 0 },
-      { connected: true, pending: 0 },
-      { connected: false, pending: 0 },
-      { connected: false, pending: 2 },
+      { connected: false, pending: 0, synced: false },
+      { connected: true, pending: 0, synced: false },
+      { connected: false, pending: 0, synced: false },
+      { connected: false, pending: 2, synced: false },
     ]);
-    expect(collaboration.connection?.state).toEqual({ connected: false, pending: 2 });
+    expect(collaboration.connection?.state).toEqual({ connected: false, pending: 2, synced: false });
     unsubscribe?.();
-    report?.({ connected: true, pending: 0 });
+    report?.({ connected: true, pending: 0, synced: false });
     expect(seen).toHaveLength(4);
     await collaboration.destroy();
   });

@@ -90,7 +90,11 @@ function render(
       target: new EventTarget(),
       platform: "mac" as const,
       mode: "desktop" as const,
-      catalog: new NoteCatalog({ vault: "personal", load: async () => [] }),
+      catalog: new NoteCatalog({
+        vault: "personal",
+        load: async () => ({ kind: "ok", notes: [] }),
+        replica: async () => undefined,
+      }),
       bookmarks: new Bookmarks({
         vault: "personal",
         fetch: (async () => new Response("[]")) as unknown as typeof globalThis.fetch,

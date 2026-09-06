@@ -17,9 +17,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import type { Extensions } from "@tiptap/core";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { LocalPersistence } from "../editor/collaboration.js";
+import type { ConnectionState } from "../editor/sync.js";
 import { createMemberberryExtensions } from "../editor/schema.js";
 import { load } from "../notes.js";
 import { LOCAL_ONLY, openNoteSurface } from "./note-surface.js";
@@ -65,9 +66,29 @@ async function open(
     ...dom,
     createPersistence: localPersistence,
     loadExtensions,
+    // Explicit rather than inherited: jsdom has no IndexedDB, so the default would be
+    // `undefined` anyway, and a test that relied on that would silently start using a real
+    // store the day the environment grew one.
+    replica: async () => undefined,
     ...overrides,
   });
   return { surface, dom };
+}
+
+/** A replica holding exactly the notes named, for the §7.2 tests below. */
+function replicaHolding(...resident: string[]) {
+  const opened: string[] = [];
+  return {
+    opened,
+    handle: async () => ({
+      reconcile: async () => [],
+      isResident: async (_vault: string, note: string) => resident.includes(note),
+      metadata: async (_vault: string, note: string) => ({ path: note, title: "Roadmap" }),
+      opened: async (_vault: string, note: string) => {
+        opened.push(note);
+      },
+    }),
+  };
 }
 
 describe("opening a note pane", () => {
@@ -88,7 +109,7 @@ describe("opening a note pane", () => {
     const { surface } = await open({
       createRemoteSync: () => {
         socketRequested = true;
-        return { connected: false, pending: 0, sendAwareness: () => undefined, destroy: () => undefined };
+        return { connected: false, pending: 0, synced: false, sendAwareness: () => undefined, destroy: () => undefined };
       },
     });
     try {
@@ -106,7 +127,7 @@ describe("opening a note pane", () => {
       location: { protocol: "https:", host: "notes.example" } as Location,
       createRemoteSync: (options) => {
         endpoint = options.endpoint;
-        return { connected: true, pending: 0, sendAwareness: () => undefined, destroy: () => undefined };
+        return { connected: true, pending: 0, synced: false, sendAwareness: () => undefined, destroy: () => undefined };
       },
     });
     try {
@@ -134,6 +155,7 @@ describe("closing a note pane", () => {
       createRemoteSync: () => ({
         connected: true,
         pending: 0,
+        synced: false,
         sendAwareness: () => undefined,
         destroy: () => {
           destroyed += 1;
@@ -154,5 +176,212 @@ describe("closing a note pane", () => {
     const { surface } = await open();
     await surface.destroy();
     await expect(surface.destroy()).resolves.toBeUndefined();
+  });
+});
+
+describe("a note whose body was never replicated (SPEC §7.2)", () => {
+  const bootstrap = { vault: "personal", note: "Projects/Roadmap.md", user: "alice" } as const;
+  const location = { protocol: "http:", host: "localhost:9010" } as Location;
+
+  /** A transport whose connection state a test drives, the way a server would. */
+  function transport() {
+    let report: ((state: ConnectionState) => void) | undefined;
+    return {
+      /** Simulates the server answering `subscribe` with the note's state. */
+      deliverBody(): void {
+        report?.({ connected: true, pending: 0, synced: true });
+      },
+      create: ((_options, _document, _awareness, onConnectionChange) => {
+        report = onConnectionChange;
+        return {
+          connected: false,
+          pending: 0,
+          synced: false,
+          sendAwareness: () => undefined,
+          destroy: () => undefined,
+        };
+      }) as NonNullable<Parameters<typeof openNoteSurface>[0]["createRemoteSync"]>,
+    };
+  }
+
+  it("covers the editor and says the body is elsewhere", async () => {
+    // An editor that could be typed into here would merge those words with the body that
+    // arrives on reconnect, and the note would look destroyed.
+    const replica = replicaHolding();
+    const server = transport();
+    const { surface, dom } = await open({
+      bootstrap,
+      location,
+      replica: replica.handle,
+      createRemoteSync: server.create,
+      // Immediately, rather than after §7.2's grace period: what the delay is for is the
+      // *first* open of a note online, and it has its own test below.
+      setTimer: (run) => {
+        run();
+        return () => undefined;
+      },
+    });
+    try {
+      expect(dom.panel.dataset["body"]).toBe("waiting");
+      const notice = dom.panel.querySelector(".note-not-downloaded");
+      expect(notice).not.toBeNull();
+      // jsdom applies no stylesheet, so *that* the editor is hidden is a browser assertion
+      // (`e2e/offline.spec.ts`). What is checkable here is the attribute the CSS keys on.
+      expect(notice?.textContent).toContain("has not been downloaded");
+      // Nothing is recorded as resident: the body has not arrived.
+      expect(replica.opened).toEqual([]);
+    } finally {
+      await surface.destroy();
+    }
+  });
+
+  it("uncovers it when the server sends the body, and remembers it is here", async () => {
+    const replica = replicaHolding();
+    const server = transport();
+    const { surface, dom } = await open({
+      bootstrap,
+      location,
+      replica: replica.handle,
+      createRemoteSync: server.create,
+      // Immediately, rather than after §7.2's grace period: what the delay is for is the
+      // *first* open of a note online, and it has its own test below.
+      setTimer: (run) => {
+        run();
+        return () => undefined;
+      },
+    });
+    try {
+      server.deliverBody();
+      await Promise.resolve();
+
+      expect(dom.panel.querySelector(".note-not-downloaded")).toBeNull();
+      expect(dom.panel.dataset["body"]).toBeUndefined();
+      expect(replica.opened).toEqual(["Projects/Roadmap.md"]);
+    } finally {
+      await surface.destroy();
+    }
+  });
+
+  it("shows the replicated title, which is the whole point of the metadata tier", async () => {
+    const replica = replicaHolding();
+    const server = transport();
+    const { surface, dom } = await open({
+      bootstrap,
+      location,
+      replica: replica.handle,
+      createRemoteSync: server.create,
+      // Immediately, rather than after §7.2's grace period: what the delay is for is the
+      // *first* open of a note online, and it has its own test below.
+      setTimer: (run) => {
+        run();
+        return () => undefined;
+      },
+    });
+    try {
+      // Rendered when the store answers rather than awaited, so a slow store cannot delay
+      // the editor behind it.
+      await vi.waitFor(() =>
+        expect(dom.panel.querySelector(".note-not-downloaded h2")?.textContent).toBe("Roadmap"),
+      );
+    } finally {
+      await surface.destroy();
+    }
+  });
+
+  it("does not cover a note this device already holds", async () => {
+    // Offline-first: a resident note opens immediately, with no server involved at all.
+    const replica = replicaHolding("Projects/Roadmap.md");
+    const server = transport();
+    const { surface, dom } = await open({
+      bootstrap,
+      location,
+      replica: replica.handle,
+      createRemoteSync: server.create,
+      // Immediately, rather than after §7.2's grace period: what the delay is for is the
+      // *first* open of a note online, and it has its own test below.
+      setTimer: (run) => {
+        run();
+        return () => undefined;
+      },
+    });
+    try {
+      expect(dom.panel.querySelector(".note-not-downloaded")).toBeNull();
+      expect(dom.surface.querySelector(".tiptap")).not.toBeNull();
+      // ...and the open moves it to the front of §7.2's LRU.
+      expect(replica.opened).toEqual(["Projects/Roadmap.md"]);
+    } finally {
+      await surface.destroy();
+    }
+  });
+
+  it("never applies to a local-only replica", async () => {
+    // The `npm run dev` path has no server, so "downloaded" means nothing there — the
+    // document *is* the local one, and there is no transport to wait on.
+    const replica = replicaHolding();
+    const { surface, dom } = await open({ replica: replica.handle });
+    try {
+      expect(dom.panel.querySelector(".note-not-downloaded")).toBeNull();
+      expect(dom.surface.querySelector(".tiptap")).not.toBeNull();
+      expect(replica.opened).toEqual([]);
+    } finally {
+      await surface.destroy();
+    }
+  });
+
+  it("does not flash the notice on a first open that is about to succeed", async () => {
+    // Every first open is a note this device does not hold yet, so without the delay each
+    // one would say "not downloaded" for the length of a round trip. The editor is covered
+    // regardless — that part is not cosmetic.
+    const replica = replicaHolding();
+    const server = transport();
+    let pending: Array<() => void> = [];
+    const { surface, dom } = await open({
+      bootstrap,
+      location,
+      replica: replica.handle,
+      createRemoteSync: server.create,
+      setTimer: (run) => {
+        pending.push(run);
+        return () => {
+          pending = pending.filter((queued) => queued !== run);
+        };
+      },
+    });
+    try {
+      expect(dom.panel.dataset["body"]).toBe("waiting");
+      expect(dom.panel.querySelector(".note-not-downloaded")).toBeNull();
+
+      server.deliverBody();
+      await Promise.resolve();
+
+      expect(dom.panel.dataset["body"]).toBeUndefined();
+      // ...and the timer was cancelled, so it cannot append the notice a second later over
+      // a note that is now open. Nothing is left to fire.
+      expect(pending).toEqual([]);
+      expect(dom.panel.querySelector(".note-not-downloaded")).toBeNull();
+    } finally {
+      await surface.destroy();
+    }
+  });
+
+  it("leaves nothing behind when the pane closes while still waiting", async () => {
+    const replica = replicaHolding();
+    const server = transport();
+    const { surface, dom } = await open({
+      bootstrap,
+      location,
+      replica: replica.handle,
+      createRemoteSync: server.create,
+      // Immediately, rather than after §7.2's grace period: what the delay is for is the
+      // *first* open of a note online, and it has its own test below.
+      setTimer: (run) => {
+        run();
+        return () => undefined;
+      },
+    });
+    await surface.destroy();
+
+    expect(dom.panel.querySelector(".note-not-downloaded")).toBeNull();
+    expect(dom.panel.dataset["body"]).toBeUndefined();
   });
 });

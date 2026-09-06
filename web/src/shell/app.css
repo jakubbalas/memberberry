@@ -462,6 +462,26 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
 .note-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: var(--space-5); overflow: auto; }
 .note-pane.is-empty { place-content: center; place-items: center; }
 .note-pane-empty { margin: 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+/* SPEC 7.2: while a note's body has not arrived, the editor is mounted but covered — the
+   pane is not rebuilt when it lands, and a hidden `contenteditable` cannot be focused, so
+   there is nothing to type into and nothing to merge badly on reconnect.
+
+   `visibility`, not `display`. Removing the surface from layout makes every rectangle in it
+   zero, and §9.5's outline decides which section is current by measuring headings against
+   the scroller — so a `display: none` here silently made a note's first section current
+   before its body had arrived. The E2E outline test is what caught it. */
+.editor-panel[data-body="waiting"] { position: relative; }
+.editor-panel[data-body="waiting"] .editor-surface,
+.editor-panel[data-body="waiting"] .editor-controls { visibility: hidden; }
+
+/* SPEC 7.2: opening a note whose body was never replicated, with no network. Deliberately
+   not styled as an error — the note exists and the reader may read it, the text is simply
+   somewhere else — so it reads as a note with its title and nothing under it yet. */
+.note-not-downloaded { position: absolute; inset: 0; display: grid; align-content: start; gap: var(--space-4); padding: var(--space-7) 0; background: var(--surface-note); }
+.note-not-downloaded h2 { margin: 0; color: var(--text-primary); font: var(--weight-bold) var(--text-xl)/var(--leading-snug) var(--font-body); }
+.note-not-downloaded p { margin: 0; color: var(--text-muted); font: var(--text-sm)/var(--leading-body) var(--font-body); }
+.note-not-downloaded-path { color: var(--text-muted); font: var(--text-xs)/var(--leading-flat) var(--font-mono); }
+
 /* Inside a pane the panel is a scroll container rather than a page-sized card. */
 .note-pane .editor-panel { flex: 1 1 auto; min-height: 0; padding: var(--space-6); }
 .note-pane .editor-surface { min-height: 0; }

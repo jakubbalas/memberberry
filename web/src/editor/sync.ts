@@ -42,6 +42,8 @@ export interface SyncProvider {
   readonly connected: boolean;
   /** Local changes produced while the socket was not open, and so not yet sent. */
   readonly pending: number;
+  /** Whether the server has sent this note's state at least once (§7.2). */
+  readonly synced: boolean;
   sendAwareness(state: unknown): void;
   destroy(): void;
 }
@@ -71,7 +73,17 @@ export interface CreateSyncProviderOptions {
 /** What the transport reports about itself, for a UI that has to say so (§7.4). */
 export interface ConnectionState {
   readonly connected: boolean;
+  /** Local changes produced while the socket was not open, and so not yet sent. */
   readonly pending: number;
+  /**
+   * Whether the server has sent this note's state at least once in this session.
+   *
+   * Latches: once the body has arrived it is here, and a later disconnection does not
+   * un-download it. This is what §7.2 means by a note being *downloaded*, and it is a better
+   * signal than `navigator.onLine` for the same question — a browser that believes it is
+   * online tells you nothing about whether this note's body ever came.
+   */
+  readonly synced: boolean;
 }
 
 type ControlFrame =
@@ -93,6 +105,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   let socket: WebSocket | undefined;
   let connected = false;
   let pending = 0;
+  let synced = false;
   /** Consecutive failed connections, which is what the backoff grows from. */
   let attempts = 0;
   let destroyed = false;
@@ -104,7 +117,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   let retry: ReturnType<typeof setTimeout> | undefined;
 
   const announce = (): void => {
-    options.onConnectionChange?.({ connected, pending });
+    options.onConnectionChange?.({ connected, pending, synced });
   };
   const setConnected = (next: boolean): void => {
     if (connected === next) return;
@@ -174,7 +187,12 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     if (hasContent(missing)) {
       sendBinary(encodeBinaryFrame(FRAME_UPDATE, options.vault, options.note, missing));
     }
-    setPending(0);
+    // Both at once, and one announcement: a subscriber must never see this half-applied,
+    // and the *first* sync is news even when the count was already zero. `ConnectionStatus`
+    // drops a repeat of an identical state, so announcing unconditionally costs nothing.
+    synced = true;
+    pending = 0;
+    announce();
   };
   const onOpen = (): void => {
     attempts = 0;
@@ -304,6 +322,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   return {
     get connected(): boolean { return connected; },
     get pending(): number { return pending; },
+    get synced(): boolean { return synced; },
     sendAwareness: (state: unknown): void => { sendAwareness(state); },
     destroy: (): void => {
       if (destroyed) return;

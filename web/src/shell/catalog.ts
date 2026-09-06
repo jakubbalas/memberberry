@@ -12,12 +12,19 @@
  * exists for when there is something to trigger it, which today there is not.
  */
 
-/** One note, as the server's index reports it. */
-export interface NoteSummary {
-  readonly path: string;
-  /** `null` when the note has nothing titleable. */
-  readonly title: string | null;
-}
+import type { ReplicatedNote } from "../offline/db.js";
+import type { CatalogAnswer } from "../offline/replica.js";
+
+/**
+ * One note, as the server's index reports it.
+ *
+ * The same shape the offline replica stores, and deliberately the *same type*: what is
+ * replicated is exactly what the index answered (§7.2), and two structurally identical
+ * declarations would be two things that can drift apart when a field is added.
+ */
+export type NoteSummary = ReplicatedNote;
+
+export type { CatalogAnswer };
 
 /** One vault this user can open. */
 export interface VaultSummary {
@@ -61,25 +68,40 @@ function stripExtension(path: string): string {
 /**
  * Fetches the readable notes for a vault.
  *
- * Returns an empty list rather than throwing on any failure. A quick switcher that shows
- * nothing is a mild disappointment; one that throws takes the shell down with it, and every
- * failure here is either a denial (which the user cannot act on) or a network blip (which
- * retrying the keystroke fixes).
+ * Never throws: a quick switcher that shows nothing is a mild disappointment, one that
+ * throws takes the shell down with it. What it does instead is say *which* kind of nothing,
+ * because §7.4's reconciliation turns on the difference. A refusal means this user may no
+ * longer see this vault and the local replica has to go; no answer at all means a tunnel,
+ * and wiping a 10 000-note replica because of a tunnel is the other bug. `replica.ts`
+ * decides; this only reports.
  */
 export async function fetchNotes(
   vault: string,
   options: CatalogOptions = {},
-): Promise<readonly NoteSummary[]> {
+): Promise<CatalogAnswer> {
   const request = options.fetch ?? globalThis.fetch.bind(globalThis);
+  let response: Response;
   try {
-    const response = await request(`/api/v1/vaults/${encodeURIComponent(vault)}/notes`, {
+    response = await request(`/api/v1/vaults/${encodeURIComponent(vault)}/notes`, {
       headers: { accept: "application/json" },
     });
-    if (!response.ok) return [];
-    const body: unknown = await response.json();
-    return readNotes(body);
   } catch {
-    return [];
+    // A `fetch` rejects for a network failure and nothing else. Every refusal arrives as a
+    // response, so this branch is always "there was no server".
+    return { kind: "unreachable" };
+  }
+  // 404 is what a denial looks like here, and it is the same answer an unknown vault gets —
+  // the invisibility rule (§6.5) requires that. 401 is a session that has expired.
+  if (response.status === 404 || response.status === 401 || response.status === 403) {
+    return { kind: "denied" };
+  }
+  if (!response.ok) return { kind: "unreachable" };
+  try {
+    return { kind: "ok", notes: readNotes(await response.json()) };
+  } catch {
+    // A 200 whose body will not parse is a broken server, not a denial. Keeping the replica
+    // is the safe direction: it holds nothing this user was not already sent.
+    return { kind: "unreachable" };
   }
 }
 

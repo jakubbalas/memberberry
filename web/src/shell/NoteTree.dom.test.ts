@@ -76,7 +76,10 @@ function render(
   const server = bookmarkServer(options.bookmarked ?? []);
   const catalog = new NoteCatalog({
     vault: "personal",
-    load: async () => options.notes ?? NOTES,
+    load: async () => ({ kind: "ok", notes: options.notes ?? NOTES }),
+    // No replica: these tests are about the tree, and one that reconciled a real IndexedDB
+    // would be testing §7.2 by accident (`note-catalog.test.ts` tests it on purpose).
+    replica: async () => undefined,
   });
   const bookmarks = new Bookmarks({
     vault: "personal",

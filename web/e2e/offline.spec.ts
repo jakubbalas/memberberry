@@ -101,11 +101,40 @@ test("a note that was never opened still gets the application, not a browser err
   await context.setOffline(true);
   await page.goto("/v/personal/Projects/Roadmap.md");
 
-  // The shell renders the workspace for a note whose body was never downloaded. What it
-  // cannot do is show the body — that is §7.2's tiered replication, and until it lands the
-  // honest state is an empty editor rather than Chrome's dinosaur.
+  // The shell renders, from the cache — and then says what it cannot do. §7.2's tiered
+  // replication means the body of a note nobody has opened is not on this device, and an
+  // empty editor over it would merge whatever was typed with the body that arrives later.
   await expect(page.locator("#app")).toHaveAttribute("data-vault", "");
-  await expect(page.locator(".ProseMirror").first()).toBeVisible();
+  const notice = page.locator(".note-not-downloaded");
+  await expect(notice).toBeVisible();
+  // The metadata tier is what lets it name the note it will not show.
+  await expect(notice.getByRole("heading")).toHaveText("Roadmap");
+  // The editor is mounted underneath and *covered*, so nothing is rebuilt when the body
+  // lands — and a hidden `contenteditable` cannot be focused, which is what stops anything
+  // being typed into it. Only a browser can check this: jsdom applies no stylesheet, so the
+  // unit test asserts the attribute the rule keys on and this asserts the rule.
+  await expect(page.locator(".ProseMirror")).not.toBeVisible();
+});
+
+test("the note tree still lists the vault with no network", async ({ page, context, failures }, info) => {
+  // §7.2's "always replicated" tier, which is the reason the metadata is stored at all: the
+  // tree, the switcher and the breadcrumbs are what make a vault navigable, and none of them
+  // has anything to show from an HTTP request that cannot be made.
+  test.skip(info.project.name === "mobile", "the tree is a drawer on mobile (§8.3)");
+  allowDisconnection(failures);
+
+  await signIn(page);
+  await page.goto("/v/personal/Welcome.md");
+  // Online first: the replica is filled by the same request the tree already makes.
+  const tree = page.getByRole("tree", { name: "Notes" });
+  await expect(tree.getByRole("treeitem", { name: "Projects" })).toBeVisible();
+  await serviceWorkerReady(page);
+
+  await context.setOffline(true);
+  await page.reload();
+
+  await expect(tree.getByRole("treeitem", { name: "Projects" })).toBeVisible();
+  await expect(tree.getByRole("treeitem", { name: "Welcome" })).toBeVisible();
 });
 
 test("a route that needs a server says so rather than failing", async ({ page, context, failures }) => {

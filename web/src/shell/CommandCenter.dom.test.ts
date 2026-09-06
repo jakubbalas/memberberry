@@ -94,7 +94,11 @@ function render(
       mode: "desktop" as const,
       // The note list is the shared catalog now, not a per-palette fetch: the tree and the
       // switcher search the same one.
-      catalog: new NoteCatalog({ vault: "personal", load: async () => NOTES }),
+      catalog: new NoteCatalog({
+        vault: "personal",
+        load: async () => ({ kind: "ok", notes: NOTES }),
+        replica: async () => undefined,
+      }),
       bookmarks: new Bookmarks({
         vault: "personal",
         fetch: (async () => new Response("[]")) as unknown as typeof globalThis.fetch,

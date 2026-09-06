@@ -141,7 +141,7 @@ describe("editor shell presence", () => {
     expect(status.textContent).toContain("Offline");
     expect(status.dataset["state"]).toBe("offline");
 
-    connection.set({ connected: true, pending: 0 });
+    connection.set({ connected: true, pending: 0, synced: false });
 
     expect(status.hidden).toBe(true);
     expect(status.dataset["state"]).toBe("online");
@@ -155,17 +155,17 @@ describe("editor shell presence", () => {
     const status = panel.querySelector<HTMLElement>(".connection-status");
     if (status === null) throw new Error("connection status missing");
 
-    connection.set({ connected: false, pending: 1 });
+    connection.set({ connected: false, pending: 1, synced: false });
     expect(status.textContent).toBe("Offline — 1 unsent change, saved on this device");
 
-    connection.set({ connected: false, pending: 4 });
+    connection.set({ connected: false, pending: 4, synced: false });
     expect(status.textContent).toBe("Offline — 4 unsent changes, saved on this device");
 
-    connection.set({ connected: true, pending: 4 });
+    connection.set({ connected: true, pending: 4, synced: false });
     expect(status.hidden).toBe(false);
     expect(status.textContent).toBe("Reconnected — sending 4 unsent changes");
 
-    connection.set({ connected: true, pending: 0 });
+    connection.set({ connected: true, pending: 0, synced: false });
     expect(status.hidden).toBe(true);
     teardown();
   });
@@ -600,23 +600,23 @@ describe("what the control strip shows, and when", () => {
 
 describe("connectionMessage", () => {
   it("says nothing when there is nothing to say", () => {
-    expect(connectionMessage({ connected: true, pending: 0 })).toBeUndefined();
+    expect(connectionMessage({ connected: true, pending: 0, synced: false })).toBeUndefined();
   });
 
   it("keeps §7.5's promise that offline you are alone", () => {
-    expect(connectionMessage({ connected: false, pending: 0 })).toBe("Offline — you are editing alone");
+    expect(connectionMessage({ connected: false, pending: 0, synced: false })).toBe("Offline — you are editing alone");
   });
 
   it("counts in singular and plural", () => {
-    expect(connectionMessage({ connected: false, pending: 1 })).toContain("1 unsent change,");
-    expect(connectionMessage({ connected: false, pending: 2 })).toContain("2 unsent changes,");
+    expect(connectionMessage({ connected: false, pending: 1, synced: false })).toContain("1 unsent change,");
+    expect(connectionMessage({ connected: false, pending: 2, synced: false })).toContain("2 unsent changes,");
   });
 
   it("says where an unsent change is, because that is the part that matters", () => {
     // Not "unsaved": it *is* saved, in IndexedDB on this device (§7.2). What is true is that
     // it is nowhere else, and a message that said "unsaved" would send people looking for a
     // save button that would not help.
-    expect(connectionMessage({ connected: false, pending: 3 })).toBe(
+    expect(connectionMessage({ connected: false, pending: 3, synced: false })).toBe(
       "Offline — 3 unsent changes, saved on this device",
     );
   });

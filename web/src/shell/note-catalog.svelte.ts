@@ -10,12 +10,16 @@
  * palette when it is first opened, and whichever comes first pays.
  */
 
+import { localReplica } from "../offline/local.js";
+import type { Replica } from "../offline/replica.js";
 import { type NoteSummary, fetchNotes } from "./catalog.js";
 
 export interface NoteCatalogOptions {
   readonly vault: string;
   /** Injectable for tests; defaults to the real HTTP call. */
   readonly load?: typeof fetchNotes;
+  /** Injectable for tests; defaults to this page's replica (§7.2). */
+  readonly replica?: () => Promise<Replica | undefined>;
 }
 
 export class NoteCatalog {
@@ -23,10 +27,12 @@ export class NoteCatalog {
   #state: "idle" | "loading" | "ready" = $state("idle");
   readonly #vault: string;
   readonly #load: typeof fetchNotes;
+  readonly #replica: () => Promise<Replica | undefined>;
 
   constructor(options: NoteCatalogOptions) {
     this.#vault = options.vault;
     this.#load = options.load ?? fetchNotes;
+    this.#replica = options.replica ?? localReplica;
   }
 
   /** The readable notes, already permission-filtered by the server (§6.4 E5). */
@@ -55,11 +61,21 @@ export class NoteCatalog {
     void this.refresh();
   }
 
-  /** Re-fetches unconditionally. Nothing triggers this yet — see the note in `catalog.ts`. */
+  /**
+   * Re-fetches unconditionally, and reconciles the local replica with what came back (§7.4).
+   *
+   * The list this ends up holding is the replica's answer, not the server's, and the
+   * difference is the whole point: offline it is the stored copy, and on a refusal it is
+   * empty even though a stored copy exists.
+   */
   async refresh(): Promise<void> {
     this.#state = "loading";
-    const notes = await this.#load(this.#vault);
-    this.#notes = notes;
+    const answer = await this.#load(this.#vault);
+    const replica = await this.#replica();
+    this.#notes =
+      replica === undefined
+        ? (answer.kind === "ok" ? answer.notes : [])
+        : await replica.reconcile(this.#vault, answer);
     this.#state = "ready";
   }
 }
