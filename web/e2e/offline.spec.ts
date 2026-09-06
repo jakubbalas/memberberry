@@ -196,3 +196,34 @@ test("an edit made offline reaches the server when the network comes back", asyn
     .poll(() => readFileSync(path, "utf8"), { timeout: 15_000, intervals: [100] })
     .toContain("Written on a train.");
 });
+
+test("a note can be kept offline, and stays kept across a reload", async ({ page, failures }, info) => {
+  // §7.2's pinned tier. What a browser can say that a unit test cannot: the command is in the
+  // palette, it acts on the note in front, and the answer survives a reload — which means it
+  // reached IndexedDB rather than a variable.
+  test.skip(info.project.name === "mobile", "the palette is asserted on desktop (§8.4)");
+  allowDisconnection(failures);
+
+  await signIn(page);
+  await page.goto("/v/personal/Welcome.md");
+  await expect(page.getByText("A note that already exists")).toBeVisible();
+
+  const palette = async (): Promise<void> => {
+    await page.keyboard.press("ControlOrMeta+Shift+P");
+    await expect(page.getByRole("dialog")).toBeVisible();
+  };
+
+  await palette();
+  await page.getByRole("option", { name: /Keep this note available offline/ }).click();
+
+  // The command is a toggle, so its wording is the state: asking again is how a reader finds
+  // out whether it worked.
+  await palette();
+  await expect(page.getByRole("option", { name: /Stop keeping this note offline/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.reload();
+  await expect(page.getByText("A note that already exists")).toBeVisible();
+  await palette();
+  await expect(page.getByRole("option", { name: /Stop keeping this note offline/ })).toBeVisible();
+});

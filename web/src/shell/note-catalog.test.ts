@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { CatalogAnswer } from "../offline/replica.js";
+import { stubReplica } from "../offline/testing.js";
 import { NoteCatalog } from "./note-catalog.svelte.js";
 
 const NOTES = [{ path: "One.md", title: "One" }];
@@ -18,15 +19,13 @@ function replicaHolding(stored: readonly { path: string; title: string | null }[
   const seen: CatalogAnswer[] = [];
   return {
     seen,
-    handle: async () => ({
-      reconcile: async (_vault: string, answer: CatalogAnswer) => {
-        seen.push(answer);
-        return answer.kind === "ok" ? answer.notes : answer.kind === "denied" ? [] : stored;
-      },
-      isResident: async () => false,
-      metadata: async () => undefined,
-      opened: async () => undefined,
-    }),
+    handle: async () =>
+      stubReplica({
+        reconcile: async (_vault: string, answer: CatalogAnswer) => {
+          seen.push(answer);
+          return answer.kind === "ok" ? answer.notes : answer.kind === "denied" ? [] : stored;
+        },
+      }),
   };
 }
 

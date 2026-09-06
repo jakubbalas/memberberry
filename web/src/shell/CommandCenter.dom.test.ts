@@ -15,9 +15,11 @@ import Workspace from "./Workspace.svelte";
 import { Bookmarks } from "./bookmarks.svelte.js";
 import type { NoteSummary, VaultSummary } from "./catalog.js";
 import { NoteCatalog } from "./note-catalog.svelte.js";
+import { PinnedNotes } from "./pins.svelte.js";
 import type { NoteSurface, OpenNoteSurfaceOptions } from "./note-surface.js";
 import type { renameNote as renameNoteRequest, renameTag as renameTagRequest } from "./rename.js";
 import { TagView } from "./tags.svelte.js";
+import { stubReplica } from "../offline/testing.js";
 import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
 
@@ -76,6 +78,7 @@ function render(
     renameNote?: typeof renameNoteRequest;
     renameTag?: typeof renameTagRequest;
     tags?: TagView;
+    pins?: PinnedNotes;
   } = {},
 ) {
   const ids = sessionIds();
@@ -108,6 +111,7 @@ function render(
       ...(options.renameNote === undefined ? {} : { renameNote: options.renameNote }),
       ...(options.renameTag === undefined ? {} : { renameTag: options.renameTag }),
       ...(options.tags === undefined ? {} : { tags: options.tags }),
+      ...(options.pins === undefined ? {} : { pins: options.pins }),
     },
   });
   return { store, teardown: () => unmount(app) };
@@ -634,6 +638,94 @@ describe("rename (SPEC 6.6)", () => {
         .map((option) => option.textContent?.trim() ?? "");
       expect(disabled).toContain("Rename note…");
       expect(disabled.some((label) => label.startsWith("Rename the selected tag"))).toBe(true);
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("keeping a note offline (SPEC §7.2)", () => {
+  /** Opens the command palette and clicks the entry starting with `title`. */
+  async function runCommand(title: string): Promise<void> {
+    shortcut("P", { shiftKey: true });
+    await flush();
+    const option = options().find((entry) => entry.textContent?.trim().startsWith(title));
+    if (option === undefined) {
+      throw new Error(`no palette entry for ${title}; saw ${labels().join(", ")}`);
+    }
+    option.click();
+    await flush();
+  }
+
+  /** A `PinnedNotes` over a replica whose pins live in a set. */
+  function pinnedNotes(...initial: string[]) {
+    const stored = new Set(initial);
+    return {
+      stored,
+      pins: new PinnedNotes({
+        vault: "personal",
+        replica: async () =>
+          stubReplica({
+            pinned: async () => [...stored],
+            setPinned: async (_vault, note, pinned) => {
+              if (pinned) stored.add(note);
+              else stored.delete(note);
+            },
+          }),
+      }),
+    };
+  }
+
+  it("pins the note in front, and says so the next time it is asked", async () => {
+    const store = pinnedNotes();
+    const { teardown } = render({ notes: ["Projects/Roadmap.md"], pins: store.pins });
+    try {
+      // The shell attaches its hotkey listener from an effect, so the first keystroke has to
+      // wait for it — every command test in this file starts the same way.
+      await flush();
+      await runCommand("Keep this note available offline");
+      await flush();
+
+      expect([...store.stored]).toEqual(["Projects/Roadmap.md"]);
+      // The command is a toggle, so its wording has to follow the state — otherwise it takes
+      // two commands to say one thing.
+      shortcut("P", { shiftKey: true });
+      await flush();
+      expect(labels().some((label) => label.startsWith("Stop keeping this note offline"))).toBe(true);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("unpins it again", async () => {
+    const store = pinnedNotes("Projects/Roadmap.md");
+    const { teardown } = render({ notes: ["Projects/Roadmap.md"], pins: store.pins });
+    try {
+      await flush();
+      // The list is loaded when the palette first opens, like the note catalog.
+      shortcut("P", { shiftKey: true });
+      await flush();
+      await flush();
+      await runCommand("Stop keeping this note offline");
+      await flush();
+      expect([...store.stored]).toEqual([]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("cannot be run on a device with nowhere to keep a replica", async () => {
+    // jsdom has no IndexedDB, which is exactly the private-window case: the command is
+    // listed and refuses, rather than pretending to pin a note that will not be there.
+    const { teardown } = render({ notes: ["Projects/Roadmap.md"] });
+    try {
+      await flush();
+      shortcut("P", { shiftKey: true });
+      await flush();
+      // Not a vacuous assertion: the palette is open and full of other commands.
+      expect(labels().length).toBeGreaterThan(5);
+      const row = options().find((entry) => entry.textContent?.includes("offline"));
+      expect(row?.getAttribute("aria-disabled")).toBe("true");
     } finally {
       teardown();
     }

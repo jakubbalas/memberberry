@@ -32,6 +32,7 @@
   import type { NoteBootstrap } from "./bootstrap.js";
   import type { fetchVaults } from "./catalog.js";
   import { NoteCatalog } from "./note-catalog.svelte.js";
+  import { PinnedNotes } from "./pins.svelte.js";
   import { OUTLINE_EVENT, type OutlineDetail } from "../editor/outline.js";
   import { fromVisiblePane } from "./outline.js";
   import { OutlineView } from "./outline.svelte.js";
@@ -75,6 +76,8 @@
     readonly backlinks?: BacklinkView | undefined;
     /** The vault's tags. Supplied by a test; built from the session otherwise. */
     readonly tags?: TagView | undefined;
+    /** The notes kept offline (§7.2). Supplied by a test; built from the session otherwise. */
+    readonly pins?: PinnedNotes | undefined;
     /** The focused note's neighbourhood. Supplied by a test; built from the session otherwise. */
     readonly graph?: GraphView | undefined;
     /** The whole-vault graph (§9.4). Injectable for tests, like the panels above. */
@@ -102,6 +105,7 @@
     bookmarks: suppliedBookmarks,
     backlinks: suppliedBacklinks,
     tags: suppliedTags,
+    pins: suppliedPins,
     graph: suppliedGraph,
     vaultGraph: suppliedVaultGraph,
     outline: suppliedOutline,
@@ -136,6 +140,17 @@
   const graph = untrack(
     () => suppliedGraph ?? new GraphView({ vault: session?.vault ?? "local-demo" }),
   );
+  // Only for a vault a server bootstrapped: pinning a note on a local-only replica would be
+  // asking to keep offline the one document that is already nowhere else (§7.2).
+  const pins = untrack(() =>
+    session === undefined ? undefined : (suppliedPins ?? new PinnedNotes({ vault: session.vault })),
+  );
+  // At mount rather than when the palette opens: the pin command is a toggle whose *wording*
+  // depends on this, and one that appeared a frame after the list was first read would pop
+  // into a palette somebody is already looking at. It is one read of a local store.
+  $effect(() => {
+    pins?.ensure();
+  });
   /**
    * The graph, loaded the first time somebody asks for it.
    *
@@ -390,6 +405,7 @@
   {store}
   {catalog}
   {tags}
+  {pins}
   {renameNote}
   {renameTag}
   vault={vaultSlug}

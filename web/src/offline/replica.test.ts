@@ -56,6 +56,38 @@ describe("a fresh readable set", () => {
   });
 });
 
+describe("pins", () => {
+  it("keeps and forgets a note", async () => {
+    await replica.setPinned("personal", "One.md", true);
+    expect(await replica.pinned("personal")).toEqual(["One.md"]);
+    await replica.setPinned("personal", "One.md", false);
+    expect(await replica.pinned("personal")).toEqual([]);
+  });
+
+  it("drops a pin for a note that left the readable set", async () => {
+    // A pin is a standing instruction to fetch something. One naming a note this user may no
+    // longer read would keep asking for it on every start.
+    await replica.setPinned("personal", "Secret.md", true);
+    await replica.setPinned("personal", "One.md", true);
+
+    await replica.reconcile("personal", { kind: "ok", notes: [{ path: "One.md", title: "One" }] });
+
+    expect(await replica.pinned("personal")).toEqual(["One.md"]);
+  });
+
+  it("drops every pin when the vault is refused", async () => {
+    await replica.setPinned("personal", "One.md", true);
+    await replica.reconcile("personal", { kind: "denied" });
+    expect(await replica.pinned("personal")).toEqual([]);
+  });
+
+  it("keeps them all when the server simply did not answer", async () => {
+    await replica.setPinned("personal", "One.md", true);
+    await replica.reconcile("personal", { kind: "unreachable" });
+    expect(await replica.pinned("personal")).toEqual(["One.md"]);
+  });
+});
+
 describe("a refusal", () => {
   it("returns nothing, whatever is stored", async () => {
     // Not the stored copy. The stored copy is exactly what a revocation invalidates, and a

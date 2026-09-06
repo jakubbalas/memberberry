@@ -15,7 +15,7 @@
  */
 
 import { persistenceName } from "../editor/collaboration.js";
-import type { Factory, OfflineStore, ReplicatedNote, ResidentBody } from "./db.js";
+import type { Factory, OfflineStore, PinnedNote, ReplicatedNote, ResidentBody } from "./db.js";
 
 /** What the server's note index said — or failed to say. */
 export type CatalogAnswer =
@@ -51,6 +51,10 @@ export interface Replica {
   metadata(vault: string, note: string): Promise<ReplicatedNote | undefined>;
   /** Records that a note's body is here, and that it was just opened. */
   opened(vault: string, note: string): Promise<void>;
+  /** The notes this device is keeping offline (§7.2's pinned tier). */
+  pinned(vault: string): Promise<readonly string[]>;
+  /** Marks a note to keep, or stops keeping it. Idempotent either way. */
+  setPinned(vault: string, note: string, pinned: boolean): Promise<void>;
 }
 
 export function createReplica(options: ReplicaOptions): Replica {
@@ -70,6 +74,11 @@ export function createReplica(options: ReplicaOptions): Replica {
       }
       const readable = new Set(answer.notes.map((note) => note.path));
       const gone = unreadable(await options.store.residents(vault), readable);
+      // A pin for a note that is no longer readable is a standing instruction to fetch
+      // something this user may not have. It goes with the body.
+      for (const pin of await options.store.pins(vault)) {
+        if (!readable.has(pin.note)) await options.store.deletePin(vault, pin.note);
+      }
       // Bodies first, then the metadata: interrupted half-way, the honest failure is a
       // device that has dropped what it may not read and will re-fetch what it may.
       for (const body of gone) {
@@ -89,6 +98,13 @@ export function createReplica(options: ReplicaOptions): Replica {
     },
     async opened(vault, note): Promise<void> {
       await options.store.putResident({ vault, note, openedAt: now() });
+    },
+    async pinned(vault): Promise<readonly string[]> {
+      return (await options.store.pins(vault)).map((pin: PinnedNote) => pin.note);
+    },
+    async setPinned(vault, note, pinned): Promise<void> {
+      if (pinned) await options.store.putPin({ vault, note });
+      else await options.store.deletePin(vault, note);
     },
   };
 }

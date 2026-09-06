@@ -10,6 +10,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { localReplica, setLocalReplica } from "./local.js";
+import { stubReplica } from "./testing.js";
 
 afterEach(() => {
   setLocalReplica(undefined);
@@ -48,7 +49,7 @@ describe("the page's replica", () => {
   });
 
   it("can be replaced, which is how a test avoids touching a real store", async () => {
-    const stub = { reconcile: async () => [], isResident: async () => false, metadata: async () => undefined, opened: async () => undefined };
+    const stub = stubReplica();
     setLocalReplica(Promise.resolve(stub));
     expect(await localReplica()).toBe(stub);
   });

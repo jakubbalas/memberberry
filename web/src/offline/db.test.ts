@@ -98,20 +98,56 @@ describe("resident bodies", () => {
   });
 });
 
+describe("pins", () => {
+  it("records a note to keep, and lists it", async () => {
+    await store.putPin({ vault: "personal", note: "One.md" });
+    expect(await store.pins("personal")).toEqual([{ vault: "personal", note: "One.md" }]);
+  });
+
+  it("is idempotent, so pinning twice is still one pin", async () => {
+    await store.putPin({ vault: "personal", note: "One.md" });
+    await store.putPin({ vault: "personal", note: "One.md" });
+    expect(await store.pins("personal")).toHaveLength(1);
+  });
+
+  it("forgets one", async () => {
+    await store.putPin({ vault: "personal", note: "One.md" });
+    await store.deletePin("personal", "One.md");
+    expect(await store.pins("personal")).toEqual([]);
+  });
+
+  it("keeps vaults apart", async () => {
+    await store.putPin({ vault: "personal", note: "One.md" });
+    await store.putPin({ vault: "work", note: "Two.md" });
+    expect(await store.pins("work")).toEqual([{ vault: "work", note: "Two.md" }]);
+  });
+
+  it("is not the same thing as a resident body", async () => {
+    // A pin is a standing instruction, and the note it names may never have been opened —
+    // which is the whole point of §7.2's eager tier.
+    await store.putPin({ vault: "personal", note: "One.md" });
+    expect(await store.residents("personal")).toEqual([]);
+  });
+});
+
 describe("forgetting a vault", () => {
   it("removes its metadata and every resident record, and nothing else", async () => {
     // What a revoked vault gets (§6.7). Another vault's replica is not this vault's business.
     await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
     await store.putResident({ vault: "personal", note: "One.md", openedAt: 1 });
+    await store.putPin({ vault: "personal", note: "One.md" });
     await store.putNotes("work", [{ path: "Two.md", title: "Two" }]);
     await store.putResident({ vault: "work", note: "Two.md", openedAt: 2 });
+    await store.putPin({ vault: "work", note: "Two.md" });
 
     await store.deleteVault("personal");
 
     expect(await store.getNotes("personal")).toBeUndefined();
     expect(await store.residents("personal")).toEqual([]);
+    expect(await store.pins("personal")).toEqual([]);
     expect(await store.getNotes("work")).toEqual([{ path: "Two.md", title: "Two" }]);
     expect(await store.residents("work")).toHaveLength(1);
+    expect(await store.pins("work")).toHaveLength(1);
   });
 
   it("is not an error for a vault this device never held", async () => {

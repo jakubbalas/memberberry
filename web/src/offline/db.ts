@@ -32,6 +32,12 @@ export interface ResidentBody {
 /** The subset of IndexedDB this module needs, so a test can supply its own. */
 export type Factory = Pick<IDBFactory, "open" | "deleteDatabase">;
 
+/** A note the user has asked to keep available offline (§7.2's pinned tier). */
+export interface PinnedNote {
+  readonly vault: string;
+  readonly note: string;
+}
+
 export interface OfflineStore {
   /** Replaces the metadata replica for one vault. */
   putNotes(vault: string, notes: readonly ReplicatedNote[]): Promise<void>;
@@ -43,15 +49,29 @@ export interface OfflineStore {
   residents(vault: string): Promise<readonly ResidentBody[]>;
   /** Forgets one body's bookkeeping. Deleting the document itself is `replica.ts`. */
   deleteResident(vault: string, note: string): Promise<void>;
-  /** Forgets everything about a vault: its metadata and every resident record. */
+  /** Marks a note as one to keep offline. Idempotent. */
+  putPin(pin: PinnedNote): Promise<void>;
+  /** Every pinned note in a vault. */
+  pins(vault: string): Promise<readonly PinnedNote[]>;
+  deletePin(vault: string, note: string): Promise<void>;
+  /** Forgets everything about a vault: metadata, resident records and pins. */
   deleteVault(vault: string): Promise<void>;
   close(): void;
 }
 
 const DATABASE = "memberberry:offline";
-const VERSION = 1;
+/**
+ * Version 2 adds the pin store (§7.2).
+ *
+ * The upgrade creates what is missing and touches nothing else, so a device that has been
+ * offline since version 1 keeps its metadata and its resident records rather than starting
+ * over — the replica is a cache of things the server sent, but re-fetching a 10 000-note
+ * index because a store was added is a bad first impression of an upgrade.
+ */
+const VERSION = 2;
 const NOTES = "notes";
 const BODIES = "bodies";
+const PINS = "pins";
 const BY_VAULT = "by-vault";
 
 /**
@@ -66,6 +86,10 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
     const database = open.result;
     if (!database.objectStoreNames.contains(NOTES)) {
       database.createObjectStore(NOTES, { keyPath: "vault" });
+    }
+    if (!database.objectStoreNames.contains(PINS)) {
+      const pins = database.createObjectStore(PINS, { keyPath: ["vault", "note"] });
+      pins.createIndex(BY_VAULT, "vault", { unique: false });
     }
     if (!database.objectStoreNames.contains(BODIES)) {
       // why: a composite key rather than `"<vault>:<note>"`. A note path may contain any
@@ -100,12 +124,26 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
     async deleteResident(vault: string, note: string): Promise<void> {
       await promised(transaction(BODIES, "readwrite").delete([vault, note]));
     },
+    async putPin(pin: PinnedNote): Promise<void> {
+      await promised(transaction(PINS, "readwrite").put({ ...pin }));
+    },
+    async pins(vault: string): Promise<readonly PinnedNote[]> {
+      const records: unknown = await promised(
+        transaction(PINS, "readonly").index(BY_VAULT).getAll(vault),
+      );
+      return Array.isArray(records) ? records.flatMap(readPin) : [];
+    },
+    async deletePin(vault: string, note: string): Promise<void> {
+      await promised(transaction(PINS, "readwrite").delete([vault, note]));
+    },
     async deleteVault(vault: string): Promise<void> {
       await promised(transaction(NOTES, "readwrite").delete(vault));
-      const bodies = database.transaction(BODIES, "readwrite").objectStore(BODIES);
-      const keys: unknown = await promised(bodies.index(BY_VAULT).getAllKeys(vault));
-      if (!Array.isArray(keys)) return;
-      await Promise.all(keys.map((key) => promised(bodies.delete(key as IDBValidKey))));
+      for (const name of [BODIES, PINS]) {
+        const store = database.transaction(name, "readwrite").objectStore(name);
+        const keys: unknown = await promised(store.index(BY_VAULT).getAllKeys(vault));
+        if (!Array.isArray(keys)) continue;
+        await Promise.all(keys.map((key) => promised(store.delete(key as IDBValidKey))));
+      }
     },
     close(): void {
       database.close();
@@ -141,6 +179,13 @@ function readNotes(record: unknown): readonly ReplicatedNote[] | undefined {
     if (title !== null && typeof title !== "string") return [];
     return [{ path, title }];
   });
+}
+
+function readPin(record: unknown): PinnedNote[] {
+  if (typeof record !== "object" || record === null) return [];
+  const { vault, note } = record as Record<string, unknown>;
+  if (typeof vault !== "string" || typeof note !== "string") return [];
+  return [{ vault, note }];
 }
 
 function readResident(record: unknown): ResidentBody[] {

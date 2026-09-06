@@ -9,6 +9,8 @@
 
 import { mount } from "svelte";
 
+import { localReplica } from "./offline/local.js";
+import { noteFetcher, prefetchPinned } from "./offline/prefetch.js";
 import {
   afterLoad,
   registerOfflineShell,
@@ -16,7 +18,7 @@ import {
 } from "./offline/register.js";
 import NoteWorkspace from "./shell/NoteWorkspace.svelte";
 import Workspace from "./shell/Workspace.svelte";
-import { resolveNoteBootstrap } from "./shell/bootstrap.js";
+import { remoteSyncFor, resolveNoteBootstrap } from "./shell/bootstrap.js";
 import { startWorkspace } from "./shell/session.js";
 
 const target = document.querySelector<HTMLElement>("#app");
@@ -66,7 +68,30 @@ async function start(): Promise<void> {
     "serviceWorker" in navigator ? navigator.serviceWorker : undefined;
   afterLoad(window, () => {
     void registerOfflineShell(workers);
+    // §7.2's pinned tier: the notes this device promised to keep are fetched now, in the
+    // background, one at a time. After the load event for the same reason the precache is —
+    // nothing on screen is waiting for it.
+    void keepPinnedNotes();
   });
+
+  /**
+   * Downloads whatever is pinned and not already here (§7.2).
+   *
+   * Failures are swallowed: a device with nowhere to keep a replica has nothing to do, and a
+   * sweep that cannot reach the server gives up by itself after two attempts. Neither is
+   * something to interrupt a reader with.
+   */
+  async function keepPinnedNotes(): Promise<void> {
+    if (bootstrap === undefined) return;
+    const replica = await localReplica();
+    if (replica === undefined) return;
+    const { endpoint } = remoteSyncFor(bootstrap, location);
+    await prefetchPinned({
+      vault: bootstrap.vault,
+      replica,
+      openNote: noteFetcher({ vault: bootstrap.vault, user: bootstrap.user, endpoint }),
+    });
+  }
 
   // why: `pagehide` rather than `beforeunload`. `beforeunload` is unreliable on mobile, where
   // a backgrounded tab is often discarded without it ever firing — and mobile is the primary

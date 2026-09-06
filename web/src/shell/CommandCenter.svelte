@@ -34,6 +34,7 @@
     renameTag as renameTagRequest,
     renamedMessage,
   } from "./rename.js";
+  import type { PinnedNotes } from "./pins.svelte.js";
   import type { TagView } from "./tags.svelte.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { groups } from "./workspace.js";
@@ -66,6 +67,15 @@
     /** Injectable for tests; default to the real HTTP calls. */
     readonly renameNote?: typeof renameNoteRequest | undefined;
     readonly renameTag?: typeof renameTagRequest | undefined;
+    /**
+     * Which notes this device keeps offline (§7.2).
+     *
+     * Absent in a shell with no vault behind it — a local-only replica has no pinned tier,
+     * because the one document it holds is already nowhere else. Where there is a vault but
+     * nowhere to keep a replica (a private window), the command is listed and **refuses**,
+     * which is the palette's own convention for a command that cannot run right now.
+     */
+    readonly pins?: PinnedNotes | undefined;
   }
 
   const {
@@ -82,6 +92,7 @@
     ongraph,
     renameNote = renameNoteRequest,
     renameTag = renameTagRequest,
+    pins,
   }: Props = $props();
 
   type Mode = "commands" | "notes" | "vaults";
@@ -93,6 +104,11 @@
     readonly from: string;
     readonly initial: string;
   }
+
+  // Read through a derived so the pin command's title re-resolves when the tab changes or
+  // the pin does; reading `store.activeTab.note` inside the title expression would work too,
+  // but this is the value the title is actually about.
+  const activeNote = $derived(store.activeTab?.note);
 
   let mode = $state<Mode | undefined>(undefined);
   let query = $state("");
@@ -109,6 +125,9 @@
     // the note index of a large vault is the biggest payload the shell can ask for. The
     // catalog is shared with the tree, so whichever asks first pays and the other is free.
     if (next === "notes") catalog.ensure();
+    // The pin command is a toggle, so the command list cannot be worded without knowing what
+    // is pinned. One read of a local store, on the first open of the palette.
+    if (next === "commands") pins?.ensure();
     if (next === "vaults" && vaults.length === 0) {
       void loadVaults().then((list) => (vaults = list));
     }
@@ -285,6 +304,21 @@
       // palette teaches a reader that the feature is broken rather than that it is elsewhere.
       enabled: () => ongraph !== undefined,
       run: () => ongraph?.(),
+    },
+    {
+      id: "note.pinOffline",
+      // §7.2's pinned tier, worded as what it does rather than as what it is called: "pin"
+      // means something else in every other notes application (pin to the top of a list).
+      title:
+        activeNote !== undefined && pins?.has(activeNote) === true
+          ? "Stop keeping this note offline"
+          : "Keep this note available offline",
+      group: "Note",
+      enabled: () => pins?.available === true && store.activeTab !== undefined,
+      run: () => {
+        const active = store.activeTab;
+        if (active !== undefined) void pins?.toggle(active.note);
+      },
     },
     {
       id: "note.toggleMode",

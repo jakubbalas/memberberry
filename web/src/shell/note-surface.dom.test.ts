@@ -21,6 +21,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { LocalPersistence } from "../editor/collaboration.js";
 import type { ConnectionState } from "../editor/sync.js";
+import { stubReplica } from "../offline/testing.js";
 import { createMemberberryExtensions } from "../editor/schema.js";
 import { load } from "../notes.js";
 import { LOCAL_ONLY, openNoteSurface } from "./note-surface.js";
@@ -80,14 +81,14 @@ function replicaHolding(...resident: string[]) {
   const opened: string[] = [];
   return {
     opened,
-    handle: async () => ({
-      reconcile: async () => [],
-      isResident: async (_vault: string, note: string) => resident.includes(note),
-      metadata: async (_vault: string, note: string) => ({ path: note, title: "Roadmap" }),
-      opened: async (_vault: string, note: string) => {
-        opened.push(note);
-      },
-    }),
+    handle: async () =>
+      stubReplica({
+        isResident: async (_vault: string, note: string) => resident.includes(note),
+        metadata: async (_vault: string, note: string) => ({ path: note, title: "Roadmap" }),
+        opened: async (_vault: string, note: string) => {
+          opened.push(note);
+        },
+      }),
   };
 }
 
