@@ -51,6 +51,16 @@ export interface Pending {
 
 export const BUDGETS: readonly Budget[] = [
   {
+    // M6 (§7.4) is what made this measurable: before the service worker there was no warm
+    // cache to start from. Measured with one browser context across the samples and a fresh
+    // page for each, and dropped entirely if no worker takes control — see `measure.ts`.
+    id: "cold-start-warm-cache",
+    metric: "Cold start → interactive, warm SW cache",
+    unit: "ms",
+    mobile: 1_500,
+    desktop: 800,
+  },
+  {
     id: "cold-start-first-visit",
     metric: "Cold start → interactive, first ever visit",
     unit: "ms",
@@ -135,12 +145,6 @@ export const BUDGETS: readonly Budget[] = [
 ];
 
 export const PENDING: readonly Pending[] = [
-  {
-    id: "cold-start-warm-cache",
-    metric: "Cold start → interactive, warm SW cache",
-    blockedBy: "M6",
-    reason: "there is no service worker yet, so there is no warm cache to start from",
-  },
   {
     id: "scroll-fps",
     metric: "Scroll, 60 fps sustained",

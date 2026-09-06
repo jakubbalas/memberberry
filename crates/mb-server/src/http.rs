@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -342,6 +342,14 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .layer(DefaultBodyLimit::max(crate::workspace::MAX_LAYOUT_BYTES)),
         )
         .route("/assets/{*asset}", get(asset))
+        // The three files a service worker needs at the root of the origin (§7.4). They are
+        // named individually rather than served from a directory: a wildcard over the build
+        // root would hand out whatever else an operator keeps beside their bundle, and the
+        // whole point of `asset`'s containment check is that it must not.
+        .route("/app.html", get(app_shell))
+        .route("/sw.js", get(service_worker))
+        .route("/manifest.webmanifest", get(web_manifest))
+        .route("/icon.svg", get(app_icon))
         .route("/v/{slug}", get(vault_index))
         .route("/v/{slug}/", get(vault_index))
         .route("/v/{slug}/{*note}", get(note))
@@ -1913,6 +1921,7 @@ fn inject_bootstrap(index: &str, vault: &str, note: &str, user: &str) -> Option<
 /// no form; putting it on the sign-in page is what broke logging in during M5.
 const EDITOR_CSP: &str = "default-src 'none'; \
      script-src 'self' 'wasm-unsafe-eval'; \
+     manifest-src 'self'; \
      style-src 'self' 'unsafe-inline'; \
      img-src 'self' data: blob:; \
      font-src 'self'; \
@@ -1921,6 +1930,108 @@ const EDITOR_CSP: &str = "default-src 'none'; \
      base-uri 'none'; \
      form-action 'none'; \
      frame-ancestors 'none'";
+
+/// The unbootstrapped application shell, for a navigation the network cannot answer (§7.4).
+///
+/// The Vite `index.html` verbatim: the same bytes served for a note page, with the bootstrap
+/// element still empty. The service worker precaches it and answers `/v/<vault>/<note>` with
+/// it while offline, and the client works out which note it is from the URL.
+///
+/// **Served without authentication, deliberately.** It carries no vault data — it is the
+/// public bundle's HTML, whose script and stylesheet are already public under `/assets/`.
+/// Gating it would add a failure mode without closing anything: the service worker fetches
+/// it during install, so an expired session would leave a browser with no offline shell and
+/// no way to notice.
+async fn app_shell(State(state): State<Arc<AppState>>) -> Response {
+    let Some(body) = web_root_file(&state, "index.html") else {
+        return not_found().await;
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            // `no-cache` rather than a max-age: the shell is not content-addressed, and a
+            // browser holding an old one holds a page that asks for chunks a later build
+            // deleted. Revalidation is one conditional request per navigation, and the
+            // service worker is what makes those rare.
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::CONTENT_SECURITY_POLICY, EDITOR_CSP),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        Html(body),
+    )
+        .into_response()
+}
+
+/// The service worker (§7.4), which `web/scripts/build-sw.ts` emits into the build root.
+///
+/// `no-cache` matters more here than anywhere else: this file is how a browser learns that
+/// a new build exists, so an HTTP cache answering for it pins that browser to one version's
+/// precache list. The client asks for the same thing from its side with
+/// `updateViaCache: "none"`; both, because either alone is one configuration away from a
+/// user stuck on last month's bundle.
+async fn service_worker(State(state): State<Arc<AppState>>) -> Response {
+    let Some(body) = web_root_file(&state, "sw.js") else {
+        return not_found().await;
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+            // Scope is `/` by default for a worker served from the root; the header is what
+            // keeps that true if the file ever moves.
+            (HeaderName::from_static("service-worker-allowed"), "/"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// The installable-application manifest (§7.4).
+///
+/// Unauthenticated because a browser fetches a manifest anonymously — the request omits
+/// credentials — so an authenticated route here would 404 on every page load. It contains
+/// the application's name and icon and nothing about any vault.
+async fn web_manifest(State(state): State<Arc<AppState>>) -> Response {
+    let Some(body) = web_root_file(&state, "manifest.webmanifest") else {
+        return not_found().await;
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "application/manifest+json"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// The application icon, referenced by both the page and the manifest.
+async fn app_icon(State(state): State<Arc<AppState>>) -> Response {
+    let Some(body) = web_root_file(&state, "icon.svg") else {
+        return not_found().await;
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Reads one named file from the build root, or `None` if there is no build root.
+///
+/// `name` is a literal at every call site, which is what makes this safe without a
+/// containment check: there is no caller-supplied path component to escape with. Anything
+/// user-named goes through `asset`, which canonicalizes and checks containment.
+fn web_root_file(state: &AppState, name: &str) -> Option<String> {
+    let root = state.web_root.as_ref()?;
+    std::fs::read_to_string(root.join(name)).ok()
+}
 
 async fn asset(
     State(state): State<Arc<AppState>>,

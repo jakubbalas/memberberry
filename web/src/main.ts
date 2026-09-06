@@ -9,9 +9,14 @@
 
 import { mount } from "svelte";
 
+import {
+  afterLoad,
+  registerOfflineShell,
+  type ServiceWorkerRegistrar,
+} from "./offline/register.js";
 import NoteWorkspace from "./shell/NoteWorkspace.svelte";
 import Workspace from "./shell/Workspace.svelte";
-import { readNoteBootstrap } from "./shell/bootstrap.js";
+import { resolveNoteBootstrap } from "./shell/bootstrap.js";
 import { startWorkspace } from "./shell/session.js";
 
 const target = document.querySelector<HTMLElement>("#app");
@@ -21,7 +26,11 @@ if (target === null) {
 // Narrowed above; named so the closure below keeps the narrowing.
 const mountPoint: HTMLElement = target;
 
-const bootstrap = readNoteBootstrap(mountPoint);
+const bootstrap = resolveNoteBootstrap(
+  mountPoint,
+  location,
+  typeof localStorage === "undefined" ? undefined : localStorage,
+);
 
 /**
  * Wrapped in a function rather than written as top-level `await`.
@@ -43,6 +52,20 @@ async function start(): Promise<void> {
   mount(Workspace, {
     target: mountPoint,
     props: { store: started.store, session: { vault: bootstrap.vault, user: bootstrap.user } },
+  });
+
+  // why: registered only from a page a server bootstrapped, and only after it has loaded.
+  // The `npm run dev` inner loop serves `index.html` from Vite with no bootstrap and no
+  // `/sw.js` to fetch, and a worker caching dev-server modules is a debugging session nobody
+  // asked for. `afterLoad` keeps the precache off the critical path (§21.2).
+  //
+  // The annotation is what makes the guard mean something: the DOM types declare
+  // `navigator.serviceWorker` as always present, and it is absent in an insecure context and
+  // in some private windows.
+  const workers: ServiceWorkerRegistrar | undefined =
+    "serviceWorker" in navigator ? navigator.serviceWorker : undefined;
+  afterLoad(window, () => {
+    void registerOfflineShell(workers);
   });
 
   // why: `pagehide` rather than `beforeunload`. `beforeunload` is unreliable on mobile, where

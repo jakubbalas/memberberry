@@ -31,7 +31,7 @@ export default defineConfig({
       // `.svelte` is included on purpose. AGENTS.md §4.4 keeps components presentational and
       // logic in plain `.ts`, which only holds if an untested component shows up as a hole
       // rather than as nothing at all.
-      include: ["src/**/*.ts", "src/**/*.svelte", "perf/**/*.ts"],
+      include: ["src/**/*.ts", "src/**/*.svelte", "perf/**/*.ts", "scripts/**/*.ts"],
       // `main.ts` is the entry shim that wires the DOM to the modules below it, the same
       // role `mb-cli/src/main.rs` plays; `src/wasm` is generated.
       //
@@ -50,6 +50,15 @@ export default defineConfig({
         // canvas — see `web/e2e/global-graph.spec.ts`.
         "src/shell/graph-gl.ts",
         "src/shell/graph-worker.ts",
+        // The service worker's event handlers, for the same reason: jsdom has no
+        // `ServiceWorkerGlobalScope`, no `caches` and no `fetch` event. Everything that
+        // decides anything was moved into `src/offline/{precache,routing,offline-page}.ts`
+        // before this line was written, and all three are tested. What exercises this one is
+        // `make e2e`, which disconnects a real browser (`web/e2e/offline.spec.ts`).
+        "src/offline/sw.ts",
+        // Reads a directory and shells out to a bundler; the one decision in it is
+        // `planPrecache`, which is covered above. The same boundary `perf/run.ts` is.
+        "scripts/build-sw.ts",
         "perf/run.ts",
         "perf/measure.ts",
         "perf/server.ts",

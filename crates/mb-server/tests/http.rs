@@ -870,11 +870,155 @@ fn the_editor_page_carries_a_policy_scoped_to_what_it_actually_does() {
         "connect-src 'self'",
         "frame-ancestors 'none'",
         "base-uri 'none'",
+        // Without this the browser refuses to fetch the web app manifest at all, and the
+        // application is silently not installable — `default-src 'none'` covers manifests
+        // too (§7.4).
+        "manifest-src 'self'",
     ] {
         assert!(
             headers.contains(directive),
             "the editor policy is missing `{directive}`: {headers}"
         );
+    }
+}
+
+/// A build root with everything the offline shell needs in it (§7.4).
+fn pwa_web_root() -> TempDir {
+    let dir = TempDir::new("http-pwa-web");
+    dir.write(
+        "index.html",
+        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div></body>",
+    );
+    dir.write("sw.js", "self.addEventListener('fetch', () => {})");
+    dir.write("manifest.webmanifest", "{\"name\":\"Memberberry\"}");
+    dir.write("icon.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+    dir.write("assets/index-abc123.js", "console.log('editor')");
+    dir.write("secret.txt", "not part of the bundle");
+    dir
+}
+
+#[test]
+fn the_offline_shell_is_the_unbootstrapped_page_under_the_editor_policy() {
+    // What the service worker precaches and answers a note URL with when the network is gone
+    // (§7.4). It has to be the *unbootstrapped* page: a shell carrying one user's vault, note
+    // and display name would be a cache entry the next user of that browser profile shares.
+    let vault_dir = TempDir::new("http-pwa-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web_dir = pwa_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web_dir.path().to_path_buf(),
+    );
+
+    let (status, body) = server.get("/app.html");
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        body.contains("data-vault=\"\"") && body.contains("data-user=\"\""),
+        "the shell must carry no session: {body}"
+    );
+
+    let headers = server.headers("/app.html").to_lowercase();
+    // The same policy the bootstrapped page gets. This one runs exactly the same script.
+    assert!(
+        headers.contains("script-src 'self' 'wasm-unsafe-eval'"),
+        "the shell runs the application and must carry its policy: {headers}"
+    );
+    // Not content-addressed, so a cached copy is a page asking for chunks a later build
+    // deleted.
+    assert!(headers.contains("cache-control: no-cache"), "{headers}");
+}
+
+#[test]
+fn the_offline_shell_needs_no_session_and_reveals_no_vault() {
+    // Deliberately unauthenticated: the service worker fetches it during install, and an
+    // expired session would otherwise leave a browser with no offline shell and no way to
+    // notice. Safe only because it carries nothing private — which is what this asserts.
+    let vault_dir = TempDir::new("http-pwa-anon-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web_dir = pwa_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web_dir.path().to_path_buf(),
+    );
+
+    // No cookie: `request` sends exactly the headers it is given, unlike `get`.
+    let (status, body) = server.request("GET", "/app.html", "", "");
+    assert!(is_ok(&status), "{status}");
+    assert!(
+        !body.contains("personal") && !body.contains("Personal") && !body.contains("One.md"),
+        "the shell named a vault to an anonymous caller: {body}"
+    );
+}
+
+#[test]
+fn the_service_worker_and_its_manifest_are_served_from_the_root() {
+    // All three have to be at the root of the origin: a worker's scope is the directory it
+    // is served from, and one under `/assets/` could not control `/v/<vault>/<note>`.
+    let vault_dir = TempDir::new("http-pwa-root-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web_dir = pwa_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web_dir.path().to_path_buf(),
+    );
+
+    let (status, body) = server.get("/sw.js");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("addEventListener"), "{body}");
+    let headers = server.headers("/sw.js").to_lowercase();
+    assert!(
+        headers.contains("text/javascript"),
+        "a worker served as the wrong type is refused: {headers}"
+    );
+    // This file is how a browser learns a new build exists. An HTTP cache answering for it
+    // pins that browser to one version's precache list.
+    assert!(headers.contains("cache-control: no-cache"), "{headers}");
+    assert!(headers.contains("service-worker-allowed: /"), "{headers}");
+
+    // A browser fetches a manifest without credentials, so an authenticated route here would
+    // 404 on every page load.
+    let (manifest_status, manifest) = server.request("GET", "/manifest.webmanifest", "", "");
+    assert!(is_ok(&manifest_status), "{manifest_status}");
+    assert!(manifest.contains("Memberberry"), "{manifest}");
+    assert!(
+        server
+            .headers("/manifest.webmanifest")
+            .to_lowercase()
+            .contains("application/manifest+json"),
+        "a manifest served as the wrong type is ignored"
+    );
+
+    let (icon_status, _) = server.request("GET", "/icon.svg", "", "");
+    assert!(is_ok(&icon_status), "{icon_status}");
+}
+
+#[test]
+fn the_root_files_are_named_individually_rather_than_served_from_a_directory() {
+    // The routes read one literal filename each. Nothing else beside an operator's bundle is
+    // reachable through them, and there is no caller-supplied path component to escape with.
+    let vault_dir = TempDir::new("http-pwa-scope-vault");
+    vault_dir.write("One.md", "# One\n");
+    let web_dir = pwa_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![vault(&vault_dir, "personal", "Personal")],
+        web_dir.path().to_path_buf(),
+    );
+
+    for path in ["/secret.txt", "/index.html", "/sw.js/../secret.txt"] {
+        assert!(is_not_found(&server.status(path)), "{path} was served");
+    }
+}
+
+#[test]
+fn a_server_with_no_frontend_build_serves_no_worker_at_all() {
+    // The read-only server (`web_root` unset) is a complete deployment (§3.1). It has no
+    // bundle to cache, and a worker registered against a 404 is a browser that keeps asking.
+    let dir = TempDir::new("http-pwa-none");
+    dir.write("One.md", "# One\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "personal", "Personal")]);
+
+    for path in ["/app.html", "/sw.js", "/manifest.webmanifest", "/icon.svg"] {
+        assert!(is_not_found(&server.status(path)), "{path} was served");
     }
 }
 

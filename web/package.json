@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && npm run build:sw",
+    "build:sw": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/build-sw.ts",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

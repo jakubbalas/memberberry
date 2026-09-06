@@ -55,3 +55,77 @@ export function remoteSyncFor(bootstrap: NoteBootstrap, location: Location): Rem
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   return { ...bootstrap, endpoint: `${protocol}//${location.host}/api/v1/sync` };
 }
+
+/** Where the last authenticated display name is kept, for an offline start (§7.4). */
+export const USER_KEY = "memberberry.user";
+
+/** The `Storage` surface the offline bootstrap needs. Narrow, so a test can supply it. */
+export type UserStore = Pick<Storage, "getItem" | "setItem">;
+
+/**
+ * The bootstrap for this page, from the server if there is one and from the URL if not.
+ *
+ * Offline the service worker answers a note URL with the unbootstrapped shell (§7.4), so the
+ * three attributes are empty and the page has to work out for itself which note it is. Two
+ * of the three are in the URL. The third is the display name, which is remembered here on
+ * every successful load.
+ *
+ * **The remembered name is a label, never an authorization.** It names the caret in the
+ * editor and nothing else; every request this page makes is authenticated by the session
+ * cookie and filtered by the server (§6.4). A tampered value renames a cursor.
+ */
+export function resolveNoteBootstrap(
+  element: HTMLElement,
+  location: Pick<Location, "pathname">,
+  storage: UserStore | undefined,
+): NoteBootstrap | undefined {
+  const served = readNoteBootstrap(element);
+  if (served !== undefined) {
+    remember(storage, served.user);
+    return served;
+  }
+  const route = parseNoteRoute(location.pathname);
+  if (route === undefined) return undefined;
+  const user = read(storage);
+  // No remembered user means this browser has never completed a load here, so there is no
+  // session either. Better an empty local replica than a workspace claiming to be someone.
+  if (user === undefined) return undefined;
+  return { ...route, user };
+}
+
+/**
+ * Splits `/v/<vault>/<note>` into its two parts, or `undefined` for any other path.
+ *
+ * The note is decoded whole rather than segment by segment, which is what the rest of the
+ * client does with a note path (`%2F` routes exactly as `/` does) — and a malformed escape
+ * is treated as "not a note route" rather than throwing out of the page's first statement.
+ */
+export function parseNoteRoute(pathname: string): { readonly vault: string; readonly note: string } | undefined {
+  const match = /^\/v\/([^/]+)\/(.+)$/.exec(pathname);
+  const [, vault, note] = match ?? [];
+  if (vault === undefined || note === undefined) return undefined;
+  try {
+    return { vault: decodeURIComponent(vault), note: decodeURIComponent(note) };
+  } catch {
+    return undefined;
+  }
+}
+
+function remember(storage: UserStore | undefined, user: string): void {
+  // A storage that refuses to write — Safari's private mode throws rather than returning —
+  // costs the offline display name and nothing else, so it is not worth failing a page load.
+  try {
+    storage?.setItem(USER_KEY, user);
+  } catch {
+    /* the next load asks the server again */
+  }
+}
+
+function read(storage: UserStore | undefined): string | undefined {
+  try {
+    const stored = storage?.getItem(USER_KEY);
+    return isFilled(stored ?? undefined) ? stored ?? undefined : undefined;
+  } catch {
+    return undefined;
+  }
+}

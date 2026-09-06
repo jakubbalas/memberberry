@@ -10,7 +10,13 @@
 
 import { describe, expect, it } from "vitest";
 
-import { readNoteBootstrap, remoteSyncFor } from "./bootstrap.js";
+import {
+  USER_KEY,
+  parseNoteRoute,
+  readNoteBootstrap,
+  remoteSyncFor,
+  resolveNoteBootstrap,
+} from "./bootstrap.js";
 
 function element(attributes: Readonly<Record<string, string>>): HTMLElement {
   const div = document.createElement("div");
@@ -82,5 +88,111 @@ describe("the sync endpoint", () => {
   it("carries the bootstrap through unchanged", () => {
     const location = { protocol: "http:", host: "localhost:9010" } as Location;
     expect(remoteSyncFor(bootstrap, location)).toMatchObject(bootstrap);
+  });
+});
+
+describe("resolving a bootstrap with no server behind it", () => {
+  function store(initial?: string): Pick<Storage, "getItem" | "setItem"> {
+    const state = new Map<string, string>(initial === undefined ? [] : [[USER_KEY, initial]]);
+    return {
+      getItem: (key: string) => state.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        state.set(key, value);
+      },
+    };
+  }
+
+  it("prefers what the server said, and remembers the user for next time", () => {
+    const storage = store();
+    const target = element({
+      "data-vault": "personal",
+      "data-note": "Projects/Roadmap.md",
+      "data-user": "alice",
+    });
+    const resolved = resolveNoteBootstrap(target, { pathname: "/v/personal/Projects/Roadmap.md" }, storage);
+    expect(resolved).toEqual({ vault: "personal", note: "Projects/Roadmap.md", user: "alice" });
+    expect(storage.getItem(USER_KEY)).toBe("alice");
+  });
+
+  it("reads the vault and note out of the URL when the shell arrived from the cache", () => {
+    // Offline the service worker answers a note URL with the unbootstrapped shell (§7.4), so
+    // the attributes are empty and this is the only thing that knows which note it is.
+    const target = element({ "data-vault": "", "data-note": "", "data-user": "" });
+    expect(resolveNoteBootstrap(target, { pathname: "/v/personal/Projects/Roadmap.md" }, store("alice")))
+      .toEqual({ vault: "personal", note: "Projects/Roadmap.md", user: "alice" });
+  });
+
+  it("refuses when no user has ever loaded this application here", () => {
+    // No remembered name means no completed load, and so no session either. An empty local
+    // replica is better than a workspace claiming to be someone.
+    const target = element({ "data-vault": "", "data-note": "", "data-user": "" });
+    expect(resolveNoteBootstrap(target, { pathname: "/v/personal/Note.md" }, store())).toBeUndefined();
+  });
+
+  it("refuses a path that is not a note", () => {
+    const target = element({ "data-vault": "", "data-note": "", "data-user": "" });
+    for (const pathname of ["/", "/login", "/v/personal", "/v/personal/"]) {
+      expect(resolveNoteBootstrap(target, { pathname }, store("alice"))).toBeUndefined();
+    }
+  });
+
+  it("survives a storage that throws, which is what a private window does", () => {
+    const hostile: Pick<Storage, "getItem" | "setItem"> = {
+      getItem: () => {
+        throw new Error("storage is disabled");
+      },
+      setItem: () => {
+        throw new Error("storage is disabled");
+      },
+    };
+    const served = element({
+      "data-vault": "personal",
+      "data-note": "Note.md",
+      "data-user": "alice",
+    });
+    expect(resolveNoteBootstrap(served, { pathname: "/v/personal/Note.md" }, hostile)).toEqual({
+      vault: "personal",
+      note: "Note.md",
+      user: "alice",
+    });
+    const shell = element({ "data-vault": "", "data-note": "", "data-user": "" });
+    expect(resolveNoteBootstrap(shell, { pathname: "/v/personal/Note.md" }, hostile)).toBeUndefined();
+  });
+
+  it("works with no storage at all", () => {
+    const target = element({
+      "data-vault": "personal",
+      "data-note": "Note.md",
+      "data-user": "alice",
+    });
+    expect(resolveNoteBootstrap(target, { pathname: "/v/personal/Note.md" }, undefined)?.user).toBe("alice");
+  });
+});
+
+describe("parsing a note route", () => {
+  it("splits the vault from the note", () => {
+    expect(parseNoteRoute("/v/personal/Projects/Roadmap.md")).toEqual({
+      vault: "personal",
+      note: "Projects/Roadmap.md",
+    });
+  });
+
+  it("decodes the note whole, the way every other client of a note path does", () => {
+    // `%2F` routes exactly as `/` does (§9.1), so a segment-by-segment decode would disagree
+    // with the server about which note this is.
+    expect(parseNoteRoute("/v/personal/Notes%2FA%20note.md")).toEqual({
+      vault: "personal",
+      note: "Notes/A note.md",
+    });
+  });
+
+  it("treats a malformed escape as not a note route", () => {
+    expect(parseNoteRoute("/v/personal/%E0%A4%A")).toBeUndefined();
+  });
+
+  it("refuses anything that is not a note", () => {
+    for (const pathname of ["/", "/login", "/assets/index.js", "/v/", "/v/personal", "/v/personal/"]) {
+      expect(parseNoteRoute(pathname)).toBeUndefined();
+    }
   });
 });

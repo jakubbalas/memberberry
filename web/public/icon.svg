@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Memberberry">
+  <!--
+    The application icon. Two colours, and both are literals rather than design tokens
+    (AGENTS.md §4.4): a browser reads this before any stylesheet exists, and an installed
+    icon cannot be re-themed at runtime. They are the light theme's `--surface-canvas` and
+    `--accent-primary`, kept in step with `web/src/shell/tokens.css` by hand.
+
+    Drawn inside the middle 80% so the `maskable` purpose can crop it to a circle without
+    cutting the berries.
+  -->
+  <rect width="192" height="192" fill="#f4f0e8"/>
+  <g fill="#ae4d28">
+    <circle cx="76" cy="112" r="30"/>
+    <circle cx="118" cy="112" r="30"/>
+    <circle cx="97" cy="76" r="30"/>
+  </g>
+  <path d="M97 46c0-14 10-24 24-26-2 16-10 25-24 26z" fill="#24332c"/>
+</svg>

@@ -30,7 +30,7 @@ const SWITCHER = 'dialog.palette[aria-label="Open a note"]';
 const SWITCHER_INPUT = `${SWITCHER} .palette-input`;
 
 /** How many times each scenario runs. Enough for a p95 to mean something, few enough to run. */
-const REPEATS = { coldStart: 5, openNote: 12, keystrokes: 60, switcher: 12, graphFrames: 90 } as const;
+const REPEATS = { coldStart: 5, warmStart: 5, openNote: 12, keystrokes: 60, switcher: 12, graphFrames: 90 } as const;
 
 /**
  * Fewest samples a browser measurement may be reported from.
@@ -269,6 +269,71 @@ async function timeToEditor(page: Page, url: string): Promise<number> {
       }),
     [EDITOR, IN_PAGE_TIMEOUT_MS] as const,
   );
+}
+
+/**
+ * Cold start → interactive, warm service-worker cache (§21.2).
+ *
+ * The other half of the cold-start pair, and the one M6 unblocked: a returning visit, where
+ * the build is already in cache storage and the page fetches only the note's own HTML. One
+ * context for the whole scenario — that is what makes the cache warm — and a fresh page per
+ * sample, which is what still makes it a start.
+ *
+ * **If the worker never takes control, this returns no samples.** A page that was measured
+ * before the worker claimed it is measuring the network, and a number like that is worse
+ * than a hole: the report would show a budget met by a feature that was not running. §21.4's
+ * rule is that a measurement which cannot observe its own subject is not a measurement.
+ */
+async function warmCacheStart(
+  browser: Browser,
+  profile: DeviceProfile,
+  origin: string,
+  storageState: StorageState,
+): Promise<{ samples: number[]; controlled: boolean }> {
+  const url = `/v/${PERF_SLUG}/${PERF_NOTE}`;
+  const context = await newContext(browser, profile, origin, storageState);
+  try {
+    const first = await context.newPage();
+    await throttle(context, first, profile.cpuThrottle);
+    await timeToEditor(first, url);
+    const controlled = await controlledByWorker(first);
+    await first.close();
+    if (!controlled) return { samples: [], controlled };
+
+    const samples: number[] = [];
+    for (let attempt = 0; attempt < REPEATS.warmStart; attempt += 1) {
+      const page = await context.newPage();
+      await throttle(context, page, profile.cpuThrottle);
+      samples.push(await timeToEditor(page, url));
+      await page.close();
+    }
+    return { samples, controlled };
+  } finally {
+    await context.close();
+  }
+}
+
+/** Whether a service worker is installed, activated and controlling this page. */
+async function controlledByWorker(page: Page): Promise<boolean> {
+  return page.evaluate(async () => {
+    if (!("serviceWorker" in navigator)) return false;
+    const claimed = new Promise<boolean>((resolve) => {
+      if (navigator.serviceWorker.controller !== null) {
+        resolve(true);
+        return;
+      }
+      navigator.serviceWorker.addEventListener("controllerchange", () => resolve(true), {
+        once: true,
+      });
+    });
+    // `ready` resolves on activation, one step before control: registration is asked for
+    // after the load event, so on a first visit this waits for both.
+    await navigator.serviceWorker.ready;
+    const timeout = new Promise<boolean>((resolve) => {
+      setTimeout(() => resolve(false), 5_000);
+    });
+    return Promise.race([claimed, timeout]);
+  });
 }
 
 /**
@@ -833,6 +898,8 @@ export async function measureDevice(
   problems = [];
   const cold = await coldStart(browser, profile, origin, storageState);
   report(profile, "cold start");
+  const warm = await warmCacheStart(browser, profile, origin, storageState);
+  report(profile, "cold start, warm cache");
 
   const context = await newContext(browser, profile, origin, storageState);
   const page = await context.newPage();
@@ -864,6 +931,16 @@ export async function measureDevice(
       samples: cold.samples,
       reduce: "median",
       caveat: "fresh context per sample: no HTTP cache, no IndexedDB replica, no service worker",
+    },
+    {
+      id: "cold-start-warm-cache",
+      samples: warm.samples,
+      reduce: "median",
+      caveat:
+        "one context across the samples, a fresh page for each: the service worker, the HTTP " +
+        "cache and the IndexedDB replica are all warm, which is what a returning visit is. " +
+        "The note's own HTML is still fetched — a navigation is network-first (§7.4)" +
+        (warm.controlled ? "" : ". No worker ever took control, so these samples were dropped"),
     },
     {
       id: "open-note",
