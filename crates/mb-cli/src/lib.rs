@@ -456,10 +456,31 @@ fn vault_create(
     });
     // Opening every vault before writing means a bad path is rejected now rather than at
     // the next `serve`, when the message is further from the mistake.
-    config
+    let opened = config
         .open_vaults(std::env::var_os("HOME").as_deref())
         .map_err(|e| e.to_string())?;
     let actor = require_server_admin(args, stdin, "vault create")?;
+    let vault = opened
+        .last()
+        .ok_or("vault create did not open the vault it was registering")?;
+    let access_path = vault.root().join("access.toml");
+    let access_exists = access_path
+        .try_exists()
+        .map_err(|error| format!("checking {}: {error}", access_path.display()))?;
+    if !access_exists {
+        let owner = mb_core::Username::parse(&actor.username).map_err(|error| error.to_string())?;
+        let policy = mb_core::Access::new(
+            vec![mb_core::Member {
+                user: owner,
+                role: mb_core::Role::Owner,
+            }],
+            Vec::new(),
+        )
+        .map_err(|error| error.to_string())?;
+        mb_server::AccessFile::from_access(policy)
+            .save(vault.root())
+            .map_err(|error| error.to_string())?;
+    }
     write_config(path, &config)?;
     append_audit(
         &auth_db_path(args),

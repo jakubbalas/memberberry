@@ -654,6 +654,69 @@ fn vault_create_registers_and_list_shows_it() {
     // And it landed in a server.toml the server can read back.
     let toml = fs::read_to_string(dir.path().join("server.toml")).expect("server.toml");
     assert!(toml.contains("slug = \"personal\""), "{toml}");
+
+    let access = vault.read("access.toml");
+    assert!(access.contains("user = \"alice\""), "{access}");
+    assert!(access.contains("role = \"owner\""), "{access}");
+}
+
+#[test]
+fn vault_create_preserves_an_existing_access_policy() {
+    let dir = TempDir::new("vault-existing-access");
+    setup_admin(&dir);
+    let vault = TempDir::new("vault-existing-access-root");
+    let existing = "[[members]]\nuser = \"bob\"\nrole = \"viewer\"\n";
+    vault.write("access.toml", existing);
+    let path = vault.path().to_string_lossy().into_owned();
+
+    let (code, _) = run_with_stdin(
+        &[
+            "vault",
+            "create",
+            "--slug",
+            "shared",
+            "--path",
+            &path,
+            "--config",
+            &config_of(&dir),
+            "--actor",
+            "alice",
+        ],
+        "correct horse battery staple\n",
+    );
+
+    assert!(is_success(code));
+    assert_eq!(vault.read("access.toml"), existing);
+}
+
+#[test]
+fn vault_create_does_not_register_when_the_initial_access_file_cannot_be_written() {
+    let dir = TempDir::new("vault-access-write-failure");
+    setup_admin(&dir);
+    let vault = TempDir::new("vault-access-write-failure-root");
+    fs::create_dir(vault.path().join(".access.toml.memberberry-tmp"))
+        .expect("blocking the atomic access-file write");
+    let path = vault.path().to_string_lossy().into_owned();
+
+    let message = run_err_with_stdin(
+        &[
+            "vault",
+            "create",
+            "--slug",
+            "blocked",
+            "--path",
+            &path,
+            "--config",
+            &config_of(&dir),
+            "--actor",
+            "alice",
+        ],
+        "correct horse battery staple\n",
+    );
+
+    assert!(message.contains("access.toml.memberberry-tmp"), "{message}");
+    assert!(!dir.path().join("server.toml").exists());
+    assert!(!vault.path().join("access.toml").exists());
 }
 
 #[test]
