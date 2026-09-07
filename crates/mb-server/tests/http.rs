@@ -37,6 +37,7 @@ struct TestServer {
     state: Arc<AppState>,
     addr: SocketAddr,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    stopped: std::sync::mpsc::Receiver<()>,
     default_headers: String,
 }
 
@@ -54,6 +55,7 @@ impl TestServer {
         let app = router(Arc::clone(&state));
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
 
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -71,6 +73,8 @@ impl TestServer {
                 });
                 drop(served.await);
             });
+            drop(rt);
+            let _sent = stopped_tx.send(());
         });
 
         let addr = addr_rx
@@ -80,6 +84,7 @@ impl TestServer {
             state,
             addr,
             shutdown: Some(shutdown_tx),
+            stopped: stopped_rx,
             default_headers: String::new(),
         }
     }
@@ -127,6 +132,18 @@ impl TestServer {
     fn tick(&self) {
         let errors = self.state.maintain_index(&mb_server::watch::Changes::All);
         assert!(errors.is_empty(), "index maintenance: {errors:?}");
+    }
+
+    /// Waits for the runtime to release every connection before a recovery test deletes it.
+    fn stop(mut self) {
+        self.shutdown
+            .take()
+            .expect("running server")
+            .send(())
+            .expect("signal shutdown");
+        self.stopped
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the server runtime must stop before derived state is deleted");
     }
 
     /// Issues a GET and returns `(status line, body)`.
@@ -258,6 +275,95 @@ impl TestServer {
         raw.split_once("\r\n\r\n")
             .map_or(raw.clone(), |(head, _)| head.to_string())
     }
+}
+
+#[test]
+fn i1_http_restart_rebuilds_readable_content_without_reviving_denied_notes() {
+    let dir = TempDir::new("http-i1");
+    dir.write("notes/Source.md", "# Before\n");
+    dir.write("notes/Target.md", "# Target\n");
+    dir.write(
+        "notes/Private/Secret.md",
+        "# Classified\n\n[[Target]] #hidden\n",
+    );
+    let policy = "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n[[rules]]\npath = \"Private\"\n[rules.grant]\nalice = \"none\"\n";
+    dir.write("access.toml", policy);
+    {
+        let vault = Vault::open(Slug::parse("v").expect("slug"), "V", dir.path()).expect("vault");
+        let canonical = vault.canonical_note("Source.md").expect("note");
+        let mut coordinator =
+            mb_server::sync::NoteCoordinator::open(&vault, &canonical).expect("coordinator");
+        let replica =
+            mb_crdt::document_from_update_v1(&coordinator.full_update()).expect("replica");
+        mb_crdt::apply_external_markdown(
+            &replica,
+            "# After\n\n[[Target]] #recovery\n\n- [ ] Recovered task\n",
+        )
+        .expect("edit");
+        coordinator
+            .apply_remote_update(
+                &mb_crdt::encode_update_v1(&replica),
+                std::time::Instant::now(),
+            )
+            .expect("accept edit");
+        coordinator.flush().expect("write Markdown");
+    }
+    let start = || {
+        TestServer::authenticated(vec![
+            Vault::open(Slug::parse("v").expect("slug"), "V", dir.path()).expect("reopen vault"),
+        ])
+    };
+    let routes = [
+        "/v/v/Source.md",
+        "/api/v1/vaults/v/notes",
+        "/api/v1/vaults/v/backlinks/Target.md",
+        "/api/v1/vaults/v/tags",
+        "/api/v1/vaults/v/graph",
+        "/api/v1/vaults/v/graph/Target.md",
+    ];
+    let server = start();
+    let before: Vec<_> = routes.iter().map(|path| server.get(path)).collect();
+    for (path, (status, body)) in routes.iter().zip(&before) {
+        assert!(is_ok(status), "{path}: {status}");
+        assert!(
+            !body.contains("Classified")
+                && !body.contains("Private/Secret")
+                && !body.contains("hidden"),
+            "{path}: {body}"
+        );
+    }
+    assert!(before[0].1.contains("Recovered task"));
+    assert!(before[1].1.contains("After"));
+    assert!(before[2].1.contains("Source.md"));
+    assert!(before[3].1.contains("recovery"));
+    assert!(before[4].1.contains("Source.md"));
+    assert!(before[5].1.contains("Source.md"));
+    server.stop();
+    std::fs::remove_dir_all(dir.path().join(".memberberry"))
+        .expect("delete all derived state with the server stopped");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("access.toml")).expect("durable ACL"),
+        policy
+    );
+    let restarted = start();
+    for (path, expected) in routes.iter().zip(&before) {
+        assert_eq!(
+            &restarted.get(path),
+            expected,
+            "{path} changed after rebuilding"
+        );
+    }
+    for prefix in [
+        "/v/v/",
+        "/api/v1/vaults/v/backlinks/",
+        "/api/v1/vaults/v/graph/",
+    ] {
+        let denied = restarted.get(&format!("{prefix}Private/Secret.md"));
+        let absent = restarted.get(&format!("{prefix}Absent.md"));
+        assert!(is_not_found(&denied.0));
+        assert_eq!(denied, absent, "recovery leaked existence through {prefix}");
+    }
+    restarted.stop();
 }
 
 #[test]
