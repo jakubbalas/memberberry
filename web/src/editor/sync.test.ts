@@ -519,6 +519,118 @@ describe("editing with the socket closed (SPEC §7.4)", () => {
   });
 });
 
+describe("detecting a divergence (SPEC §3.5)", () => {
+  function syncFrame(state: Uint8Array): ArrayBufferLike {
+    const frame = encodeBinaryFrame(0x01, "personal", "One.md", state);
+    return frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength);
+  }
+
+  /** A server document that has moved on from this client's, and its whole state. */
+  function serverState(text: string): Uint8Array {
+    const server = new Doc();
+    server.getText("body").insert(0, text);
+    return encodeStateAsUpdate(server);
+  }
+
+  it("reports what this device held before the merge", () => {
+    // The only moment it can be captured. A moment later the CRDT has merged the two and
+    // whatever lost a block-level race is gone without a trace.
+    const states: Array<{ mine?: Uint8Array; theirs: Uint8Array }> = [];
+    const { socket, document, sync } = provider({ onServerState: (state) => states.push(state) });
+    document.getText("body").insert(0, "written on a train");
+
+    socket.emit("open", {});
+    const theirs = serverState("written at a desk");
+    socket.emit("message", { data: syncFrame(theirs) });
+
+    const captured = states.at(-1);
+    expect(captured?.theirs).toEqual(theirs);
+    const before = new Doc();
+    applyUpdate(before, captured?.mine ?? new Uint8Array());
+    expect(before.getText("body").toString()).toBe("written on a train");
+    // And the local document really did move on, so the capture is the only copy of it.
+    expect(document.getText("body").toString()).not.toBe("written on a train");
+    sync.destroy();
+  });
+
+  it("reports no local state when the server already had everything", () => {
+    // The ordinary reconnection, and the cheap path: nothing of this device's can be lost,
+    // so nothing is serialized. The event is still raised — recording §3.5's merge base is
+    // the handler's other job.
+    const states: Array<{ mine?: Uint8Array; theirs: Uint8Array }> = [];
+    const { socket, document, sync } = provider({ onServerState: (state) => states.push(state) });
+    socket.emit("open", {});
+    document.getText("body").insert(0, "already there");
+
+    socket.emit("message", { data: syncFrame(encodeStateAsUpdate(document)) });
+
+    expect(states).toHaveLength(1);
+    expect(states[0]?.mine).toBeUndefined();
+    sync.destroy();
+  });
+
+  it("detects a replica restored from storage, with nothing counted as pending", () => {
+    // The case the unsent-change counter cannot see, and the one §3.5 exists for: the device
+    // edited offline, the tab was closed, and the page was reopened. `pending` starts at zero
+    // on a fresh provider, so a counter-based check finds nothing to reconcile — while the
+    // restored replica holds exactly the updates the server has never seen.
+    const states: Array<{ mine?: Uint8Array; theirs: Uint8Array }> = [];
+    const restored = new Doc();
+    restored.getText("body").insert(0, "written on a train");
+    const { socket, sync } = provider({
+      document: restored,
+      onServerState: (state) => states.push(state),
+    });
+    expect(sync.pending).toBe(0);
+
+    socket.emit("open", {});
+    socket.emit("message", { data: syncFrame(serverState("written at a desk")) });
+
+    const before = new Doc();
+    applyUpdate(before, states.at(-1)?.mine ?? new Uint8Array());
+    expect(before.getText("body").toString()).toBe("written on a train");
+    sync.destroy();
+  });
+
+  it("says nothing about an incremental update from another client", () => {
+    // Only the server's whole state can say what it does *not* have. An ordinary live update
+    // is not a reconnection and reconciling on one would mark every collaborator's edit.
+    const states: Array<{ mine?: Uint8Array; theirs: Uint8Array }> = [];
+    const { socket, sync } = provider({ onServerState: (state) => states.push(state) });
+    socket.emit("open", {});
+
+    const other = new Doc();
+    other.getText("body").insert(0, "somebody else typing");
+    const update = encodeBinaryFrame(0x02, "personal", "One.md", encodeStateAsUpdate(other));
+    socket.emit("message", {
+      data: update.buffer.slice(update.byteOffset, update.byteOffset + update.byteLength),
+    });
+
+    expect(states).toEqual([]);
+    sync.destroy();
+  });
+
+  it("still flushes what the server is missing", () => {
+    // The detection reuses the flush's own difference, so a mistake in one is a lost edit in
+    // the other. Asserted together for that reason.
+    const { socket, document, sync } = provider({ onServerState: () => undefined });
+    document.getText("body").insert(0, "written on a train");
+    const theirs = serverState("written at a desk");
+
+    socket.emit("open", {});
+    socket.emit("message", { data: syncFrame(theirs) });
+
+    const server = new Doc();
+    applyUpdate(server, theirs);
+    for (const frame of socket.binary().map(decodeBinaryFrame)) {
+      if (frame !== null) applyUpdate(server, frame.payload);
+    }
+    expect(server.getText("body").toString()).toBe(document.getText("body").toString());
+    expect(sync.pending).toBe(0);
+    sync.destroy();
+  });
+});
+
 describe("reconnecting (SPEC §7.4)", () => {
   it("opens a new socket after a close, and subscribes again", () => {
     vi.useFakeTimers();

@@ -44,6 +44,20 @@ export interface ResidentBody {
    * everything else about the LRU is approximate.
    */
   readonly dirty: boolean;
+  /**
+   * The canonical Markdown this note had when this device and the server were last in sync.
+   *
+   * §3.5's merge base. Two versions of a note cannot say who changed what — a block only one
+   * side has is either an addition or a deletion — so detecting a real collision needs the
+   * version they last agreed on. Absent for a note this device has never synced, and for one
+   * whose record predates the field; `conflict::merge` degrades to a two-way comparison then.
+   *
+   * It lives on the resident record, beside the body, because that is what makes it follow
+   * the body: dropping a note for the cap, a revocation or a rename drops its base with it,
+   * and nothing has to remember to. It is a cache of content that is also in the note, so it
+   * is nothing C2 has an opinion about and nothing a permission decision rests on.
+   */
+  readonly base?: string;
 }
 
 /** The subset of IndexedDB this module needs, so a test can supply its own. */
@@ -213,7 +227,7 @@ function readPin(record: unknown): PinnedNote[] {
 
 function readResident(record: unknown): ResidentBody[] {
   if (typeof record !== "object" || record === null) return [];
-  const { vault, note, openedAt, bytes, dirty } = record as Record<string, unknown>;
+  const { vault, note, openedAt, bytes, dirty, base } = record as Record<string, unknown>;
   if (typeof vault !== "string" || typeof note !== "string") return [];
   return [
     {
@@ -225,6 +239,10 @@ function readResident(record: unknown): ResidentBody[] {
       // this field existed might hold unsent changes and nothing here can tell; refusing to
       // evict it costs one note's worth of quota, and evicting it costs somebody's writing.
       dirty: dirty !== false,
+      // Dropped rather than coerced when it is not a string: a base that is not the Markdown
+      // this note had is worse than none, because `conflict::merge` trusts it. No base
+      // degrades to a comparison that keeps content; a wrong one silently takes a side.
+      ...(typeof base === "string" ? { base } : {}),
     },
   ];
 }

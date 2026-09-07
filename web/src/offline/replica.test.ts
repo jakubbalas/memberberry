@@ -239,6 +239,85 @@ describe("measuring a note", () => {
   });
 });
 
+describe("the merge base (§3.5)", () => {
+  it("is absent until a note has synced", async () => {
+    await replica.opened("personal", "One.md");
+    expect(await replica.base("personal", "One.md")).toBeUndefined();
+  });
+
+  it("is absent for a note this device does not hold", async () => {
+    // Not an error and not an empty string: a note with no body cannot have local edits, so
+    // there is nothing a base would be the base *of*.
+    expect(await replica.base("personal", "Absent.md")).toBeUndefined();
+  });
+
+  it("records the Markdown both sides hold", async () => {
+    await replica.opened("personal", "One.md");
+    await replica.measured("personal", "One.md", { base: "# One\n" });
+
+    expect(await replica.base("personal", "One.md")).toBe("# One\n");
+  });
+
+  it("survives the note being opened again", async () => {
+    // `putResident` replaces rather than merges. A base forgotten on open would make the
+    // next reconnection undetectable, which is the silent loss §3.5 exists to prevent.
+    await replica.opened("personal", "One.md");
+    await replica.measured("personal", "One.md", { base: "# One\n" });
+    await replica.opened("personal", "One.md");
+
+    expect(await replica.base("personal", "One.md")).toBe("# One\n");
+  });
+
+  it("is dropped with the body when the note stops being readable", async () => {
+    // The base is note content. §6.7 requires a reconnection to drop what this user may no
+    // longer read, and living on the resident record is what makes that automatic.
+    await replica.opened("personal", "Secret.md");
+    await replica.measured("personal", "Secret.md", { base: "# Secret\n" });
+    await replica.reconcile("personal", { kind: "ok", notes: [{ path: "One.md", title: "One" }] });
+
+    expect(await replica.base("personal", "Secret.md")).toBeUndefined();
+  });
+
+  it("is dropped with the vault when access is refused", async () => {
+    await replica.opened("personal", "Secret.md");
+    await replica.measured("personal", "Secret.md", { base: "# Secret\n" });
+    await replica.reconcile("personal", { kind: "denied" });
+
+    expect(await replica.base("personal", "Secret.md")).toBeUndefined();
+  });
+
+  it("is dropped when the note is evicted for the cap", async () => {
+    let clock = 1_000;
+    const capped = createReplica({
+      store,
+      dropBody: async () => {},
+      now: () => (clock += 1_000),
+      caps: { notes: 1, bytes: 1_000_000 },
+    });
+    await capped.opened("personal", "Old.md");
+    await capped.measured("personal", "Old.md", { base: "# Old\n", dirty: false });
+    await capped.opened("personal", "New.md");
+    await capped.evict("personal");
+
+    expect(await capped.base("personal", "Old.md")).toBeUndefined();
+  });
+
+  it("is not read back when the stored value is not a string", async () => {
+    // Our own data, but written by a previous release and reachable from devtools. A base
+    // that is not this note's Markdown is worse than none: the merge trusts it.
+    await store.putResident({
+      vault: "personal",
+      note: "One.md",
+      openedAt: 1,
+      bytes: 0,
+      dirty: false,
+      base: 7 as unknown as string,
+    });
+
+    expect(await replica.base("personal", "One.md")).toBeUndefined();
+  });
+});
+
 describe("unreadable", () => {
   it("is everything the readable set does not name", () => {
     const residents = [

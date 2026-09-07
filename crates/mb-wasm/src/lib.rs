@@ -66,6 +66,63 @@ pub fn update_from_markdown_inner(markdown: &str) -> Result<Vec<u8>, mb_crdt::Cr
     Ok(mb_crdt::encode_update_v1(&crdt))
 }
 
+/// Merges an external version of a note into the local one, marking divergences (§3.5).
+///
+/// The client calls this when a reconnection brings a version of a note it also changed
+/// while offline. Every version crosses as Markdown and the merged note comes out the same
+/// way, so the block alignment and the callout it writes are `mb-core`'s — the same code the
+/// server would run, which is the whole point of §5.2.
+///
+/// `base` is the Markdown this note had when the two sides were last in sync, and is what
+/// tells a collision from an ordinary remote edit. `undefined` — a note this device has never
+/// synced, or whose base was dropped with its body — degrades to the two-way comparison,
+/// which keeps content and can therefore resurrect a deletion made elsewhere.
+///
+/// `stamp` is the caller's: `mb-core` has no clock.
+#[wasm_bindgen(js_name = "mergeWithConflicts")]
+#[must_use]
+pub fn merge_with_conflicts(base: Option<String>, mine: &str, theirs: &str, stamp: &str) -> String {
+    let base = base.map(|base| mb_core::parse(&base));
+    mb_core::to_markdown(&mb_core::conflict::merge(
+        base.as_ref(),
+        &mb_core::parse(mine),
+        &mb_core::parse(theirs),
+        stamp,
+    ))
+}
+
+/// How many unresolved conflict callouts a note carries (§3.5).
+#[wasm_bindgen(js_name = "conflictCount")]
+#[must_use]
+pub fn conflict_count(markdown: &str) -> usize {
+    mb_core::conflict::count(&mb_core::parse(markdown))
+}
+
+/// Resolves the `ordinal`-th unresolved conflict callout in a note (§3.5).
+///
+/// `ordinal` counts conflicts rather than blocks, because that is what the editor can say
+/// without knowing how the note canonicalizes — see `mb_core::conflict::nth`.
+///
+/// `keep` is `"mine"`, `"theirs"` or `"both"`; anything else, or an ordinal past the last
+/// conflict, returns the note unchanged. A reader clicks a button on a note that may have
+/// moved on since it rendered, so a stale request has to be inert rather than destructive.
+#[wasm_bindgen(js_name = "resolveConflict")]
+#[must_use]
+pub fn resolve_conflict(markdown: &str, ordinal: usize, keep: &str) -> String {
+    let resolution = match keep {
+        "mine" => mb_core::conflict::Resolution::Mine,
+        "theirs" => mb_core::conflict::Resolution::Theirs,
+        "both" => mb_core::conflict::Resolution::Both,
+        _ => return markdown.to_string(),
+    };
+    let mut document = mb_core::parse(markdown);
+    let Some(index) = mb_core::conflict::nth(&document.blocks, ordinal) else {
+        return markdown.to_string();
+    };
+    document.blocks = mb_core::conflict::resolve(&document.blocks, index, resolution);
+    mb_core::to_markdown(&document)
+}
+
 /// Rewrites Markdown into its canonical form (`SPEC.md` §4.5).
 ///
 /// The same function the server and `memberberry normalize` run, so a source view in the

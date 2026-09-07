@@ -9,10 +9,13 @@
  */
 
 import init, {
+  conflictCount as wasmConflictCount,
   extract as wasmExtract,
+  mergeWithConflicts as wasmMergeWithConflicts,
   markdownFromUpdate as wasmMarkdownFromUpdate,
   noteTitle as wasmNoteTitle,
   normalize as wasmNormalize,
+  resolveConflict as wasmResolveConflict,
   schemaJson as wasmSchemaJson,
   toHtml as wasmToHtml,
   updateFromMarkdown as wasmUpdateFromMarkdown,
@@ -121,4 +124,58 @@ export async function markdownFromUpdate(update: Uint8Array): Promise<string> {
 export async function updateFromMarkdown(markdown: string): Promise<Uint8Array> {
   await load();
   return wasmUpdateFromMarkdown(markdown);
+}
+
+/** Which side of a conflict a reader chose (`SPEC.md` §3.5). */
+export type ConflictSide = "mine" | "theirs" | "both";
+
+/**
+ * The WASM entry points §3.5 needs, callable without an `await`.
+ *
+ * Every other function in this module awaits the module load, so a caller never has to think
+ * about it. Reconciling a divergence is the one place that cannot afford to: it runs when the
+ * server's state lands on top of local changes, and between reading the document and writing
+ * the merged version back there must be no gap a keystroke can fall into. An `await` there is
+ * exactly that gap — the merge would be computed from a document that has since moved on, and
+ * writing it back would delete whatever was typed in the meantime.
+ *
+ * So the load is awaited once, up front, and what comes back is this: the same functions,
+ * synchronous, for the one caller that has to be atomic.
+ */
+export interface NoteBridge {
+  /** Materializes a CRDT update as canonical Markdown. */
+  markdownFromUpdate(update: Uint8Array): string;
+  /** Parses Markdown into the shared CRDT update format. */
+  updateFromMarkdown(markdown: string): Uint8Array;
+  /**
+   * Merges an external version of a note into the local one, marking divergences (§3.5).
+   *
+   * `base` is the Markdown this note had when the two sides were last in sync, and is what
+   * tells a collision from an ordinary remote edit. `undefined` degrades to a two-way
+   * comparison that keeps content, and so can resurrect a deletion made elsewhere.
+   */
+  merge(base: string | undefined, mine: string, theirs: string, stamp: string): string;
+  /** How many unresolved conflict callouts a note carries, at any depth. */
+  count(markdown: string): number;
+  /**
+   * Resolves the `ordinal`-th unresolved conflict, counting from the top of the note.
+   *
+   * An ordinal rather than a block index: the editor's document can hold blocks the canonical
+   * Markdown does not, so an index taken from what is on screen can address a different
+   * block. Returns the note unchanged when there is no such conflict, which is what makes a
+   * click on a note that has moved on inert rather than destructive.
+   */
+  resolve(markdown: string, ordinal: number, keep: ConflictSide): string;
+}
+
+/** Loads the module if it is not loaded, and hands back its synchronous entry points. */
+export async function noteBridge(): Promise<NoteBridge> {
+  await load();
+  return {
+    markdownFromUpdate: wasmMarkdownFromUpdate,
+    updateFromMarkdown: wasmUpdateFromMarkdown,
+    merge: (base, mine, theirs, stamp) => wasmMergeWithConflicts(base, mine, theirs, stamp),
+    count: wasmConflictCount,
+    resolve: (markdown, ordinal, keep) => wasmResolveConflict(markdown, ordinal, keep),
+  };
 }

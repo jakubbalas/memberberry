@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   PROSEMIRROR_ROOT,
+  createServerStateSignal,
   createNoteCollaboration,
   createYjsBinding,
   persistenceName,
@@ -92,6 +93,7 @@ describe("createNoteCollaboration", () => {
       collaboration.document,
       collaboration.awareness,
       expect.any(Function),
+      expect.any(Function),
     );
     await collaboration.destroy();
     expect(remote.destroy).toHaveBeenCalledOnce();
@@ -137,6 +139,30 @@ describe("createNoteCollaboration", () => {
     await collaboration.destroy();
   });
 
+  it("retains a server state raised during transport startup until a consumer subscribes", async () => {
+    const state = { mine: new Uint8Array([1]), theirs: new Uint8Array([2]) };
+    const collaboration = createNoteCollaboration({
+      vaultId: "vault",
+      noteId: "note",
+      createPersistence: () => fakePersistence(Promise.resolve()),
+      remoteSync: { endpoint: "ws://localhost/api/v1/sync", vault: "personal", note: "One.md", user: "alice" },
+      createRemoteSync: (_options, _document, _awareness, _onConnectionChange, onServerState) => {
+        onServerState(state);
+        return { connected: false, pending: 0, synced: false, sendAwareness: vi.fn(), destroy: vi.fn() };
+      },
+    });
+    await collaboration.whenReady;
+    const received = vi.fn();
+    const unsubscribe = collaboration.serverState.subscribe(received);
+    expect(received.mock.calls).toEqual([[state]]);
+    unsubscribe();
+    const next = vi.fn();
+    const removeNext = collaboration.serverState.subscribe(next);
+    expect(next).not.toHaveBeenCalled();
+    removeNext();
+    await collaboration.destroy();
+  });
+
   it("has no connection to report for a local-only document", () => {
     // SPEC 7.5: a note with no server transport is not "offline", it simply has no server.
     const collaboration = createNoteCollaboration({
@@ -146,6 +172,45 @@ describe("createNoteCollaboration", () => {
     });
 
     expect(collaboration.connection).toBeUndefined();
+  });
+});
+
+describe("createServerStateSignal", () => {
+  it("delivers to the active listener and stops calling it after teardown", () => {
+    const signal = createServerStateSignal();
+    const received = vi.fn();
+    const remove = signal.subscribe(received);
+    const first = { mine: new Uint8Array([1]), theirs: new Uint8Array([2]) };
+    signal.raise(first);
+    remove();
+    signal.raise({ theirs: new Uint8Array([3]) });
+    expect(received.mock.calls).toEqual([[first]]);
+  });
+
+  it("buffers the latest event when no listener is present", () => {
+    // The transport connects before the editor that reconciles exists, so an event delivered
+    // to nobody is a note that merged silently (§3.5). The newest is the one to keep: two
+    // arrivals before anything subscribed were both against the same local state.
+    const signal = createServerStateSignal();
+    signal.raise({ theirs: new Uint8Array([1]) });
+    const latest = { mine: new Uint8Array([2]), theirs: new Uint8Array([3]) };
+    signal.raise(latest);
+    const received = vi.fn();
+    const remove = signal.subscribe(received);
+    expect(received.mock.calls).toEqual([[latest]]);
+    remove();
+  });
+
+  it("hands a buffered event to only the first subscriber", () => {
+    const signal = createServerStateSignal();
+    const state = { theirs: new Uint8Array([1]) };
+    signal.raise(state);
+    const first = vi.fn();
+    signal.subscribe(first)();
+    const second = vi.fn();
+    signal.subscribe(second)();
+    expect(first.mock.calls).toEqual([[state]]);
+    expect(second).not.toHaveBeenCalled();
   });
 });
 

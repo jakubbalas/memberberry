@@ -16,7 +16,10 @@
     clippy::panic
 )]
 
-use mb_wasm::{facts_of, normalize, note_title, schema_json, to_html};
+use mb_wasm::{
+    conflict_count, facts_of, merge_with_conflicts, normalize, note_title, resolve_conflict,
+    schema_json, to_html,
+};
 
 #[test]
 fn normalize_is_the_canonical_form_the_server_writes() {
@@ -107,4 +110,53 @@ fn the_schema_shipped_to_the_browser_is_the_one_the_crate_is_held_to() {
     let shipped = schema_json();
     assert_eq!(shipped, include_str!("../../mb-core/schema.json"));
     assert!(shipped.contains("\"topNode\": \"doc\""), "{shipped}");
+}
+
+#[test]
+fn merging_marks_a_divergence_and_counts_it() {
+    let merged = merge_with_conflicts(
+        Some("Base.\n".to_string()),
+        "Mine.\n",
+        "Theirs.\n",
+        "2026-08-28T22:41:07Z",
+    );
+    assert!(merged.starts_with("Mine.\n"), "{merged}");
+    assert!(merged.contains("[!conflict]"), "{merged}");
+    assert_eq!(conflict_count(&merged), 1);
+    assert_eq!(conflict_count("Mine.\n"), 0);
+}
+
+#[test]
+fn a_base_the_local_side_matches_takes_their_version_without_marking_it() {
+    // The case that decides whether this feature is usable: somebody else edited a note this
+    // device merely held. Crossing the boundary must not lose the base, or every reconnection
+    // in a shared vault produces a callout.
+    let merged = merge_with_conflicts(Some("Base.\n".to_string()), "Base.\n", "Theirs.\n", "now");
+    assert_eq!(merged, "Theirs.\n");
+    assert_eq!(conflict_count(&merged), 0);
+}
+
+#[test]
+fn a_missing_base_degrades_to_the_two_way_comparison() {
+    // `undefined` from JavaScript, which is a note this device has never synced.
+    let merged = merge_with_conflicts(None, "Mine.\n", "Theirs.\n", "now");
+    assert_eq!(conflict_count(&merged), 1, "{merged}");
+    assert!(merged.starts_with("Mine.\n"), "{merged}");
+}
+
+#[test]
+fn resolving_takes_the_side_it_is_named() {
+    let merged = merge_with_conflicts(None, "Mine.\n", "Theirs.\n", "now");
+    assert_eq!(resolve_conflict(&merged, 0, "mine"), "Mine.\n");
+    assert_eq!(resolve_conflict(&merged, 0, "theirs"), "Theirs.\n");
+    assert_eq!(resolve_conflict(&merged, 0, "both"), "Mine.\n\nTheirs.\n");
+}
+
+#[test]
+fn an_unknown_resolution_changes_nothing() {
+    // The argument crosses a language boundary as a string, so a typo on the JavaScript side
+    // has to be inert rather than destructive.
+    let merged = merge_with_conflicts(None, "Mine.\n", "Theirs.\n", "now");
+    assert_eq!(resolve_conflict(&merged, 0, "neither"), merged);
+    assert_eq!(resolve_conflict(&merged, 99, "mine"), merged);
 }

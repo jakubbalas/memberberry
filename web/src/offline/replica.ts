@@ -31,6 +31,8 @@ export type CatalogAnswer =
 export interface ResidentPatch {
   readonly bytes?: number;
   readonly dirty?: boolean;
+  /** The Markdown both sides now hold — §3.5's merge base. */
+  readonly base?: string;
 }
 
 /** Deletes a Y document's own IndexedDB database. */
@@ -75,6 +77,13 @@ export interface Replica {
    * Returns what it dropped. Never a pinned note and never one with unsent changes.
    */
   evict(vault: string): Promise<readonly string[]>;
+  /**
+   * The Markdown this note had when this device and the server were last in sync (§3.5).
+   *
+   * `undefined` for a note this device has never synced, or whose body it does not hold —
+   * both of which make a divergence undetectable rather than wrong. See `ResidentBody.base`.
+   */
+  base(vault: string, note: string): Promise<string | undefined>;
   /** The notes this device is keeping offline (§7.2's pinned tier). */
   pinned(vault: string): Promise<readonly string[]>;
   /** Marks a note to keep, or stops keeping it. Idempotent either way. */
@@ -122,8 +131,9 @@ export function createReplica(options: ReplicaOptions): Replica {
       return notes?.find((entry) => entry.path === note);
     },
     async opened(vault, note): Promise<void> {
-      // Read first, so opening a note does not forget what it weighed or that it has unsent
-      // changes — `putResident` replaces the record rather than merging it.
+      // Read first, so opening a note does not forget what it weighed, that it has unsent
+      // changes, or what its merge base is — `putResident` replaces the record rather than
+      // merging it, and a forgotten base makes the next divergence undetectable (§3.5).
       const existing = await options.store.getResident(vault, note);
       await options.store.putResident({
         vault,
@@ -131,6 +141,7 @@ export function createReplica(options: ReplicaOptions): Replica {
         openedAt: now(),
         bytes: existing?.bytes ?? 0,
         dirty: existing?.dirty ?? false,
+        ...(existing?.base === undefined ? {} : { base: existing.base }),
       });
     },
     async measured(vault, note, patch): Promise<void> {
@@ -142,7 +153,11 @@ export function createReplica(options: ReplicaOptions): Replica {
         ...existing,
         ...(patch.bytes === undefined ? {} : { bytes: patch.bytes }),
         ...(patch.dirty === undefined ? {} : { dirty: patch.dirty }),
+        ...(patch.base === undefined ? {} : { base: patch.base }),
       });
+    },
+    async base(vault, note): Promise<string | undefined> {
+      return (await options.store.getResident(vault, note))?.base;
     },
     async evict(vault): Promise<readonly string[]> {
       const pinned = new Set((await options.store.pins(vault)).map((pin) => pin.note));

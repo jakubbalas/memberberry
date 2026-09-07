@@ -68,6 +68,32 @@ export interface CreateSyncProviderOptions {
   readonly network?: Pick<EventTarget, "addEventListener" | "removeEventListener">;
   /** Notified whenever the transport's connected state or pending count changes. */
   readonly onConnectionChange?: (state: ConnectionState) => void;
+  /**
+   * Notified every time the server sends this note's whole state.
+   *
+   * §3.5's precondition, and the only moment it can be detected: the CRDT is about to merge
+   * two versions of this note at block granularity, and whatever loses a block-level race
+   * disappears without a trace. `mine` is this device's state *before* that merge — captured
+   * here because a moment later there is nowhere to get it from.
+   *
+   * Raised even when there is nothing to reconcile, because the handler's other job is to
+   * record what both sides now hold as §3.5's merge base. That is also the cheap case: with
+   * nothing unsent, `mine` is absent and no state is serialized.
+   */
+  readonly onServerState?: (state: ServerState) => void;
+}
+
+/** The server's whole state, and what this device held that the server had not seen. */
+export interface ServerState {
+  /**
+   * This device's state before the merge, absent when the server already had everything.
+   *
+   * Present is exactly the §3.5 case: the local replica held updates the server's frame did
+   * not cover, so the merge that is about to happen can drop one of them.
+   */
+  readonly mine?: Uint8Array;
+  /** The server's whole state, as it arrived. */
+  readonly theirs: Uint8Array;
 }
 
 /** What the transport reports about itself, for a UI that has to say so (§7.4). */
@@ -180,10 +206,11 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
    * client's own updates stayed on the device forever.
    *
    * The difference is computed from the state vector *of the server's own frame*, so it is
-   * exactly what is missing rather than everything this client has.
+   * exactly what is missing rather than everything this client has. It is computed by the
+   * caller, before the merge, because it is also what detects §3.5's divergence — and after
+   * the merge there is no difference left to see.
    */
-  const flush = (remote: Uint8Array): void => {
-    const missing = encodeStateAsUpdate(options.document, encodeStateVectorFromUpdate(remote));
+  const flush = (missing: Uint8Array): void => {
     if (hasContent(missing)) {
       sendBinary(encodeBinaryFrame(FRAME_UPDATE, options.vault, options.note, missing));
     }
@@ -203,12 +230,29 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     if (event.data instanceof ArrayBuffer) {
       const frame = decodeBinaryFrame(new Uint8Array(event.data));
       if (frame === null || frame.vault !== options.vault || frame.note !== options.note) return;
-      if (frame.tag === FRAME_SYNC || frame.tag === FRAME_UPDATE) {
+      if (frame.tag === FRAME_UPDATE) {
         applyUpdate(options.document, frame.payload, REMOTE_SYNC_ORIGIN);
+        return;
       }
+      if (frame.tag !== FRAME_SYNC) return;
       // The server answers `subscribe` with its whole state, which is the only frame that
-      // says what it does *not* have.
-      if (frame.tag === FRAME_SYNC) flush(frame.payload);
+      // says what it does *not* have — and so the only one that can see a divergence.
+      //
+      // why: the difference between the two state vectors, not a count of unsent updates.
+      // The count lives in this object and a fresh page starts it at zero, which is exactly
+      // the case §3.5 exists for: a device that edited offline, was closed, and reopened. The
+      // vectors are the document's own state, so they survive the reload the counter does not.
+      const missing = encodeStateAsUpdate(
+        options.document,
+        encodeStateVectorFromUpdate(frame.payload),
+      );
+      const mine = hasContent(missing) ? encodeStateAsUpdate(options.document) : undefined;
+      applyUpdate(options.document, frame.payload, REMOTE_SYNC_ORIGIN);
+      flush(missing);
+      options.onServerState?.({
+        theirs: frame.payload,
+        ...(mine === undefined ? {} : { mine }),
+      });
       return;
     }
     if (typeof event.data !== "string") return;

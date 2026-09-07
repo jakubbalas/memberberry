@@ -17,6 +17,7 @@ import {
   createSyncProvider,
   presenceColor,
   type ConnectionState,
+  type ServerState,
   type SyncProvider,
 } from "./sync.js";
 
@@ -51,8 +52,51 @@ export interface NoteCollaboration {
   readonly fragment: XmlFragment;
   readonly awareness: Awareness;
   readonly connection?: ConnectionStatus;
+  /** Raised each time the server sends this note's whole state (§3.5). */
+  readonly serverState: ServerStateSignal;
   readonly whenReady: Promise<void>;
   destroy(): Promise<void>;
+}
+
+/** A one-slot event: the server's whole state, held until something is listening for it. */
+export interface ServerStateSignal {
+  /** Registers the handler and returns its teardown. */
+  subscribe(handler: (state: ServerState) => void): () => void;
+}
+
+/**
+ * A server-state signal that buffers the most recent event.
+ *
+ * why: buffered rather than fire-and-forget. The transport connects as soon as the local
+ * replica is restored, and the editor that reconciles a divergence is created a moment
+ * later — so a divergence detected in that window would be delivered to nobody, and a note
+ * would merge silently exactly when a reader was least expecting it. One slot is enough:
+ * two of these before the first is handled would both be against the same local state, and
+ * the later one carries the newer server version.
+ */
+export function createServerStateSignal(): ServerStateSignal & {
+  raise(state: ServerState): void;
+} {
+  let handler: ((state: ServerState) => void) | undefined;
+  let held: ServerState | undefined;
+  return {
+    subscribe(next): () => void {
+      handler = next;
+      const buffered = held;
+      held = undefined;
+      if (buffered !== undefined) next(buffered);
+      return () => {
+        handler = undefined;
+      };
+    },
+    raise(state): void {
+      if (handler === undefined) {
+        held = state;
+        return;
+      }
+      handler(state);
+    },
+  };
 }
 
 /** A mutable connection status plus the setter its transport drives. */
@@ -100,6 +144,7 @@ export interface CreateNoteCollaborationOptions {
     document: Doc,
     awareness: Awareness,
     onConnectionChange: (state: ConnectionState) => void,
+    onServerState: (state: ServerState) => void,
   ) => SyncProvider;
 }
 
@@ -121,11 +166,16 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
   const persistence = createPersistence(name, document);
   let remote: SyncProvider | undefined;
   const status = options.remoteSync === undefined ? undefined : createConnectionStatus();
+  const serverState = createServerStateSignal();
   const whenReady = persistence.whenSynced.then(() => {
     if (options.remoteSync !== undefined) {
       const createRemoteSync = options.createRemoteSync ?? defaultRemoteSync;
-      remote = createRemoteSync(options.remoteSync, document, awareness, (state) =>
-        status?.set(state),
+      remote = createRemoteSync(
+        options.remoteSync,
+        document,
+        awareness,
+        (state) => status?.set(state),
+        serverState.raise,
       );
     }
   });
@@ -135,6 +185,7 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
     document,
     fragment,
     awareness,
+    serverState,
     ...(status === undefined ? {} : { connection: status }),
     whenReady,
     destroy: () => {
@@ -182,6 +233,13 @@ function defaultRemoteSync(
   document: Doc,
   awareness: Awareness,
   onConnectionChange: (state: ConnectionState) => void,
+  onServerState: (state: ServerState) => void,
 ): SyncProvider {
-  return createSyncProvider({ ...options, document, awareness, onConnectionChange });
+  return createSyncProvider({
+    ...options,
+    document,
+    awareness,
+    onConnectionChange,
+    onServerState,
+  });
 }

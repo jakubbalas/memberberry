@@ -24,6 +24,7 @@
 )]
 
 pub mod canonical;
+pub mod conflict;
 pub mod extract;
 pub mod frontmatter;
 pub mod html;
