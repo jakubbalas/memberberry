@@ -23,9 +23,12 @@ function responding(init: { status?: number; body?: unknown } = {}): typeof glob
 describe("fetching the note index", () => {
   it("returns what the server listed", async () => {
     const answer = await fetchNotes("personal", {
-      fetch: responding({ body: { notes: [{ path: "One.md", title: "One" }] } }),
+      fetch: responding({ body: { notes: [{ path: "One.md", title: "One", conflicts: 2 }] } }),
     });
-    expect(answer).toEqual({ kind: "ok", notes: [{ path: "One.md", title: "One" }] });
+    expect(answer).toEqual({
+      kind: "ok",
+      notes: [{ path: "One.md", title: "One", conflicts: 2 }],
+    });
   });
 
   it("drops an entry with the wrong shape rather than rendering it", async () => {
@@ -33,7 +36,10 @@ describe("fetching the note index", () => {
     const answer = await fetchNotes("personal", {
       fetch: responding({ body: { notes: [{ path: 7 }, { path: "One.md", title: null }] } }),
     });
-    expect(answer).toEqual({ kind: "ok", notes: [{ path: "One.md", title: null }] });
+    expect(answer).toEqual({
+      kind: "ok",
+      notes: [{ path: "One.md", title: null, conflicts: 0 }],
+    });
   });
 
   it.each([404, 401, 403])("reads %d as a refusal", async (status) => {
@@ -75,15 +81,21 @@ describe("fetching the note index", () => {
 
 describe("labelling a note", () => {
   it("prefers the title and falls back to the path", () => {
-    expect(noteLabel({ path: "Projects/Roadmap.md", title: "Roadmap" })).toBe("Roadmap");
-    expect(noteLabel({ path: "Projects/Roadmap.md", title: null })).toBe("Projects/Roadmap");
+    expect(noteLabel({ path: "Projects/Roadmap.md", title: "Roadmap", conflicts: 0 })).toBe(
+      "Roadmap",
+    );
+    expect(noteLabel({ path: "Projects/Roadmap.md", title: null, conflicts: 0 })).toBe(
+      "Projects/Roadmap",
+    );
   });
 
   it("hints at the folder only when that adds something", () => {
-    expect(noteHint({ path: "Roadmap.md", title: "Roadmap" })).toBeUndefined();
-    expect(noteHint({ path: "Projects/Roadmap.md", title: "Roadmap" })).toBe("Projects");
-    expect(noteHint({ path: "Projects/2024-01-15.md", title: "Sprint planning" })).toBe(
-      "Projects/2024-01-15",
+    expect(noteHint({ path: "Roadmap.md", title: "Roadmap", conflicts: 0 })).toBeUndefined();
+    expect(noteHint({ path: "Projects/Roadmap.md", title: "Roadmap", conflicts: 0 })).toBe(
+      "Projects",
     );
+    expect(
+      noteHint({ path: "Projects/2024-01-15.md", title: "Sprint planning", conflicts: 0 }),
+    ).toBe("Projects/2024-01-15");
   });
 });

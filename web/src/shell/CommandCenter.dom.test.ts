@@ -43,10 +43,10 @@ const openSurface = async (_options: OpenNoteSurfaceOptions): Promise<NoteSurfac
 });
 
 const NOTES: readonly NoteSummary[] = [
-  { path: "Welcome.md", title: "Welcome" },
-  { path: "Projects/Roadmap.md", title: "Product roadmap" },
-  { path: "Projects/2024-01-15.md", title: "Sprint planning" },
-  { path: "Untitled.md", title: null },
+  { path: "Welcome.md", title: "Welcome", conflicts: 0 },
+  { path: "Projects/Roadmap.md", title: "Product roadmap", conflicts: 0 },
+  { path: "Projects/2024-01-15.md", title: "Sprint planning", conflicts: 0 },
+  { path: "Untitled.md", title: null, conflicts: 0 },
 ];
 
 const VAULTS: readonly VaultSummary[] = [
@@ -692,6 +692,40 @@ describe("keeping a note offline (SPEC §7.2)", () => {
       shortcut("P", { shiftKey: true });
       await flush();
       expect(labels().some((label) => label.startsWith("Stop keeping this note offline"))).toBe(true);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("stays open when a stale native close event arrives after an immediate reopen", async () => {
+    const store = pinnedNotes();
+    const { teardown } = render({ notes: ["Projects/Roadmap.md"], pins: store.pins });
+    try {
+      await flush();
+      shortcut("P", { shiftKey: true });
+      await flush();
+      const dialog = palette();
+      if (dialog === null) throw new Error("the palette should be open");
+      let deliverClose = (): void => {};
+      dialog.close = function closeLater(this: HTMLDialogElement): void {
+        this.open = false;
+        deliverClose = () => this.dispatchEvent(new Event("close"));
+      };
+      const option = options().find((entry) =>
+        entry.textContent?.trim().startsWith("Keep this note available offline"),
+      );
+      if (option === undefined) throw new Error("the pin command should be listed");
+      option.click();
+      await tick();
+
+      shortcut("P", { shiftKey: true });
+      await flush();
+      expect(palette()?.open).toBe(true);
+
+      // Deliver the event queued by the *previous* close after the second shortcut opened.
+      deliverClose();
+      await flush();
+      expect(palette()?.open).toBe(true);
     } finally {
       teardown();
     }

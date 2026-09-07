@@ -31,7 +31,7 @@ beforeEach(async () => {
 
 describe("a fresh readable set", () => {
   it("becomes the stored replica", async () => {
-    const notes = [{ path: "One.md", title: "One" }];
+    const notes = [{ path: "One.md", title: "One", conflicts: 0 }];
     expect(await replica.reconcile("personal", { kind: "ok", notes })).toEqual(notes);
     expect(await store.getNotes("personal")).toEqual(notes);
   });
@@ -43,7 +43,10 @@ describe("a fresh readable set", () => {
     await store.putResident({ vault: "personal", note: "Secret.md", openedAt: 1, bytes: 0, dirty: false });
     await store.putResident({ vault: "personal", note: "One.md", openedAt: 2, bytes: 0, dirty: false });
 
-    await replica.reconcile("personal", { kind: "ok", notes: [{ path: "One.md", title: "One" }] });
+    await replica.reconcile("personal", {
+      kind: "ok",
+      notes: [{ path: "One.md", title: "One", conflicts: 0 }],
+    });
 
     expect(dropped).toEqual(["personal/Secret.md"]);
     expect((await store.residents("personal")).map((body) => body.note)).toEqual(["One.md"]);
@@ -51,7 +54,10 @@ describe("a fresh readable set", () => {
 
   it("keeps the bodies it still may read", async () => {
     await store.putResident({ vault: "personal", note: "One.md", openedAt: 1, bytes: 0, dirty: false });
-    await replica.reconcile("personal", { kind: "ok", notes: [{ path: "One.md", title: "One" }] });
+    await replica.reconcile("personal", {
+      kind: "ok",
+      notes: [{ path: "One.md", title: "One", conflicts: 0 }],
+    });
     expect(dropped).toEqual([]);
   });
 });
@@ -70,7 +76,10 @@ describe("pins", () => {
     await replica.setPinned("personal", "Secret.md", true);
     await replica.setPinned("personal", "One.md", true);
 
-    await replica.reconcile("personal", { kind: "ok", notes: [{ path: "One.md", title: "One" }] });
+    await replica.reconcile("personal", {
+      kind: "ok",
+      notes: [{ path: "One.md", title: "One", conflicts: 0 }],
+    });
 
     expect(await replica.pinned("personal")).toEqual(["One.md"]);
   });
@@ -92,12 +101,12 @@ describe("a refusal", () => {
   it("returns nothing, whatever is stored", async () => {
     // Not the stored copy. The stored copy is exactly what a revocation invalidates, and a
     // note this user may not read does not exist for them (§6.5).
-    await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
+    await store.putNotes("personal", [{ path: "One.md", title: "One", conflicts: 0 }]);
     expect(await replica.reconcile("personal", { kind: "denied" })).toEqual([]);
   });
 
   it("drops the whole vault: its metadata and every body", async () => {
-    await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
+    await store.putNotes("personal", [{ path: "One.md", title: "One", conflicts: 0 }]);
     await store.putResident({ vault: "personal", note: "One.md", openedAt: 1, bytes: 0, dirty: false });
     await store.putResident({ vault: "personal", note: "Two.md", openedAt: 2, bytes: 0, dirty: false });
 
@@ -109,17 +118,19 @@ describe("a refusal", () => {
   });
 
   it("leaves another vault alone", async () => {
-    await store.putNotes("work", [{ path: "Two.md", title: "Two" }]);
+    await store.putNotes("work", [{ path: "Two.md", title: "Two", conflicts: 0 }]);
     await replica.reconcile("personal", { kind: "denied" });
-    expect(await store.getNotes("work")).toEqual([{ path: "Two.md", title: "Two" }]);
+    expect(await store.getNotes("work")).toEqual([
+      { path: "Two.md", title: "Two", conflicts: 0 },
+    ]);
   });
 });
 
 describe("no answer at all", () => {
   it("uses the stored copy, which is what makes the tree work offline", async () => {
-    await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
+    await store.putNotes("personal", [{ path: "One.md", title: "One", conflicts: 0 }]);
     expect(await replica.reconcile("personal", { kind: "unreachable" })).toEqual([
-      { path: "One.md", title: "One" },
+      { path: "One.md", title: "One", conflicts: 0 },
     ]);
   });
 
@@ -144,8 +155,12 @@ describe("resident bodies", () => {
   });
 
   it("knows what it has stored about a note, which is what the notice shows", async () => {
-    await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
-    expect(await replica.metadata("personal", "One.md")).toEqual({ path: "One.md", title: "One" });
+    await store.putNotes("personal", [{ path: "One.md", title: "One", conflicts: 2 }]);
+    expect(await replica.metadata("personal", "One.md")).toEqual({
+      path: "One.md",
+      title: "One",
+      conflicts: 2,
+    });
     expect(await replica.metadata("personal", "Absent.md")).toBeUndefined();
     expect(await replica.metadata("never-seen", "One.md")).toBeUndefined();
   });
@@ -273,7 +288,10 @@ describe("the merge base (§3.5)", () => {
     // longer read, and living on the resident record is what makes that automatic.
     await replica.opened("personal", "Secret.md");
     await replica.measured("personal", "Secret.md", { base: "# Secret\n" });
-    await replica.reconcile("personal", { kind: "ok", notes: [{ path: "One.md", title: "One" }] });
+    await replica.reconcile("personal", {
+      kind: "ok",
+      notes: [{ path: "One.md", title: "One", conflicts: 0 }],
+    });
 
     expect(await replica.base("personal", "Secret.md")).toBeUndefined();
   });

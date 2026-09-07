@@ -1535,6 +1535,10 @@ fn the_note_index_lists_only_readable_notes_with_their_titles() {
     let dir = TempDir::new("http-note-index");
     dir.write("Public.md", "# The Public One\n\nBody.\n");
     dir.write("Untitled.md", "");
+    dir.write(
+        "Conflicted.md",
+        "# Conflicted\n\nMine.\n\n> [!conflict] Conflicting version — external edit, now\n>\n> Theirs.\n",
+    );
     dir.write("Private/Salary.md", "# Salary Review\n");
     dir.write(
         "access.toml",
@@ -1585,6 +1589,15 @@ fn the_note_index_lists_only_readable_notes_with_their_titles() {
     assert!(body.contains("Salary Review"), "{body}");
     // A note with nothing titleable is listed with a null title, not omitted.
     assert!(body.contains("Untitled.md"), "{body}");
+    // §3.5's badge travels with the summary, so the tree can show it without opening a note.
+    assert!(
+        body.contains("\"path\":\"Conflicted.md\",\"title\":\"Conflicted\",\"conflicts\":1"),
+        "the conflict count must reach the tree: {body}"
+    );
+    assert!(
+        body.contains("\"path\":\"Public.md\",\"title\":\"The Public One\",\"conflicts\":0"),
+        "and be zero for a note without one: {body}"
+    );
 
     // The viewer denied `Private` sees neither the path nor the title.
     let (status, body) = server.get_with_headers(route, &bob_header);

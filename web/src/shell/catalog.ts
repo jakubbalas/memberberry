@@ -135,9 +135,16 @@ function readNotes(body: unknown): readonly NoteSummary[] {
     const record = entry as Record<string, unknown>;
     const path = record["path"];
     const title = record["title"];
+    const conflicts = record["conflicts"];
     if (typeof path !== "string" || path === "") continue;
     if (title !== null && typeof title !== "string") continue;
-    valid.push({ path, title });
+    // A count that is not a number is dropped to zero rather than rejecting the note: the
+    // note still has to be listed, and no badge is better than a wrong one (§3.5).
+    valid.push({
+      path,
+      title,
+      conflicts: typeof conflicts === "number" && conflicts > 0 ? Math.floor(conflicts) : 0,
+    });
   }
   return valid;
 }

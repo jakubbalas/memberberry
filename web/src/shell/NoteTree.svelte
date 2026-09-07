@@ -42,6 +42,7 @@
       return {
         path,
         label: note?.title ?? (path.split("/").pop() ?? path).replace(/\.md$/, ""),
+        conflicts: note?.conflicts ?? 0,
       };
     }),
   );
@@ -75,6 +76,9 @@
 
   const label = (row: (typeof rows)[number]): string =>
     row.node.kind === "note" ? (row.node.title ?? row.node.name) : row.node.name;
+
+  const conflictLabel = (count: number): string =>
+    `${count} unresolved ${count === 1 ? "conflict" : "conflicts"}`;
 </script>
 
 <div class="tree-panel">
@@ -93,6 +97,11 @@
             >
               <span class="tree-icon" aria-hidden="true">★</span>
               <span class="tree-label">{entry.label}</span>
+              {#if entry.conflicts > 0}
+                <span class="tree-conflicts" aria-label={conflictLabel(entry.conflicts)}>
+                  {entry.conflicts}
+                </span>
+              {/if}
             </button>
           </li>
         {/each}
@@ -151,6 +160,11 @@
 
             {#if row.node.kind === "note"}
               {@const path = row.node.path}
+              {#if row.node.conflicts > 0}
+                <span class="tree-conflicts" aria-label={conflictLabel(row.node.conflicts)}>
+                  {row.node.conflicts}
+                </span>
+              {/if}
               <button
                 type="button"
                 class="tree-bookmark"

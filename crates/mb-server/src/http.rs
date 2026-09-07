@@ -763,12 +763,17 @@ struct NoteIndexResponse {
     truncated: bool,
 }
 
-/// `GET /api/v1/vaults/{slug}/notes` — the readable notes and their titles (§8.4).
+/// `GET /api/v1/vaults/{slug}/notes` — the readable notes, their titles and their conflicts.
+///
+/// §8.4 for the titles, §3.5 for the unresolved-conflict count the note tree badges with. The
+/// count travels here because this is where the tree's data already comes from, and because a
+/// badge that needed a note opened to appear would not be a badge.
 ///
 /// Enforcement point E1/E5: the list comes from [`AuthorizedVault::notes`], which is already
 /// filtered, and the title cache is only ever handed paths that survived that filter. A note
 /// this user cannot read is not named, not counted, and not distinguishable from one that does
-/// not exist (§6.5).
+/// not exist (§6.5) — and that applies to the conflict count as much as to the title: a number
+/// about a note somebody cannot see is still knowledge of a note that does not exist for them.
 async fn note_index(
     State(state): State<Arc<AppState>>,
     AxumPath(slug): AxumPath<String>,

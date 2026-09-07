@@ -364,6 +364,93 @@ fn e5_a_revoked_note_leaves_the_title_cache_on_the_next_listing() {
     );
 }
 
+/// E5: §3.5's conflict badge is a statement about a note, so it is filtered like the title.
+///
+/// A badge is a smaller leak than a title and a worse one to reason about, because it is a
+/// number rather than a name: "one of the notes you cannot see has an unresolved conflict" is
+/// still knowledge of a note that, under §6.5, does not exist for this reader. It travels on
+/// the note summary, so the same filter carries it — and this is the assertion that says so.
+#[test]
+fn e5_a_conflict_badge_names_no_note_the_viewer_cannot_read() {
+    use mb_server::titles::TitleCache;
+
+    const CONFLICTED: &str =
+        "Mine.\n\n> [!conflict] Conflicting version — external edit, now\n>\n> Theirs.\n";
+
+    let dir = TempDir::new("leak-conflict-badge");
+    dir.write("Shared.md", "# Shared\n");
+    dir.write("Private/Salary.md", CONFLICTED);
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let view = AuthorizedVault::new(&vault, &access, alice);
+
+    let cache = TitleCache::new();
+    let summaries = cache.summaries(
+        view.notes().expect("notes").iter().map(String::as_str),
+        |relative| view.resolve(relative).ok(),
+    );
+
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(
+        summaries.iter().map(|note| note.conflicts).sum::<usize>(),
+        0,
+        "a conflict in a note this viewer cannot read was counted: {summaries:?}",
+    );
+}
+
+/// The badge is a real count for a note the viewer *can* read, or the test above proves
+/// nothing: a count that is always zero passes every filter.
+#[test]
+fn e5_a_conflict_badge_counts_a_note_the_viewer_can_read() {
+    use mb_server::titles::TitleCache;
+
+    let dir = TempDir::new("leak-conflict-badge-visible");
+    dir.write(
+        "Shared.md",
+        "Mine.\n\n> [!conflict] Conflicting version — external edit, now\n>\n> Theirs.\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        Vec::new(),
+    )
+    .expect("policy");
+    let view = AuthorizedVault::new(&vault, &access, alice);
+
+    let cache = TitleCache::new();
+    let summaries = cache.summaries(
+        view.notes().expect("notes").iter().map(String::as_str),
+        |relative| view.resolve(relative).ok(),
+    );
+
+    assert_eq!(summaries.first().map(|note| note.conflicts), Some(1));
+}
+
 /// E15: a bookmark outlives the permission that created it, so reading one is filtered.
 ///
 /// This is the case a workspace layout does not have to handle. A layout is short-lived and

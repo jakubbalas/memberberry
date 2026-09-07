@@ -19,6 +19,18 @@
 export interface ReplicatedNote {
   readonly path: string;
   readonly title: string | null;
+  /**
+   * Unresolved conflicts in the note, for §3.5's badge in the tree.
+   *
+   * Replicated with the title rather than fetched per note, for the same reason the title is:
+   * the tree shows every readable note at once, and a badge that needed a request each would
+   * not be a badge. It is also what makes the badge work offline, which is the state a
+   * conflict is most likely to be discovered in.
+   *
+   * A record written before this field existed reads as `0` — no badge, rather than a wrong
+   * one, until the next listing.
+   */
+  readonly conflicts: number;
 }
 
 /** A note whose body this device holds a copy of. */
@@ -211,10 +223,10 @@ function readNotes(record: unknown): readonly ReplicatedNote[] | undefined {
   if (!Array.isArray(notes)) return undefined;
   return notes.flatMap((entry): ReplicatedNote[] => {
     if (typeof entry !== "object" || entry === null) return [];
-    const { path, title } = entry as Record<string, unknown>;
+    const { path, title, conflicts } = entry as Record<string, unknown>;
     if (typeof path !== "string" || path === "") return [];
     if (title !== null && typeof title !== "string") return [];
-    return [{ path, title }];
+    return [{ path, title, conflicts: typeof conflicts === "number" ? conflicts : 0 }];
   });
 }
 

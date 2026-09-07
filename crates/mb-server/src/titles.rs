@@ -1,18 +1,20 @@
-//! A cache of note titles, for the quick switcher (`SPEC.md` §8.4, §21.2).
+//! A cache of note titles and conflict counts, for the tree and quick switcher
+//! (`SPEC.md` §3.5, §8.4, §21.2).
 //!
 //! §21.2 budgets quick-switcher results at 80 ms over 10 000 notes, and a note's title is not
 //! its filename — `Projects/2024-01-15.md` may be "Sprint planning", and someone typing
 //! "sprint" expects to find it. Getting the title means parsing the note, and parsing 10 000
 //! notes per keystroke is not a thing that can be made fast enough.
 //!
-//! So titles are cached, keyed by a cheap fingerprint of the file. A request re-parses only
+//! So summaries are cached, keyed by a cheap fingerprint of the file. A request re-parses only
 //! the notes that actually changed, which on a settled vault is none of them. `stat` is
 //! roughly three orders of magnitude cheaper than a parse, and it is the only cost paid for a
 //! note whose title is already known.
 //!
 //! **This is not the index of §9.1 and M8.** That one is SQLite, holds links, tags, tasks and
-//! headings, and is incrementally maintained. This holds titles and nothing else, because
-//! titles are what M7 needs and a half-built index is worse than an honest cache.
+//! headings, and is incrementally maintained. This holds titles and conflict counts and
+//! nothing else, because those are what the catalog needs and a half-built index is worse
+//! than an honest cache.
 //!
 //! The cache is **not** permission-filtered and does not need to be: callers hand it paths
 //! that an [`AuthorizedVault`](crate::repository::AuthorizedVault) already filtered, so an
@@ -46,18 +48,22 @@ struct Cached {
     /// `None` when the note has nothing titleable — a real answer, and worth caching so an
     /// untitled note is not re-parsed on every keystroke.
     title: Option<String>,
+    /// Unresolved `[!conflict]` callouts, at any depth (`SPEC.md` §3.5).
+    conflicts: usize,
 }
 
-/// One note, as the quick switcher needs it.
+/// One note, as the tree and quick switcher need it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct NoteSummary {
     /// Vault-relative path, e.g. `Projects/Roadmap.md`.
     pub path: String,
     /// The note's title, or `None` when it has nothing titleable.
     pub title: Option<String>,
+    /// Unresolved conflicts, for §3.5's badge in the note tree. `0` for almost every note.
+    pub conflicts: usize,
 }
 
-/// Titles for the notes of one vault, cached across requests.
+/// Summaries for the notes of one vault, cached across requests.
 #[derive(Debug, Default)]
 pub struct TitleCache {
     // `RwLock` rather than `Mutex`: the common request reads every entry and writes none, and
@@ -103,6 +109,7 @@ impl TitleCache {
             .map(|path| NoteSummary {
                 path: (*path).to_string(),
                 title: None,
+                conflicts: 0,
             })
             .collect();
 
@@ -121,6 +128,7 @@ impl TitleCache {
                     Some(cached) if cached.fingerprint == fingerprint => {
                         if let Some(summary) = summaries.get_mut(index) {
                             summary.title.clone_from(&cached.title);
+                            summary.conflicts = cached.conflicts;
                         }
                     }
                     _ => {
@@ -136,19 +144,27 @@ impl TitleCache {
             return summaries;
         }
 
-        // Parse only what changed, still without the lock held.
-        let parsed: Vec<(usize, Fingerprint, Option<String>)> = stale
+        // Parse only what changed, still without the lock held. One parse answers both
+        // questions, which is the whole reason the conflict count lives here.
+        let parsed: Vec<(usize, Fingerprint, Option<String>, usize)> = stale
             .into_iter()
             .map(|(index, fingerprint, absolute)| {
-                let title = std::fs::read_to_string(&absolute)
-                    .ok()
-                    .and_then(|source| mb_core::extract::title(&mb_core::parse(&source)));
-                (index, fingerprint, title)
+                let (title, conflicts) = match std::fs::read_to_string(&absolute) {
+                    Ok(source) => {
+                        let document = mb_core::parse(&source);
+                        (
+                            mb_core::extract::title(&document),
+                            mb_core::conflict::count(&document),
+                        )
+                    }
+                    Err(_) => (None, 0),
+                };
+                (index, fingerprint, title, conflicts)
             })
             .collect();
 
         if let Ok(mut entries) = self.entries.write() {
-            for (index, fingerprint, title) in &parsed {
+            for (index, fingerprint, title, conflicts) in &parsed {
                 let Some(path) = paths.get(*index) else {
                     continue;
                 };
@@ -157,6 +173,7 @@ impl TitleCache {
                     Cached {
                         fingerprint: *fingerprint,
                         title: title.clone(),
+                        conflicts: *conflicts,
                     },
                 );
             }
@@ -166,9 +183,10 @@ impl TitleCache {
             entries.retain(|path, _| live.contains(path.as_str()));
         }
 
-        for (index, _, title) in parsed {
+        for (index, _, title, conflicts) in parsed {
             if let Some(summary) = summaries.get_mut(index) {
                 summary.title = title;
+                summary.conflicts = conflicts;
             }
         }
         summaries

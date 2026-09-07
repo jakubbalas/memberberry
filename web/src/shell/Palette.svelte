@@ -46,6 +46,7 @@
   let dialog = $state<HTMLDialogElement | undefined>(undefined);
   let input = $state<HTMLInputElement | undefined>(undefined);
   let active = $state(0);
+  let closingForState = false;
 
   const selectable = $derived(items.filter((item) => item.disabled !== true));
   const current = $derived(selectable[Math.min(active, Math.max(0, selectable.length - 1))]);
@@ -58,7 +59,10 @@
       // The whole point of a palette is that it is ready to type into.
       input?.focus();
     }
-    if (!open && element.open) element.close();
+    if (!open && element.open) {
+      closingForState = true;
+      element.close();
+    }
   });
 
   $effect(() => {
@@ -114,7 +118,13 @@
   class="palette"
   aria-label={title}
   bind:this={dialog}
-  onclose={ondismiss}
+  onclose={() => {
+    // `dialog.close()` queues this event. Remember state-driven closes so their delayed event
+    // cannot dismiss a palette already reopened by another shortcut. A native Escape close
+    // has no marker and still dismisses the parent state.
+    if (closingForState) closingForState = false;
+    else ondismiss();
+  }}
   onclick={(event) => {
     if (event.target === dialog) ondismiss();
   }}

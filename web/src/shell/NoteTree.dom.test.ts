@@ -20,10 +20,10 @@ import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
 
 const NOTES: readonly NoteSummary[] = [
-  { path: "Welcome.md", title: "Welcome" },
-  { path: "Projects/Roadmap.md", title: "Product roadmap" },
-  { path: "Projects/Sprint.md", title: null },
-  { path: "Archive/2019/Old.md", title: null },
+  { path: "Welcome.md", title: "Welcome", conflicts: 0 },
+  { path: "Projects/Roadmap.md", title: "Product roadmap", conflicts: 0 },
+  { path: "Projects/Sprint.md", title: null, conflicts: 0 },
+  { path: "Archive/2019/Old.md", title: null, conflicts: 0 },
 ];
 
 const openSurface = async (_options: OpenNoteSurfaceOptions): Promise<NoteSurface> => ({
@@ -139,6 +139,40 @@ describe("the tree", () => {
       // `Projects/Roadmap.md` is titled "Product roadmap"; `Sprint.md` has no title.
       expect(names()).toContain("Product roadmap");
       expect(names()).toContain("Sprint");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("badges only notes with unresolved conflicts", async () => {
+    const { teardown } = render({
+      notes: [
+        { path: "Clean.md", title: "Clean", conflicts: 0 },
+        { path: "Conflicted.md", title: "Conflicted", conflicts: 3 },
+      ],
+    });
+    try {
+      await flush();
+      const badges = [...target.querySelectorAll<HTMLElement>(".tree-conflicts")];
+      expect(badges).toHaveLength(1);
+      expect(badges[0]?.textContent).toBe("3");
+      expect(badges[0]?.getAttribute("aria-label")).toBe("3 unresolved conflicts");
+      expect(badges[0]?.closest('[role="treeitem"]')?.textContent).toContain("Conflicted");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("badges a conflicted note in bookmarks too", async () => {
+    const { teardown } = render({
+      notes: [{ path: "Conflicted.md", title: "Conflicted", conflicts: 1 }],
+      bookmarked: ["Conflicted.md"],
+    });
+    try {
+      await flush();
+      const badge = target.querySelector<HTMLElement>(".bookmark-list .tree-conflicts");
+      expect(badge?.textContent).toBe("1");
+      expect(badge?.getAttribute("aria-label")).toBe("1 unresolved conflict");
     } finally {
       teardown();
     }

@@ -22,7 +22,7 @@ import {
 } from "./tree.js";
 
 function notes(...paths: readonly string[]): readonly NoteSummary[] {
-  return paths.map((path) => ({ path, title: null }));
+  return paths.map((path) => ({ path, title: null, conflicts: 0 }));
 }
 
 /** The tree as an indented outline, which is far easier to read than nested objects. */
@@ -68,11 +68,14 @@ describe("building the tree", () => {
   });
 
   it("keeps the note's title alongside its name", () => {
-    const tree = buildTree([{ path: "Projects/2024-01-15.md", title: "Sprint planning" }]);
+    const tree = buildTree([
+      { path: "Projects/2024-01-15.md", title: "Sprint planning", conflicts: 2 },
+    ]);
     const folder = tree[0];
     if (folder?.kind !== "folder") throw new Error("expected a folder");
     const note = folder.children[0];
     expect(note?.kind === "note" && note.title).toBe("Sprint planning");
+    expect(note?.kind === "note" && note.conflicts).toBe(2);
     expect(note?.name).toBe("2024-01-15");
   });
 

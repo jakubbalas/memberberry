@@ -12,10 +12,12 @@ import type { CatalogAnswer } from "../offline/replica.js";
 import { stubReplica } from "../offline/testing.js";
 import { NoteCatalog } from "./note-catalog.svelte.js";
 
-const NOTES = [{ path: "One.md", title: "One" }];
+const NOTES = [{ path: "One.md", title: "One", conflicts: 0 }];
 
 /** A replica that records what it was asked to reconcile and answers with `stored`. */
-function replicaHolding(stored: readonly { path: string; title: string | null }[]) {
+function replicaHolding(
+  stored: readonly { path: string; title: string | null; conflicts: number }[],
+) {
   const seen: CatalogAnswer[] = [];
   return {
     seen,

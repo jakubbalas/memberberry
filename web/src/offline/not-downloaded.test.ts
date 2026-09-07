@@ -17,6 +17,7 @@ describe("the not-downloaded state", () => {
     const element = notDownloaded("Projects/Roadmap.md", {
       path: "Projects/Roadmap.md",
       title: "Roadmap",
+      conflicts: 0,
     });
     expect(element.querySelector("h2")?.textContent).toBe("Roadmap");
   });

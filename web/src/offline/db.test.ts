@@ -28,34 +28,59 @@ describe("the metadata replica", () => {
   });
 
   it("stores and returns a vault's notes", async () => {
-    await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
-    expect(await store.getNotes("personal")).toEqual([{ path: "One.md", title: "One" }]);
+    await store.putNotes("personal", [{ path: "One.md", title: "One", conflicts: 2 }]);
+    expect(await store.getNotes("personal")).toEqual([
+      { path: "One.md", title: "One", conflicts: 2 },
+    ]);
   });
 
   it("replaces rather than merges, so a deleted note does not survive", async () => {
     await store.putNotes("personal", [
-      { path: "One.md", title: "One" },
-      { path: "Two.md", title: "Two" },
+      { path: "One.md", title: "One", conflicts: 0 },
+      { path: "Two.md", title: "Two", conflicts: 1 },
     ]);
-    await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
-    expect(await store.getNotes("personal")).toEqual([{ path: "One.md", title: "One" }]);
+    await store.putNotes("personal", [{ path: "One.md", title: "One", conflicts: 0 }]);
+    expect(await store.getNotes("personal")).toEqual([
+      { path: "One.md", title: "One", conflicts: 0 },
+    ]);
   });
 
   it("keeps vaults apart", async () => {
-    await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
-    await store.putNotes("work", [{ path: "Two.md", title: "Two" }]);
-    expect(await store.getNotes("work")).toEqual([{ path: "Two.md", title: "Two" }]);
+    await store.putNotes("personal", [{ path: "One.md", title: "One", conflicts: 0 }]);
+    await store.putNotes("work", [{ path: "Two.md", title: "Two", conflicts: 0 }]);
+    expect(await store.getNotes("work")).toEqual([
+      { path: "Two.md", title: "Two", conflicts: 0 },
+    ]);
   });
 
   it("drops a record whose shape is not what this version writes", async () => {
     // Written by an older release, or edited in devtools. A `path` that is not a string
     // reaches a DOM attribute (AGENTS.md §4.3).
     await store.putNotes("personal", [
-      { path: "One.md", title: "One" },
-      { path: "", title: null },
-      { path: "Bad.md", title: 7 } as unknown as { path: string; title: null },
+      { path: "One.md", title: "One", conflicts: 0 },
+      { path: "", title: null, conflicts: 0 },
+      { path: "Bad.md", title: 7, conflicts: 0 } as unknown as {
+        path: string;
+        title: null;
+        conflicts: number;
+      },
     ]);
-    expect(await store.getNotes("personal")).toEqual([{ path: "One.md", title: "One" }]);
+    expect(await store.getNotes("personal")).toEqual([
+      { path: "One.md", title: "One", conflicts: 0 },
+    ]);
+  });
+
+  it("reads a pre-conflict-badge record as zero until the next listing", async () => {
+    await store.putNotes("personal", [
+      { path: "Legacy.md", title: "Legacy" } as unknown as {
+        path: string;
+        title: string;
+        conflicts: number;
+      },
+    ]);
+    expect(await store.getNotes("personal")).toEqual([
+      { path: "Legacy.md", title: "Legacy", conflicts: 0 },
+    ]);
   });
 });
 
@@ -133,10 +158,10 @@ describe("pins", () => {
 describe("forgetting a vault", () => {
   it("removes its metadata and every resident record, and nothing else", async () => {
     // What a revoked vault gets (§6.7). Another vault's replica is not this vault's business.
-    await store.putNotes("personal", [{ path: "One.md", title: "One" }]);
+    await store.putNotes("personal", [{ path: "One.md", title: "One", conflicts: 0 }]);
     await store.putResident({ vault: "personal", note: "One.md", openedAt: 1, bytes: 0, dirty: false });
     await store.putPin({ vault: "personal", note: "One.md" });
-    await store.putNotes("work", [{ path: "Two.md", title: "Two" }]);
+    await store.putNotes("work", [{ path: "Two.md", title: "Two", conflicts: 0 }]);
     await store.putResident({ vault: "work", note: "Two.md", openedAt: 2, bytes: 0, dirty: false });
     await store.putPin({ vault: "work", note: "Two.md" });
 
@@ -145,7 +170,9 @@ describe("forgetting a vault", () => {
     expect(await store.getNotes("personal")).toBeUndefined();
     expect(await store.residents("personal")).toEqual([]);
     expect(await store.pins("personal")).toEqual([]);
-    expect(await store.getNotes("work")).toEqual([{ path: "Two.md", title: "Two" }]);
+    expect(await store.getNotes("work")).toEqual([
+      { path: "Two.md", title: "Two", conflicts: 0 },
+    ]);
     expect(await store.residents("work")).toHaveLength(1);
     expect(await store.pins("work")).toHaveLength(1);
   });
@@ -160,11 +187,13 @@ describe("reopening", () => {
     // The whole point of the store: this is the second visit, after the tab was closed.
     const factory = new IDBFactory();
     const first = await openOfflineStore(factory);
-    await first.putNotes("personal", [{ path: "One.md", title: "One" }]);
+    await first.putNotes("personal", [{ path: "One.md", title: "One", conflicts: 0 }]);
     first.close();
 
     const second = await openOfflineStore(factory);
-    expect(await second.getNotes("personal")).toEqual([{ path: "One.md", title: "One" }]);
+    expect(await second.getNotes("personal")).toEqual([
+      { path: "One.md", title: "One", conflicts: 0 },
+    ]);
     second.close();
   });
 });

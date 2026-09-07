@@ -211,6 +211,7 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .tree-row[data-kind="folder"] { font-weight: var(--weight-medium); }
 .tree-icon { flex: 0 0 auto; width: var(--space-5); color: var(--text-muted); text-align: center; }
 .tree-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-conflicts { flex: 0 0 auto; min-width: var(--space-5); padding: var(--space-1); border-radius: var(--radius-sm); color: var(--state-conflict); background: color-mix(in srgb, var(--state-conflict) 10%, var(--surface-raised)); font: var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui); text-align: center; }
 .tree-bookmark { flex: 0 0 auto; padding: 0 var(--space-1); border: 0; color: var(--text-muted); background: none; font-size: var(--text-xs); cursor: pointer; opacity: 0; }
 /* Revealed on hover or when set, so a column of empty stars does not compete with the names.
    Always revealed for keyboard users, who cannot hover. */

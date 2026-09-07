@@ -157,6 +157,22 @@ test("an offline edit colliding with a file edit is marked, not silently merged"
     await expect(callout).toHaveCount(1);
     expect(fileOf(note)).toContain("Written on a train.");
     expect(fileOf(note)).toContain("> A note this test may edit. Written at a desk.");
+
+    // The tree's count comes from the Markdown file on a fresh catalog request, not from the
+    // editor's in-memory count. Reloading proves the server parses it, the offline metadata
+    // replica carries it, and the tree draws the badge without opening every note (§3.5).
+    await page.reload();
+    await expect(page.locator(".ProseMirror").first()).toContainText("Written on a train.");
+    const navigationToggle = page.getByRole("button", { name: /^Show Navigation$/ });
+    if (await navigationToggle.isVisible()) await navigationToggle.click();
+    const tree = page.getByRole("tree", { name: "Notes" });
+    await tree.getByRole("treeitem", { name: /Scratch/ }).click();
+    const noteRow = tree.locator(`[role="treeitem"][title="${note}"]`);
+    await expect(noteRow.locator(".tree-conflicts")).toHaveText("1");
+    await expect(noteRow.locator(".tree-conflicts")).toHaveAttribute(
+      "aria-label",
+      "1 unresolved conflict",
+    );
   } finally {
     await observer.close();
   }

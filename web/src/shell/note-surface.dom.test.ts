@@ -86,7 +86,11 @@ function replicaHolding(...resident: string[]) {
     handle: async () =>
       stubReplica({
         isResident: async (_vault: string, note: string) => resident.includes(note),
-        metadata: async (_vault: string, note: string) => ({ path: note, title: "Roadmap" }),
+        metadata: async (_vault: string, note: string) => ({
+          path: note,
+          title: "Roadmap",
+          conflicts: 0,
+        }),
         opened: async (_vault: string, note: string) => {
           opened.push(note);
         },
