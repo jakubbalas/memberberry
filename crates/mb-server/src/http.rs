@@ -2820,8 +2820,40 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
     served.map_err(Error::Serve)
 }
 
+/// Waits for the operator to ask the server to stop (`SPEC.md` §6.11).
+///
+/// Both signals, because the flush that follows is the durability contract and not a
+/// courtesy: `SIGTERM` is what `systemctl stop`, `docker stop` and every process supervisor
+/// send, and leaving it on the default disposition would kill the process outright — skipping
+/// the flush, and stranding accepted edits in a sidecar until the next start recovered them.
+/// `SIGINT` is the one a person sends.
 async fn shutdown() {
-    drop(tokio::signal::ctrl_c().await);
+    let interrupt = async {
+        drop(tokio::signal::ctrl_c().await);
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signals) => {
+                signals.recv().await;
+            }
+            // why: a handler that cannot be installed must not become a shutdown that fires
+            // immediately. Never resolving leaves `SIGTERM` on its default disposition, which
+            // is the behaviour this had before — degraded, but not a server that exits at
+            // startup.
+            Err(error) => {
+                eprintln!("memberberry: cannot handle SIGTERM ({error}); it will not flush");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = interrupt => {}
+        () = terminate => {}
+    }
     println!("\nmemberberry: shutting down");
 }
 

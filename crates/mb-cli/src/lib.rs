@@ -152,6 +152,12 @@ fn serve(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
         }
     }
 
+    // Everything above is this command's own report, and it is flushed before the server
+    // starts. The server prints from inside the runtime, so an unflushed buffer here would
+    // put the vault list *after* "listening" — the startup output would read in an order
+    // that never happened.
+    out.flush().map_err(io("flushing the startup report"))?;
+
     // why: a multi-thread runtime built here rather than `#[tokio::main]` on `main`, so the
     // async runtime exists only for the command that needs one. Nothing else in this binary
     // is async, and `normalize` should not pay for a thread pool.

@@ -516,6 +516,126 @@ fn walk_md(root: &Path) -> Vec<PathBuf> {
 /// make these race when run in parallel. `config_path_in` unit-tests the precedence.
 /// Provisions a server by spawning the real binary, the way a script or a container would.
 ///
+/// A running server must stop when it is asked to (`SPEC.md` §6.11).
+///
+/// why the built binary, and why this test is worth its seconds: the bug it holds fixed was
+/// invisible to every in-process test, because it was not in `serve` at all. `main` wrapped
+/// its writer around `stdout.lock()`, which holds the process-wide stdout mutex for the whole
+/// command; that mutex is reentrant only for the thread that took it. The server prints its
+/// shutdown message from a tokio worker thread, so `Ctrl+C` arrived, the shutdown future
+/// resolved, and the process then deadlocked on the *println* — leaving a server that could
+/// not be stopped without `kill -9` and that kept holding its port. Only a real process with
+/// a real signal can see that.
+///
+/// Port 0 rather than a fixed one: this test needs a server, not an address, and `AGENTS.md`
+/// §5.1 reserves the fixed range for services something else has to find.
+#[test]
+fn the_running_server_stops_when_it_is_interrupted() {
+    stops_on("-INT", "serve-sigint");
+}
+
+/// `SIGTERM` is what every process supervisor sends, and §6.11 makes it the same path.
+///
+/// Left on its default disposition it would kill the process outright, skipping the flush
+/// that puts accepted edits into Markdown — the one thing stopping the server has to do.
+#[test]
+fn the_running_server_stops_when_it_is_terminated() {
+    stops_on("-TERM", "serve-sigterm");
+}
+
+fn stops_on(signal: &str, label: &str) {
+    use std::process::{Command, Stdio};
+
+    let dir = TempDir::new(label);
+    let vault = TempDir::new(&format!("{label}-vault"));
+    let config = config_of(&dir);
+    setup_admin(&dir);
+    let (code, _) = run_with_stdin(
+        &[
+            "vault",
+            "create",
+            "--slug",
+            "personal",
+            "--path",
+            &vault.path().to_string_lossy(),
+            "--config",
+            &config,
+            "--actor",
+            "alice",
+        ],
+        "correct horse battery staple\n",
+    );
+    assert!(is_success(code));
+    fs::write(
+        dir.path().join("server.toml"),
+        format!(
+            "bind = \"127.0.0.1:0\"\n{}",
+            fs::read_to_string(dir.path().join("server.toml")).expect("server.toml")
+        ),
+    )
+    .expect("pinning the bind address to an ephemeral port");
+
+    let log = dir.path().join("serve.log");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_memberberry"))
+        .args(["serve", "--config", &config])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(fs::File::create(&log).expect("log file")))
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawning the server");
+
+    // Wait for it to be serving. Reading the log rather than the port, because what this
+    // test needs is a process that has got as far as `axum::serve` — which is where the
+    // deadlock lived.
+    let started = std::time::Instant::now();
+    let mut listening = false;
+    while started.elapsed() < std::time::Duration::from_secs(30) {
+        if fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("index ready")
+        {
+            listening = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        listening,
+        "the server never started: {:?}",
+        fs::read_to_string(&log)
+    );
+
+    let interrupted = Command::new("kill")
+        .args([signal, &child.id().to_string()])
+        .status()
+        .expect("sending the stop signal");
+    assert!(interrupted.success());
+
+    let deadline = std::time::Instant::now();
+    loop {
+        match child.try_wait().expect("polling the server") {
+            Some(_) => break,
+            None if deadline.elapsed() > std::time::Duration::from_secs(15) => {
+                drop(child.kill());
+                drop(child.wait());
+                panic!(
+                    "the server ignored {signal} and had to be killed; it printed: {:?}",
+                    fs::read_to_string(&log)
+                );
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    }
+
+    // It said so on the way out, which is the line that used to deadlock.
+    let output = fs::read_to_string(&log).unwrap_or_default();
+    assert!(output.contains("shutting down"), "{output}");
+    // And the startup report came first, rather than sitting in an unflushed buffer.
+    let vault_line = output.find("vault personal").expect("the vault report");
+    let listening_line = output.find("listening on").expect("the listening line");
+    assert!(vault_line < listening_line, "{output}");
+}
+
 /// why: every other test in this file calls `mb_cli::run` in process with an injected
 /// reader, which cannot see the difference between reading stdin and prompting on
 /// `/dev/tty` — the whole point of `--password-stdin`. Only the built binary can.

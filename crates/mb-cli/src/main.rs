@@ -9,8 +9,18 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let stdout = io::stdout();
-    let mut out = io::BufWriter::new(stdout.lock());
+    // why: buffered around `Stdout`, **not** around `stdout.lock()`. A `StdoutLock` held for
+    // the whole command holds the process-wide stdout mutex for the whole command, and that
+    // mutex is only reentrant for the thread that took it. `serve` then runs a server whose
+    // lifecycle messages are printed from tokio worker threads, and the first one of those to
+    // run `println!` blocks on a lock the main thread will not release until the server
+    // returns — which it cannot, because it is waiting for that thread. The result was a
+    // server that ignored Ctrl+C entirely: the signal arrived, the shutdown future resolved,
+    // and the process then deadlocked printing "shutting down".
+    //
+    // `Stdout` takes and releases the lock per write, so the buffering survives and the
+    // deadlock cannot form.
+    let mut out = io::BufWriter::new(io::stdout());
     let result = if mb_cli::reads_password_from_terminal(&args) {
         run_with_terminal_passwords(&args, &mut out)
     } else {
