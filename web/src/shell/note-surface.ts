@@ -15,7 +15,15 @@
 import { Editor, type Extensions } from "@tiptap/core";
 import { encodeStateAsUpdate, type Doc } from "yjs";
 
-import type { ConnectionStatus, LocalPersistenceFactory } from "../editor/collaboration.js";
+import type { EditorView } from "@tiptap/pm/view";
+
+import { noteBridge, type NoteBridge } from "../notes.js";
+import type {
+  ConnectionStatus,
+  LocalPersistenceFactory,
+  ServerStateSignal,
+} from "../editor/collaboration.js";
+import { reconcile } from "../editor/conflicts.js";
 import { mountEditorShell } from "../editor/editor-shell.js";
 import { startNoteEditor } from "../editor/note-editor.js";
 import { localReplica } from "../offline/local.js";
@@ -205,6 +213,80 @@ function waitingForBody(options: WaitingOptions): { destroy(): void } {
   };
 }
 
+interface ReconcileConflictsOptions {
+  readonly bootstrap: NoteBootstrap;
+  readonly replica: Replica;
+  readonly view: EditorView;
+  readonly document: Doc;
+  readonly bridge: NoteBridge;
+  readonly serverState: ServerStateSignal;
+}
+
+/**
+ * Reconciles §3.5's divergences for one open note, and keeps its merge base current.
+ *
+ * This is where the three pieces meet: the transport says the server's state arrived and what
+ * this device held that it had not seen, `mb-core` decides whether that is a conflict, and the
+ * replica holds the version the two sides last agreed on.
+ *
+ * **The base is written on every arrival, not only a divergent one.** A note that reconnected
+ * cleanly is a note both sides now agree about, and that agreement is exactly what makes the
+ * *next* divergence detectable. Skipping it would leave the first offline edit after a clean
+ * reconnection with nothing to compare against.
+ *
+ * The write is not awaited: nothing on screen depends on it, and the reconciliation itself has
+ * already happened synchronously by then — see `conflicts.ts` for why that matters.
+ */
+function reconcileConflicts(options: ReconcileConflictsOptions): { destroy(): void } {
+  const { bootstrap, replica } = options;
+  let base: string | undefined;
+  let loaded = false;
+  // Read once, before the first arrival can need it. A base that has not loaded yet reads as
+  // absent, which degrades that one merge rather than failing it (§3.5).
+  const whenLoaded = replica
+    .base(bootstrap.vault, bootstrap.note)
+    .then((stored) => {
+      if (!loaded) base = stored;
+      loaded = true;
+    })
+    .catch(() => {
+      loaded = true;
+    });
+  const unsubscribe = options.serverState.subscribe((state) => {
+    const result = reconcile({
+      view: options.view,
+      document: options.document,
+      bridge: options.bridge,
+      state,
+      base,
+    });
+    // Held in memory as well as stored: two arrivals in one session must not both compare
+    // against the version from before the first one.
+    base = result.base;
+    loaded = true;
+    // `opened` first, and that ordering is load-bearing: `measured` writes nothing for a note
+    // with no resident record, and the *first* sync of a note is exactly when there is none
+    // yet. Without this the first base of every note was dropped, so the first offline edit
+    // after opening it fell back to the two-way comparison — silently.
+    //
+    // Recording it here is also what that arrival means: the server has sent this note's
+    // whole state, so this device holds the body. It is the same conclusion `waitingForBody`
+    // draws from the same frame.
+    void replica
+      .opened(bootstrap.vault, bootstrap.note)
+      .then(() => replica.measured(bootstrap.vault, bootstrap.note, { base: result.base }))
+      .catch(() => undefined);
+  });
+  return {
+    destroy: (): void => {
+      unsubscribe();
+      // Swallowed rather than left dangling: the read is only a cache warm-up and a pane can
+      // close before it resolves.
+      void whenLoaded;
+    },
+  };
+}
+
 /** The note a local-only replica edits, when no server said otherwise. */
 export const LOCAL_ONLY = { vault: "local-demo", note: "scratch-note" } as const;
 
@@ -227,6 +309,12 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
       ? true
       : await replica.isResident(bootstrap.vault, bootstrap.note);
 
+  // §3.5's actions and its merge are the same WASM module the source view already uses, so
+  // this resolves from cache in every case but the very first note of a session. Awaited
+  // rather than loaded lazily: reconciliation has to be synchronous once it starts, and the
+  // callout's buttons have to work the first time they are clicked.
+  const bridge = replica === undefined || bootstrap === undefined ? undefined : await noteBridge();
+
   const editor = await startNoteEditor({
     element: surface,
     vaultId: bootstrap?.vault ?? LOCAL_ONLY.vault,
@@ -245,6 +333,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     ...(options.createRemoteSync === undefined
       ? {}
       : { createRemoteSync: options.createRemoteSync }),
+    ...(bridge === undefined ? {} : { bridge }),
   });
 
   if (!(editor.editor instanceof Editor)) {
@@ -290,6 +379,20 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
       ? undefined
       : trackResidency({ bootstrap, replica, collaboration, connection: collaboration.connection });
 
+  // §3.5. After the shell, so the count it announces has somewhere to be rendered, and only
+  // with a server behind it: a local-only replica has nothing to diverge from.
+  const conflicts =
+    bootstrap === undefined || replica === undefined || bridge === undefined
+      ? undefined
+      : reconcileConflicts({
+          bootstrap,
+          replica,
+          view: editor.editor.view,
+          document: collaboration.document,
+          bridge,
+          serverState: collaboration.serverState,
+        });
+
   let closing: Promise<void> | undefined;
   return {
     destroy: (): Promise<void> => {
@@ -298,6 +401,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
       // that still resolves when teardown actually finished.
       closing ??= (async () => {
         await accounting?.settle();
+        conflicts?.destroy();
         waiting?.destroy();
         shell.destroy();
         await editor.destroy();

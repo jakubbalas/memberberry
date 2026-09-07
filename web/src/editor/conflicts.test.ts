@@ -74,7 +74,7 @@ describe("reconciling the server's state", () => {
     // same one, and the CRDT has just merged them without asking.
     const open = note("Four levels.\n");
     const result = reconcile({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       base: "Three levels.\n",
@@ -102,7 +102,7 @@ describe("reconciling the server's state", () => {
     // is indistinguishable from a collision, and every shared vault grows callouts.
     const open = note("Four levels.\n");
     const result = reconcile({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       base: "Three levels.\n",
@@ -121,7 +121,7 @@ describe("reconciling the server's state", () => {
     // is nothing to merge — only the base to record.
     const open = note("Four levels.\n");
     const result = reconcile({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       base: "Three levels.\n",
@@ -140,7 +140,7 @@ describe("reconciling the server's state", () => {
       "Mine.\n\n> [!conflict] Conflicting version — external edit, then\n>\n> Theirs.\n";
     const open = note(carried);
     const result = reconcile({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       base: carried,
@@ -157,7 +157,7 @@ describe("reconciling the server's state", () => {
     // content, so the collision is still marked — it is deletions it can no longer honour.
     const open = note("Four levels.\n");
     const result = reconcile({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       base: undefined,
@@ -184,7 +184,7 @@ describe("reconciling the server's state", () => {
     expect(caret).toBeGreaterThan(1);
 
     const result = reconcile({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       base: "Same.\n\nSecond paragraph.\n",
@@ -205,7 +205,7 @@ describe("reconciling the server's state", () => {
     // rewrite has flushed, so feeding it back must mark nothing new.
     const first = note("Four levels.\n");
     const merged = reconcile({
-      editor: first.editor,
+      view: first.editor.view,
       document: first.document,
       bridge,
       base: "Three levels.\n",
@@ -216,7 +216,7 @@ describe("reconciling the server's state", () => {
 
     const second = note(merged.base);
     const again = reconcile({
-      editor: second.editor,
+      view: second.editor.view,
       document: second.document,
       bridge,
       base: merged.base,
@@ -242,7 +242,7 @@ describe("resolving a conflict", () => {
     const open = diverged();
     expect(
       applyResolution({
-        editor: open.editor,
+        view: open.editor.view,
         document: open.document,
         bridge,
         ordinal: 0,
@@ -261,7 +261,7 @@ describe("resolving a conflict", () => {
     // to leave `A., C., D.`, because the run's boundary was not recoverable from the file.
     const open = diverged();
     applyResolution({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       ordinal: 0,
@@ -277,7 +277,7 @@ describe("resolving a conflict", () => {
   it("keeps both as ordinary blocks", () => {
     const open = diverged();
     applyResolution({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       ordinal: 0,
@@ -293,7 +293,7 @@ describe("resolving a conflict", () => {
   it("resolves the second conflict independently of the first", () => {
     const open = diverged();
     applyResolution({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       ordinal: 1,
@@ -315,7 +315,7 @@ describe("resolving a conflict", () => {
 
     expect(
       applyResolution({
-        editor: open.editor,
+        view: open.editor.view,
         document: open.document,
         bridge,
         ordinal: 0,
@@ -337,7 +337,7 @@ describe("resolving a conflict", () => {
     });
 
     applyResolution({
-      editor: open.editor,
+      view: open.editor.view,
       document: open.document,
       bridge,
       ordinal: 1,

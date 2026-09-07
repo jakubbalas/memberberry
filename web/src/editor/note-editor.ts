@@ -2,12 +2,14 @@
 
 import { Editor, type Extensions } from "@tiptap/core";
 
+import type { NoteBridge } from "../notes.js";
 import {
   createNoteCollaboration,
   createYjsBinding,
   type CreateNoteCollaborationOptions,
   type NoteCollaboration,
 } from "./collaboration.js";
+import { conflictViews } from "./conflict-view.js";
 import { type EmbedContext, embedViews } from "./embed-view.js";
 import { loadMemberberryExtensions } from "./schema.js";
 import { memberberryInputRules } from "./commands.js";
@@ -39,6 +41,16 @@ export interface StartNoteEditorOptions extends CreateNoteCollaborationOptions {
    * a vault name nobody granted would put a request per embed against a 404.
    */
   readonly embeds?: EmbedContext | undefined;
+  /**
+   * The WASM entry points §3.5's conflict actions need, already loaded.
+   *
+   * why: absent rather than defaulted. A conflict callout without it still renders and still
+   * round-trips — it is an ordinary callout to the parser and the serializer — it just
+   * carries no buttons, which is the honest state for an editor mounted with no note
+   * boundary behind it. Loading the module here instead would put a WASM fetch on the path
+   * of every editor, including the ones a test mounts.
+   */
+  readonly bridge?: NoteBridge | undefined;
 }
 
 /** A mounted editor and the local Y.Doc it is attached to. */
@@ -67,6 +79,9 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
         memberberryInputRules,
         taskItemView,
         ...(options.embeds === undefined ? [] : [embedViews(options.embeds)]),
+        ...(options.bridge === undefined
+          ? []
+          : [conflictViews({ document: collaboration.document, bridge: options.bridge })]),
         createYjsBinding(collaboration.fragment, collaboration.awareness),
       ],
       editable: options.editable ?? true,

@@ -162,6 +162,34 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
 .task-chip-label { color: var(--text-muted); font-weight: var(--weight-medium); }
 .offline-status { margin: var(--space-6) var(--space-4) 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
 
+/* ------------------------------------------------------- callouts (SPEC 3.5, 4.4)
+
+   Until this existed a callout rendered as a bare `aside`, which is to say as body text with
+   a `data-callout` attribute nothing looked at — the block round-tripped correctly and read
+   as nothing. The rail and the title are what make it "a distinct block in the editor", which
+   is §3.5's own argument for choosing a callout over git-style markers.
+
+   Generic first, then the one kind that has behaviour. Other kinds keep the neutral rail
+   until the feature that tints them arrives (§20). */
+aside[data-callout] { display: block; margin: var(--editor-block-gap) 0; padding: var(--space-4) var(--space-5); border: 1px solid var(--border-subtle); border-left: var(--divider-thickness) solid var(--text-muted); border-radius: var(--radius-md); background: var(--surface-raised); }
+aside[data-callout] > :first-child, .callout-body > :first-child { margin-top: 0; }
+aside[data-callout] > :last-child, .callout-body > :last-child { margin-bottom: 0; }
+[data-callout-title] { color: var(--text-muted); font: var(--weight-bold) var(--text-xs)/var(--leading-snug) var(--font-ui); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+
+/* An unresolved conflict (§3.5). Not `--state-danger`: nothing failed and nothing was lost,
+   both versions are in the note, and a decision is waiting. See `tokens.css`. */
+aside[data-callout="conflict"] { border-left-color: var(--state-conflict); background: color-mix(in srgb, var(--state-conflict) 6%, var(--surface-raised)); }
+aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-conflict); text-transform: none; letter-spacing: normal; }
+.conflict-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-4); }
+.conflict-action { padding: var(--space-2) var(--space-4); border: 1px solid color-mix(in srgb, var(--state-conflict) 40%, var(--border-subtle)); border-radius: var(--radius-sm); color: var(--state-conflict); background: var(--surface-note); font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.conflict-action:hover { background: color-mix(in srgb, var(--state-conflict) 10%, var(--surface-note)); }
+.conflict-action:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+
+/* The count §3.5 asks for. Hidden at zero rather than saying "0 conflicts", which is a line
+   of furniture on every note nobody has a conflict in. */
+.conflict-count { display: block; margin: 0 0 var(--space-4); color: var(--state-conflict); font: var(--weight-medium) var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.conflict-count[hidden] { display: none; }
+
 /* ---------------------------------------------------------------- note tree (SPEC 8.2)
 
    One tab stop for the whole tree, with the current row marked by `aria-activedescendant`

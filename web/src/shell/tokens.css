@@ -47,11 +47,18 @@
 
   /* ---------------------------------------------------------------- colour: semantic state */
   /* warning is "something needs your attention but nothing is broken" — the offline
-     indicator. danger is "this did not happen": a refused sign-in today. Both are checked
-     for >= 4.5:1 against --surface-note in their own theme. Success and conflict tints
-     arrive with the features that surface them (§3.5 conflict callouts, M6). */
+     indicator. danger is "this did not happen": a refused sign-in today. conflict is
+     "two versions of this disagree and nobody has decided" — §3.5's callout and its count.
+     All three are checked for >= 4.5:1 against --surface-note in their own theme. A success
+     tint arrives with the feature that surfaces one.
+
+     conflict is deliberately not danger: nothing failed and nothing was lost — both versions
+     are in the note — so borrowing the colour of a refused sign-in would overstate it. It is
+     the one cool hue in a warm palette, which is what makes it read as *different* rather
+     than as worse. */
   --state-warning: #9a5b12;
   --state-danger: #a52016;
+  --state-conflict: #6a3d9a;
 
   /* ---------------------------------------------------------------- typography: families */
   --font-body: Georgia, "Times New Roman", serif;
@@ -220,6 +227,7 @@
 
     --state-warning: #e0aa5f;
     --state-danger: #f2a09a;
+    --state-conflict: #c4a2ef;
 
     /* Lightened for the dark surface: the light-theme hues fall below 4.5:1 here. */
     --series-0: #f08b7d;

@@ -1,10 +1,13 @@
 /** Source-view bridge. Markdown conversion is delegated to Rust/WASM. */
 
 import type { Editor } from "@tiptap/core";
+import { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import type { EditorView } from "@tiptap/pm/view";
 import { yXmlFragmentToProsemirrorJSON } from "y-prosemirror";
 import { applyUpdate, Doc, encodeStateAsUpdate, type XmlFragment } from "yjs";
 
 import { markdownFromUpdate, type NoteBridge, noteBridge } from "../notes.js";
+import { PROSEMIRROR_ROOT } from "./collaboration.js";
 
 /** Reads the active Y.Doc as canonical Markdown through the WASM boundary. */
 export async function editorMarkdown(document: Doc): Promise<string> {
@@ -13,7 +16,7 @@ export async function editorMarkdown(document: Doc): Promise<string> {
 
 /** Parses source Markdown through WASM and replaces the editor content with the result. */
 export async function applySourceMarkdown(editor: Editor, markdown: string): Promise<void> {
-  applySourceMarkdownWith(await noteBridge(), editor, markdown);
+  applySourceMarkdownWith(await noteBridge(), editor.view, markdown);
 }
 
 /**
@@ -26,17 +29,27 @@ export function editorMarkdownWith(bridge: NoteBridge, document: Doc): string {
   return bridge.markdownFromUpdate(encodeStateAsUpdate(document));
 }
 
-/** Replaces the editor's content with parsed Markdown, without awaiting anything. */
+/**
+ * Replaces a view's content with parsed Markdown, without awaiting anything.
+ *
+ * Dispatched as one ProseMirror transaction rather than through Tiptap's `setContent`, for
+ * two reasons: it is undoable, which is what §3.5 asks a conflict resolution to be, and a
+ * `NodeView` holds an `EditorView` rather than an `Editor`, so this is what a callout's own
+ * buttons can call.
+ */
 export function applySourceMarkdownWith(
   bridge: NoteBridge,
-  editor: Editor,
+  view: EditorView,
   markdown: string,
 ): void {
   const document = new Doc();
   applyUpdate(document, bridge.updateFromMarkdown(markdown));
-  const fragment = document.getXmlFragment("prosemirror");
+  const fragment = document.getXmlFragment(PROSEMIRROR_ROOT);
   const content = yXmlFragmentToProsemirrorJSON(fragment);
-  editor.commands.setContent(content, { emitUpdate: true });
+  const replacement = ProseMirrorNode.fromJSON(view.state.schema, content);
+  view.dispatch(
+    view.state.tr.replaceWith(0, view.state.doc.content.size, replacement.content),
+  );
   document.destroy();
 }
 

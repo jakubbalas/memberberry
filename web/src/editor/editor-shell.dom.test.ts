@@ -8,9 +8,10 @@ import { applyUpdate, Doc } from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { load, updateFromMarkdown } from "../notes.js";
-import { createConnectionStatus } from "./collaboration.js";
-import { connectionMessage, mountEditorShell } from "./editor-shell.js";
+import { load, noteBridge, updateFromMarkdown } from "../notes.js";
+import { PROSEMIRROR_ROOT, createConnectionStatus, createYjsBinding } from "./collaboration.js";
+import { conflictViews } from "./conflict-view.js";
+import { conflictMessage, connectionMessage, mountEditorShell } from "./editor-shell.js";
 import { PRESENCE_CLIENT_ATTRIBUTE } from "./presence.js";
 import { createMemberberryExtensions } from "./schema.js";
 import { taskItemView } from "./task-view.js";
@@ -619,5 +620,102 @@ describe("connectionMessage", () => {
     expect(connectionMessage({ connected: false, pending: 3, synced: false })).toBe(
       "Offline — 3 unsent changes, saved on this device",
     );
+  });
+});
+
+describe("conflictMessage", () => {
+  it("says nothing when the note has no conflict", () => {
+    // §3.5's count is news on the one note that has one. A "0 conflicts" line on every other
+    // note is furniture readers stop seeing, which is the opposite of what the count is for.
+    expect(conflictMessage(0)).toBeUndefined();
+    expect(conflictMessage(-1)).toBeUndefined();
+  });
+
+  it("counts in singular and plural, and says what to do about it", () => {
+    expect(conflictMessage(1)).toBe("1 unresolved conflict — choose a version below");
+    expect(conflictMessage(4)).toBe("4 unresolved conflicts — choose a version for each");
+  });
+});
+
+describe("the conflict count in the note header (SPEC 3.5)", () => {
+  /** The shell over a note, with the conflict node view registered. */
+  async function shellOver(markdown: string) {
+    const panel = document.createElement("section");
+    const surface = document.createElement("div");
+    const status = document.createElement("p");
+    panel.append(surface);
+    document.body.append(panel, status);
+    const ydoc = new Doc();
+    applyUpdate(ydoc, await updateFromMarkdown(markdown));
+    const bridge = await noteBridge();
+    const editor = new Editor({
+      element: surface,
+      extensions: [
+        ...createMemberberryExtensions(contract),
+        conflictViews({ document: ydoc, bridge }),
+        createYjsBinding(ydoc.getXmlFragment(PROSEMIRROR_ROOT)),
+      ],
+    });
+    const shell = mountEditorShell({ editor, document: ydoc, panel, status });
+    return {
+      panel,
+      editor,
+      count: (): HTMLElement | null => panel.querySelector<HTMLElement>(".conflict-count"),
+      destroy: () => {
+        shell.destroy();
+        editor.destroy();
+        ydoc.destroy();
+        panel.remove();
+        status.remove();
+      },
+    };
+  }
+
+  it("says so as soon as a note with a conflict is opened", async () => {
+    // Not on the first keystroke: the listener is attached before the announcer is mounted
+    // precisely so a note that arrives with a conflict already in it reports it immediately.
+    const open = await shellOver(
+      "Mine.\n\n> [!conflict] Conflicting version — external edit, now\n>\n> Theirs.\n",
+    );
+    try {
+      expect(open.count()?.hidden).toBe(false);
+      expect(open.count()?.textContent).toBe("1 unresolved conflict — choose a version below");
+      expect(open.count()?.getAttribute("role")).toBe("status");
+    } finally {
+      open.destroy();
+    }
+  });
+
+  it("is hidden for a note with none", async () => {
+    const open = await shellOver("Just text.\n");
+    try {
+      expect(open.count()?.hidden).toBe(true);
+      expect(open.count()?.textContent).toBe("");
+    } finally {
+      open.destroy();
+    }
+  });
+
+  it("disappears when the last conflict is resolved", async () => {
+    const open = await shellOver(
+      "Mine.\n\n> [!conflict] Conflicting version — external edit, now\n>\n> Theirs.\n",
+    );
+    try {
+      open.panel.querySelector<HTMLButtonElement>(".conflict-action")?.click();
+
+      expect(open.count()?.hidden).toBe(true);
+    } finally {
+      open.destroy();
+    }
+  });
+
+  it("goes with the note when the pane closes", async () => {
+    const open = await shellOver(
+      "Mine.\n\n> [!conflict] Conflicting version — external edit, now\n>\n> Theirs.\n",
+    );
+    const panel = open.panel;
+    open.destroy();
+
+    expect(panel.querySelector(".conflict-count")).toBeNull();
   });
 });

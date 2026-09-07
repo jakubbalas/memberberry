@@ -18,7 +18,7 @@
  * awaited one at a time — see `notes.ts`.
  */
 
-import type { Editor } from "@tiptap/core";
+import type { EditorView } from "@tiptap/pm/view";
 import type { Doc } from "yjs";
 
 import type { ConflictSide, NoteBridge } from "../notes.js";
@@ -26,7 +26,7 @@ import { applySourceMarkdownWith, editorMarkdownWith } from "./source.js";
 import type { ServerState } from "./sync.js";
 
 export interface ReconcileOptions {
-  readonly editor: Editor;
+  readonly view: EditorView;
   readonly document: Doc;
   readonly bridge: NoteBridge;
   /** The server's whole state, and what this device held that it had not seen. */
@@ -82,12 +82,12 @@ export function reconcile(options: ReconcileOptions): Reconciliation {
   // `setContent` replaces the document, which moves the caret to the top and takes the scroll
   // position with it — and every reconnection comes through here, so rewriting an unchanged
   // note would throw a reader out of their place for nothing.
-  if (merged !== current) applySourceMarkdownWith(options.bridge, options.editor, merged);
+  if (merged !== current) applySourceMarkdownWith(options.bridge, options.view, merged);
   return { conflicts: options.bridge.count(merged), base: merged };
 }
 
 export interface ResolveOptions {
-  readonly editor: Editor;
+  readonly view: EditorView;
   readonly document: Doc;
   readonly bridge: NoteBridge;
   /** Which conflict, counting from the top of the note. See `NoteBridge.resolve`. */
@@ -107,7 +107,7 @@ export function applyResolution(options: ResolveOptions): boolean {
   const markdown = editorMarkdownWith(options.bridge, options.document);
   const resolved = options.bridge.resolve(markdown, options.ordinal, options.keep);
   if (resolved === markdown) return false;
-  applySourceMarkdownWith(options.bridge, options.editor, resolved);
+  applySourceMarkdownWith(options.bridge, options.view, resolved);
   return true;
 }
 

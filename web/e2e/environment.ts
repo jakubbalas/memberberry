@@ -60,6 +60,10 @@ const SCRATCH_PURPOSES: readonly string[] = [
   "rename-source",
   // Typed into with the network off, then read off disk once it comes back (§7.4).
   "offline-edit",
+  // Edited offline *and* on disk at the same time, which is §3.5's collision. Two, because
+  // the second one resolves the conflict and a resolution is not repeatable.
+  "conflict",
+  "conflict-resolve",
 ];
 const SCRATCH_PROJECTS: readonly string[] = ["desktop", "mobile"];
 

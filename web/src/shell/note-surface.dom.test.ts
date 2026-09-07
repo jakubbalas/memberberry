@@ -25,7 +25,7 @@ import type { LocalPersistence } from "../editor/collaboration.js";
 import type { ConnectionState } from "../editor/sync.js";
 import { stubReplica } from "../offline/testing.js";
 import { createMemberberryExtensions } from "../editor/schema.js";
-import { load } from "../notes.js";
+import { load, updateFromMarkdown } from "../notes.js";
 import { LOCAL_ONLY, openNoteSurface } from "./note-surface.js";
 
 const fixture = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
@@ -481,5 +481,214 @@ describe("keeping §7.2's bookkeeping", () => {
     const measured = store.patches.find((patch) => patch.bytes !== undefined);
     expect(measured?.note).toBe(bootstrap.note);
     expect(measured?.bytes).toBeGreaterThan(500);
+  });
+});
+
+describe("reconciling §3.5's conflicts", () => {
+  const bootstrap = { vault: "personal", note: "Projects/Roadmap.md", user: "alice" } as const;
+  const location = { protocol: "http:", host: "localhost:9010" } as Location;
+
+  /** A replica holding one merge base, recording every one written back. */
+  function withBase(stored: string | undefined) {
+    const written: string[] = [];
+    const state = { asked: false };
+    return {
+      written,
+      state,
+      handle: async () =>
+        stubReplica({
+          isResident: async () => true,
+          base: async () => {
+            state.asked = true;
+            return stored;
+          },
+          measured: async (_vault, _note, patch) => {
+            if (patch.base !== undefined) written.push(patch.base);
+          },
+        }),
+    };
+  }
+
+  /**
+   * Opens a pane whose transport this test drives.
+   *
+   * `raise` applies the server's state to the document before announcing it, which is what
+   * the real transport does and what the announcement means — the CRDT has already merged,
+   * and `mine` is the only copy of what was there before. A fake that skipped the apply would
+   * be testing a sequence that cannot happen.
+   *
+   * The transport is the only injected part: the real WASM bridge and the real editor are
+   * mounted, because what is being checked is that the three are wired to each other.
+   */
+  async function openWithTransport(replica: () => Promise<ReturnType<typeof stubReplica>>) {
+    let announce: ((state: { mine?: Uint8Array; theirs: Uint8Array }) => void) | undefined;
+    let document: Doc | undefined;
+    const opened = await open({
+      bootstrap,
+      location,
+      replica,
+      createRemoteSync: ((_options, remote, _awareness, _onConnectionChange, onServerState) => {
+        document = remote;
+        announce = onServerState;
+        return {
+          connected: true,
+          pending: 0,
+          synced: true,
+          sendAwareness: () => undefined,
+          destroy: () => undefined,
+        };
+      }) as NonNullable<Parameters<typeof openNoteSurface>[0]["createRemoteSync"]>,
+    });
+    return {
+      ...opened,
+      ready: (): boolean => announce !== undefined,
+      raise: (state: { mine?: Uint8Array; theirs: Uint8Array }): void => {
+        if (document !== undefined) applyUpdate(document, state.theirs);
+        announce?.(state);
+      },
+    };
+  }
+
+  /** A note's state, as the server would send it or as this device would have captured it. */
+  async function stateOf(markdown: string): Promise<Uint8Array> {
+    return updateFromMarkdown(markdown);
+  }
+
+  it("marks a collision against the stored base and shows the count", async () => {
+    const store = withBase("Three levels.\n");
+    const pane = await openWithTransport(store.handle);
+    try {
+      await vi.waitFor(() => expect(pane.ready() && store.state.asked).toBe(true));
+      pane.raise({
+        mine: await stateOf("Five levels.\n"),
+        theirs: await stateOf("Four levels.\n"),
+      });
+
+      await vi.waitFor(() => {
+        const count = pane.dom.panel.querySelector<HTMLElement>(".conflict-count");
+        expect(count?.textContent).toBe("1 unresolved conflict — choose a version below");
+        expect(count?.hidden).toBe(false);
+      });
+      const actions = pane.dom.panel.querySelectorAll(".conflict-action");
+      expect([...actions].map((button) => button.textContent)).toEqual([
+        "Keep mine",
+        "Keep theirs",
+        "Keep both",
+      ]);
+      expect(store.written.at(-1)).toContain("Five levels.");
+      expect(store.written.at(-1)).toContain("[!conflict]");
+    } finally {
+      await pane.surface.destroy();
+    }
+  });
+
+  it("marks nothing when only the other side changed the note", async () => {
+    // The ordinary reconnection. Without the base this is indistinguishable from a collision,
+    // and every note in a shared vault would grow a callout on every reconnect.
+    const store = withBase("Three levels.\n");
+    const pane = await openWithTransport(store.handle);
+    try {
+      await vi.waitFor(() => expect(pane.ready() && store.state.asked).toBe(true));
+      pane.raise({
+        mine: await stateOf("Three levels.\n"),
+        theirs: await stateOf("Four levels.\n"),
+      });
+
+      await vi.waitFor(() => expect(store.written).toEqual(["Four levels.\n"]));
+      expect(pane.dom.panel.querySelector(".conflict-action")).toBeNull();
+      expect(pane.dom.panel.querySelector<HTMLElement>(".conflict-count")?.hidden).toBe(true);
+    } finally {
+      await pane.surface.destroy();
+    }
+  });
+
+  it("records what both sides hold even when there was nothing to reconcile", async () => {
+    // §3.5's base is written on every arrival, not only a divergent one: a note that
+    // reconnected cleanly is a note both sides now agree about, and that agreement is what
+    // makes the *next* offline edit detectable.
+    const store = withBase(undefined);
+    const pane = await openWithTransport(store.handle);
+    try {
+      await vi.waitFor(() => expect(pane.ready() && store.state.asked).toBe(true));
+      pane.raise({ theirs: await stateOf("Four levels.\n") });
+
+      await vi.waitFor(() => expect(store.written).toEqual(["Four levels.\n"]));
+    } finally {
+      await pane.surface.destroy();
+    }
+  });
+
+  it("records a base for a note this device did not hold until now", async () => {
+    // The first sync of a note is the one with no resident record yet, and `measured` writes
+    // nothing without one — so this used to drop the very first base of every note, leaving
+    // the first offline edit after opening it with nothing to compare against.
+    const written: string[] = [];
+    let resident = false;
+    const pane = await openWithTransport(async () =>
+      stubReplica({
+        isResident: async () => resident,
+        base: async () => undefined,
+        opened: async () => {
+          resident = true;
+        },
+        measured: async (_vault, _note, patch) => {
+          if (patch.base !== undefined && resident) written.push(patch.base);
+        },
+      }),
+    );
+    try {
+      await vi.waitFor(() => expect(pane.ready()).toBe(true));
+      pane.raise({ theirs: await stateOf("Four levels.\n") });
+
+      await vi.waitFor(() => expect(written).toEqual(["Four levels.\n"]));
+    } finally {
+      await pane.surface.destroy();
+    }
+  });
+
+  it("compares the second arrival against the first one's result", async () => {
+    // Held in memory as well as stored: two reconnections in one session must not both
+    // compare against the version from before the first.
+    const store = withBase("One.\n");
+    const pane = await openWithTransport(store.handle);
+    try {
+      await vi.waitFor(() => expect(pane.ready() && store.state.asked).toBe(true));
+      pane.raise({ theirs: await stateOf("Two.\n") });
+      await vi.waitFor(() => expect(store.written).toEqual(["Two.\n"]));
+
+      // Only they changed it again, measured against "Two." — against "One." this would read
+      // as a collision and mark a callout.
+      pane.raise({ mine: await stateOf("Two.\n"), theirs: await stateOf("Three.\n") });
+
+      await vi.waitFor(() => expect(store.written).toEqual(["Two.\n", "Three.\n"]));
+      expect(pane.dom.panel.querySelector(".conflict-action")).toBeNull();
+    } finally {
+      await pane.surface.destroy();
+    }
+  });
+
+  it("stops reconciling once the pane is closed", async () => {
+    // A pane is closed constantly under splits and tabs, and a transport that outlives one by
+    // a frame would reconcile into an editor that has been destroyed.
+    const store = withBase("Three levels.\n");
+    const pane = await openWithTransport(store.handle);
+    await vi.waitFor(() => expect(pane.ready() && store.state.asked).toBe(true));
+    await pane.surface.destroy();
+    store.written.length = 0;
+
+    pane.raise({ mine: await stateOf("Five levels.\n"), theirs: await stateOf("Four levels.\n") });
+
+    expect(store.written).toEqual([]);
+  });
+
+  it("does nothing for a local-only replica", async () => {
+    // Nothing to diverge from and no base to keep, so no count is rendered — not even zero.
+    const { surface, dom } = await open();
+    try {
+      expect(dom.panel.querySelector<HTMLElement>(".conflict-count")?.hidden).toBe(true);
+      expect(dom.panel.querySelector(".conflict-action")).toBeNull();
+    } finally {
+      await surface.destroy();
+    }
   });
 });

@@ -9,6 +9,7 @@ import type { ConnectionState } from "./sync.js";
 import { PRESENCE_CLIENT_ATTRIBUTE, trackPresenceIdle } from "./presence.js";
 
 import { insertBlock, moveCurrentBlock, runTaskSlashCommand, setHeading, setTaskDue, setTaskPriority, slashCommands, toggleTask } from "./commands.js";
+import { CONFLICT_EVENT, mountConflicts, type ConflictDetail } from "./conflict-view.js";
 import { mountOutline } from "./outline.js";
 import { applySourceMarkdown, copyMarkdown, editorMarkdown, longNoteMode, setLongNoteMode } from "./source.js";
 import { TASK_CHIP_EVENT, type TaskChipEventDetail } from "./task-view.js";
@@ -175,6 +176,23 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   // to go when the note closes.
   const outline = mountOutline(options.editor);
 
+  // §3.5's count. The listener is attached before the announcer is mounted, because
+  // `mountConflicts` announces the note's current count immediately — a note opened with a
+  // conflict already in it must say so without waiting for the first keystroke.
+  const conflicts = document.createElement("p");
+  conflicts.className = "conflict-count";
+  conflicts.setAttribute("role", "status");
+  conflicts.hidden = true;
+  controls.prepend(conflicts);
+  const onConflicts = (event: Event): void => {
+    if (!(event instanceof CustomEvent)) return;
+    const detail = event.detail as ConflictDetail;
+    conflicts.textContent = conflictMessage(detail.count) ?? "";
+    conflicts.hidden = detail.count === 0;
+  };
+  options.editor.view.dom.addEventListener(CONFLICT_EVENT, onConflicts);
+  const conflictCount = mountConflicts(options.editor);
+
   return {
     destroy: () => {
       options.editor.view.dom.removeEventListener("keydown", onKeyDown);
@@ -190,6 +208,9 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       visualViewport?.removeEventListener("scroll", positionToolbar);
       presence?.destroy();
       outline.destroy();
+      conflictCount.destroy();
+      options.editor.view.dom.removeEventListener(CONFLICT_EVENT, onConflicts);
+      conflicts.remove();
       clearPress();
       controls.remove();
       slash.destroy();
@@ -212,6 +233,20 @@ interface PresenceHandle { destroy(): void; }
  * usually too short to read, and leaving it unlabelled would mean the count vanishing before
  * anything reported it.
  */
+/**
+ * What the note says about its unresolved conflicts, or `undefined` for none (§3.5).
+ *
+ * `undefined` rather than "0 conflicts": a line of furniture on every note nobody has a
+ * conflict in is a line readers stop seeing, which is the opposite of what §3.5 wants from
+ * the one note where it matters.
+ */
+export function conflictMessage(count: number): string | undefined {
+  if (count <= 0) return undefined;
+  return count === 1
+    ? "1 unresolved conflict — choose a version below"
+    : `${count} unresolved conflicts — choose a version for each`;
+}
+
 export function connectionMessage(state: ConnectionState): string | undefined {
   const changes = `${state.pending} unsent ${state.pending === 1 ? "change" : "changes"}`;
   if (!state.connected) {
