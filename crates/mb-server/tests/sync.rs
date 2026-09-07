@@ -106,6 +106,66 @@ fn own_atomic_write_is_suppressed_but_external_edit_becomes_a_crdt_update() {
     );
 }
 
+#[test]
+fn an_applied_external_edit_is_not_applied_a_second_time() {
+    // The bug: `inspect_external_change` applied the file and left the last-written marker
+    // holding whatever the server wrote *before* it. Every later inspection therefore read the
+    // same file as a fresh external edit — and the watcher is a hint that fires often, with a
+    // periodic sweep behind it (§3.4) — so an unchanged file kept being re-applied.
+    let dir = TempDir::new("sync-external-twice");
+    let note = dir.write("One.md", "before\n");
+    let vault = vault(&dir);
+    let mut coordinator =
+        NoteCoordinator::open(&vault, &vault.canonical_note("One.md").unwrap()).unwrap();
+    coordinator.flush().unwrap();
+
+    std::fs::write(&note, "external\n").unwrap();
+    assert!(matches!(
+        coordinator.inspect_external_change().unwrap(),
+        ExternalUpdate::Applied(_)
+    ));
+
+    assert_eq!(
+        coordinator.inspect_external_change().unwrap(),
+        ExternalUpdate::SelfWrite,
+        "a file the CRDT has already accounted for is not an external edit",
+    );
+}
+
+#[test]
+fn a_stale_file_never_reverts_an_edit_made_after_it_was_imported() {
+    // What that bug cost, which is why it is data loss rather than wasted work: after an
+    // Obsidian edit was imported, the next inspection diffed the *same* file against a
+    // document that had moved on — and the diff's job is to make the document match the file,
+    // so it deleted whatever had been typed in between.
+    let dir = TempDir::new("sync-external-revert");
+    let note = dir.write("One.md", "before\n");
+    let vault = vault(&dir);
+    let mut coordinator =
+        NoteCoordinator::open(&vault, &vault.canonical_note("One.md").unwrap()).unwrap();
+    coordinator.flush().unwrap();
+
+    std::fs::write(&note, "external\n").unwrap();
+    assert!(matches!(
+        coordinator.inspect_external_change().unwrap(),
+        ExternalUpdate::Applied(_)
+    ));
+
+    // Somebody types, or an offline client reconnects and flushes. The file is untouched.
+    let update = edit_to(&coordinator, "external and then mine\n");
+    coordinator
+        .apply_remote_update(&update, Instant::now())
+        .unwrap();
+
+    coordinator.inspect_external_change().unwrap();
+
+    let live = document_from_update_v1(&coordinator.full_update()).unwrap();
+    assert_eq!(
+        mb_core::to_markdown(&document_from_yrs(&live).unwrap()),
+        "external and then mine\n",
+    );
+}
+
 /// Produces the lib0 update that moves `coordinator`'s current state to `markdown`.
 fn edit_to(coordinator: &NoteCoordinator, markdown: &str) -> Vec<u8> {
     let remote = document_from_update_v1(&coordinator.full_update()).unwrap();

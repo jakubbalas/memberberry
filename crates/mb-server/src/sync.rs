@@ -598,8 +598,13 @@ pub struct NoteCoordinator {
     /// The room's canonical note identity, needed to re-authorize an imported file change.
     note: String,
     markdown_path: PathBuf,
-    /// Records the hash of the Markdown this note last had written to it, so a restart can
-    /// tell its own unflushed state from a file somebody edited while the server was down.
+    /// Records the hash of the file content this note's document is built on, so a restart
+    /// can tell its own unflushed state from a file somebody edited while the server was down.
+    ///
+    /// Written by both directions: the coordinator's own atomic write, and an external edit
+    /// it has imported. Both leave the file as a version the document already contains, which
+    /// is the question every reader of this asks — see
+    /// [`NoteCoordinator::inspect_external_change`] for what recording only the first cost.
     marker: PathBuf,
     sidecar: Sidecar,
     doc: Doc,
@@ -731,14 +736,33 @@ impl NoteCoordinator {
             .map_err(SyncError::from)
     }
 
-    /// Imports a filesystem change, suppressing only bytes this coordinator last wrote.
+    /// Imports a filesystem change, suppressing bytes the CRDT has already accounted for.
+    ///
+    /// The marker is updated on the way out, and that is not bookkeeping — it is what stops
+    /// this from losing writing. The watcher is a hint that fires more than once for one edit
+    /// and a periodic sweep runs behind it regardless (§3.4), so this method is called again
+    /// and again for a file nobody has touched since. Left recording only the server's *own*
+    /// writes, the second call diffed the same file against a document that had moved on —
+    /// and the diff's job is to make the document match the file, so it deleted whatever had
+    /// been typed, or flushed by a reconnecting client, in between.
+    ///
+    /// Recording it is also the honest answer to what the marker means. Once an external edit
+    /// is in the document, the file is no longer "a version the server has not seen": it is
+    /// the version the CRDT is built on, which is exactly the question §3.3's restart check
+    /// asks it.
     pub fn inspect_external_change(&mut self) -> Result<ExternalUpdate, SyncError> {
         let markdown = read_markdown(&self.markdown_path)?;
-        if self.last_written_hash == Some(content_hash(markdown.as_bytes())) {
+        let hash = content_hash(markdown.as_bytes());
+        if self.last_written_hash == Some(hash) {
             return Ok(ExternalUpdate::SelfWrite);
         }
         let before = self.doc.transact().state_vector();
         let changed = apply_external_markdown(&self.doc, &markdown)?;
+        // Before the early return as well: a file that differs from the last write only in
+        // whitespace is one this document already contains, and re-parsing it every sweep is
+        // work with no possible outcome.
+        write_marker(&self.marker, &hash)?;
+        self.last_written_hash = Some(hash);
         if !changed.changed() {
             return Ok(ExternalUpdate::Unchanged);
         }
@@ -798,7 +822,7 @@ fn sidecar_path(vault_root: &Path, relative: &str) -> PathBuf {
     vault_root.join(".memberberry").join("crdt").join(name)
 }
 
-/// The last-written marker sits beside its sidecar, so `rm -rf .memberberry/` still leaves
+/// The marker sits beside its sidecar, so `rm -rf .memberberry/` still leaves
 /// a vault that rebuilds cleanly from Markdown alone (invariant I1, `SPEC.md` §22.4).
 fn marker_path(sidecar: &Path) -> PathBuf {
     sidecar.with_extension("last-write")
