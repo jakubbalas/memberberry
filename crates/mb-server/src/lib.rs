@@ -11,6 +11,7 @@ pub mod audit;
 pub mod bookmarks;
 pub mod compress;
 pub mod config;
+pub mod create;
 pub mod http;
 pub mod indexing;
 pub mod invites;

@@ -181,6 +181,39 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
   ),
 };
 
+/**
+ * A vault per project that starts with **no notes and no `access.toml`** (§6.10).
+ *
+ * Two things nothing else in this suite can check, and both were real defects.
+ *
+ * The first is `vault create` itself. Every other vault here has its `access.toml` written by
+ * `serve.ts` *before* registration, which is convenient and which also meant the suite never
+ * exercised what the CLI does when a vault has no policy — it wrote none, deny-by-default
+ * made the newly registered vault invisible, and a first-time user saw a server with nothing
+ * on it. Registering these through the CLI with no policy in place is what proves the CLI
+ * writes one.
+ *
+ * The second is the empty vault as a place to stand. The workspace shell is served from a
+ * note URL, so a vault with no notes cannot load it and cannot reach the palette — which
+ * makes the vault index page the only way in, and the only thing that can prove it.
+ *
+ * One per project rather than one shared: `fullyParallel` runs both viewports against one
+ * server, and "this vault has no notes" is not a claim two tests can make about one vault.
+ */
+export const E2E_EMPTY_SLUGS: Readonly<Record<string, string>> = {
+  desktop: "empty-desktop",
+  mobile: "empty-mobile",
+};
+
+/** The slug of the empty vault belonging to this project. */
+export function emptyVaultSlug(project: string): string {
+  const slug = E2E_EMPTY_SLUGS[project];
+  if (slug === undefined) {
+    throw new Error(`no empty vault for project \`${project}\` — add one to E2E_EMPTY_SLUGS`);
+  }
+  return slug;
+}
+
 /** Everything the run creates, under `target/` so `cargo clean` and `.gitignore` cover it. */
 export const E2E_ROOT: string = join(REPO, "target", "e2e");
 
@@ -191,6 +224,11 @@ export const E2E_ROOT: string = join(REPO, "target", "e2e");
  * assert it is to open the file the way a text editor would.
  */
 export const E2E_VAULT: string = join(E2E_ROOT, "vault");
+
+/** Where an empty vault's files go. Created, but deliberately left with nothing in it. */
+export function emptyVaultRoot(project: string): string {
+  return join(E2E_ROOT, emptyVaultSlug(project));
+}
 
 export const E2E_DATA_DIR: string = join(E2E_ROOT, "data");
 export const E2E_CONFIG: string = join(E2E_DATA_DIR, "server.toml");

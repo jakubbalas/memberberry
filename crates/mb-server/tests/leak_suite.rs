@@ -1107,3 +1107,91 @@ fn e14_a_privileged_rewrite_never_reports_what_it_reached() {
         );
     }
 }
+
+/// E17: creating a note must not become an oracle for which notes and folders exist.
+///
+/// This is the enforcement point with the newest shape: every earlier write path was asked
+/// about a note that already existed, so the ACL had a subject. Creation is asked about a
+/// *name*, and the danger is entirely in the ordering. If "that already exists" were
+/// answered before "you may write here", anyone who could reach the route could map a
+/// private vault by trying to create over it — the reply would differ for an occupied path
+/// and an empty one, which is precisely the distinction §6.5 forbids.
+///
+/// Four claims, each of which fails independently:
+///
+/// 1. a member who may not write in a folder cannot create there;
+/// 2. the refusal is **byte-identical** whether or not a note occupies the path, so it
+///    carries no information about what is there;
+/// 3. nothing is written on a refusal;
+/// 4. a per-folder grant is what bounds it, not vault-wide membership — so the same user
+///    who is refused in `Private/` succeeds in the folder they were granted.
+#[test]
+fn e17_creating_a_note_never_reveals_what_is_already_there() {
+    let dir = TempDir::new("leak-create");
+    dir.write("Shared/Welcome.md", "# Welcome\n");
+    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Shared\"\ngrant = { bob = \"editor\" }\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let bob = Username::parse("bob").expect("username");
+    let create = mb_server::create::CreateNote::new(&vault, access.policy(), bob, &index);
+
+    // `Private/` does not exist for bob, so neither does what is in it. The occupied path and
+    // the empty one must be one answer — compared as strings, because two `Denied` variants
+    // that formatted differently would leak just as surely as two different variants.
+    let occupied = create.note("Private/Salary.md");
+    let empty = create.note("Private/NeverExisted.md");
+    for (probe, outcome) in [
+        ("Private/Salary.md", &occupied),
+        ("Private/NeverExisted.md", &empty),
+    ] {
+        assert!(
+            matches!(outcome, Err(mb_server::create::CreateError::Denied)),
+            "{probe} must answer as a folder that is not there: {outcome:?}"
+        );
+    }
+    assert_eq!(
+        occupied.expect_err("denied").to_string(),
+        empty.expect_err("denied").to_string(),
+        "an occupied path and an empty one must give one refusal, byte for byte"
+    );
+    assert!(!dir.path().join("Private/NeverExisted.md").exists());
+    // The note bob probed is untouched, which is the other half of "nothing was written".
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Private/Salary.md")).expect("the hidden note"),
+        "# Salary Review\n"
+    );
+
+    // Vault-wide he is only a viewer, so the grant on `Shared/` is doing the work — and the
+    // refusal above was about the folder, not about bob being unable to create anything.
+    let allowed = create.note("Shared/Plan.md");
+    assert!(
+        allowed.is_ok(),
+        "the folder grant must permit this: {allowed:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Shared/Plan.md")).expect("the new note"),
+        "# Plan\n"
+    );
+    // And a viewer's own root, where he has no grant at all, stays closed.
+    assert!(matches!(
+        create.note("Root.md"),
+        Err(mb_server::create::CreateError::Denied)
+    ));
+    assert!(!dir.path().join("Root.md").exists());
+}

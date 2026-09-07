@@ -199,6 +199,47 @@ impl TestServer {
         )
     }
 
+    /// Issues a form POST carrying this server's session cookie.
+    ///
+    /// Separate from `post_form`, which is deliberately unauthenticated because the sign-in
+    /// form is posted by somebody who has no session yet.
+    fn post_form_signed_in(&self, path: &str, form: &str) -> (String, String) {
+        self.request(
+            "POST",
+            path,
+            &format!(
+                "{}Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n",
+                self.default_headers,
+                form.len()
+            ),
+            form,
+        )
+    }
+
+    /// The same, returning the whole header block — for a reply whose point is a header.
+    fn post_form_head(&self, path: &str, form: &str) -> String {
+        let mut stream = TcpStream::connect(self.addr).expect("connecting");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("setting a read timeout");
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\n{}Content-Type: \
+             application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: \
+             close\r\n\r\n{form}",
+            self.default_headers,
+            form.len()
+        )
+        .expect("writing the request");
+        let mut raw = String::new();
+        stream
+            .read_to_string(&mut raw)
+            .expect("reading the response");
+        raw.split_once("\r\n\r\n")
+            .map_or(raw.clone(), |(head, _)| head.to_string())
+            .to_ascii_lowercase()
+    }
+
     /// Issues a POST with a JSON body.
     fn post_json(&self, path: &str, headers: &str, body: &str) -> (String, String) {
         self.request(
@@ -910,11 +951,28 @@ fn every_page_carries_a_content_security_policy() {
             body.contains("Content-Security-Policy") && body.contains("default-src 'none'"),
             "{path} has no CSP: {body}"
         );
+    }
+
+    // `form-action` is the one directive that varies, and it varies with whether the page has
+    // a form rather than with who asked. The vault index gained one in §6.10 — it is the only
+    // route into an empty vault — so it permits posting to this origin and nothing else. Every
+    // page that renders note content still submits nowhere at all, which is the property this
+    // test was written for: a CSP that allowed a form on a page displaying untrusted Markdown
+    // would be a hole, and one that forbade it on a page whose whole job is a form is the M5
+    // outage, where the sign-in page's own policy made it unsubmittable.
+    for path in ["/", "/v/v/note.md", "/nonsense"] {
+        let (_, body) = server.get(path);
         assert!(
             body.contains("form-action 'none'"),
             "a page rendering note content must not be able to submit anywhere: {path}"
         );
     }
+    let (_, index) = server.get("/v/v");
+    assert!(index.contains("form-action 'self'"), "{index}");
+    assert!(
+        !index.contains("form-action 'none'"),
+        "the vault index carries the create form and must be able to submit it: {index}"
+    );
 }
 
 #[test]
@@ -3769,4 +3827,231 @@ fn a_rename_body_that_is_not_a_rename_is_refused_without_touching_the_vault() {
         );
     }
     assert!(dir.path().join("Roadmap.md").exists());
+}
+
+// ---------------------------------------------------------------- note creation (§6.10)
+
+#[test]
+fn creating_a_note_over_the_api_writes_markdown_and_reports_where() {
+    let dir = TempDir::new("http-create");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/notes",
+        "",
+        r#"{"path":"Projects/Plan.md"}"#,
+    );
+
+    assert!(is_ok(&status), "{status} {body}");
+    assert!(body.contains("Projects/Plan.md"), "{body}");
+    // C2: the note is a Markdown file, not a row somewhere.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Projects/Plan.md")).expect("the new note"),
+        "# Plan\n"
+    );
+}
+
+#[test]
+fn a_created_note_is_in_the_note_index_on_the_very_next_request() {
+    let dir = TempDir::new("http-create-indexed");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, _) = server.post_json("/api/v1/vaults/v/notes", "", r#"{"path":"Fresh.md"}"#);
+    assert!(is_ok(&status));
+
+    // No `tick()`: the route sweeps for itself, so a client that creates and then lists does
+    // not see a vault that has forgotten what it just did.
+    let (_, body) = server.get("/api/v1/vaults/v/notes");
+    assert!(body.contains("Fresh.md"), "{body}");
+}
+
+#[test]
+fn an_unauthenticated_create_is_refused_and_writes_nothing() {
+    let dir = TempDir::new("http-create-anon");
+    let mut server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    server.default_headers = String::new();
+
+    let (status, _) = server.post_json("/api/v1/vaults/v/notes", "", r#"{"path":"Sneaky.md"}"#);
+
+    assert!(is_not_found(&status), "{status}");
+    assert!(!dir.path().join("Sneaky.md").exists());
+}
+
+/// E17 over the wire: the four probes an attacker would actually send, and one reply.
+#[test]
+fn a_create_a_caller_may_not_do_answers_exactly_as_an_unknown_vault_does() {
+    let dir = TempDir::new("http-create-denied");
+    dir.write("Private/Salary.md", "# Salary\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let token = auth.create_session(bob.id, 4_102_444_800).expect("session");
+    let bob_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&token).expect("sign cookie")
+    );
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("secure state");
+    let mut server = TestServer::start(state);
+    server.default_headers = bob_header;
+
+    let mut replies = Vec::new();
+    for (route, body) in [
+        // A note that is there but unreadable, and one that is not there.
+        ("/api/v1/vaults/v/notes", r#"{"path":"Private/Salary.md"}"#),
+        ("/api/v1/vaults/v/notes", r#"{"path":"Private/Nothing.md"}"#),
+        // A folder bob has no grant in at all.
+        ("/api/v1/vaults/v/notes", r#"{"path":"Root.md"}"#),
+        // A vault that does not exist.
+        ("/api/v1/vaults/nope/notes", r#"{"path":"Root.md"}"#),
+    ] {
+        let (status, reply) = server.post_json(route, "", body);
+        assert!(is_not_found(&status), "{route} {body}: {status}");
+        replies.push(reply);
+    }
+    assert!(
+        replies.windows(2).all(|pair| pair[0] == pair[1]),
+        "the four refusals must be one refusal: {replies:?}"
+    );
+    assert!(!dir.path().join("Private/Nothing.md").exists());
+    assert!(!dir.path().join("Root.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Private/Salary.md")).expect("untouched"),
+        "# Salary\n"
+    );
+}
+
+#[test]
+fn a_create_body_that_is_not_a_path_is_refused_without_touching_the_vault() {
+    let dir = TempDir::new("http-create-shape");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for body in [
+        r#"{"path":"../Escaped.md"}"#,
+        r#"{"path":"NoExtension"}"#,
+        r#"{"path":""}"#,
+    ] {
+        let (status, _) = server.post_json("/api/v1/vaults/v/notes", "", body);
+        assert!(status.contains("400"), "{body} should be refused: {status}");
+    }
+    assert!(!dir.path().join("../Escaped.md").exists());
+}
+
+// ---------------------------------------------------------------- first run (§6.10)
+
+/// The whole reason this feature exists: a vault with no notes must not be a dead end.
+///
+/// The workspace shell is only served from a note URL, so an empty vault cannot load it and
+/// cannot reach the palette's create command. If the vault index has no way in, a freshly
+/// registered vault can only be used by writing a Markdown file by hand.
+#[test]
+fn an_empty_vault_offers_a_way_to_create_the_first_note() {
+    let dir = TempDir::new("http-first-run");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/v/v");
+
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("0 notes"), "{body}");
+    assert!(
+        body.contains("action=\"/v/v/new\""),
+        "an empty vault must offer a create form: {body}"
+    );
+    assert!(body.contains("no notes yet"), "{body}");
+}
+
+/// A form is worthless if the page's own CSP forbids submitting it — the M5 outage exactly.
+#[test]
+fn the_vault_index_permits_submitting_its_own_form() {
+    let dir = TempDir::new("http-first-run-csp");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (_, body) = server.get("/v/v");
+
+    assert!(body.contains("form-action 'self'"), "{body}");
+    // And a note page, which renders untrusted content and has no form, keeps the strict rule.
+    std::fs::write(dir.path().join("A.md"), "# A\n").expect("a note");
+    server.tick();
+    let (_, note) = server.get("/v/v/A.md");
+    assert!(note.contains("form-action 'none'"), "{note}");
+}
+
+#[test]
+fn the_first_note_form_creates_it_and_redirects_to_it() {
+    let dir = TempDir::new("http-first-run-create");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, _) = server.post_form_signed_in("/v/v/new", "name=Welcome");
+
+    assert!(status.contains("303"), "{status}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Welcome.md")).expect("the first note"),
+        "# Welcome\n"
+    );
+    // The vault is no longer empty, and the note it now lists is the one just created.
+    let (_, body) = server.get("/v/v");
+    assert!(body.contains("1 notes"), "{body}");
+    assert!(body.contains("/v/v/Welcome.md"), "{body}");
+}
+
+#[test]
+fn the_redirect_after_creating_points_at_the_new_note() {
+    let dir = TempDir::new("http-first-run-location");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let head = server.post_form_head("/v/v/new", "name=Q3+Plans");
+
+    assert!(head.contains("303"), "{head}");
+    assert!(head.contains("location: /v/v/q3%20plans.md"), "{head}");
+    assert!(
+        std::fs::read_to_string(dir.path().join("Q3 Plans.md")).is_ok(),
+        "the redirect must point at a note that is really there"
+    );
+}
+
+#[test]
+fn a_refused_name_comes_back_on_the_page_that_asked_rather_than_a_dead_end() {
+    let dir = TempDir::new("http-first-run-refused");
+    dir.write("Taken.md", "# Taken\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    server.tick();
+
+    let (status, body) = server.post_form_signed_in("/v/v/new", "name=Taken");
+
+    // Not a 303, and not a bare error document: the form is there to try again with.
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("already exists"), "{body}");
+    assert!(body.contains("action=\"/v/v/new\""), "{body}");
+    assert!(body.contains("role=\"alert\""), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Taken.md")).expect("untouched"),
+        "# Taken\n"
+    );
+}
+
+#[test]
+fn an_unauthenticated_form_post_creates_nothing() {
+    let dir = TempDir::new("http-first-run-anon");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, _) = server.post_form("/v/v/new", "name=Sneaky");
+
+    assert!(is_not_found(&status), "{status}");
+    assert!(!dir.path().join("Sneaky.md").exists());
 }

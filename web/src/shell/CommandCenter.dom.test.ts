@@ -17,6 +17,7 @@ import type { NoteSummary, VaultSummary } from "./catalog.js";
 import { NoteCatalog } from "./note-catalog.svelte.js";
 import { PinnedNotes } from "./pins.svelte.js";
 import type { NoteSurface, OpenNoteSurfaceOptions } from "./note-surface.js";
+import type { createNote as createNoteRequest } from "./create.js";
 import type { renameNote as renameNoteRequest, renameTag as renameTagRequest } from "./rename.js";
 import { TagView } from "./tags.svelte.js";
 import { stubReplica } from "../offline/testing.js";
@@ -77,6 +78,7 @@ function render(
     onvault?: (slug: string) => void;
     renameNote?: typeof renameNoteRequest;
     renameTag?: typeof renameTagRequest;
+    createNote?: typeof createNoteRequest;
     tags?: TagView;
     pins?: PinnedNotes;
   } = {},
@@ -110,6 +112,7 @@ function render(
       ...(options.onvault === undefined ? {} : { onvault: options.onvault }),
       ...(options.renameNote === undefined ? {} : { renameNote: options.renameNote }),
       ...(options.renameTag === undefined ? {} : { renameTag: options.renameTag }),
+      ...(options.createNote === undefined ? {} : { createNote: options.createNote }),
       ...(options.tags === undefined ? {} : { tags: options.tags }),
       ...(options.pins === undefined ? {} : { pins: options.pins }),
     },
@@ -638,6 +641,169 @@ describe("rename (SPEC 6.6)", () => {
         .map((option) => option.textContent?.trim() ?? "");
       expect(disabled).toContain("Rename note…");
       expect(disabled.some((label) => label.startsWith("Rename the selected tag"))).toBe(true);
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("creating a note (SPEC 6.10)", () => {
+  const prompt = (): HTMLDialogElement | null => target.querySelector("dialog.rename-prompt");
+  const nameField = (): HTMLInputElement | null => target.querySelector(".rename-input");
+  const notice = (): string => target.querySelector(".rename-notice")?.textContent?.trim() ?? "";
+  const error = (): string => target.querySelector(".rename-error")?.textContent?.trim() ?? "";
+
+  async function run(title: string): Promise<void> {
+    shortcut("P", { shiftKey: true });
+    await flush();
+    const option = options().find((entry) => entry.textContent?.trim().startsWith(title));
+    if (option === undefined) {
+      throw new Error(`no palette entry for ${title}; saw ${labels().join(", ")}`);
+    }
+    option.click();
+    await flush();
+  }
+
+  async function submit(name: string): Promise<void> {
+    const field = nameField();
+    if (field === null) throw new Error("the prompt should have an input");
+    field.value = name;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    target.querySelector<HTMLFormElement>(".rename-body")?.requestSubmit();
+    await flush();
+    await flush();
+  }
+
+  it("creates the note beside the one that is open, and opens it", async () => {
+    const calls: Array<readonly [string, string]> = [];
+    const { store, teardown } = render({
+      notes: ["Projects/Roadmap.md"],
+      createNote: async (vault, path) => {
+        calls.push([vault, path]);
+        return { ok: { path } };
+      },
+    });
+    try {
+      await flush();
+      await run("New note…");
+      expect(prompt()?.open).toBe(true);
+      // Empty, not prefilled: there is no existing name to edit.
+      expect(nameField()?.value).toBe("");
+      await submit("Plan");
+
+      expect(calls).toEqual([["personal", "Projects/Plan.md"]]);
+      // Opening it is the point — somebody who just named a note wants to write in it.
+      expect(store.tabs.some((tab) => tab.note === "Projects/Plan.md")).toBe(true);
+      expect(store.activeTab?.note).toBe("Projects/Plan.md");
+      expect(prompt()?.open).toBe(false);
+      expect(notice()).toContain("Projects/Plan.md");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("creates at the vault root when nothing is open", async () => {
+    const calls: string[] = [];
+    const { teardown } = render({
+      createNote: async (_vault, path) => {
+        calls.push(path);
+        return { ok: { path } };
+      },
+    });
+    try {
+      await flush();
+      await run("New note…");
+      await submit("First");
+      expect(calls).toEqual(["First.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("is offered even with nothing open, which is when it matters most", async () => {
+    // The other note commands are disabled without an active tab. This one must not be: an
+    // empty vault is exactly the case the command exists for.
+    const { teardown } = render();
+    try {
+      await flush();
+      shortcut("P", { shiftKey: true });
+      await flush();
+      const entry = options().find((option) => option.textContent?.trim().startsWith("New note…"));
+      expect(entry).toBeDefined();
+      expect(entry?.getAttribute("aria-disabled")).not.toBe("true");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("does not warn about rewriting other notes, because it does not touch any", async () => {
+    // The rename prompt's warning is about a privileged rewrite reaching notes the user
+    // cannot see. Creating a note touches one file and nobody else's, so inheriting that
+    // sentence would be a lie about what the button does.
+    const { teardown } = render({ notes: ["Projects/Roadmap.md"] });
+    try {
+      await flush();
+      await run("New note…");
+      expect(target.querySelector(".rename-warning")).toBeNull();
+      expect(prompt()?.getAttribute("aria-label")).toBe("New note");
+      expect(target.querySelector(".rename-confirm")?.textContent?.trim()).toBe("Create");
+
+      // And the rename prompt still carries it, so this is a difference and not a deletion.
+      target.querySelector<HTMLButtonElement>(".rename-cancel")?.click();
+      await flush();
+      await run("Rename note…");
+      expect(target.querySelector(".rename-warning")?.textContent).toContain("cannot see");
+      expect(target.querySelector(".rename-confirm")?.textContent?.trim()).toBe("Rename");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("says where the note will go without making the user read a path", async () => {
+    const { teardown } = render({ notes: ["Projects/Roadmap.md"] });
+    try {
+      await flush();
+      await run("New note…");
+      expect(target.querySelector(".rename-subject")?.textContent?.trim()).toBe("In Projects/");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("keeps the prompt open on a refusal, with the reason, and opens nothing", async () => {
+    const { store, teardown } = render({
+      createNote: async () => ({ refused: "`Plan.md` already exists" }),
+    });
+    try {
+      await flush();
+      await run("New note…");
+      await submit("Plan");
+
+      expect(prompt()?.open).toBe(true);
+      expect(error()).toContain("already exists");
+      expect(store.tabs.some((tab) => tab.note === "Plan.md")).toBe(false);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("refuses a name that cannot be a path without asking the server", async () => {
+    let asked = false;
+    const { teardown } = render({
+      createNote: async (_vault, path) => {
+        asked = true;
+        return { ok: { path } };
+      },
+    });
+    try {
+      await flush();
+      await run("New note…");
+      await submit("   ");
+
+      expect(asked).toBe(false);
+      expect(error()).toContain("not a usable name");
+      expect(prompt()?.open).toBe(true);
     } finally {
       teardown();
     }

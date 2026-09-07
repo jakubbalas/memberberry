@@ -22,6 +22,7 @@ import { dirname, join } from "node:path";
 
 import {
   E2E_CONFIG,
+  E2E_EMPTY_SLUGS,
   E2E_DATA_DIR,
   E2E_NOTES,
   E2E_PORT,
@@ -30,6 +31,7 @@ import {
   E2E_VAULT,
   E2E_WEB_ROOT,
   REPO,
+  emptyVaultRoot,
 } from "./environment.ts";
 
 /**
@@ -112,6 +114,30 @@ function provision(): string {
     E2E_USER.username,
     "--password-stdin",
   ]);
+
+  // One empty vault per project, and note what is *not* done to them: no notes are written,
+  // and **no `access.toml` is written either**. That is the whole point. Every vault above
+  // has its policy hand-written here before registration, which is why this suite could not
+  // see that `vault create` wrote none of its own — deny by default then made a freshly
+  // registered vault invisible to the person who had just created it. Registering these the
+  // way a real first run does is what holds that fixed (§6.10).
+  for (const [project, slug] of Object.entries(E2E_EMPTY_SLUGS)) {
+    const root = emptyVaultRoot(project);
+    mkdirSync(root, { recursive: true });
+    run([
+      "vault",
+      "create",
+      "--slug",
+      slug,
+      "--name",
+      `Empty ${project}`,
+      "--path",
+      root,
+      "--actor",
+      E2E_USER.username,
+      "--password-stdin",
+    ]);
+  }
 
   return mb;
 }

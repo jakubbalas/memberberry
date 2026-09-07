@@ -38,7 +38,7 @@
 //! order, rewriting first, would instead point every link at a note that does not exist yet.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use mb_core::rewrite::{self, RewriteError};
@@ -340,21 +340,12 @@ impl<'a> Rename<'a> {
     /// not. The containment rule is the same one, applied to the parent directory — the
     /// part of the path that does exist.
     fn destination(&self, to: &str) -> Result<PathBuf, RenameError> {
-        let joined = self.vault.notes_root().join(to);
-        let base = self
+        // Containment for a path that is not supposed to exist yet lives on `Vault`, shared
+        // with note creation: one boundary, so a fix to one write path is a fix to both.
+        let joined = self
             .vault
-            .notes_root()
-            .canonicalize()
-            .map_err(|error| RenameError::Failed(error.to_string()))?;
-        // The parent is canonicalized because a symlinked folder inside the vault could
-        // otherwise place the renamed note outside it. Only the parent: the file itself is
-        // not supposed to exist yet.
-        let parent = joined.parent().unwrap_or(&joined);
-        if let Ok(real) = parent.canonicalize()
-            && !real.starts_with(&base)
-        {
-            return Err(RenameError::InvalidName(to.to_string()));
-        }
+            .reserve(to)
+            .map_err(|_| RenameError::InvalidName(to.to_string()))?;
         if joined.exists() {
             return Err(RenameError::Exists(to.to_string()));
         }
@@ -444,18 +435,11 @@ impl<'a> Rename<'a> {
 /// a destination that are about the *string* are safe to answer for anybody, and the parts
 /// that are about the *vault* are not.
 fn validate_shape(to: &str) -> Result<(), RenameError> {
-    let invalid = to.is_empty()
-        || !to.ends_with(".md")
-        || to.starts_with('/')
-        || Path::new(to).is_absolute()
-        || to
-            .split('/')
-            .any(|segment| segment.is_empty() || segment.starts_with('.') || segment == "..")
-        || NotePath::parse(to).is_err();
-    if invalid {
-        return Err(RenameError::InvalidName(to.to_string()));
+    if crate::vault::valid_note_path(to) {
+        Ok(())
+    } else {
+        Err(RenameError::InvalidName(to.to_string()))
     }
-    Ok(())
 }
 
 /// One note's rewritten source, waiting to be written.

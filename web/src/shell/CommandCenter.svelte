@@ -8,20 +8,26 @@
   worth testing on their own are already elsewhere: `commands.ts` resolves bindings,
   `fuzzy.ts` ranks, `catalog.ts` fetches, and `Palette.svelte` handles the keyboard.
 
-  Rename (§6.6) is here for the same reason the three switchers are: it is a command, and
+  Rename (§6.6) and creating a note (§6.10) are here for the same reason the three switchers
+  are: they are commands, and
   §8.4 says the palette is over *every* registered command. It is deliberately **not** a
   button on a note-tree row — the tree is one tab stop with `aria-activedescendant`, and a
   control per row would turn four hundred notes into eight hundred tab stops.
 -->
 <script lang="ts">
   import Palette, { type PaletteItem } from "./Palette.svelte";
-  import RenamePrompt from "./RenamePrompt.svelte";
+  import NamePrompt from "./NamePrompt.svelte";
   import { type VaultSummary, fetchVaults, noteHint, noteLabel } from "./catalog.js";
   import {
     type Command,
     CommandRegistry,
     readBindingOverrides,
   } from "./commands.js";
+  import {
+    createNote as createNoteRequest,
+    newNotePathFor,
+    newNoteSubject,
+  } from "./create.js";
   import { fuzzyRank } from "./fuzzy.js";
   import { type Platform, detectPlatform, formatBinding } from "./hotkeys.js";
   import type { LayoutMode } from "./layout.js";
@@ -67,6 +73,7 @@
     /** Injectable for tests; default to the real HTTP calls. */
     readonly renameNote?: typeof renameNoteRequest | undefined;
     readonly renameTag?: typeof renameTagRequest | undefined;
+    readonly createNote?: typeof createNoteRequest | undefined;
     /**
      * Which notes this device keeps offline (§7.2).
      *
@@ -92,15 +99,22 @@
     ongraph,
     renameNote = renameNoteRequest,
     renameTag = renameTagRequest,
+    createNote = createNoteRequest,
     pins,
   }: Props = $props();
 
   type Mode = "commands" | "notes" | "vaults";
 
-  /** What the rename prompt is currently asking about. `undefined` means it is closed. */
-  interface Renaming {
-    readonly kind: "note" | "tag";
-    /** The note path or the tag key the rename acts on. */
+  /**
+   * What the name prompt is currently asking about. `undefined` means it is closed.
+   *
+   * One dialog for renaming and for creating, because it is one question — "what should this
+   * be called" — and two `<dialog>` elements would need a rule about which may be open.
+   * `create` carries the note the new one will sit beside, which is `from`'s meaning there.
+   */
+  interface Prompting {
+    readonly kind: "note" | "tag" | "create";
+    /** The note path or tag key being renamed, or the note a new one is created beside. */
     readonly from: string;
     readonly initial: string;
   }
@@ -113,7 +127,7 @@
   let mode = $state<Mode | undefined>(undefined);
   let query = $state("");
   let vaults = $state<readonly VaultSummary[]>([]);
-  let renaming = $state<Renaming | undefined>(undefined);
+  let renaming = $state<Prompting | undefined>(undefined);
   let renameBusy = $state(false);
   let renameError = $state<string | undefined>(undefined);
   let renameNotice = $state("");
@@ -140,11 +154,50 @@
 
   const canSplit = $derived(groups(store.current.root).length <= splitLimitFor(layout));
 
-  function ask(next: Renaming): void {
+  function ask(next: Prompting): void {
     dismiss();
     renameError = undefined;
     renameNotice = "";
     renaming = next;
+  }
+
+  /** Routes the one dialog's submission to whichever question it was asking. */
+  function submitPrompt(typed: string): void {
+    if (renaming?.kind === "create") {
+      void confirmCreate(typed);
+    } else {
+      void confirmRename(typed);
+    }
+  }
+
+  /**
+   * Creates a note and opens it in the focused pane.
+   *
+   * Opening it is the point rather than a courtesy: somebody who has just named a note wants
+   * to write in it, and a create that only refreshed the tree would leave them to find it.
+   * The catalog is refreshed too, so the tree and the quick switcher agree with the vault
+   * before either is next opened.
+   */
+  async function confirmCreate(typed: string): Promise<void> {
+    const subject = renaming;
+    if (subject === undefined) return;
+    const path = newNotePathFor(subject.from, typed);
+    if (path === undefined) {
+      renameError = "That is not a usable name.";
+      return;
+    }
+    renameBusy = true;
+    renameError = undefined;
+    const result = await createNote(vault, path);
+    renameBusy = false;
+    if ("refused" in result) {
+      renameError = result.refused;
+      return;
+    }
+    renaming = undefined;
+    renameNotice = `Created ${result.ok.path}.`;
+    store.open(result.ok.path);
+    void catalog.refresh();
   }
 
   /**
@@ -269,6 +322,20 @@
         const active = store.activeTab;
         if (active !== undefined) store.forward(active.id);
       },
+    },
+    {
+      id: "note.create",
+      title: "New note…",
+      group: "Note",
+      // why: no default binding. The obvious ones are taken by the browser and cannot be
+      // intercepted from a page — `Mod+n` opens a window and `Mod+Shift+n` a private one —
+      // so shipping either would register a shortcut that silently never fires. §8.4's
+      // hotkeys are remappable, so anyone who wants one can bind a key the browser leaves
+      // alone; the palette is the route that always works.
+      // Always enabled, unlike the other note commands: creating one is the thing a vault
+      // with nothing open most needs, so requiring an active tab would disable it exactly
+      // when it matters. With no tab open the new note lands at the vault root.
+      run: () => ask({ kind: "create", from: store.activeTab?.note ?? "", initial: "" }),
     },
     {
       id: "note.rename",
@@ -424,17 +491,39 @@
     },
     vaults: { title: "Switch vault", placeholder: "Search vaults…", empty: "No vault matches." },
   };
+
+  function promptTitle(prompt: Prompting | undefined): string {
+    if (prompt?.kind === "create") return "New note";
+    return prompt?.kind === "tag" ? "Rename tag" : "Rename note";
+  }
+
+  /** What the prompt is acting on: the thing being renamed, or where a new note will go. */
+  function promptSubject(prompt: Prompting | undefined): string {
+    if (prompt === undefined) return "";
+    if (prompt.kind === "create") return newNoteSubject(prompt.from);
+    return prompt.kind === "tag" ? `#${prompt.from}` : prompt.from;
+  }
+
+  function promptLabel(prompt: Prompting | undefined): string {
+    if (prompt?.kind === "create") return "Name";
+    return prompt?.kind === "tag" ? "New tag" : "New name";
+  }
 </script>
 
-<RenamePrompt
+<NamePrompt
   open={renaming !== undefined}
-  title={renaming?.kind === "tag" ? "Rename tag" : "Rename note"}
-  subject={renaming?.kind === "tag" ? `#${renaming.from}` : (renaming?.from ?? "")}
-  label={renaming?.kind === "tag" ? "New tag" : "New name"}
+  title={promptTitle(renaming)}
+  subject={promptSubject(renaming)}
+  label={promptLabel(renaming)}
   initial={renaming?.initial ?? ""}
   busy={renameBusy}
   error={renameError}
-  onsubmit={(name) => void confirmRename(name)}
+  warning={renaming === undefined || renaming.kind === "create"
+    ? undefined
+    : "Inbound links are rewritten across the whole vault, including in notes you cannot see."}
+  confirm={renaming?.kind === "create" ? "Create" : "Rename"}
+  confirming={renaming?.kind === "create" ? "Creating…" : "Renaming…"}
+  onsubmit={submitPrompt}
   ondismiss={() => {
     renaming = undefined;
     renameBusy = false;

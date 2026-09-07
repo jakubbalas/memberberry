@@ -28,6 +28,7 @@ use mb_core::html::Urls;
 
 use crate::audit::{AuditAction, AuditEvent, AuditLog, AuditResult};
 use crate::bookmarks::BookmarkStore;
+use crate::create::{CreateError, CreateNote};
 use crate::indexing::IndexRegistry;
 use crate::rename::{Rename, RenameError};
 use crate::repository::AuthorizedVault;
@@ -307,7 +308,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/login", post(login))
         .route("/api/v1/sync", get(websocket))
         .route("/api/v1/vaults", get(vault_index_json))
-        .route("/api/v1/vaults/{slug}/notes", get(note_index))
+        .route(
+            "/api/v1/vaults/{slug}/notes",
+            get(note_index)
+                .post(create_note)
+                // A create body is one path. Bounded here for the same reason `rename`'s is.
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
         .route(
             "/api/v1/vaults/{slug}/backlinks/{*note}",
             get(note_backlinks),
@@ -351,6 +358,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/manifest.webmanifest", get(web_manifest))
         .route("/icon.svg", get(app_icon))
         .route("/v/{slug}", get(vault_index))
+        .route(
+            "/v/{slug}/new",
+            post(create_note_from_form).layer(DefaultBodyLimit::max(8 * 1024)),
+        )
         .route("/v/{slug}/", get(vault_index))
         .route("/v/{slug}/{*note}", get(note))
         .fallback(not_found)
@@ -634,14 +645,27 @@ async fn vault_index(
     AxumPath(slug): AxumPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(vault) = state.vault(&slug) else {
-        return not_found().await;
+    vault_index_page(&state, &slug, &headers, None)
+}
+
+/// Renders the vault index, optionally reporting why a create just failed.
+///
+/// Shared by the listing and by the create form's own error path, so a refusal comes back on
+/// the page that asked rather than as a bare error document with no way onward.
+fn vault_index_page(
+    state: &AppState,
+    slug: &str,
+    headers: &HeaderMap,
+    error: Option<&str>,
+) -> Response {
+    let Some(vault) = state.vault(slug) else {
+        return not_found_page();
     };
     let Some(access) = state.access_for(vault.slug()) else {
-        return not_found().await;
+        return not_found_page();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
-        return not_found().await;
+    let Some(view) = state.authorized_vault(vault, &access, headers) else {
+        return not_found_page();
     };
     let notes = match view.notes() {
         Ok(notes) => notes,
@@ -651,18 +675,109 @@ async fn vault_index(
     let mut body = String::new();
     body.push_str("<p class=\"mb-count\">");
     body.push_str(&notes.len().to_string());
-    body.push_str(" notes</p>\n<ul class=\"mb-note-list\">\n");
-    for rel in &notes {
-        body.push_str("<li><a href=\"/v/");
-        push_escaped_attr(&mut body, vault.slug().as_str());
-        body.push('/');
-        push_escaped_attr(&mut body, &encode_path(rel));
-        body.push_str("\">");
-        push_escaped_text(&mut body, rel.trim_end_matches(".md"));
-        body.push_str("</a></li>\n");
+    body.push_str(" notes</p>\n");
+
+    // why: the form is on this page rather than only in the workspace, and that is the whole
+    // point of it. The editor is served from a note URL, so a vault with no notes has no way
+    // to load the shell and therefore no way to reach the palette's create command. Without
+    // something here, a freshly registered vault is a dead end that can only be escaped by
+    // writing a Markdown file by hand.
+    // The sign-in page's form vocabulary, not a second one: same classes, same tokens, so
+    // this inherits the touch-target and focus-ring rules already proved on that page.
+    body.push_str("<form class=\"mb-form\" method=\"post\" action=\"/v/");
+    push_escaped_attr(&mut body, vault.slug().as_str());
+    body.push_str("/new\">");
+    if let Some(message) = error {
+        // role="alert" so the refusal is heard as well as seen (AGENTS.md §4.4).
+        body.push_str("<p class=\"mb-form-error\" role=\"alert\">");
+        push_escaped_text(&mut body, message);
+        body.push_str("</p>");
     }
-    body.push_str("</ul>");
-    page(vault.name(), &body).into_response()
+    body.push_str(
+        "<div class=\"mb-field\"><label for=\"mb-new-note\">New note</label>\
+         <input id=\"mb-new-note\" name=\"name\" autocomplete=\"off\" spellcheck=\"false\" \
+         required ",
+    );
+    // Autofocus only when the vault is empty: that is the one visit where creating a note is
+    // certainly what the reader came to do, and stealing focus from the list otherwise would
+    // fight anyone who arrived to open something.
+    if notes.is_empty() {
+        body.push_str("autofocus ");
+    }
+    body.push_str("/></div>");
+    body.push_str("<button class=\"mb-button\" type=\"submit\">Create</button>");
+    body.push_str("</form>");
+
+    if notes.is_empty() {
+        body.push_str(
+            "<p class=\"mb-empty\">This vault has no notes yet. Create one to get started.</p>",
+        );
+    } else {
+        body.push_str("<ul class=\"mb-note-list\">\n");
+        for rel in &notes {
+            body.push_str("<li><a href=\"/v/");
+            push_escaped_attr(&mut body, vault.slug().as_str());
+            body.push('/');
+            push_escaped_attr(&mut body, &encode_path(rel));
+            body.push_str("\">");
+            push_escaped_text(&mut body, rel.trim_end_matches(".md"));
+            body.push_str("</a></li>\n");
+        }
+        body.push_str("</ul>");
+    }
+    // The page carries a form, so it needs `form-action 'self'`; the note pages, which render
+    // untrusted content and submit nothing, keep the stricter policy.
+    page_with(PagePolicy::VaultIndex, vault.name(), &body).into_response()
+}
+
+/// What the vault index form submits: a name, not a path the caller composed.
+#[derive(Deserialize)]
+struct NewNoteForm {
+    name: String,
+}
+
+/// `POST /v/{slug}/new` — creates a note from the vault index and opens it (§6.10, E17).
+///
+/// A form post rather than script, because this is the page that has to work before the
+/// application does. A `303` afterwards, so the browser lands on the new note with a `GET`
+/// and reloading it does not re-post the form.
+async fn create_note_from_form(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    Form(form): Form<NewNoteForm>,
+) -> Response {
+    let path = note_path_for(&form.name);
+    match create_in_vault(&state, &slug, &path, &headers).await {
+        Ok(created) => (
+            StatusCode::SEE_OTHER,
+            [(
+                header::LOCATION,
+                format!("/v/{}/{}", slug, encode_path(&created.path)),
+            )],
+        )
+            .into_response(),
+        // A denial is the invisibility rule again: the same page an unknown vault gives.
+        Err(CreateError::Denied) => not_found_page(),
+        Err(error @ (CreateError::InvalidName(_) | CreateError::Exists(_))) => {
+            vault_index_page(&state, &slug, &headers, Some(&error.to_string()))
+        }
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
+/// The vault-relative path a name typed on the vault index means.
+///
+/// Deliberately thin: it appends the extension nobody thinks of as part of a name, and
+/// nothing else. Every rule about what is *allowed* stays in `create`, which is the one
+/// place that decides — duplicating any of it here would be a second opinion to keep in step.
+fn note_path_for(typed: &str) -> String {
+    let name = typed.trim();
+    if name.ends_with(".md") {
+        name.to_string()
+    } else {
+        format!("{name}.md")
+    }
 }
 
 /// The JSON denial every workspace route gives, whatever went wrong.
@@ -1278,6 +1393,80 @@ async fn rename(
             rename_refused(StatusCode::CONFLICT, &error.to_string())
         }
         Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
+/// What `POST /api/v1/vaults/{slug}/notes` is asked for: where to put the new note.
+#[derive(Deserialize)]
+struct CreateNoteRequest {
+    /// Vault-relative and ending in `.md`. The client turns a typed name into one.
+    path: String,
+}
+
+/// `POST /api/v1/vaults/{slug}/notes` — creates a note and says where it landed (§6.10, E17).
+///
+/// The workspace's half of note creation. Its sibling is the form on the vault index page,
+/// which exists because this one cannot be reached from a vault with no notes: the shell is
+/// only served from a note URL, so a fresh vault has nothing to load it from. Both call the
+/// same [`CreateNote`], so there is one enforcement point and not two.
+async fn create_note(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<CreateNoteRequest>,
+) -> Response {
+    match create_in_vault(&state, &slug, &request.path, &headers).await {
+        Ok(created) => json_no_store(&CreateNoteResponse { path: created.path }),
+        Err(CreateError::Denied) => workspace_denied(),
+        // Both of these name a string the caller sent us, so echoing it reveals nothing they
+        // did not already know — and `Exists` is only reachable once they have proved they
+        // may write there, which for `Owner`/`Editor` also means they may read it.
+        Err(error @ (CreateError::InvalidName(_) | CreateError::Exists(_))) => {
+            rename_refused(StatusCode::BAD_REQUEST, &error.to_string())
+        }
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct CreateNoteResponse {
+    path: String,
+}
+
+/// The authorization and blocking-work half both create entry points share.
+async fn create_in_vault(
+    state: &Arc<AppState>,
+    slug: &str,
+    path: &str,
+    headers: &HeaderMap,
+) -> Result<crate::create::Created, CreateError> {
+    let Some(vault) = state.vault(slug) else {
+        return Err(CreateError::Denied);
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return Err(CreateError::Denied);
+    };
+    let Some(user) = state.vault_user(vault.slug(), headers) else {
+        return Err(CreateError::Denied);
+    };
+    let Some(index) = state.indexes.get(vault) else {
+        return Err(CreateError::Failed("no index for this vault".to_string()));
+    };
+    let worker = Arc::clone(state);
+    let slug = vault.slug().clone();
+    let path = path.to_string();
+    // why: `spawn_blocking`, as `rename` does. This writes a file and then reconciles the
+    // index, and doing either on the async runtime's thread stalls every other request.
+    let outcome = tokio::task::spawn_blocking(move || {
+        let Some(vault) = worker.vault(slug.as_str()) else {
+            return Err(CreateError::Denied);
+        };
+        CreateNote::new(vault, &access, user, &index).note(&path)
+    })
+    .await;
+    match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => Err(CreateError::Failed(error.to_string())),
     }
 }
 
@@ -2422,6 +2611,11 @@ fn login_form(error: Option<&str>, username: &str) -> String {
 }
 
 async fn not_found() -> Response {
+    not_found_page()
+}
+
+/// The same refusal, callable from a handler that is not itself the fallback.
+fn not_found_page() -> Response {
     (
         StatusCode::NOT_FOUND,
         page("Not found", "<p class=\"mb-empty\">No such note.</p>"),
@@ -2447,6 +2641,8 @@ enum PagePolicy {
     Content,
     /// The sign-in page. Identical, except it may post its own form back to this origin.
     SignIn,
+    /// The vault index. Carries the create-a-note form, so it posts to this origin too.
+    VaultIndex,
 }
 
 impl PagePolicy {
@@ -2456,7 +2652,7 @@ impl PagePolicy {
             // why: `'none'` on every page made the sign-in form unsubmittable, so nobody
             // could log in with a browser at all. Only this page has a form, and it posts
             // to its own origin; the note pages keep the stricter rule they need.
-            Self::SignIn => "'self'",
+            Self::SignIn | Self::VaultIndex => "'self'",
             Self::Content => "'none'",
         }
     }

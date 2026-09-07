@@ -385,8 +385,12 @@ test.describe("the command palette and switchers (§8.4)", () => {
     const switcher = page.getByRole("dialog", { name: "Switch vault" });
     await expect(switcher).toBeVisible();
     await expect(switcher.getByRole("option", { name: /Personal/ })).toBeVisible();
-    // The only vault the E2E server has, and it is the current one.
-    await expect(switcher.getByRole("option").first()).toContainText("current");
+    // The current one is marked as such, whichever position it sorts into. Asserted on the
+    // Personal row rather than on `.first()`: the server has had more than one vault since
+    // §6.10 added the empty ones, and `.first()` was quietly asserting the sort order.
+    await expect(switcher.getByRole("option", { name: /Personal/ })).toContainText("current");
+    // The others are listed too, because the switcher is over every vault this user can open.
+    await expect(switcher.getByRole("option", { name: /^Empty/ }).first()).toBeVisible();
   });
 
   test("Escape closes the palette without acting", async ({ page }) => {

@@ -36,6 +36,7 @@
   import { OUTLINE_EVENT, type OutlineDetail } from "../editor/outline.js";
   import { fromVisiblePane } from "./outline.js";
   import { OutlineView } from "./outline.svelte.js";
+  import type { createNote as createNoteRequest } from "./create.js";
   import type { renameNote as renameNoteRequest, renameTag as renameTagRequest } from "./rename.js";
   import { TagView } from "./tags.svelte.js";
   import type { Platform } from "./hotkeys.js";
@@ -89,6 +90,7 @@
     /** How a rename is sent (§6.6). Injectable so a test needs no server. */
     readonly renameNote?: typeof renameNoteRequest | undefined;
     readonly renameTag?: typeof renameTagRequest | undefined;
+    readonly createNote?: typeof createNoteRequest | undefined;
   }
 
   const {
@@ -112,6 +114,7 @@
     resolveLink,
     renameNote,
     renameTag,
+    createNote,
   }: Props = $props();
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
@@ -408,6 +411,7 @@
   {pins}
   {renameNote}
   {renameTag}
+  {createNote}
   vault={vaultSlug}
   {layout}
   {target}

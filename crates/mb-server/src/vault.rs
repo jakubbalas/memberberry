@@ -195,6 +195,49 @@ impl Vault {
         Ok(CanonicalNote { path, identity })
     }
 
+    /// Resolves a path for a note that does **not exist yet**, keeping it inside the vault.
+    ///
+    /// The write-side counterpart to [`Vault::resolve`], which cannot serve here because it
+    /// requires the file to be there already. Containment still has to hold, so the rule is
+    /// the same one stated differently: canonicalize the **deepest ancestor that exists**
+    /// and require it to sit under the canonicalized notes root.
+    ///
+    /// why the deepest existing ancestor, rather than just the parent: creating
+    /// `Away/Deep/Note.md` where `Away` is a symlink out of the vault leaves `Away/Deep`
+    /// non-canonicalizable, so a parent-only check silently passes and the subsequent
+    /// `create_dir_all` follows the symlink and writes outside the vault. Walking up until
+    /// something resolves is what closes that; the loop always terminates, because the notes
+    /// root itself exists.
+    ///
+    /// Shape is **not** checked here — callers validate it first with [`valid_note_path`],
+    /// because the order matters for what a refusal reveals (see `rename::note`).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] if the path would land outside the vault, matching
+    /// [`Vault::resolve`]'s refusal rather than describing the boundary to a caller.
+    pub fn reserve(&self, relative: &str) -> Result<PathBuf, Error> {
+        let joined = self.notes_root.join(relative);
+        let base = self
+            .notes_root
+            .canonicalize()
+            .map_err(|_| Error::NotFound)?;
+        let mut ancestor = joined.parent().unwrap_or(&joined).to_path_buf();
+        loop {
+            if let Ok(real) = ancestor.canonicalize() {
+                return if real.starts_with(&base) {
+                    Ok(joined)
+                } else {
+                    Err(Error::NotFound)
+                };
+            }
+            match ancestor.parent() {
+                Some(parent) if parent != ancestor => ancestor = parent.to_path_buf(),
+                _ => return Err(Error::NotFound),
+            }
+        }
+    }
+
     /// Finds a note by the human-readable name a wikilink carries (`SPEC.md` §4.3).
     ///
     /// `[[Daily]]` has to reach `todos/Daily.md`, so a literal path lookup is not enough —
@@ -289,6 +332,28 @@ impl Vault {
         found.sort();
         Ok(found)
     }
+}
+
+/// Whether a caller-supplied string is a usable vault-relative path for a **new** note.
+///
+/// Purely lexical: no filesystem call, so it can be asked before the caller has proved they
+/// may write anywhere. That ordering is deliberate and is explained at `rename::note` — a
+/// shape refusal reveals nothing, whereas "that already exists" is an answer about a path
+/// and must come after authorization.
+///
+/// Containment is [`Vault::reserve`]'s job, not this function's. Both are required; neither
+/// is sufficient. This lives beside `reserve` so the two rules cannot drift apart, which is
+/// the failure mode that matters when the same check guards two write paths.
+#[must_use]
+pub fn valid_note_path(relative: &str) -> bool {
+    !relative.is_empty()
+        && relative.ends_with(".md")
+        && !relative.starts_with('/')
+        && !Path::new(relative).is_absolute()
+        && !relative
+            .split('/')
+            .any(|segment| segment.is_empty() || segment.starts_with('.') || segment == "..")
+        && mb_core::NotePath::parse(relative).is_ok()
 }
 
 /// Normalises to NFC, the form note text is written in.
