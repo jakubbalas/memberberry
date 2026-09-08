@@ -10,15 +10,21 @@
 
 import init, {
   conflictCount as wasmConflictCount,
+  dailyPath as wasmDailyPath,
+  periodicPath as wasmPeriodicPath,
   extract as wasmExtract,
+  expandTemplate as wasmExpandTemplate,
   mergeWithConflicts as wasmMergeWithConflicts,
   markdownFromUpdate as wasmMarkdownFromUpdate,
+  mergeSearchSegments as wasmMergeSearchSegments,
   noteTitle as wasmNoteTitle,
+  querySearchSegments as wasmQuerySearchSegments,
   normalize as wasmNormalize,
   resolveConflict as wasmResolveConflict,
   schemaJson as wasmSchemaJson,
   toHtml as wasmToHtml,
   updateFromMarkdown as wasmUpdateFromMarkdown,
+  validateSearchSegment as wasmValidateSearchSegment,
 } from "./wasm/mb.js";
 
 /** Where links point. Mirrors `mb_core::html::Urls`. */
@@ -61,6 +67,45 @@ export interface Facts {
   readonly tasks: readonly TaskRef[];
   readonly headings: readonly HeadingRef[];
   readonly wordCount: number;
+}
+
+export interface ExpandedTemplate {
+  readonly text: string;
+  readonly cursor: number | null;
+}
+
+/** Formats a daily-note path through the shared Rust contract. */
+export async function dailyPath(folder: string, format: string, date: string): Promise<string> {
+  await load();
+  return wasmDailyPath(folder, format, date);
+}
+
+export type CalendarPeriod = "daily" | "weekly" | "monthly";
+
+/** Formats a daily, weekly, or monthly note path through the shared Rust contract. */
+export async function periodicPath(
+  period: CalendarPeriod,
+  folder: string,
+  format: string,
+  date: string,
+): Promise<string> {
+  await load();
+  return wasmPeriodicPath(period, folder, format, date);
+}
+
+/** A compact-index search result, safe to render as text. */
+export interface CompactSearchHit {
+  readonly path: string;
+  readonly title: string;
+  readonly snippet: string;
+  readonly tags: readonly string[];
+  readonly icon: string | null;
+}
+
+/** Results from the offline compact index (§14.2). */
+export interface CompactSearchResults {
+  readonly hits: readonly CompactSearchHit[];
+  readonly phraseDegraded: boolean;
 }
 
 let ready: Promise<void> | undefined;
@@ -108,6 +153,15 @@ export async function extract(markdown: string): Promise<Facts> {
   return wasmExtract(markdown) as Facts;
 }
 
+/** Expands a template through the shared Rust engine. */
+export async function expandTemplate(
+  template: string,
+  context: { readonly date: string; readonly time: string; readonly title: string; readonly selection: string; readonly uuid: string; readonly user: string },
+): Promise<ExpandedTemplate> {
+  await load();
+  return wasmExpandTemplate(template, context.date, context.time, context.title, context.selection, context.uuid, context.user) as ExpandedTemplate;
+}
+
 /** The ProseMirror schema contract (SPEC §5.6), as parsed JSON. */
 export async function schema(): Promise<unknown> {
   await load();
@@ -124,6 +178,30 @@ export async function markdownFromUpdate(update: Uint8Array): Promise<string> {
 export async function updateFromMarkdown(markdown: string): Promise<Uint8Array> {
   await load();
   return wasmUpdateFromMarkdown(markdown);
+}
+
+/** Validates compact client-search bytes before IndexedDB may retain them (§14.2, E6). */
+export async function validateSearchSegment(bytes: Uint8Array): Promise<void> {
+  await load();
+  wasmValidateSearchSegment(bytes);
+}
+
+/** Merges an older compact segment with a newer same-epoch delta (§14.2). */
+export async function mergeSearchSegments(
+  base: Uint8Array,
+  delta: Uint8Array,
+): Promise<Uint8Array> {
+  await load();
+  return wasmMergeSearchSegments(base, delta);
+}
+
+/** Queries the union of permission-filtered compact segments (§14.2). */
+export async function querySearchSegments(
+  query: string,
+  segments: readonly Uint8Array[],
+): Promise<CompactSearchResults> {
+  await load();
+  return wasmQuerySearchSegments(query, segments) as CompactSearchResults;
 }
 
 /** Which side of a conflict a reader chose (`SPEC.md` §3.5). */

@@ -8,12 +8,17 @@ license.workspace = true
 
 [dependencies]
 mb-core.workspace = true
+mb-search.workspace = true
 # why: `bundled` compiles SQLite from source rather than linking whatever the host has.
 # The index is derived state (Invariant I1) and its schema is stamped in `user_version`, so
 # a version skew between two machines that share a vault directory would silently change
 # which SQL features parse. Bundling makes that skew impossible.
 rusqlite = { version = "0.37", features = ["bundled", "functions"] }
 sha2 = "0.10"
+# why: M9's online index needs fielded boolean, prefix and fuzzy full-text queries over
+# 10k+ notes. Tantivy supplies the Rust-native inverted index without a service or network
+# dependency; its files remain disposable derived state beside SQLite (C1, C2, §14.1).
+tantivy = "0.26.1"
 thiserror = "2"
 unicode-normalization = "0.1"
 

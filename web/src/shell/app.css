@@ -254,6 +254,106 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .tag-notes { display: flex; flex-direction: column; }
 .tag-note-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
 
+/* ---------------------------------------------------------------- search (SPEC 14.3) */
+
+.search-panel { display: flex; flex-direction: column; gap: var(--space-2); }
+.search-input { width: 100%; min-height: var(--touch-target-min); box-sizing: border-box; padding: 0 var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-note); font: var(--text-sm)/var(--leading-flat) var(--font-ui); }
+.search-input:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.search-mode, .search-warning { margin: 0; font: var(--text-2xs)/var(--leading-snug) var(--font-ui); }
+.search-mode { color: var(--text-muted); }
+.search-mode[data-mode="offline"], .search-warning { color: var(--accent-primary); }
+.search-results { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.search-result { display: flex; flex-direction: column; width: 100%; min-height: var(--touch-target-min); padding: var(--space-2); border: 0; border-radius: var(--radius-sm); color: var(--text-primary); background: none; font: var(--text-xs)/var(--leading-snug) var(--font-ui); text-align: left; cursor: pointer; }
+.search-result:hover { background: var(--surface-hover); }
+.search-result:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.search-path, .search-context { color: var(--text-muted); }
+.search-context { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
+/* ---------------------------------------------------------------- task inbox (SPEC 10.3) */
+
+.inbox-panel { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.calendar-pane { display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-3); }
+.calendar-header { display: flex; align-items: center; justify-content: space-between; }
+.calendar-nav { display: flex; gap: var(--space-1); }
+.calendar-nav button { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
+.calendar-month { margin: 0; color: var(--text-muted); text-align: center; font: var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui); }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(var(--touch-target-min), 1fr)); gap: var(--space-1); overflow-x: auto; }
+.calendar-weekday { color: var(--text-muted); font-size: var(--text-2xs); text-align: center; }
+.calendar-day { min-height: var(--touch-target-min); padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-muted); background: transparent; }
+.calendar-day.has-note { border-color: var(--border-subtle); color: var(--text-primary); background: var(--surface-raised); cursor: pointer; }
+.calendar-day.has-note:hover, .calendar-day.has-note:focus-visible { border-color: var(--accent-primary); }
+.calendar-day.is-empty { min-height: var(--touch-target-min); }
+.inbox-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-2); }
+.inbox-filters { display: flex; flex-direction: column; gap: var(--space-2); }
+.inbox-field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; flex: 1 1 auto; }
+.inbox-field-label { color: var(--text-muted); font: var(--weight-medium) var(--text-2xs)/var(--leading-flat) var(--font-ui); }
+.inbox-input, .inbox-select {
+  width: 100%;
+  min-height: var(--touch-target-min);
+  box-sizing: border-box;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: var(--surface-note);
+  font: var(--text-xs)/var(--leading-flat) var(--font-ui);
+}
+.inbox-input:focus-visible, .inbox-select:focus-visible, .inbox-filters-toggle:focus-visible, .inbox-task:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+.inbox-filters-toggle {
+  flex: 0 0 auto;
+  min-height: var(--touch-target-min);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: var(--surface-note);
+  font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui);
+  cursor: pointer;
+}
+.inbox-filters-toggle:hover { background: var(--surface-hover); }
+.inbox-groups { display: flex; flex-direction: column; gap: var(--space-4); }
+.inbox-group { display: flex; flex-direction: column; gap: var(--space-2); }
+.inbox-group-heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-muted);
+  font: var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+.inbox-group-count { color: var(--text-muted); font-weight: var(--weight-medium); }
+.inbox-list { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.inbox-task-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-1); border-radius: var(--radius-sm); }
+.inbox-task {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: var(--touch-target-min);
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: none;
+  font: var(--text-xs)/var(--leading-snug) var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+.inbox-task:hover { background: var(--surface-hover); }
+.inbox-task-action, .inbox-task-date, .inbox-task-priority { min-height: var(--touch-target-min); box-sizing: border-box; }
+.inbox-task-action { padding: 0 var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-note); font: var(--text-2xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.inbox-task-action:hover { background: var(--surface-hover); }
+.inbox-task-date, .inbox-task-priority { max-width: 9rem; padding: 0 var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--surface-note); font: var(--text-2xs)/var(--leading-flat) var(--font-ui); }
+.inbox-task-action:focus-visible, .inbox-task-date:focus-visible, .inbox-task-priority:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.inbox-task-source, .inbox-task-due, .inbox-task-priority { color: var(--text-muted); }
+.inbox-task-priority { text-transform: capitalize; }
+
 /* ---------------------------------------------------------------- backlinks (SPEC 9.5)
 
    Reuses the tree's row, heading and empty-state classes rather than restating them: both
@@ -271,6 +371,13 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .backlink-text { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .backlink-badge { flex: 0 0 auto; padding: 0 var(--space-2); border-radius: var(--radius-sm); color: var(--accent-primary); background: var(--surface-hover); font: var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui); }
 .backlinks-count { flex: 0 0 auto; color: var(--text-muted); font-weight: var(--weight-medium); }
+/* The count in a heading needs its own space: Svelte strips the literal one out of the
+   markup, so a template that reads `Backlinks {total}` renders as `BACKLINKS3`. */
+.tree-heading .backlinks-count { margin-left: var(--space-2); }
+/* Unlinked mentions are a second section in the same panel, and the panel's own gap is the
+   space between a heading and its list — so without a rule the mentions heading reads as
+   part of the links above it. */
+.mentions-heading { margin-top: var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--border-subtle); }
 
 /* ---------------------------------------------------------------- local graph (SPEC 9.4)
 
@@ -489,6 +596,8 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .tab-strip-rest { flex: 1 1 auto; min-width: var(--space-8); }
 
 .note-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: var(--space-5); overflow: auto; }
+.daily-navigation { display: flex; gap: var(--space-2); justify-content: flex-end; margin-bottom: var(--space-3); }
+.daily-navigation button { min-height: 2.75rem; padding: 0 var(--space-3); }
 .note-pane.is-empty { place-content: center; place-items: center; }
 .note-pane-empty { margin: 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
 /* SPEC 7.2: while a note's body has not arrived, the editor is mounted but covered — the

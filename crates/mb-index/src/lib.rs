@@ -27,10 +27,9 @@
 //! that way for two milestones and read for the first time by the tag pane (§9.3), which
 //! needed no reindex to work.
 //!
-//! Two tables in §9.1 are **not** here, each for a stated reason:
-//! `zones` (§14.2) has no definition to write until M9 computes zones, and `media_refs`
-//! records the vault-relative reference rather than a content hash, because §12.2's
-//! content-addressed store does not exist before M11.
+//! `zones` is derived from the live ACL rather than Markdown, and is maintained separately
+//! from note rows for that reason. `media_refs` records the vault-relative reference rather
+//! than a content hash because §12.2's content-addressed store does not exist before M11.
 
 // AGENTS.md 4.2 permits panicking constructs in tests only.
 #![cfg_attr(
@@ -46,7 +45,9 @@ mod names;
 mod read;
 mod readable;
 mod schema;
+mod search;
 mod write;
+mod zones;
 
 use std::path::{Path, PathBuf};
 
@@ -56,8 +57,10 @@ pub use graph::{
     Graph, GraphEdge, GraphNode, MAX_HOPS, MAX_NEIGHBOURHOOD, MAX_VAULT_GRAPH, VaultGraph,
     VaultNode,
 };
-pub use read::{Backlink, BacklinkGroup, Reader, TagNode, Target};
+pub use read::{Backlink, BacklinkGroup, Reader, TagNode, Target, TaskEntry, TaskQuery, TaskSort};
+pub use search::{MentionGroup, SearchHit};
 pub use write::{Changed, NoteInput, Plan, Stamp};
+pub use zones::ClientSegment;
 
 /// Everything that can go wrong reading or maintaining an index.
 #[derive(Debug, thiserror::Error)]
@@ -65,8 +68,23 @@ pub enum Error {
     #[error("index database: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    #[error("full-text index: {0}")]
+    Search(#[from] tantivy::TantivyError),
+
+    #[error("invalid search query: {0}")]
+    Query(#[from] tantivy::query::QueryParserError),
+
+    #[error("compact client index: {0}")]
+    Compact(#[from] mb_search::Error),
+
     #[error("creating the index directory {path}: {source}")]
     Directory {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("writing client index segment {path}: {source}")]
+    SegmentWrite {
         path: PathBuf,
         source: std::io::Error,
     },
@@ -89,6 +107,8 @@ pub enum Error {
 pub struct Index {
     conn: Connection,
     path: Option<PathBuf>,
+    search: search::SearchIndex,
+    zone_segments: zones::PublishedSegments,
 }
 
 impl Index {
@@ -128,9 +148,24 @@ impl Index {
         names::register(&conn)?;
         schema::install(&conn)?;
         readable::install(&conn)?;
+        let mut search = search::SearchIndex::open(path.with_file_name("search-v1"))?;
+        let sqlite_notes = schema::note_count(&conn)?;
+        if sqlite_notes > 0 && search.is_empty() {
+            // The text directory was lost independently. Clearing stamps makes the next
+            // reconcile reread every Markdown file instead of preserving a silently empty
+            // search index (Invariant I1).
+            schema::clear_notes(&conn)?;
+        } else if sqlite_notes == 0 && !search.is_empty() {
+            // The SQLite half was rebuilt. Its readable set is the authorization source,
+            // so stale text documents are not a leak, but clearing them avoids resurrecting
+            // matches if the same paths are later recreated.
+            search.clear()?;
+        }
         Ok(Self {
             conn,
             path: Some(path.to_path_buf()),
+            search,
+            zone_segments: zones::PublishedSegments::default(),
         })
     }
 
@@ -147,7 +182,13 @@ impl Index {
         names::register(&conn)?;
         schema::install(&conn)?;
         readable::install(&conn)?;
-        Ok(Self { conn, path: None })
+        let search = search::SearchIndex::in_memory()?;
+        Ok(Self {
+            conn,
+            path: None,
+            search,
+            zone_segments: zones::PublishedSegments::default(),
+        })
     }
 
     /// Where this index is stored, or `None` for [`Index::in_memory`].

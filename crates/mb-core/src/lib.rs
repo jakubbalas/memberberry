@@ -25,6 +25,7 @@
 
 pub mod canonical;
 pub mod conflict;
+pub mod daily;
 pub mod extract;
 pub mod frontmatter;
 pub mod html;
@@ -37,6 +38,7 @@ pub mod schema;
 pub mod serialize;
 pub mod syntax;
 pub mod task;
+pub mod template;
 pub mod transclude;
 pub mod unicode;
 

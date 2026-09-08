@@ -152,6 +152,7 @@ describe("the shell", () => {
     try {
       expect([...target.querySelectorAll(".sidebar-placeholder")]).toHaveLength(0);
       expect(target.querySelector('[aria-label="Navigation"] .tree-panel')).not.toBeNull();
+      expect(target.querySelector('[aria-label="Navigation"] .inbox-panel')).not.toBeNull();
       expect(target.querySelector('[aria-label="Context"] .backlinks-panel')).not.toBeNull();
     } finally {
       teardown();

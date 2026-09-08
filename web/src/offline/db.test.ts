@@ -155,6 +155,62 @@ describe("pins", () => {
   });
 });
 
+describe("client search zones", () => {
+  const zone = "a".repeat(64);
+  const nextZone = "b".repeat(64);
+  const epoch = "c".repeat(64);
+  const nextEpoch = "d".repeat(64);
+
+  it("keeps bytes only for the current permitted manifest", async () => {
+    const needed = await store.reconcileSearchZones("personal", [
+      { vault: "personal", zoneId: zone, aclHash: epoch },
+    ]);
+    expect(needed).toEqual([{ vault: "personal", zoneId: zone, aclHash: epoch }]);
+    await expect(
+      store.putSearchSegment({
+        vault: "personal",
+        zoneId: zone,
+        aclHash: epoch,
+        bytes: new Uint8Array([1, 2, 3]),
+      }),
+    ).resolves.toBe(true);
+    expect(await store.searchSegments("personal")).toEqual([
+      { vault: "personal", zoneId: zone, aclHash: epoch, bytes: new Uint8Array([1, 2, 3]) },
+    ]);
+  });
+
+  it("drops revoked bytes before reporting segments to the reconnect caller", async () => {
+    await store.reconcileSearchZones("personal", [{ vault: "personal", zoneId: zone, aclHash: epoch }]);
+    await store.putSearchSegment({
+      vault: "personal",
+      zoneId: zone,
+      aclHash: epoch,
+      bytes: new Uint8Array([1]),
+    });
+
+    await store.reconcileSearchZones("personal", [
+      { vault: "personal", zoneId: nextZone, aclHash: nextEpoch },
+    ]);
+
+    expect(await store.searchSegments("personal")).toEqual([]);
+  });
+
+  it("rejects bytes fetched from a manifest that has since been revoked", async () => {
+    await store.reconcileSearchZones("personal", [{ vault: "personal", zoneId: zone, aclHash: epoch }]);
+    await store.reconcileSearchZones("personal", []);
+
+    await expect(
+      store.putSearchSegment({
+        vault: "personal",
+        zoneId: zone,
+        aclHash: epoch,
+        bytes: new Uint8Array([1]),
+      }),
+    ).resolves.toBe(false);
+    expect(await store.searchSegments("personal")).toEqual([]);
+  });
+});
+
 describe("forgetting a vault", () => {
   it("removes its metadata and every resident record, and nothing else", async () => {
     // What a revoked vault gets (§6.7). Another vault's replica is not this vault's business.

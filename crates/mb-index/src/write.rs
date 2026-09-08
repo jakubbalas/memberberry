@@ -144,6 +144,9 @@ impl Index {
                 }
             }
             transaction.commit()?;
+            for path in &plan.removed {
+                self.search.remove(path);
+            }
         }
         Ok(plan)
     }
@@ -201,6 +204,14 @@ impl Index {
         write_media(&transaction, note_id, &facts)?;
         transaction.commit()?;
 
+        self.search.replace(
+            &input.path,
+            mb_core::extract::title(&doc).as_deref(),
+            &doc.frontmatter.aliases,
+            &facts.tags,
+            &facts.text_blocks,
+        )?;
+
         Ok(if existing.is_some() {
             Changed::Rewritten
         } else {
@@ -218,7 +229,24 @@ impl Index {
             .conn
             .prepare_cached("DELETE FROM notes WHERE path = ?1")?
             .execute([path])?;
+        if removed > 0 {
+            self.search.remove(path);
+        }
         Ok(removed > 0)
+    }
+
+    /// Publishes queued full-text changes as one Tantivy commit.
+    ///
+    /// SQLite commits each note independently, while Tantivy batches a reconcile into one
+    /// segment publication. If publication fails, the index remains derived state and the
+    /// next full rebuild repairs it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if Tantivy cannot commit or reload its reader.
+    pub fn publish(&mut self) -> Result<(), Error> {
+        self.search.publish()?;
+        self.rebuild_zone_segments()
     }
 }
 
@@ -339,8 +367,8 @@ fn write_tasks(
 ) -> Result<(), Error> {
     let mut insert = transaction.prepare_cached(
         "INSERT INTO tasks
-            (note_id, block_id, status, due, scheduled, start, done, priority, text, ordinal)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            (note_id, block_id, status, due, scheduled, start, created, done, priority, text, ordinal)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for (ordinal, task) in facts.tasks.iter().enumerate() {
         let meta = &task.task.meta;
@@ -351,6 +379,7 @@ fn write_tasks(
             meta.due.map(|date| date.to_string()),
             meta.scheduled.map(|date| date.to_string()),
             meta.start.map(|date| date.to_string()),
+            meta.created.map(|date| date.to_string()),
             meta.done.map(|date| date.to_string()),
             meta.priority.map(priority_name),
             &task.text,

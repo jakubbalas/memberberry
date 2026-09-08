@@ -112,6 +112,26 @@ impl IndexRegistry {
         }
         errors
     }
+
+    /// Recomputes one vault's persisted ACL zones from its live policy (§14.2).
+    ///
+    /// Separate from note reconciliation because `access.toml` is durable authorization,
+    /// not note content. The caller orders policy reload before this operation.
+    pub fn maintain_zones(&self, vault: &Vault, access: &mb_core::Access) -> Result<bool, String> {
+        let Some(index) = self.get(vault) else {
+            return Err(format!(
+                "vault `{}`: no index could be opened",
+                vault.slug()
+            ));
+        };
+        let mut index = index
+            .lock()
+            .map_err(|_| format!("vault `{}`: the index lock is poisoned", vault.slug()))?;
+        let changed = index
+            .replace_zones(access)
+            .map_err(|error| format!("vault `{}`: persisting ACL zones: {error}", vault.slug()))?;
+        Ok(changed)
+    }
 }
 
 /// Reconciles the whole vault: stamp everything, re-read what changed, drop what is gone.
@@ -149,6 +169,9 @@ pub fn reconcile(vault: &Vault, index: &mut Index) -> Result<(), String> {
     for relative in plan.stale {
         reindex(vault, index, &relative)?;
     }
+    index
+        .publish()
+        .map_err(|error| format!("publishing search index: {error}"))?;
     Ok(())
 }
 
@@ -175,6 +198,9 @@ fn touched<'a>(
             reindex(vault, index, &relative)?;
         }
     }
+    index
+        .publish()
+        .map_err(|error| format!("publishing search index: {error}"))?;
     Ok(())
 }
 

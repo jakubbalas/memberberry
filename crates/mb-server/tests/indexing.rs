@@ -69,6 +69,40 @@ fn a_sweep_indexes_the_whole_vault() {
 }
 
 #[test]
+fn acl_zone_maintenance_changes_only_when_the_live_policy_changes() {
+    let dir = TempDir::new("index-zones");
+    let vault = vault(&dir);
+    let registry = IndexRegistry::default();
+    let alice = Username::parse("alice").expect("username");
+    let policy = |role| {
+        Access::new(
+            vec![Member {
+                user: alice.clone(),
+                role,
+            }],
+            vec![],
+        )
+        .expect("policy")
+    };
+
+    assert!(
+        registry
+            .maintain_zones(&vault, &policy(Role::Viewer))
+            .expect("initial zones")
+    );
+    assert!(
+        !registry
+            .maintain_zones(&vault, &policy(Role::Viewer))
+            .expect("same zones")
+    );
+    assert!(
+        registry
+            .maintain_zones(&vault, &policy(Role::Owner))
+            .expect("changed zones")
+    );
+}
+
+#[test]
 fn the_index_database_lands_under_the_derived_directory() {
     // §4.1 puts it in `.memberberry/`, which is the whole reason Invariant I1 is possible:
     // one directory to gitignore, one directory to delete.

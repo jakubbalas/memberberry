@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use crate::Error;
 
 /// Bumped whenever the DDL below changes. A mismatch rebuilds; it never migrates.
-pub(crate) const VERSION: i32 = 2;
+pub(crate) const VERSION: i32 = 4;
 
 /// Every table the reader's views are built over.
 ///
@@ -37,6 +37,15 @@ CREATE TABLE notes (
 ) STRICT;
 
 CREATE INDEX notes_uuid ON notes(uuid);
+
+CREATE TABLE zones (
+    -- Stable for this prefix across ACL edits, so clients can replace one segment in place.
+    zone_id     TEXT PRIMARY KEY,
+    -- Empty means the vault root. Every other value is a normalized ACL rule path.
+    path_prefix TEXT NOT NULL UNIQUE,
+    -- Digest of the sorted, effective non-none user/role assignments for this subtree.
+    acl_hash    TEXT NOT NULL
+) STRICT;
 
 CREATE TABLE note_names (
     note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
@@ -109,6 +118,7 @@ CREATE TABLE tasks (
     due       TEXT,
     scheduled TEXT,
     start     TEXT,
+    created   TEXT,
     done      TEXT,
     priority  TEXT,
     text      TEXT    NOT NULL,
@@ -181,9 +191,22 @@ fn version_of(conn: &Connection) -> Result<i32, Error> {
 /// into "the schema is there".
 fn has_tables(conn: &Connection) -> Result<bool, Error> {
     let count: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'notes'",
+        "SELECT count(*) FROM sqlite_schema
+         WHERE type = 'table' AND name IN
+             ('notes', 'note_names', 'links', 'tags', 'blocks', 'tasks', 'media_refs', 'zones')",
         [],
         |row| row.get(0),
     )?;
-    Ok(count == 1)
+    Ok(count == 8)
+}
+
+/// Number of indexed notes, used only to align the paired derived search index on open.
+pub(crate) fn note_count(conn: &Connection) -> Result<i64, Error> {
+    Ok(conn.query_row("SELECT count(*) FROM notes", [], |row| row.get(0))?)
+}
+
+/// Clears note stamps so a missing paired search index forces a full Markdown reread.
+pub(crate) fn clear_notes(conn: &Connection) -> Result<(), Error> {
+    conn.execute("DELETE FROM notes", [])?;
+    Ok(())
 }

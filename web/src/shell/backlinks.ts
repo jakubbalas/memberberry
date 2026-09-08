@@ -34,10 +34,26 @@ export interface BacklinkSource {
   readonly links: readonly Backlink[];
 }
 
+/**
+ * One note that names this one in its text without linking to it (§9.5).
+ *
+ * Never a note that also links here — the server puts each note in one list or the other, so
+ * this side does no de-duplication and must not start: a note appearing in both would mean
+ * the server changed its mind about what a backlink is, which is not something to paper over.
+ */
+export interface MentionSource {
+  readonly path: string;
+  /** `null` when the mentioning note has nothing titleable. */
+  readonly title: string | null;
+  /** Visible text of each mentioning block, in document order. */
+  readonly contexts: readonly string[];
+}
+
 export interface BacklinksResponse {
   /** The note the server resolved the request to, which may not be what was asked for. */
   readonly note: string;
   readonly sources: readonly BacklinkSource[];
+  readonly mentions: readonly MentionSource[];
 }
 
 export interface BacklinksOptions {
@@ -46,7 +62,10 @@ export interface BacklinksOptions {
 }
 
 /** What a source row is labelled with: its title if it has one, else its filename. */
-export function sourceLabel(source: BacklinkSource): string {
+export function sourceLabel(source: {
+  readonly path: string;
+  readonly title: string | null;
+}): string {
   if (source.title !== null && source.title !== "") return source.title;
   const filename = source.path.split("/").pop() ?? source.path;
   return filename.replace(/\.md$/, "");
@@ -93,15 +112,41 @@ export function readBacklinks(body: unknown): BacklinksResponse | undefined {
   const record = body as Record<string, unknown>;
   const note = record["note"];
   const sources = record["sources"];
+  const mentions = record["mentions"];
   if (typeof note !== "string" || note === "") return undefined;
-  if (!Array.isArray(sources)) return undefined;
+  // why: a missing `mentions` is refused rather than defaulted to empty. The bundle is served
+  // by the server it talks to, so there is no version skew to be tolerant of — a response
+  // without the field is a server that is broken, and "no mentions" would hide that.
+  if (!Array.isArray(sources) || !Array.isArray(mentions)) return undefined;
 
-  const valid: BacklinkSource[] = [];
+  const validSources: BacklinkSource[] = [];
   for (const entry of sources) {
     const source = readSource(entry);
-    if (source !== undefined) valid.push(source);
+    if (source !== undefined) validSources.push(source);
   }
-  return { note, sources: valid };
+  const validMentions: MentionSource[] = [];
+  for (const entry of mentions) {
+    const mention = readMention(entry);
+    if (mention !== undefined) validMentions.push(mention);
+  }
+  return { note, sources: validSources, mentions: validMentions };
+}
+
+function readMention(entry: unknown): MentionSource | undefined {
+  if (typeof entry !== "object" || entry === null) return undefined;
+  const record = entry as Record<string, unknown>;
+  const path = record["path"];
+  const title = record["title"];
+  const contexts = record["contexts"];
+  if (typeof path !== "string" || path === "") return undefined;
+  if (title !== null && typeof title !== "string") return undefined;
+  if (!Array.isArray(contexts)) return undefined;
+
+  const text = contexts.filter((value): value is string => typeof value === "string");
+  // A mention with no readable sentence is not a row: it would name a note without saying
+  // why it is there, which is exactly the difference between a mention and a backlink.
+  if (text.length === 0) return undefined;
+  return { path, title, contexts: text };
 }
 
 function readSource(entry: unknown): BacklinkSource | undefined {

@@ -16,10 +16,75 @@
     clippy::panic
 )]
 
+use mb_search::{AclHash, Change, Note, Segment, ZoneId};
 use mb_wasm::{
-    conflict_count, facts_of, merge_with_conflicts, normalize, note_title, resolve_conflict,
-    schema_json, to_html,
+    conflict_count, daily_path_inner, expand_template_inner, facts_of, merge_search_segments_inner,
+    merge_with_conflicts, normalize, note_title, periodic_path_inner, resolve_conflict,
+    schema_json, search_segments_inner, to_html, validate_search_segment_inner,
 };
+
+fn compact_segment(word: &str) -> Vec<u8> {
+    Segment::build(
+        ZoneId::from_hex(&"a".repeat(64)).expect("zone"),
+        AclHash::from_hex(&"b".repeat(64)).expect("hash"),
+        [Change::Upsert(Note {
+            id: None,
+            title: "Title".to_string(),
+            path: "Note.md".to_string(),
+            tags: Vec::new(),
+            icon: None,
+            text: word.to_string(),
+        })],
+    )
+    .expect("segment")
+    .as_bytes()
+    .to_vec()
+}
+
+#[test]
+fn calendar_and_template_boundaries_validate_wire_strings() {
+    assert_eq!(
+        daily_path_inner("Daily/", "%d-%m-%Y.md", "2026-09-08").expect("daily path"),
+        "Daily/08-09-2026.md"
+    );
+    assert_eq!(
+        periodic_path_inner("weekly", "Weekly/", "%G-W%V.md", "2021-01-01").expect("weekly path"),
+        "Weekly/2020-W53.md"
+    );
+    assert!(periodic_path_inner("quarterly", "Q/", "%Y.md", "2026-09-08").is_err());
+    assert!(daily_path_inner("Daily/", "%Y-%m-%d.md", "not-a-date").is_err());
+
+    let expanded = expand_template_inner(
+        "# {{title}} {{time}}",
+        "2026-09-08",
+        "07:08:09",
+        "Plan",
+        "",
+        "id",
+        "Alice",
+    )
+    .expect("template");
+    assert_eq!(expanded.text, "# Plan 07:08:09");
+    assert!(expand_template_inner("", "2026-09-08", "24:00:00", "", "", "", "").is_err());
+}
+
+#[test]
+fn compact_search_bytes_are_validated_and_merge_only_inside_one_acl_epoch() {
+    let base = compact_segment("before");
+    validate_search_segment_inner(&base).expect("valid segment");
+    assert!(validate_search_segment_inner(&base[..40]).is_err());
+    let merged = merge_search_segments_inner(&base, &compact_segment("after")).expect("merge");
+    validate_search_segment_inner(&merged).expect("merged segment");
+}
+
+#[test]
+fn compact_segments_are_queried_as_one_permission_filtered_union() {
+    let results =
+        search_segments_inner("body:road", [compact_segment("roadmap body")]).expect("search");
+    assert_eq!(results.hits.len(), 1);
+    assert_eq!(results.hits[0].path, "Note.md");
+    assert!(!results.phrase_degraded);
+}
 
 #[test]
 fn normalize_is_the_canonical_form_the_server_writes() {
@@ -159,4 +224,39 @@ fn an_unknown_resolution_changes_nothing() {
     let merged = merge_with_conflicts(None, "Mine.\n", "Theirs.\n", "now");
     assert_eq!(resolve_conflict(&merged, 0, "neither"), merged);
     assert_eq!(resolve_conflict(&merged, 99, "mine"), merged);
+}
+
+#[test]
+fn compact_phrase_queries_mark_degradation_and_sort_hits_by_path() {
+    let zebra = Segment::build(
+        ZoneId::from_hex(&"a".repeat(64)).expect("zone"),
+        AclHash::from_hex(&"b".repeat(64)).expect("hash"),
+        [Change::Upsert(Note {
+            id: None,
+            title: "Z".to_string(),
+            path: "Z.md".to_string(),
+            tags: vec!["t".to_string()],
+            icon: Some("i".to_string()),
+            text: "roadmap body".to_string(),
+        })],
+    )
+    .expect("segment")
+    .as_bytes()
+    .to_vec();
+    let alpha = compact_segment("roadmap body");
+    let results =
+        search_segments_inner("\"roadmap body\"", [zebra, alpha.clone()]).expect("search");
+    assert!(results.phrase_degraded);
+    assert_eq!(
+        results
+            .hits
+            .iter()
+            .map(|hit| hit.path.as_str())
+            .collect::<Vec<_>>(),
+        ["Note.md", "Z.md"]
+    );
+    assert_eq!(results.hits[1].icon.as_deref(), Some("i"));
+    assert_eq!(results.hits[1].tags, ["t"]);
+    assert!(search_segments_inner("(", [alpha.clone()]).is_err());
+    assert!(search_segments_inner("body:road", [alpha[..40].to_vec()]).is_err());
 }

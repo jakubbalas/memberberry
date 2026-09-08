@@ -25,6 +25,8 @@ import type {
 } from "../editor/collaboration.js";
 import { reconcile } from "../editor/conflicts.js";
 import { mountEditorShell } from "../editor/editor-shell.js";
+import { setTaskDue, setTaskPriority, toggleTask } from "../editor/commands.js";
+import type { TaskPriority } from "../editor/task-metadata.js";
 import { startNoteEditor } from "../editor/note-editor.js";
 import { localReplica } from "../offline/local.js";
 import { notDownloaded } from "../offline/not-downloaded.js";
@@ -87,7 +89,14 @@ export interface NoteSurface {
    * Idempotent: calling it again returns the same promise rather than tearing down twice.
    */
   destroy(): Promise<void>;
+  /** Applies one inbox edit to the task at its source-note ordinal. */
+  editTask?(ordinal: number, action: TaskEditAction): boolean;
 }
+
+export type TaskEditAction =
+  | { readonly kind: "toggle" }
+  | { readonly kind: "due"; readonly value: string }
+  | { readonly kind: "priority"; readonly value: TaskPriority | null };
 
 interface ResidencyOptions {
   readonly bootstrap: NoteBootstrap;
@@ -343,6 +352,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     await editor.destroy();
     throw new Error("the default editor factory must return a Tiptap Editor");
   }
+  const tiptap = editor.editor;
 
   const { collaboration } = editor;
   const shell = mountEditorShell({
@@ -352,6 +362,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     ...(collaboration.connection === undefined ? {} : { connection: collaboration.connection }),
     panel,
     status,
+    ...(bootstrap === undefined ? {} : { user: bootstrap.user, title: bootstrap.note }),
   });
 
   // A note this device already holds is open now, and the write moves it to the front of
@@ -395,6 +406,24 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
 
   let closing: Promise<void> | undefined;
   return {
+    editTask: (ordinal, action): boolean => {
+      let taskPosition: number | undefined;
+      let taskNumber = 0;
+      tiptap.state.doc.descendants((node, position) => {
+        if (node.type.name !== "task_item") return true;
+        if (taskNumber === ordinal) {
+          taskPosition = position;
+          return false;
+        }
+        taskNumber += 1;
+        return true;
+      });
+      if (taskPosition === undefined) return false;
+      tiptap.commands.setTextSelection(taskPosition + 1);
+      if (action.kind === "toggle") return toggleTask(tiptap);
+      if (action.kind === "due") return setTaskDue(tiptap, action.value);
+      return setTaskPriority(tiptap, action.value);
+    },
     destroy: (): Promise<void> => {
       // A pane can be closed by the user and then again by the layout unmounting it, and
       // Tiptap throws if destroyed twice. Caching the promise makes the second call a no-op

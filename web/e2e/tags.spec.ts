@@ -107,6 +107,12 @@ test("the tag pane's controls clear the 44px touch floor on mobile", async ({ pa
   // something else entirely, so it is the control here a finger can miss into. Measured from
   // the browser's box model, because a rule in a stylesheet is not a size on screen.
   await openWithNavigation(page);
+  // why: an explicit wait for a row before enumerating. `locator.all()` does not auto-wait —
+  // it returns whatever exists at that instant — so without this the loop measures an
+  // unpopulated pane whenever the tag fetch has not resolved yet, and the failure is a
+  // confusing "the pane should offer controls to press" rather than a timeout. Seen for real
+  // in a full parallel run, and passing when the same spec ran alone.
+  await expect(row(page, "project")).toBeVisible();
 
   const measured: Array<{ label: string; width: number; height: number }> = [];
   for (const control of await page.locator("button.tag-twisty, .tag-row").all()) {

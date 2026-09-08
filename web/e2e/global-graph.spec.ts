@@ -17,6 +17,7 @@ import { expect, signIn, test } from "./fixtures.js";
 const SURFACE = ".graph-view-surface";
 const GL = ".graph-view-gl";
 const STATUS = ".graph-view-count";
+const GRAPH = "[aria-label=\"Vault graph\"]";
 
 /** Signs in, opens a note, and opens the graph from the command palette. */
 async function openGraph(page: import("@playwright/test").Page): Promise<void> {
@@ -29,7 +30,12 @@ async function openGraph(page: import("@playwright/test").Page): Promise<void> {
   await expect(page.locator(SURFACE)).toBeVisible();
   // The layout settles asynchronously in a worker; the count is what says the payload
   // arrived, and it is the only thing here that is not a picture.
-  await expect(page.locator(STATUS)).toContainText(/note/);
+  //
+  // why: a *positive* count rather than `/note/`. An empty graph renders "0 notes.", which
+  // matched — so this wait passed before the payload arrived, and a keypress on a graph with
+  // no nodes selects nothing. It showed up as `End` intermittently selecting nothing under a
+  // full parallel run, which looks exactly like a broken keyboard path (§8.4) and was not one.
+  await expect(page.locator(STATUS)).toContainText(/[1-9]\d* notes?\./);
 }
 
 /**
@@ -83,7 +89,7 @@ test("draws the vault, with area on screen and pixels in it", async ({ page }) =
   // in any graph, so "something was painted" passes with every node missing — which a probe
   // that deleted the node draw call demonstrated. With both edge kinds filtered off, anything
   // still on the canvas is a node.
-  await page.getByRole("button", { name: /^Filters/ }).click();
+  await page.locator(GRAPH).getByRole("button", { name: /^Filters/ }).click();
   await page.getByLabel("Links", { exact: true }).uncheck();
   await page.getByLabel("Embeds", { exact: true }).uncheck();
   await expect
@@ -133,7 +139,7 @@ test("filters the picture, and says that it is filtering", async ({ page }) => {
   await openGraph(page);
   const before = await page.locator(STATUS).textContent();
 
-  await page.getByRole("button", { name: /^Filters/ }).click();
+  await page.locator(GRAPH).getByRole("button", { name: /^Filters/ }).click();
   await page.getByLabel("Path").fill("Graph/**");
 
   await expect(page.getByRole("button", { name: /^Filters \(on\)/ })).toBeVisible();

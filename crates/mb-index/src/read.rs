@@ -7,8 +7,9 @@
 //! test failure rather than a review note.
 
 use mb_core::model::Anchor;
+use mb_core::task::{Date, Priority};
 use mb_core::{Access, Username};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 
 use crate::{Error, Index, readable};
 
@@ -63,13 +64,74 @@ pub struct TagNode {
     pub notes: usize,
 }
 
+/// The supported ordering for an open-task query (§10.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TaskSort {
+    /// Earliest due task first; tasks without a due date follow dated tasks.
+    #[default]
+    Due,
+    /// Highest priority first; unprioritized tasks follow prioritized tasks.
+    Priority,
+    /// Oldest explicitly-created task first; tasks without a creation date follow them.
+    Created,
+    /// Source-note path, then the task's order in that note.
+    Path,
+}
+
+/// Permission-filtered task query input (§10.3).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskQuery {
+    /// Folder prefix, without a leading or trailing slash.
+    pub folder: Option<String>,
+    /// A tag or tag prefix, with or without its leading `#`.
+    pub tag: Option<String>,
+    /// Only tasks with this priority.
+    pub priority: Option<Priority>,
+    /// Inclusive lower bound over task due dates.
+    pub due_from: Option<Date>,
+    /// Inclusive upper bound over task due dates.
+    pub due_to: Option<Date>,
+    /// One exact source-note path.
+    pub note: Option<String>,
+    /// Result ordering.
+    pub sort: TaskSort,
+}
+
+/// One open task and the source location needed to edit it (§10.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskEntry {
+    /// Vault-relative source note path.
+    pub path: String,
+    /// Source-note title, when it has one.
+    pub title: Option<String>,
+    /// Anchor of the task's source block, when present.
+    pub block_id: Option<String>,
+    /// The visible task text, without its checkbox or metadata markers.
+    pub text: String,
+    /// Due date, if the task has one.
+    pub due: Option<String>,
+    /// Scheduled date, if the task has one.
+    pub scheduled: Option<String>,
+    /// Start date, if the task has one.
+    pub start: Option<String>,
+    /// Explicit creation date, if the task has one.
+    pub created: Option<String>,
+    /// Priority stored in the source task, if any.
+    pub priority: Option<Priority>,
+    /// Position in the source note, for deterministic ordering.
+    pub ordinal: usize,
+}
+
 /// Queries scoped to one user's readable set.
 ///
 /// Obtained from [`Index::reader`], which is the only way to construct one: there is no
 /// query surface that does not carry a user.
 #[derive(Debug)]
 pub struct Reader<'a> {
-    conn: &'a Connection,
+    pub(crate) conn: &'a Connection,
+    pub(crate) search: &'a crate::search::SearchIndex,
+    pub(crate) zone_segments: &'a crate::zones::PublishedSegments,
+    pub(crate) permitted_zones: std::collections::BTreeMap<String, String>,
     readable: usize,
 }
 
@@ -86,8 +148,12 @@ impl Index {
     /// Fails if the readable set cannot be written to the connection's temporary table.
     pub fn reader(&mut self, access: &Access, user: &Username) -> Result<Reader<'_>, Error> {
         let readable = readable::populate(&mut self.conn, access, user)?;
+        let permitted_zones = crate::zones::permitted(&self.conn, access, user)?;
         Ok(Reader {
             conn: &self.conn,
+            search: &self.search,
+            zone_segments: &self.zone_segments,
+            permitted_zones,
             readable,
         })
     }
@@ -285,6 +351,93 @@ impl Reader<'_> {
         rows.collect::<Result<_, _>>().map_err(Error::from)
     }
 
+    /// Every readable, open task matching `query` (§10.3).
+    ///
+    /// Completed and cancelled tasks are deliberately absent: the inbox answers what remains
+    /// to do, not a task-history query. Every table reference is a filtered view, so a task
+    /// in an unreadable note is indistinguishable from no task at all (E5).
+    ///
+    /// A date range filters due dates. A task with no due date cannot be inside a date range;
+    /// it remains available in an unfiltered inbox under the "no date" group.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the query itself fails.
+    pub fn tasks(&self, query: &TaskQuery) -> Result<Vec<TaskEntry>, Error> {
+        let mut sql = String::from(
+            "SELECT n.path, n.title, t.block_id, t.text, t.due, t.scheduled, t.start, \
+                    t.created, t.priority, t.ordinal\n             FROM v_tasks t JOIN v_notes n ON n.id = t.note_id\n             WHERE t.status = 'todo'",
+        );
+        let mut values = Vec::<Value>::new();
+
+        if let Some(folder) = query
+            .folder
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let folder = folder.trim_matches('/');
+            if !folder.is_empty() {
+                sql.push_str(" AND (n.path = ? OR n.path GLOB ?)");
+                values.push(Value::Text(folder.to_string()));
+                values.push(Value::Text(format!("{folder}/*")));
+            }
+        }
+        if let Some(tag) = query.tag.as_deref() {
+            let key = crate::names::fold_tag(tag.trim().trim_start_matches('#'));
+            if !key.is_empty() {
+                sql.push_str(" AND EXISTS (SELECT 1 FROM v_tags g WHERE g.note_id = t.note_id AND g.prefix_key = ?)");
+                values.push(Value::Text(key));
+            }
+        }
+        if let Some(priority) = query.priority {
+            sql.push_str(" AND t.priority = ?");
+            values.push(Value::Text(priority_name(priority).to_string()));
+        }
+        if let Some(date) = query.due_from {
+            sql.push_str(" AND t.due >= ?");
+            values.push(Value::Text(date.to_string()));
+        }
+        if let Some(date) = query.due_to {
+            sql.push_str(" AND t.due <= ?");
+            values.push(Value::Text(date.to_string()));
+        }
+        if let Some(note) = query
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            sql.push_str(" AND n.path = ?");
+            values.push(Value::Text(note.to_string()));
+        }
+
+        sql.push_str(match query.sort {
+            TaskSort::Due => " ORDER BY t.due IS NULL, t.due, n.path, t.ordinal",
+            TaskSort::Priority => " ORDER BY t.priority IS NULL, CASE t.priority\n                 WHEN 'highest' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2\n                 WHEN 'low' THEN 3 WHEN 'lowest' THEN 4 ELSE 5 END, n.path, t.ordinal",
+            TaskSort::Created => " ORDER BY t.created IS NULL, t.created, n.path, t.ordinal",
+            TaskSort::Path => " ORDER BY n.path, t.ordinal",
+        });
+
+        let mut statement = self.conn.prepare_cached(&sql)?;
+        let rows = statement.query_map(params_from_iter(values.iter()), |row| {
+            let ordinal: i64 = row.get(9)?;
+            Ok(TaskEntry {
+                path: row.get(0)?,
+                title: row.get(1)?,
+                block_id: row.get(2)?,
+                text: row.get(3)?,
+                due: row.get(4)?,
+                scheduled: row.get(5)?,
+                start: row.get(6)?,
+                created: row.get(7)?,
+                priority: priority_of(row.get::<_, Option<String>>(8)?.as_deref()),
+                ordinal: usize::try_from(ordinal).unwrap_or(0),
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(Error::from)
+    }
+
     /// The connection, for the query modules beside this one.
     ///
     /// why: `pub(crate)`, and why that does not reopen E5. The property the crate holds is
@@ -309,6 +462,27 @@ fn anchor_of(kind: &str, value: Option<String>) -> Option<Anchor> {
     match (kind, value) {
         (crate::write::ANCHOR_HEADING, Some(value)) => Some(Anchor::Heading(value)),
         (crate::write::ANCHOR_BLOCK, Some(value)) => Some(Anchor::Block(value)),
+        _ => None,
+    }
+}
+
+const fn priority_name(priority: Priority) -> &'static str {
+    match priority {
+        Priority::Highest => "highest",
+        Priority::High => "high",
+        Priority::Medium => "medium",
+        Priority::Low => "low",
+        Priority::Lowest => "lowest",
+    }
+}
+
+fn priority_of(value: Option<&str>) -> Option<Priority> {
+    match value {
+        Some("highest") => Some(Priority::Highest),
+        Some("high") => Some(Priority::High),
+        Some("medium") => Some(Priority::Medium),
+        Some("low") => Some(Priority::Low),
+        Some("lowest") => Some(Priority::Lowest),
         _ => None,
     }
 }

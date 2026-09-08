@@ -35,6 +35,9 @@ CREATE TEMP VIEW v_tags AS
 
 CREATE TEMP VIEW v_blocks AS
     SELECT b.* FROM blocks b JOIN readable r ON r.note_id = b.note_id;
+
+CREATE TEMP VIEW v_tasks AS
+    SELECT t.* FROM tasks t JOIN readable r ON r.note_id = t.note_id;
 ";
 
 /// Resolves each link to the note it points at, or to NULL (§4.3).

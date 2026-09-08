@@ -97,6 +97,11 @@ impl<'a> CreateNote<'a> {
     ///
     /// See [`CreateError`]. Every variant means nothing was written.
     pub fn note(&self, path: &str) -> Result<Created, CreateError> {
+        self.note_with_body(path, &initial_body(path))
+    }
+
+    /// Creates a note with caller-provided Markdown content.
+    pub fn note_with_body(&self, path: &str, body: &str) -> Result<Created, CreateError> {
         if !crate::vault::valid_note_path(path) {
             return Err(CreateError::InvalidName(path.to_string()));
         }
@@ -128,7 +133,7 @@ impl<'a> CreateNote<'a> {
             }
             Err(error) => return Err(CreateError::Failed(error.to_string())),
         };
-        file.write_all(initial_body(path).as_bytes())
+        file.write_all(body.as_bytes())
             .map_err(|error| CreateError::Failed(error.to_string()))?;
         file.sync_all()
             .map_err(|error| CreateError::Failed(error.to_string()))?;

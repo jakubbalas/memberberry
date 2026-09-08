@@ -61,6 +61,29 @@ pub struct NoteSummary {
     pub title: Option<String>,
     /// Unresolved conflicts, for §3.5's badge in the note tree. `0` for almost every note.
     pub conflicts: usize,
+    /// Open task metadata carried by the eager offline tier (§7.2, §10.3).
+    pub tasks: Vec<NoteTaskSummary>,
+}
+
+/// The permission-filtered task metadata attached to a note summary.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NoteTaskSummary {
+    /// Optional source block anchor.
+    pub block_id: Option<String>,
+    /// Plain task text without its checkbox or metadata markers.
+    pub text: String,
+    /// Task dates in `YYYY-MM-DD` form.
+    pub due: Option<String>,
+    /// Optional scheduled date.
+    pub scheduled: Option<String>,
+    /// Optional start date.
+    pub start: Option<String>,
+    /// Optional creation date.
+    pub created: Option<String>,
+    /// Serialized task priority.
+    pub priority: Option<String>,
+    /// Zero-based ordinal among tasks in the source note.
+    pub ordinal: usize,
 }
 
 /// Summaries for the notes of one vault, cached across requests.
@@ -110,6 +133,7 @@ impl TitleCache {
                 path: (*path).to_string(),
                 title: None,
                 conflicts: 0,
+                tasks: Vec::new(),
             })
             .collect();
 

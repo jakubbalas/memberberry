@@ -12,7 +12,7 @@
  * exists for when there is something to trigger it, which today there is not.
  */
 
-import type { ReplicatedNote } from "../offline/db.js";
+import { readReplicatedTasks, type ReplicatedNote } from "../offline/db.js";
 import type { CatalogAnswer } from "../offline/replica.js";
 
 /**
@@ -136,6 +136,7 @@ function readNotes(body: unknown): readonly NoteSummary[] {
     const path = record["path"];
     const title = record["title"];
     const conflicts = record["conflicts"];
+    const tasks = record["tasks"];
     if (typeof path !== "string" || path === "") continue;
     if (title !== null && typeof title !== "string") continue;
     // A count that is not a number is dropped to zero rather than rejecting the note: the
@@ -143,6 +144,7 @@ function readNotes(body: unknown): readonly NoteSummary[] {
     valid.push({
       path,
       title,
+      ...(Array.isArray(tasks) ? { tasks: readReplicatedTasks(tasks) } : {}),
       conflicts: typeof conflicts === "number" && conflicts > 0 ? Math.floor(conflicts) : 0,
     });
   }

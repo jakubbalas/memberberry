@@ -167,6 +167,64 @@ impl Date {
             u8::try_from(day).ok()?,
         )
     }
+
+    /// Returns the date a number of Gregorian calendar days away.
+    #[must_use]
+    pub fn checked_add_days(self, days: i64) -> Option<Self> {
+        let ordinal = days_from_civil(
+            i64::from(self.year),
+            i64::from(self.month),
+            i64::from(self.day),
+        );
+        let millis = ordinal.checked_add(days)?.checked_mul(86_400_000)?;
+        Self::from_unix_millis(millis)
+    }
+
+    /// Returns the ISO weekday number, where Monday is 1 and Sunday is 7.
+    #[must_use]
+    pub fn iso_weekday(self) -> u8 {
+        let days = days_from_civil(
+            i64::from(self.year),
+            i64::from(self.month),
+            i64::from(self.day),
+        );
+        u8::try_from((days + 3).rem_euclid(7) + 1).unwrap_or(1)
+    }
+
+    /// Returns the ISO week-numbering year and week.
+    #[must_use]
+    pub fn iso_week(self) -> (i32, u8) {
+        let thursday = self.checked_add_days(4 - i64::from(self.iso_weekday()));
+        let Some(thursday) = thursday else {
+            return (self.year, 1);
+        };
+        let iso_year = thursday.year;
+        let Some(january_fourth) = Self::new(iso_year, 1, 4) else {
+            return (iso_year, 1);
+        };
+        let week_one = days_from_civil(i64::from(iso_year), 1, 4)
+            - (i64::from(january_fourth.iso_weekday()) - 1);
+        let current = days_from_civil(
+            i64::from(self.year),
+            i64::from(self.month),
+            i64::from(self.day),
+        );
+        let week = (current - week_one).div_euclid(7) + 1;
+        (iso_year, u8::try_from(week).unwrap_or(1))
+    }
+
+    /// Returns the Monday that starts an ISO week, or `None` if the result overflows.
+    #[must_use]
+    pub fn from_iso_week(year: i32, week: u8) -> Option<Self> {
+        if !(1..=53).contains(&week) {
+            return None;
+        }
+        let january_fourth = Self::new(year, 1, 4)?;
+        let monday = january_fourth.checked_add_days(
+            1 - i64::from(january_fourth.iso_weekday()) + 7 * (i64::from(week) - 1),
+        )?;
+        (monday.iso_week() == (year, week)).then_some(monday)
+    }
 }
 
 /// The proleptic Gregorian date `days` after 1970-01-01, after Howard Hinnant's `chrono`
@@ -192,6 +250,16 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
         month_position - 9
     };
     (year + i64::from(month <= 2), month, day)
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = (if year >= 0 { year } else { year - 399 }) / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 impl fmt::Display for Date {

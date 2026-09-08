@@ -5,6 +5,7 @@ members = [
     "crates/mb-core",
     "crates/mb-crdt",
     "crates/mb-index",
+    "crates/mb-search",
     "crates/mb-wasm",
     "crates/mb-server",
     "crates/mb-cli",
@@ -24,6 +25,7 @@ mb-core = { path = "crates/mb-core" }
 mb-auth = { path = "crates/mb-auth" }
 mb-crdt = { path = "crates/mb-crdt" }
 mb-index = { path = "crates/mb-index" }
+mb-search = { path = "crates/mb-search" }
 mb-server = { path = "crates/mb-server" }
 mb-wasm = { path = "crates/mb-wasm" }
 thiserror = "2"

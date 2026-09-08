@@ -17,6 +17,241 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+/// Formats a daily-note path through the same contract used by the server.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = "dailyPath")]
+pub fn daily_path(folder: &str, format: &str, date: &str) -> Result<String, JsValue> {
+    daily_path_inner(folder, format, date).map_err(js_err)
+}
+
+/// Native daily-path implementation, testable without JavaScript values.
+pub fn daily_path_inner(folder: &str, format: &str, date: &str) -> Result<String, &'static str> {
+    let date = mb_core::task::Date::parse(date).ok_or("invalid date")?;
+    mb_core::daily::path(folder, format, date).ok_or("invalid daily-note configuration")
+}
+
+/// Formats a daily, weekly, or monthly note path through the shared calendar contract.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = "periodicPath")]
+pub fn periodic_path(
+    period: &str,
+    folder: &str,
+    format: &str,
+    date: &str,
+) -> Result<String, JsValue> {
+    periodic_path_inner(period, folder, format, date).map_err(js_err)
+}
+
+/// Native periodic-path implementation, testable without JavaScript values.
+pub fn periodic_path_inner(
+    period: &str,
+    folder: &str,
+    format: &str,
+    date: &str,
+) -> Result<String, &'static str> {
+    let period = match period {
+        "daily" => mb_core::daily::Period::Daily,
+        "weekly" => mb_core::daily::Period::Weekly,
+        "monthly" => mb_core::daily::Period::Monthly,
+        _ => return Err("invalid calendar period"),
+    };
+    let date = mb_core::task::Date::parse(date).ok_or("invalid date")?;
+    mb_core::daily::periodic_path(period, folder, format, date)
+        .ok_or("invalid calendar-note configuration")
+}
+
+/// Expands a template using caller-supplied values, keeping date/time and UUID generation out
+/// of the browser boundary.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = "expandTemplate")]
+pub fn expand_template(
+    template: &str,
+    date: &str,
+    time: &str,
+    title: &str,
+    selection: &str,
+    uuid: &str,
+    user: &str,
+) -> Result<JsValue, JsValue> {
+    let expanded = expand_template_inner(template, date, time, title, selection, uuid, user)
+        .map_err(js_err)?;
+    serde_wasm_bindgen::to_value(&expanded).map_err(js_err)
+}
+
+/// Native template-expansion implementation, testable without JavaScript values.
+pub fn expand_template_inner(
+    template: &str,
+    date: &str,
+    time: &str,
+    title: &str,
+    selection: &str,
+    uuid: &str,
+    user: &str,
+) -> Result<ExpandedTemplate, &'static str> {
+    let date = mb_core::task::Date::parse(date).ok_or("invalid date")?;
+    let mut time_parts = time.split(':').map(|part| part.parse::<u8>());
+    let parsed_time = (
+        time_parts.next().transpose().map_err(|_| "invalid time")?,
+        time_parts.next().transpose().map_err(|_| "invalid time")?,
+        time_parts.next().transpose().map_err(|_| "invalid time")?,
+    );
+    if parsed_time.0.is_none()
+        || parsed_time.1.is_none()
+        || parsed_time.2.is_none()
+        || time_parts.next().is_some()
+        || parsed_time.0.is_some_and(|hour| hour > 23)
+        || parsed_time.1.is_some_and(|minute| minute > 59)
+        || parsed_time.2.is_some_and(|second| second > 59)
+    {
+        return Err("invalid time");
+    }
+    let expanded = mb_core::template::expand(
+        template,
+        mb_core::template::Context {
+            date,
+            time: (
+                parsed_time.0.unwrap_or(0),
+                parsed_time.1.unwrap_or(0),
+                parsed_time.2.unwrap_or(0),
+            ),
+            title,
+            selection,
+            uuid,
+            user,
+        },
+    );
+    Ok(ExpandedTemplate {
+        text: expanded.text,
+        cursor: expanded.cursor,
+    })
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ExpandedTemplate {
+    /// Expanded UTF-8 template text.
+    pub text: String,
+    /// Byte offset for the first cursor marker.
+    pub cursor: Option<usize>,
+}
+
+/// Validates a compact client-search segment before the browser persists it (§14.2, E6).
+///
+/// # Errors
+///
+/// Returns a JavaScript error when the binary is truncated, corrupt, or from an unsupported
+/// format version.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = validateSearchSegment)]
+pub fn validate_search_segment(bytes: &[u8]) -> Result<(), JsValue> {
+    validate_search_segment_inner(bytes).map_err(js_err)
+}
+
+/// Rust-native compact-segment validation, separated so it can be tested without `JsValue`.
+///
+/// # Errors
+///
+/// Returns the compact-index validation error unchanged.
+pub fn validate_search_segment_inner(bytes: &[u8]) -> Result<(), mb_search::Error> {
+    mb_search::Segment::from_bytes(bytes.to_vec()).map(|_| ())
+}
+
+/// Merges an older compact segment with a newer delta for the same ACL epoch (§14.2).
+///
+/// # Errors
+///
+/// Returns a JavaScript error when either binary is invalid or their zone/ACL identities
+/// differ. In particular, a revoked epoch can never be merged into its replacement.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = mergeSearchSegments)]
+pub fn merge_search_segments(base: &[u8], delta: &[u8]) -> Result<Vec<u8>, JsValue> {
+    merge_search_segments_inner(base, delta).map_err(js_err)
+}
+
+/// Rust-native compact segment merge, separated so it can be tested without `JsValue`.
+///
+/// # Errors
+///
+/// Returns validation or merge errors from `mb-search` unchanged.
+pub fn merge_search_segments_inner(base: &[u8], delta: &[u8]) -> Result<Vec<u8>, mb_search::Error> {
+    let base = mb_search::Segment::from_bytes(base.to_vec())?;
+    let delta = mb_search::Segment::from_bytes(delta.to_vec())?;
+    mb_search::Segment::merge(&[base, delta]).map(|segment| segment.as_bytes().to_vec())
+}
+
+/// One compact-index result sent back to the search worker.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    /// Vault-relative note path.
+    pub path: String,
+    /// Display title, possibly empty for an untitled note.
+    pub title: String,
+    /// The compact index's retained note context.
+    pub snippet: String,
+    /// Tags attached to the result note.
+    pub tags: Vec<String>,
+    /// Optional note icon.
+    pub icon: Option<String>,
+}
+
+/// The union of a browser's permitted compact-index segments.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchSegmentResults {
+    /// Matching notes, ordered by vault-relative path.
+    pub hits: Vec<SearchHit>,
+    /// Whether quoted phrases used the documented offline AND fallback.
+    pub phrase_degraded: bool,
+}
+
+/// Queries already-authorized compact segments in the browser (§14.2).
+///
+/// The caller owns authorization: only bytes retained after the manifest reconciliation may
+/// cross this boundary. Parsing every segment here still matters, because a worker message is
+/// an untrusted boundary and no query may dereference unchecked offsets.
+///
+/// # Errors
+///
+/// Returns a query error or an error for an invalid segment.
+pub fn search_segments_inner(
+    query: &str,
+    segments: impl IntoIterator<Item = Vec<u8>>,
+) -> Result<SearchSegmentResults, mb_search::Error> {
+    let query = mb_search::Query::parse(query)?;
+    let mut hits = Vec::new();
+    let mut phrase_degraded = false;
+    for bytes in segments {
+        let results = mb_search::Segment::from_bytes(bytes)?.search(&query)?;
+        phrase_degraded |= results.phrase_degraded;
+        hits.extend(results.hits.into_iter().map(|hit| SearchHit {
+            path: hit.note.path,
+            title: hit.note.title,
+            snippet: hit.note.snippet,
+            tags: hit.note.tags,
+            icon: hit.note.icon,
+        }));
+    }
+    hits.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(SearchSegmentResults {
+        hits,
+        phrase_degraded,
+    })
+}
+
+/// JavaScript boundary for [`search_segments_inner`].
+///
+/// # Errors
+///
+/// Returns a JavaScript error for malformed wire values, invalid compact bytes or invalid
+/// offline query syntax.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = querySearchSegments)]
+pub fn query_search_segments(query: &str, segments: JsValue) -> Result<JsValue, JsValue> {
+    let segments = serde_wasm_bindgen::from_value::<Vec<Vec<u8>>>(segments).map_err(js_err)?;
+    let results = search_segments_inner(query, segments).map_err(js_err)?;
+    results.serialize(&js_serializer()).map_err(js_err)
+}
+
 /// Materializes a lib0 v1 CRDT update into canonical Markdown.
 ///
 /// This is the source-view and copy boundary: TypeScript may handle a Yjs update, but only
@@ -27,7 +262,7 @@ use wasm_bindgen::prelude::*;
 /// Returns a JavaScript error when the update is malformed or schema-incompatible.
 #[wasm_bindgen(js_name = "markdownFromUpdate")]
 pub fn markdown_from_update(update: &[u8]) -> Result<String, JsValue> {
-    markdown_from_update_inner(update).map_err(|error| JsValue::from_str(&error.to_string()))
+    markdown_from_update_inner(update).map_err(js_err)
 }
 
 /// Rust-native implementation of [`markdown_from_update`], exposed for non-WASM tests.
@@ -52,7 +287,7 @@ pub fn markdown_from_update_inner(update: &[u8]) -> Result<String, mb_crdt::Crdt
 /// shared CRDT schema.
 #[wasm_bindgen(js_name = "updateFromMarkdown")]
 pub fn update_from_markdown(markdown: &str) -> Result<Vec<u8>, JsValue> {
-    update_from_markdown_inner(markdown).map_err(|error| JsValue::from_str(&error.to_string()))
+    update_from_markdown_inner(markdown).map_err(js_err)
 }
 
 /// Rust-native implementation of [`update_from_markdown`], exposed for non-WASM tests.
@@ -213,10 +448,9 @@ pub fn extract(markdown: &str) -> Result<JsValue, JsValue> {
     // `undefined`, so `facts.title` would be absent rather than null and every TypeScript
     // signature would have to say `| undefined` as well. An explicit `null` is a narrower
     // contract and matches what `web/src/notes.ts` declares. Caught by the boundary test.
-    let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
     facts_of(markdown)
-        .serialize(&serializer)
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+        .serialize(&js_serializer())
+        .map_err(js_err)
 }
 
 /// The mapping behind [`extract`], separated from the JavaScript boundary.
@@ -288,4 +522,12 @@ pub fn facts_of(markdown: &str) -> Facts {
 #[must_use]
 pub fn schema_json() -> String {
     include_str!("../../mb-core/schema.json").to_string()
+}
+
+fn js_err(error: impl ToString) -> JsValue {
+    JsValue::from_str(&error.to_string())
+}
+
+fn js_serializer() -> serde_wasm_bindgen::Serializer {
+    serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true)
 }

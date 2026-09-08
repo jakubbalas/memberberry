@@ -29,6 +29,7 @@ fn seed(path: &std::path::Path) {
     index
         .upsert(&note("Source.md", "see [[Target]]\n"))
         .expect("upsert");
+    index.publish().expect("publish");
 }
 
 fn backlink_count(index: &mut Index, path: &str) -> usize {
@@ -44,6 +45,43 @@ fn an_index_survives_being_closed_and_reopened() {
     seed(&path);
     let mut index = Index::open(&path).expect("reopen");
     assert_eq!(backlink_count(&mut index, "Target.md"), 1);
+}
+
+#[test]
+fn full_text_search_survives_being_closed_and_reopened() {
+    let dir = TempDir::new("search-reopen");
+    let path = dir.path().join(".memberberry/index/graph.sqlite");
+    seed(&path);
+    let mut index = Index::open(&path).expect("reopen");
+    let access = viewer_everywhere("alice");
+    let reader = index.reader(&access, &user("alice")).expect("reader");
+    let paths = reader
+        .search("target", 10)
+        .expect("search")
+        .into_iter()
+        .map(|hit| hit.path)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        paths,
+        ["Source.md".to_string(), "Target.md".to_string()].into()
+    );
+}
+
+#[test]
+fn deleting_only_the_full_text_index_asks_for_every_note_again() {
+    let dir = TempDir::new("search-deleted");
+    let path = dir.path().join(".memberberry/index/graph.sqlite");
+    seed(&path);
+    std::fs::remove_dir_all(path.with_file_name("search-v1")).expect("delete search index");
+
+    let mut index = Index::open(&path).expect("reopen");
+    let plan = index
+        .reconcile(&[
+            ("Target.md".to_string(), Stamp::from_parts(9, 1)),
+            ("Source.md".to_string(), Stamp::from_parts(16, 1)),
+        ])
+        .expect("reconcile");
+    assert_eq!(plan.stale, ["Target.md", "Source.md"]);
 }
 
 #[test]

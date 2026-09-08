@@ -56,6 +56,215 @@ fn e5_repository_never_reveals_an_unreadable_note() {
     ));
 }
 
+/// E5: the Tantivy query itself carries the readable set, so no denied title, path, tag or
+/// body can become a hit (`SPEC.md` §14.1).
+#[test]
+fn e5_search_never_reveals_an_unreadable_note() {
+    let mut index = mb_index::Index::in_memory().expect("index");
+    for (ordinal, (path, markdown)) in [
+        ("Shared.md", "ordinary visible words\n"),
+        (
+            "Private/Salary.md",
+            "---\ntags: [secret-payroll]\n---\n\n# Compensation\n\nThe canary salary is private.\n",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        index
+            .upsert(&mb_index::NoteInput {
+                path: path.to_string(),
+                markdown: markdown.to_string(),
+                stamp: mb_index::Stamp::from_parts(markdown.len() as u64, ordinal as u128),
+            })
+            .expect("upsert");
+    }
+    index.publish().expect("publish");
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let reader = index.reader(&access, &alice).expect("reader");
+
+    for query in [
+        "canary",
+        "title:compensation",
+        "tag:secret-payroll",
+        "path:private",
+    ] {
+        assert!(
+            reader.search(query, 10).expect("search").is_empty(),
+            "{query} disclosed an unreadable note"
+        );
+    }
+}
+
+/// E18: an inbox row is a source note's name and text, so task queries are filtered at the
+/// index layer before any row reaches the pane.
+#[test]
+fn e18_task_inbox_never_reveals_an_unreadable_note() {
+    let mut index = mb_index::Index::in_memory().expect("index");
+    for (ordinal, (path, markdown)) in [
+        ("Shared.md", "- [ ] Visible task 📅 2026-09-10\n"),
+        (
+            "Private/Salary.md",
+            "- [ ] Canary compensation task 📅 2026-09-09 🔺\n",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        index
+            .upsert(&mb_index::NoteInput {
+                path: path.to_string(),
+                markdown: markdown.to_string(),
+                stamp: mb_index::Stamp::from_parts(markdown.len() as u64, ordinal as u128),
+            })
+            .expect("upsert");
+    }
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let reader = index.reader(&access, &alice).expect("reader");
+
+    let tasks = reader
+        .tasks(&mb_index::TaskQuery::default())
+        .expect("tasks");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(
+        tasks.first().map(|task| task.path.as_str()),
+        Some("Shared.md")
+    );
+    assert!(!tasks.iter().any(|task| task.text.contains("Canary")));
+}
+
+/// E20: calendar metadata starts from the authorized repository, including periodic notes.
+#[test]
+fn e20_calendar_metadata_never_names_an_unreadable_period() {
+    let dir = TempDir::new("leak-calendar");
+    dir.write("Daily/2026-09-08.md", "# Visible day\n");
+    dir.write("Daily/2026-09-09.md", "# Canary private day\n");
+    dir.write("Weekly/2026-W37.md", "# Visible week\n");
+    dir.write("Weekly/2026-W38.md", "# Canary private week\n");
+    dir.write("Monthly/2026-09.md", "# Visible month\n");
+    dir.write("Monthly/2026-10.md", "# Canary private month\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let denied = [
+        "Daily/2026-09-09.md",
+        "Weekly/2026-W38.md",
+        "Monthly/2026-10.md",
+    ];
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        denied
+            .iter()
+            .map(|path| mb_core::Rule {
+                path: mb_core::NotePath::parse(path).expect("path"),
+                grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+            })
+            .collect(),
+    )
+    .expect("policy");
+    let view = AuthorizedVault::new(&vault, &access, alice);
+    let readable = view.notes().expect("readable calendar source");
+
+    for path in denied {
+        assert!(
+            !readable.contains(&path.to_string()),
+            "calendar source leaked {path}"
+        );
+    }
+    assert_eq!(readable.len(), 3);
+}
+
+/// E6: compact client search is assembled from permitted zones, never filtered after bytes
+/// have crossed the boundary. A denied title must therefore be absent from the payload itself.
+#[test]
+fn e6_client_search_segments_never_contain_an_unreadable_note() {
+    let dir = TempDir::new("leak-client-search");
+    dir.write("Shared.md", "# Visible Canary\n\nordinary text\n");
+    dir.write(
+        "Private/Salary.md",
+        "# Forbidden Canary\n\nThe private salary is classified.\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    registry
+        .maintain_zones(&vault, &access)
+        .expect("publishing zones");
+    let index = registry.get(&vault).expect("index");
+    let mut index = index.lock().expect("index lock");
+    let payloads = index
+        .reader(&access, &alice)
+        .expect("reader")
+        .client_segments();
+
+    let bytes: Vec<u8> = payloads
+        .iter()
+        .flat_map(|segment| segment.bytes.iter().copied())
+        .collect();
+    assert!(
+        bytes
+            .windows(b"Visible Canary".len())
+            .any(|window| window == b"Visible Canary")
+    );
+    assert!(
+        !bytes
+            .windows(b"Forbidden Canary".len())
+            .any(|window| window == b"Forbidden Canary")
+    );
+    assert!(
+        !bytes
+            .windows(b"classified".len())
+            .any(|window| window == b"classified")
+    );
+}
+
 /// E1: an admin without an ACL membership has no implicit content access.
 #[test]
 fn e1_server_admin_is_not_a_vault_reader() {
@@ -633,6 +842,71 @@ fn e8_backlinks_name_no_note_the_viewer_cannot_read() {
     assert_eq!(
         reader.contains("Private/Salary.md").expect("contains"),
         reader.contains("Private/Never.md").expect("contains")
+    );
+}
+
+/// E8: an unlinked mention discloses a *sentence*, which is more than a backlink discloses.
+///
+/// A backlink row leaks the linking note's title and the block a link sits in. A mention has
+/// no link to have been found by, so what puts it on screen is only that a private note
+/// happens to use a word — and the row then quotes that note's prose. The filter is the same
+/// readable set; this test exists because the consequence of losing it is larger, and because
+/// mentions reach Tantivy rather than SQLite and so are a second code path to the same data.
+#[test]
+fn e8_unlinked_mentions_quote_no_note_the_viewer_cannot_read() {
+    let dir = TempDir::new("leak-mentions");
+    dir.write("Shared.md", "# Shared\n\nBody.\n");
+    dir.write(
+        "Private/Salary.md",
+        "# Salary Review\n\nThe canary Shared budget is confidential.\n",
+    );
+    dir.write("Open.md", "# Open\n\nThe Shared plan is agreed.\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let mut index = index.lock().expect("index lock");
+    let alice = Username::parse("alice").expect("username");
+    let reader = index
+        .reader(access.policy(), &alice)
+        .expect("a reader for alice");
+
+    let mentions = reader
+        .unlinked_mentions("Shared.md", 50)
+        .expect("unlinked mentions");
+    let paths: Vec<&str> = mentions.iter().map(|group| group.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["Open.md"],
+        "the private note appeared in the mentions of a note alice may read"
+    );
+    // why: asserted on the whole rendered value rather than on the paths. The paths above
+    // would still be right if a private note's *sentence* were attached to a readable
+    // group, which is the shape of leak this route is uniquely capable of.
+    let rendered = format!("{mentions:?}");
+    assert!(
+        !rendered.contains("canary"),
+        "a private note's text reached a mention row: {rendered}"
+    );
+
+    // An unreadable target has no mentions, because for alice it does not exist.
+    assert!(
+        reader
+            .unlinked_mentions("Private/Salary.md", 50)
+            .expect("unlinked mentions")
+            .is_empty()
     );
 }
 

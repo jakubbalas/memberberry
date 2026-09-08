@@ -134,6 +134,39 @@ fn a_config_round_trips_through_toml() {
 }
 
 #[test]
+fn calendar_note_config_has_safe_defaults_and_independent_overrides() {
+    let dir = TempDir::new("calendar-config");
+    let vault = vault_at(&dir);
+    assert_eq!(
+        vault.daily_note_config(),
+        ("Daily".into(), "%Y-%m-%d.md".into())
+    );
+    assert_eq!(
+        vault.weekly_note_config(),
+        ("Weekly".into(), "%G-W%V.md".into())
+    );
+    assert_eq!(
+        vault.monthly_note_config(),
+        ("Monthly".into(), "%Y-%m.md".into())
+    );
+
+    dir.write(
+        ".memberberry/config.toml",
+        "weekly_folder = \"Journal/Weeks\"\nweekly_note_format = \"%G/%V.md\"\n\
+         weekly_note_template = \"Periods/Week.md\"\nmonthly_folder = \"../Outside\"\n",
+    );
+    assert_eq!(
+        vault.weekly_note_config(),
+        ("Journal/Weeks".into(), "%G/%V.md".into())
+    );
+    assert_eq!(vault.weekly_note_template(), "Periods/Week.md");
+    assert_eq!(
+        vault.monthly_note_config(),
+        ("Monthly".into(), "%Y-%m.md".into())
+    );
+}
+
+#[test]
 fn a_duplicate_slug_is_refused() {
     let dir = TempDir::new("dupe");
     let path = dir.path().to_string_lossy().into_owned();

@@ -69,6 +69,21 @@ const SCRATCH_PROJECTS: readonly string[] = ["desktop", "mobile"];
 
 const SCRATCH_BODY = "# Scratch\n\nA note this test may edit.\n\n- [ ] Ship the workspace shell \u{1F4C5} 2026-09-30 \u{23EB}\n";
 
+function currentPeriodicPaths(now = new Date()): { readonly weekly: string; readonly monthly: string } {
+  const thursday = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  const weekday = thursday.getUTCDay() || 7;
+  thursday.setUTCDate(thursday.getUTCDate() + 4 - weekday);
+  const year = thursday.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(year, 0, 1));
+  const week = Math.ceil((((thursday.getTime() - yearStart.getTime()) / 86_400_000) + 1) / 7);
+  return {
+    weekly: `Weekly/${year}-W${String(week).padStart(2, "0")}.md`,
+    monthly: `Monthly/${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}.md`,
+  };
+}
+
+export const CURRENT_PERIODIC_NOTES = currentPeriodicPaths();
+
 /**
  * Sections for the outline pane (§9.5), long enough that the note actually scrolls.
  *
@@ -119,6 +134,8 @@ function scratchBody(purpose: string, project: string): string {
 /** Notes the suite can rely on being present. Kept small and canonical on purpose. */
 export const E2E_NOTES: Readonly<Record<string, string>> = {
   "Welcome.md": "# Welcome\n\nA note that already exists, for the reader to open.\n",
+  [CURRENT_PERIODIC_NOTES.weekly]: "# Current week\n\nA readable weekly note.\n",
+  [CURRENT_PERIODIC_NOTES.monthly]: "# Current month\n\nA readable monthly note.\n",
   // Read-only: nothing in the suite may edit this one, which is what lets a test assert on
   // the metadata it was provisioned with.
   "Projects/Roadmap.md": "# Roadmap\n\n- [ ] Ship the workspace shell \u{1F4C5} 2026-09-30 \u{23EB}\n",
@@ -128,6 +145,18 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
   "Links/Planning.md":
     "# Quarter planning\n\nWe should ship [[Roadmap]] this quarter. ^commitment\n",
   "Links/Notes.md": "# Loose notes\n\nSee also [[Projects/Roadmap#Goals]].\n",
+  // Unlinked-mention fixtures (§9.5). Read-only, in their own folder and naming only each
+  // other, so the counts in `mentions.spec.ts` are exactly these three notes. `Talk.md` names
+  // the target twice and links to it never; `Linked.md` does both, which is what pins the
+  // rule that a note belongs to one list or the other. "Orchard" appears nowhere else in the
+  // vault, so no later fixture can quietly become a fourth row here.
+  "Mentions/Orchard.md":
+    "# Orchard release\n\nThe release other notes talk about without linking to it.\n",
+  "Mentions/Talk.md":
+    "# Mentions talk\n\nWe agreed the Orchard release ships Friday.\n\n"
+    + "The Orchard release still needs a date.\n",
+  "Mentions/Linked.md":
+    "# Mentions linked\n\nSee [[Mentions/Orchard]] about the Orchard release.\n",
   // Transclusion fixtures (§9.2). Read-only, and deliberately self-contained: they embed and
   // link only each other, so the backlinks assertions above keep counting the two sources
   // they were written for. `Host.md` carries one of every state the panel can render.
@@ -169,6 +198,14 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
   "Tags/Alpha.md": "# Alpha\n\n#Project/memberberry/spec\n",
   "Tags/Beta.md": "# Beta\n\n#project/memberberry\n",
   "Tags/Gamma.md": "# Gamma\n\n#reading\n",
+  // Task-inbox fixtures (§10.3). Read-only, in their own folder, with absolute dates that
+  // stay in the same relative groups for years: one always-overdue, one always-later, one
+  // undated. "Today" and "this week" are covered by unit tests with an injected calendar.
+  "Inbox/Overdue.md":
+    "# Overdue inbox\n\n- [ ] Pay the invoice \u{1F4C5} 2020-01-01 \u{23EB} ^invoice\n",
+  "Inbox/Later.md":
+    "---\ntags: [work/inbox]\n---\n\n# Later inbox\n\n- [ ] Plan the greenhouse \u{1F4C5} 2099-06-01\n",
+  "Inbox/Open.md": "# Open inbox\n\n- [ ] Capture the idea\n- [x] Already done \u{2705} 2026-01-01\n",
   // Three adjacent tasks, so a test can check that neighbouring tap targets do not overlap.
   "Projects/Tasks.md": "# Tasks\n\n- [ ] First task\n- [ ] Second task\n- [x] Third task \u{2705} 2026-08-28\n",
   ...Object.fromEntries(
@@ -197,21 +234,22 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
  * note URL, so a vault with no notes cannot load it and cannot reach the palette — which
  * makes the vault index page the only way in, and the only thing that can prove it.
  *
- * One per project rather than one shared: `fullyParallel` runs both viewports against one
- * server, and "this vault has no notes" is not a claim two tests can make about one vault.
+ * One per test and project rather than one shared: `fullyParallel` runs every test against
+ * one server, and "this vault has no notes" is not a claim two tests can make about one vault.
  */
-export const E2E_EMPTY_SLUGS: Readonly<Record<string, string>> = {
-  desktop: "empty-desktop",
-  mobile: "empty-mobile",
-};
+export const E2E_EMPTY_PURPOSES: readonly string[] = ["registration", "first-note", "name-clash"];
 
-/** The slug of the empty vault belonging to this project. */
-export function emptyVaultSlug(project: string): string {
-  const slug = E2E_EMPTY_SLUGS[project];
-  if (slug === undefined) {
-    throw new Error(`no empty vault for project \`${project}\` — add one to E2E_EMPTY_SLUGS`);
+/** The slug of the empty vault belonging to this test and project. */
+export function emptyVaultSlug(project: string, purpose: string): string {
+  if (!SCRATCH_PROJECTS.includes(project) || !E2E_EMPTY_PURPOSES.includes(purpose)) {
+    throw new Error(`no empty vault for project \`${project}\` and purpose \`${purpose}\``);
   }
-  return slug;
+  return `empty-${project}-${purpose}`;
+}
+
+/** The display name of the empty vault belonging to this test and project. */
+export function emptyVaultName(project: string, purpose: string): string {
+  return `Empty ${project} ${purpose}`;
 }
 
 /** Everything the run creates, under `target/` so `cargo clean` and `.gitignore` cover it. */
@@ -226,8 +264,8 @@ export const E2E_ROOT: string = join(REPO, "target", "e2e");
 export const E2E_VAULT: string = join(E2E_ROOT, "vault");
 
 /** Where an empty vault's files go. Created, but deliberately left with nothing in it. */
-export function emptyVaultRoot(project: string): string {
-  return join(E2E_ROOT, emptyVaultSlug(project));
+export function emptyVaultRoot(project: string, purpose: string): string {
+  return join(E2E_ROOT, emptyVaultSlug(project, purpose));
 }
 
 export const E2E_DATA_DIR: string = join(E2E_ROOT, "data");

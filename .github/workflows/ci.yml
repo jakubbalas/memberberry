@@ -37,10 +37,10 @@ jobs:
       - name: Coverage gate
         run: cargo llvm-cov --workspace --json --quiet | python3 scripts/coverage-gate.py
 
-      # mb-core compiles to wasm32 on every commit so the browser build can never
+      # Both pure browser crates compile to wasm32 on every commit so the web build can never
       # silently break on an accidental std::fs or SystemTime (AGENTS.md §4.2).
       - name: wasm32 build
-        run: cargo check -p mb-core --target wasm32-unknown-unknown
+        run: cargo check -p mb-core -p mb-search --target wasm32-unknown-unknown
 
       # SPEC.md §20.2 promises theme authors that the token names are a stable public API.
       # This is what makes that a promise rather than a hope: it fails on an undeclared

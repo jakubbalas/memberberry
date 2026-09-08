@@ -56,6 +56,11 @@ pub struct Extracted {
     /// Destinations of images and links into `media/`, backing `media_refs` (E11).
     pub media: Vec<String>,
     pub headings: Vec<(u8, String)>,
+    /// Visible text of each top-level block, in document order.
+    ///
+    /// Search indexes blocks rather than byte spans so results can show context without
+    /// reparsing Markdown or maintaining a second parser in TypeScript (`SPEC.md` §14.3).
+    pub text_blocks: Vec<String>,
     pub word_count: usize,
 }
 
@@ -71,6 +76,7 @@ pub fn extract(doc: &Document) -> Extracted {
     {
         push_unique(&mut out.emoji, name.to_string());
     }
+    out.text_blocks = doc.blocks.iter().map(block_text).collect();
     walk_blocks(&doc.blocks, &mut out);
     out
 }

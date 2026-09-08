@@ -10,7 +10,7 @@
  * a stale panel is worse than a second request: it says a link exists that has been deleted.
  */
 
-import { type BacklinkSource, fetchBacklinks } from "./backlinks.js";
+import { type BacklinkSource, type MentionSource, fetchBacklinks } from "./backlinks.js";
 
 export interface BacklinkViewOptions {
   readonly vault: string;
@@ -21,6 +21,7 @@ export interface BacklinkViewOptions {
 export class BacklinkView {
   #note: string | undefined = $state(undefined);
   #sources: readonly BacklinkSource[] = $state([]);
+  #mentions: readonly MentionSource[] = $state([]);
   #state: "idle" | "loading" | "ready" | "unavailable" = $state("idle");
   /** Guards against an out-of-order response; see `show`. */
   #request = 0;
@@ -41,11 +42,22 @@ export class BacklinkView {
     return this.#sources;
   }
 
+  /** Notes naming this one without linking to it (§9.5). */
+  get mentions(): readonly MentionSource[] {
+    return this.#mentions;
+  }
+
   get loading(): boolean {
     return this.#state === "loading";
   }
 
-  /** Whether the list has arrived and is empty — which is a real answer, not a failure. */
+  /**
+   * Whether the list of *links* has arrived and is empty — a real answer, not a failure.
+   *
+   * Deliberately not "and there are no mentions either". The two sections are separate
+   * statements: "nothing links here yet" stays true and worth saying when six notes mention
+   * the note without linking to it, which is precisely when a reader wants to know.
+   */
   get empty(): boolean {
     return this.#state === "ready" && this.#sources.length === 0;
   }
@@ -71,6 +83,7 @@ export class BacklinkView {
     if (note === this.#note && this.#state !== "idle") return;
     this.#note = note;
     this.#sources = [];
+    this.#mentions = [];
     if (note === undefined) {
       this.#state = "ready";
       return;
@@ -89,6 +102,7 @@ export class BacklinkView {
         return;
       }
       this.#sources = response.sources;
+      this.#mentions = response.mentions;
       this.#state = "ready";
     });
   }

@@ -10,10 +10,11 @@
  * real IndexedDB by accident and no component holds a reference it cannot replace.
  */
 
-import { openOfflineStore, type Factory } from "./db.js";
+import { openOfflineStore, type Factory, type OfflineStore } from "./db.js";
 import { createReplica, dropBodyWith, type Replica } from "./replica.js";
 
 let opening: Promise<Replica | undefined> | undefined;
+let localStore: OfflineStore | undefined;
 
 /**
  * The replica, or `undefined` where there is nowhere to keep one.
@@ -31,13 +32,22 @@ export function localReplica(): Promise<Replica | undefined> {
 /** Replaces the page's replica. For tests, and for nothing else. */
 export function setLocalReplica(replica: Promise<Replica | undefined> | undefined): void {
   opening = replica;
+  localStore = undefined;
+}
+
+/** The page's IndexedDB store, for the compact-index owner (§14.2). */
+export async function localOfflineStore(): Promise<OfflineStore | undefined> {
+  await localReplica();
+  return localStore;
 }
 
 async function open(available: Factory | undefined): Promise<Replica | undefined> {
   if (available === undefined) return undefined;
   try {
+    const store = await openOfflineStore(available);
+    localStore = store;
     return createReplica({
-      store: await openOfflineStore(available),
+      store,
       dropBody: dropBodyWith(available),
     });
   } catch {

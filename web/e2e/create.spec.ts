@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { E2E_VAULT, emptyVaultRoot, emptyVaultSlug } from "./environment.js";
+import { E2E_VAULT, emptyVaultName, emptyVaultRoot, emptyVaultSlug } from "./environment.js";
 import { expect, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
@@ -28,12 +28,13 @@ test.describe("first run, on a vault with no notes", () => {
     // The original defect. `serve.ts` registers these vaults with no `access.toml` of their
     // own, so if the CLI does not write one the vault is invisible here and this fails —
     // which is exactly how it reached a user.
-    const slug = emptyVaultSlug(info.project.name);
+    const purpose = "registration";
+    const slug = emptyVaultSlug(info.project.name, purpose);
     await signIn(page);
 
-    await expect(page.getByRole("link", { name: `Empty ${info.project.name}` })).toBeVisible();
+    await expect(page.getByRole("link", { name: emptyVaultName(info.project.name, purpose) })).toBeVisible();
     // And the policy it wrote is a real file in the vault, readable in a text editor (C2).
-    const access = readFileSync(join(emptyVaultRoot(info.project.name), "access.toml"), "utf8");
+    const access = readFileSync(join(emptyVaultRoot(info.project.name, purpose), "access.toml"), "utf8");
     expect(access).toContain("alice");
     expect(access).toContain("owner");
     await page.goto(`/v/${slug}`);
@@ -43,7 +44,8 @@ test.describe("first run, on a vault with no notes", () => {
   test("an empty vault offers a way in, and creating the first note opens the editor", async ({
     page,
   }, info) => {
-    const slug = emptyVaultSlug(info.project.name);
+    const purpose = "first-note";
+    const slug = emptyVaultSlug(info.project.name, purpose);
     const name = "First note";
     await signIn(page);
     await page.goto(`/v/${slug}`);
@@ -62,17 +64,15 @@ test.describe("first run, on a vault with no notes", () => {
     await expect(page.locator(EDITOR).getByRole("heading", { name })).toBeVisible();
 
     // C2: it is a Markdown file a text editor would open, with no server involved.
-    const onDisk = readFileSync(join(emptyVaultRoot(info.project.name), `${name}.md`), "utf8");
+    const onDisk = readFileSync(join(emptyVaultRoot(info.project.name, purpose), `${name}.md`), "utf8");
     expect(onDisk).toBe(`# ${name}\n`);
   });
 
   test("a name that is already taken comes back on the form rather than a dead end", async ({
     page,
   }, info) => {
-    // Makes its own clash rather than depending on the test above: `fullyParallel` gives no
-    // ordering within a file, and a test that quietly passed against an empty vault when the
-    // order changed would be worse than no test.
-    const slug = emptyVaultSlug(info.project.name);
+    // Makes its own vault and clash rather than depending on another test's mutation.
+    const slug = emptyVaultSlug(info.project.name, "name-clash");
     const name = `Taken ${info.project.name}`;
     await signIn(page);
     await page.goto(`/v/${slug}`);

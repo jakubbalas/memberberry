@@ -108,6 +108,108 @@ impl Vault {
         &self.notes_root
     }
 
+    /// The vault-relative folder containing templates.
+    ///
+    /// A malformed or unsafe setting falls back to `Templates`: configuration must never
+    /// widen a read path beyond the notes root.
+    #[must_use]
+    pub fn template_folder(&self) -> String {
+        let configured = self.config_string("template_folder");
+        configured
+            .filter(|folder| {
+                !folder.is_empty()
+                    && folder.split('/').all(|part| {
+                        !part.is_empty() && part != "." && part != ".." && !part.starts_with('.')
+                    })
+            })
+            .unwrap_or_else(|| "Templates".to_string())
+    }
+
+    /// The folder and filename pattern used for daily notes (SPEC.md §15.1).
+    #[must_use]
+    pub fn daily_note_config(&self) -> (String, String) {
+        self.periodic_note_config("daily", "Daily", "%Y-%m-%d.md")
+    }
+
+    /// The folder and filename pattern used for weekly notes (SPEC.md §15.1).
+    #[must_use]
+    pub fn weekly_note_config(&self) -> (String, String) {
+        self.periodic_note_config("weekly", "Weekly", "%G-W%V.md")
+    }
+
+    /// The folder and filename pattern used for monthly notes (SPEC.md §15.1).
+    #[must_use]
+    pub fn monthly_note_config(&self) -> (String, String) {
+        self.periodic_note_config("monthly", "Monthly", "%Y-%m.md")
+    }
+
+    fn periodic_note_config(
+        &self,
+        name: &str,
+        default_folder: &str,
+        default_format: &str,
+    ) -> (String, String) {
+        let Some(date) = mb_core::task::Date::new(2000, 1, 1) else {
+            return (default_folder.to_string(), default_format.to_string());
+        };
+        let period = match name {
+            "weekly" => mb_core::daily::Period::Weekly,
+            "monthly" => mb_core::daily::Period::Monthly,
+            _ => mb_core::daily::Period::Daily,
+        };
+        let folder = self
+            .config_string(&format!("{name}_folder"))
+            .filter(|folder| {
+                mb_core::daily::periodic_path(period, &format!("{folder}/"), default_format, date)
+                    .is_some()
+            })
+            .unwrap_or_else(|| default_folder.to_string());
+        let format = self
+            .config_string(&format!("{name}_note_format"))
+            .filter(|format| {
+                mb_core::daily::periodic_path(period, &format!("{folder}/"), format, date).is_some()
+            })
+            .unwrap_or_else(|| default_format.to_string());
+        (folder, format)
+    }
+
+    /// The conventional daily template, relative to the configured template folder.
+    #[must_use]
+    pub fn daily_note_template(&self) -> String {
+        self.periodic_note_template("daily", "Daily.md")
+    }
+
+    /// The conventional weekly template, relative to the configured template folder.
+    #[must_use]
+    pub fn weekly_note_template(&self) -> String {
+        self.periodic_note_template("weekly", "Weekly.md")
+    }
+
+    /// The conventional monthly template, relative to the configured template folder.
+    #[must_use]
+    pub fn monthly_note_template(&self) -> String {
+        self.periodic_note_template("monthly", "Monthly.md")
+    }
+
+    fn periodic_note_template(&self, name: &str, default: &str) -> String {
+        self.config_string(&format!("{name}_note_template"))
+            .filter(|name| {
+                !name.is_empty()
+                    && name.ends_with(".md")
+                    && name.split('/').all(|part| {
+                        !part.is_empty() && part != "." && part != ".." && !part.starts_with('.')
+                    })
+            })
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    fn config_string(&self, key: &str) -> Option<String> {
+        std::fs::read_to_string(self.root.join(".memberberry/config.toml"))
+            .ok()
+            .and_then(|source| source.parse::<toml::Table>().ok())
+            .and_then(|table| table.get(key)?.as_str().map(str::to_owned))
+    }
+
     /// Resolves a request-supplied relative path to a real file inside the vault.
     ///
     /// This is the containment boundary — the only thing between a URL and the rest of the

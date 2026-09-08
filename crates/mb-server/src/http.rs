@@ -33,7 +33,7 @@ use crate::indexing::IndexRegistry;
 use crate::rename::{Rename, RenameError};
 use crate::repository::AuthorizedVault;
 use crate::sync::{Announcement, ClientFrame, ConnectionId, ServerFrame, SyncRegistry, Wire};
-use crate::titles::{NoteSummary, TitleCache};
+use crate::titles::{NoteSummary, NoteTaskSummary, TitleCache};
 use crate::watch::{Changes, WatchSignal};
 use crate::workspace::{DeviceId, WorkspaceStore};
 use crate::{AccessFile, Error, Slug, Vault};
@@ -131,7 +131,20 @@ impl AppState {
     ///
     /// Blocking: callers must keep it off the async runtime.
     pub fn maintain_index(&self, changed: &Changes) -> Vec<String> {
-        self.indexes.maintain(self.vaults.values(), changed)
+        let mut errors = self.indexes.maintain(self.vaults.values(), changed);
+        for vault in self.vaults.values() {
+            let Some(access) = self.access_for(vault.slug()) else {
+                errors.push(format!(
+                    "vault `{}`: no live policy is available; ACL zones were not updated",
+                    vault.slug()
+                ));
+                continue;
+            };
+            if let Err(error) = self.indexes.maintain_zones(vault, &access) {
+                errors.push(error);
+            }
+        }
+        errors
     }
 
     /// Every directory whose contents this server must notice changing.
@@ -321,6 +334,22 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/vaults/{slug}/graph", get(vault_graph))
         .route("/api/v1/vaults/{slug}/graph/{*note}", get(note_graph))
+        .route("/api/v1/vaults/{slug}/search", get(search_notes))
+        .route("/api/v1/vaults/{slug}/templates", get(template_index))
+        .route("/api/v1/vaults/{slug}/daily", get(daily_index))
+        .route(
+            "/api/v1/vaults/{slug}/templates/{*template}",
+            get(template_content),
+        )
+        .route("/api/v1/vaults/{slug}/tasks", get(vault_tasks))
+        .route(
+            "/api/v1/vaults/{slug}/search/segments",
+            get(search_segments),
+        )
+        .route(
+            "/api/v1/vaults/{slug}/search/segments/{zone_id}",
+            get(search_segment),
+        )
         .route("/api/v1/vaults/{slug}/tags", get(tag_index))
         .route("/api/v1/vaults/{slug}/tags/{*prefix}", get(tagged_notes))
         .route(
@@ -748,7 +777,7 @@ async fn create_note_from_form(
     Form(form): Form<NewNoteForm>,
 ) -> Response {
     let path = note_path_for(&form.name);
-    match create_in_vault(&state, &slug, &path, &headers).await {
+    match create_in_vault(&state, &slug, &path, None, &headers).await {
         Ok(created) => (
             StatusCode::SEE_OTHER,
             [(
@@ -922,6 +951,33 @@ async fn note_index(
         view.resolve(relative).ok()
     });
 
+    let mut notes = notes;
+    if let Some(index) = state.indexes.get(vault)
+        && let Some(user) = state.vault_user(vault.slug(), &headers)
+        && let Ok(mut index) = index.lock()
+        && let Ok(reader) = index.reader(&access, &user)
+        && let Ok(tasks) = reader.tasks(&mb_index::TaskQuery::default())
+    {
+        let mut by_path: HashMap<String, Vec<NoteTaskSummary>> = HashMap::new();
+        for task in tasks {
+            by_path.entry(task.path).or_default().push(NoteTaskSummary {
+                block_id: task.block_id,
+                text: task.text,
+                due: task.due,
+                scheduled: task.scheduled,
+                start: task.start,
+                created: task.created,
+                priority: task.priority.map(priority_label).map(str::to_string),
+                ordinal: task.ordinal,
+            });
+        }
+        for note in &mut notes {
+            if let Some(tasks) = by_path.remove(&note.path) {
+                note.tasks = tasks;
+            }
+        }
+    }
+
     let body = match serde_json::to_string(&NoteIndexResponse { notes, truncated }) {
         Ok(body) => body,
         Err(error) => return server_error(&Error::Config(error.to_string())),
@@ -939,11 +995,242 @@ async fn note_index(
 }
 
 #[derive(serde::Serialize)]
+struct TemplateSummary {
+    path: String,
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+struct TemplateIndexResponse {
+    folder: String,
+    templates: Vec<TemplateSummary>,
+}
+
+#[derive(serde::Serialize)]
+struct DailyIndexResponse {
+    folder: String,
+    format: String,
+    notes: Vec<DailyNoteSummary>,
+    template: Option<String>,
+    weekly: PeriodicIndexResponse,
+    monthly: PeriodicIndexResponse,
+}
+
+#[derive(serde::Serialize)]
+struct PeriodicIndexResponse {
+    folder: String,
+    format: String,
+    notes: Vec<DailyNoteSummary>,
+    template: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct DailyNoteSummary {
+    date: String,
+    path: String,
+}
+
+/// GET /api/v1/vaults/{slug}/daily — readable daily notes for the calendar.
+///
+/// The note list comes from AuthorizedVault, so the calendar cannot reveal a date whose note
+/// is private. A missing daily note is simply absent; creation remains the ordinary note
+/// creation operation and therefore uses the same write permission boundary.
+async fn daily_index(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    if !view.has_any_access().unwrap_or(false) {
+        return workspace_denied();
+    }
+    let readable = match view.notes() {
+        Ok(paths) => paths,
+        Err(_) => return workspace_denied(),
+    };
+    let (folder, format) = vault.daily_note_config();
+    let daily = periodic_index(
+        &readable,
+        mb_core::daily::Period::Daily,
+        folder,
+        format,
+        vault,
+        vault.daily_note_template(),
+    );
+    let (weekly_folder, weekly_format) = vault.weekly_note_config();
+    let weekly = periodic_index(
+        &readable,
+        mb_core::daily::Period::Weekly,
+        weekly_folder,
+        weekly_format,
+        vault,
+        vault.weekly_note_template(),
+    );
+    let (monthly_folder, monthly_format) = vault.monthly_note_config();
+    let monthly = periodic_index(
+        &readable,
+        mb_core::daily::Period::Monthly,
+        monthly_folder,
+        monthly_format,
+        vault,
+        vault.monthly_note_template(),
+    );
+    let body = match serde_json::to_string(&DailyIndexResponse {
+        folder: daily.folder,
+        format: daily.format,
+        notes: daily.notes,
+        template: daily.template,
+        weekly,
+        monthly,
+    }) {
+        Ok(body) => body,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+fn periodic_index(
+    readable: &[String],
+    period: mb_core::daily::Period,
+    folder: String,
+    format: String,
+    vault: &Vault,
+    template_name: String,
+) -> PeriodicIndexResponse {
+    let prefix = format!("{folder}/");
+    let notes = readable
+        .iter()
+        .filter_map(|path| {
+            let date = mb_core::daily::periodic_date_from_path(period, &prefix, &format, path)?;
+            Some(DailyNoteSummary {
+                date: date.to_string(),
+                path: path.clone(),
+            })
+        })
+        .collect();
+    let template_path = format!("{}/{}", vault.template_folder(), template_name);
+    PeriodicIndexResponse {
+        folder,
+        format,
+        notes,
+        template: readable.contains(&template_path).then_some(template_path),
+    }
+}
+
+/// `GET /api/v1/vaults/{slug}/templates` — readable Markdown templates.
+///
+/// Templates are ordinary notes under the configured folder. Listing through the authorized
+/// repository keeps a template from becoming a side channel for an unreadable note.
+async fn template_index(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    if !view.has_any_access().unwrap_or(false) {
+        return workspace_denied();
+    }
+    let folder = vault.template_folder();
+    let prefix = format!("{folder}/");
+    let templates = match view.notes() {
+        Ok(notes) => notes
+            .into_iter()
+            .filter(|path| path.starts_with(&prefix) && path.ends_with(".md"))
+            .map(|path| TemplateSummary {
+                name: path
+                    .trim_start_matches(&prefix)
+                    .trim_end_matches(".md")
+                    .to_string(),
+                path,
+            })
+            .collect(),
+        Err(_) => return workspace_denied(),
+    };
+    let body = match serde_json::to_string(&TemplateIndexResponse { folder, templates }) {
+        Ok(body) => body,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// `GET /api/v1/vaults/{slug}/templates/{template}` — one readable template body.
+async fn template_content(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, template)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let path = format!("{}/{}", vault.template_folder(), template);
+    let Ok(resolved) = view.resolve(&path) else {
+        return workspace_denied();
+    };
+    if !path.ends_with(".md") {
+        return workspace_denied();
+    }
+    match std::fs::read_to_string(resolved) {
+        Ok(body) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(_) => workspace_denied(),
+    }
+}
+
+#[derive(serde::Serialize)]
 struct BacklinksResponse {
     /// The canonical identity the backlinks were resolved for, so the client can tell that
     /// its request for `[[Roadmap]]` landed on `Projects/Roadmap.md`.
     note: String,
     sources: Vec<BacklinkSource>,
+    /// Notes whose text names this one without linking to it (§9.5). Never overlaps
+    /// `sources`: a note that links here is a backlink, and listing it in both would make
+    /// the panel report the same relationship twice.
+    mentions: Vec<MentionSource>,
 }
 
 #[derive(serde::Serialize)]
@@ -952,6 +1239,20 @@ struct BacklinkSource {
     title: Option<String>,
     links: Vec<BacklinkEntry>,
 }
+
+#[derive(serde::Serialize)]
+struct MentionSource {
+    path: String,
+    title: Option<String>,
+    contexts: Vec<String>,
+}
+
+/// How many mentioning *blocks* one response may carry.
+///
+/// A cap rather than a page, because the panel is a sidebar and not a result list: a note
+/// called `Notes` matches a large fraction of a vault, and the honest answer to that is a
+/// bounded list plus §14.3's search pane, not scrolling. §9.5 records the limit.
+const MAX_MENTIONS: usize = 50;
 
 #[derive(serde::Serialize)]
 struct BacklinkEntry {
@@ -964,13 +1265,18 @@ struct BacklinkEntry {
     target_raw: String,
 }
 
-/// `GET /api/v1/vaults/{slug}/backlinks/{note}` — inbound links to one note (§9.5).
+/// `GET /api/v1/vaults/{slug}/backlinks/{note}` — inbound links and unlinked mentions (§9.5).
 ///
 /// Enforcement point **E8**. Three filters, and it is worth knowing which one does what:
 /// `authorized_vault` establishes that this user may read the *target* at all (E1), the
 /// index [`Reader`](mb_index::Reader) is constructed from the live ACL so the *sources* are
 /// filtered server-side (E5), and link resolution runs against readable candidates only, so
 /// an edge into a note this user cannot read does not exist (E9).
+///
+/// Mentions come from the same reader and are therefore under the same three filters, with
+/// the readable set entering the Tantivy query as a required clause rather than filtering
+/// its results (§14.1). They leak more than a backlink would if they were unfiltered: a
+/// mention carries a *sentence* from the mentioning note, not just its title.
 ///
 /// A target the user cannot read answers exactly as a missing one does — the empty-handed
 /// `workspace_denied`, not an empty list, because an empty list confirms the note exists.
@@ -998,11 +1304,13 @@ async fn note_backlinks(
     let Ok(mut index) = index.lock() else {
         return server_error(&Error::Config("the index lock is poisoned".to_string()));
     };
-    let sources = match index
-        .reader(&access, &user)
-        .and_then(|reader| reader.backlinks(&identity))
-    {
-        Ok(groups) => groups,
+    let found = index.reader(&access, &user).and_then(|reader| {
+        let sources = reader.backlinks(&identity)?;
+        let mentions = reader.unlinked_mentions(&identity, MAX_MENTIONS)?;
+        Ok((sources, mentions))
+    });
+    let (sources, mentions) = match found {
+        Ok(found) => found,
         Err(error) => return server_error(&Error::Config(error.to_string())),
     };
 
@@ -1014,6 +1322,14 @@ async fn note_backlinks(
                 path: group.path,
                 title: group.title,
                 links: group.links.into_iter().map(entry_of).collect(),
+            })
+            .collect(),
+        mentions: mentions
+            .into_iter()
+            .map(|group| MentionSource {
+                path: group.path,
+                title: group.title,
+                contexts: group.contexts,
             })
             .collect(),
     };
@@ -1401,6 +1717,8 @@ async fn rename(
 struct CreateNoteRequest {
     /// Vault-relative and ending in `.md`. The client turns a typed name into one.
     path: String,
+    #[serde(default)]
+    content: Option<String>,
 }
 
 /// `POST /api/v1/vaults/{slug}/notes` — creates a note and says where it landed (§6.10, E17).
@@ -1415,7 +1733,15 @@ async fn create_note(
     headers: HeaderMap,
     Json(request): Json<CreateNoteRequest>,
 ) -> Response {
-    match create_in_vault(&state, &slug, &request.path, &headers).await {
+    match create_in_vault(
+        &state,
+        &slug,
+        &request.path,
+        request.content.as_deref(),
+        &headers,
+    )
+    .await
+    {
         Ok(created) => json_no_store(&CreateNoteResponse { path: created.path }),
         Err(CreateError::Denied) => workspace_denied(),
         // Both of these name a string the caller sent us, so echoing it reveals nothing they
@@ -1438,6 +1764,7 @@ async fn create_in_vault(
     state: &Arc<AppState>,
     slug: &str,
     path: &str,
+    content: Option<&str>,
     headers: &HeaderMap,
 ) -> Result<crate::create::Created, CreateError> {
     let Some(vault) = state.vault(slug) else {
@@ -1455,13 +1782,17 @@ async fn create_in_vault(
     let worker = Arc::clone(state);
     let slug = vault.slug().clone();
     let path = path.to_string();
+    let content = content.map(str::to_owned);
     // why: `spawn_blocking`, as `rename` does. This writes a file and then reconciles the
     // index, and doing either on the async runtime's thread stalls every other request.
     let outcome = tokio::task::spawn_blocking(move || {
         let Some(vault) = worker.vault(slug.as_str()) else {
             return Err(CreateError::Denied);
         };
-        CreateNote::new(vault, &access, user, &index).note(&path)
+        match content.as_deref() {
+            Some(body) => CreateNote::new(vault, &access, user, &index).note_with_body(&path, body),
+            None => CreateNote::new(vault, &access, user, &index).note(&path),
+        }
     })
     .await;
     match outcome {
@@ -1602,6 +1933,296 @@ fn json_no_store<T: serde::Serialize>(body: &T) -> Response {
         body,
     )
         .into_response()
+}
+
+const MAX_SEARCH_RESULTS: usize = 100;
+
+#[derive(Deserialize)]
+struct TasksQuery {
+    folder: Option<String>,
+    tag: Option<String>,
+    priority: Option<String>,
+    due_from: Option<String>,
+    due_to: Option<String>,
+    note: Option<String>,
+    sort: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct TasksResponse {
+    tasks: Vec<TaskEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct TaskEntry {
+    path: String,
+    title: Option<String>,
+    block_id: Option<String>,
+    text: String,
+    due: Option<String>,
+    scheduled: Option<String>,
+    start: Option<String>,
+    created: Option<String>,
+    priority: Option<&'static str>,
+    ordinal: usize,
+}
+
+/// `GET /api/v1/vaults/{slug}/tasks` — open, readable task rows (§10.3).
+///
+/// Enforcement point **E18**. Membership is established before opening the index, and the
+/// task query is a [`mb_index::Reader`] query over `v_tasks`: the source note, its title and
+/// every task field are filtered together rather than returning rows to filter afterward.
+async fn vault_tasks(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    Query(query): Query<TasksQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let query = match task_query(query) {
+        Ok(query) => query,
+        Err(message) => return rename_refused(StatusCode::BAD_REQUEST, &message),
+    };
+    let Some((access, user, index)) = vault_query(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(mut index) = index.lock() else {
+        return server_error(&Error::Config("the index lock is poisoned".to_string()));
+    };
+    let tasks = match index
+        .reader(&access, &user)
+        .and_then(|reader| reader.tasks(&query))
+    {
+        Ok(tasks) => tasks,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    json_no_store(&TasksResponse {
+        tasks: tasks
+            .into_iter()
+            .map(|task| TaskEntry {
+                path: task.path,
+                title: task.title,
+                block_id: task.block_id,
+                text: task.text,
+                due: task.due,
+                scheduled: task.scheduled,
+                start: task.start,
+                created: task.created,
+                priority: task.priority.map(priority_label),
+                ordinal: task.ordinal,
+            })
+            .collect(),
+    })
+}
+
+fn task_query(query: TasksQuery) -> Result<mb_index::TaskQuery, String> {
+    let priority = match query.priority.as_deref() {
+        None => None,
+        Some("highest") => Some(mb_core::task::Priority::Highest),
+        Some("high") => Some(mb_core::task::Priority::High),
+        Some("medium") => Some(mb_core::task::Priority::Medium),
+        Some("low") => Some(mb_core::task::Priority::Low),
+        Some("lowest") => Some(mb_core::task::Priority::Lowest),
+        Some(_) => return Err("priority must be highest, high, medium, low or lowest".to_string()),
+    };
+    let due_from = parse_task_date(query.due_from.as_deref(), "due_from")?;
+    let due_to = parse_task_date(query.due_to.as_deref(), "due_to")?;
+    if due_from.zip(due_to).is_some_and(|(from, to)| from > to) {
+        return Err("due_from must not be after due_to".to_string());
+    }
+    let sort = match query.sort.as_deref().unwrap_or("due") {
+        "due" => mb_index::TaskSort::Due,
+        "priority" => mb_index::TaskSort::Priority,
+        "created" => mb_index::TaskSort::Created,
+        "path" => mb_index::TaskSort::Path,
+        _ => return Err("sort must be due, priority, created or path".to_string()),
+    };
+    Ok(mb_index::TaskQuery {
+        folder: query.folder,
+        tag: query.tag,
+        priority,
+        due_from,
+        due_to,
+        note: query.note,
+        sort,
+    })
+}
+
+fn parse_task_date(
+    value: Option<&str>,
+    field: &str,
+) -> Result<Option<mb_core::task::Date>, String> {
+    match value {
+        None => Ok(None),
+        Some(value) => mb_core::task::Date::parse(value)
+            .map(Some)
+            .ok_or_else(|| format!("{field} must be a YYYY-MM-DD date")),
+    }
+}
+
+const fn priority_label(priority: mb_core::task::Priority) -> &'static str {
+    match priority {
+        mb_core::task::Priority::Highest => "highest",
+        mb_core::task::Priority::High => "high",
+        mb_core::task::Priority::Medium => "medium",
+        mb_core::task::Priority::Low => "low",
+        mb_core::task::Priority::Lowest => "lowest",
+    }
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+}
+
+const fn default_search_limit() -> usize {
+    20
+}
+
+#[derive(serde::Serialize)]
+struct SearchResponse {
+    hits: Vec<SearchEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct SearchEntry {
+    path: String,
+    title: Option<String>,
+    context: String,
+    score: f32,
+}
+
+/// One segment in a reader's current offline-search manifest (§14.2, E6).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchSegmentManifestEntry {
+    zone_id: String,
+    acl_hash: String,
+}
+
+/// The complete permission-filtered offline-search manifest.
+#[derive(serde::Serialize)]
+struct SearchSegmentManifest {
+    segments: Vec<SearchSegmentManifestEntry>,
+}
+
+#[derive(Deserialize)]
+struct SearchSegmentQuery {
+    acl_hash: String,
+}
+
+/// `GET /api/v1/vaults/{slug}/search/segments` — current permitted compact zones (E6).
+///
+/// This is a manifest, deliberately not an archive. The browser must first remove every
+/// stored zone absent from this list, then fetch the individual bytes. The bytes endpoint
+/// repeats the live authorization and epoch check so a policy change between these requests
+/// cannot turn a stale manifest into a disclosure.
+async fn search_segments(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((access, user, index)) = vault_query(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(mut index) = index.lock() else {
+        return server_error(&Error::Config("the index lock is poisoned".to_string()));
+    };
+    let reader = match index.reader(&access, &user) {
+        Ok(reader) => reader,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    json_no_store(&SearchSegmentManifest {
+        segments: reader
+            .client_segments()
+            .into_iter()
+            .map(|segment| SearchSegmentManifestEntry {
+                zone_id: segment.zone_id,
+                acl_hash: segment.acl_hash,
+            })
+            .collect(),
+    })
+}
+
+/// `GET /api/v1/vaults/{slug}/search/segments/{zone}?acl_hash=…` — one compact zone (E6).
+///
+/// Enforcement point **E6**. The expected ACL hash is part of the request so a manifest
+/// captured before a revocation cannot retrieve a replacement epoch under the old identity.
+async fn search_segment(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, zone_id)): AxumPath<(String, String)>,
+    Query(query): Query<SearchSegmentQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((access, user, index)) = vault_query(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(mut index) = index.lock() else {
+        return server_error(&Error::Config("the index lock is poisoned".to_string()));
+    };
+    let segment = match index.reader(&access, &user) {
+        Ok(reader) => reader
+            .client_segments()
+            .into_iter()
+            .find(|segment| segment.zone_id == zone_id && segment.acl_hash == query.acl_hash),
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    let Some(segment) = segment else {
+        return workspace_denied();
+    };
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/vnd.memberberry.search-index;version=1",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        segment.bytes,
+    )
+        .into_response()
+}
+
+/// `GET /api/v1/vaults/{slug}/search?q=…` — server-side Tantivy search (§14.1).
+///
+/// Enforcement point **E5**. Membership is established before the index is opened, then
+/// [`mb_index::Reader::search`] intersects the Tantivy query with the live readable set as
+/// a required term query. No result is fetched and filtered after authorization.
+async fn search_notes(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    Query(query): Query<SearchQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((access, user, index)) = vault_query(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(mut index) = index.lock() else {
+        return server_error(&Error::Config("the index lock is poisoned".to_string()));
+    };
+    let hits = match index
+        .reader(&access, &user)
+        .and_then(|reader| reader.search(&query.q, query.limit.min(MAX_SEARCH_RESULTS)))
+    {
+        Ok(hits) => hits,
+        Err(mb_index::Error::Query(error)) => {
+            return rename_refused(StatusCode::BAD_REQUEST, &error.to_string());
+        }
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    json_no_store(&SearchResponse {
+        hits: hits
+            .into_iter()
+            .map(|hit| SearchEntry {
+                path: hit.path,
+                title: hit.title,
+                context: hit.context,
+                score: hit.score,
+            })
+            .collect(),
+    })
 }
 
 fn entry_of(link: mb_index::Backlink) -> BacklinkEntry {

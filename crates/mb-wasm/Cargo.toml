@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 mb-core.workspace = true
 mb-crdt.workspace = true
+mb-search.workspace = true
 wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"

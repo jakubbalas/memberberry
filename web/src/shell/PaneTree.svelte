@@ -17,9 +17,10 @@
   import SplitDivider from "./SplitDivider.svelte";
   import TabStrip from "./TabStrip.svelte";
   import type { NoteBootstrap } from "./bootstrap.js";
-  import type { openNoteSurface } from "./note-surface.js";
+  import type { openNoteSurface, TaskEditAction } from "./note-surface.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import type { GroupId, WorkspaceNode } from "./workspace.js";
+  import type { DailyView } from "./daily.svelte.js";
 
   interface Props {
     readonly node: WorkspaceNode;
@@ -29,12 +30,19 @@
     readonly open?: typeof openNoteSurface | undefined;
     /** A note's title, for the breadcrumbs each pane draws. */
     readonly titleOf?: ((path: string) => string | null) | undefined;
+    readonly taskEdit?: { readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined;
+    readonly daily?: DailyView | undefined;
   }
 
-  const { node, store, panes, session, open, titleOf }: Props = $props();
+  const { node, store, panes, session, open, titleOf, taskEdit, daily }: Props = $props();
 
   /** The split's own box, which the divider measures a pointer position against. */
   let container = $state<HTMLElement | undefined>(undefined);
+
+  function editFor(path: string | undefined): { readonly ordinal: number; readonly action: TaskEditAction } | undefined {
+    if (taskEdit === undefined || path === undefined || taskEdit.path !== path) return undefined;
+    return { ordinal: taskEdit.ordinal, action: taskEdit.action };
+  }
 </script>
 
 {#if node.kind === "group"}
@@ -71,6 +79,9 @@
       onscroll={active === undefined
         ? undefined
         : (scroll) => store.setScroll(active.id, scroll)}
+      taskEdit={editFor(active?.note)}
+      {daily}
+      ondailyopen={(path) => store.open(path)}
     />
   </div>
 {:else}
@@ -81,7 +92,7 @@
     bind:this={container}
   >
     <div class="pane-split-side">
-      <PaneTree node={node.first} {store} {panes} {session} {open} {titleOf} />
+      <PaneTree node={node.first} {store} {panes} {session} {open} {titleOf} {taskEdit} {daily} />
     </div>
     <SplitDivider
       split={node}
@@ -89,7 +100,7 @@
       onresize={(ratio) => store.resize(node.id, ratio)}
     />
     <div class="pane-split-side">
-      <PaneTree node={node.second} {store} {panes} {session} {open} {titleOf} />
+      <PaneTree node={node.second} {store} {panes} {session} {open} {titleOf} {taskEdit} {daily} />
     </div>
   </div>
 {/if}

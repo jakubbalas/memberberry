@@ -31,6 +31,48 @@ describe("fetching the note index", () => {
     });
   });
 
+  it("keeps permission-filtered task metadata with the note", async () => {
+    const answer = await fetchNotes("personal", {
+      fetch: responding({
+        body: {
+          notes: [{
+            path: "Inbox.md",
+            title: "Inbox",
+            conflicts: 0,
+            tasks: [{
+              block_id: null,
+              text: "Ship it",
+              due: "2026-09-10",
+              scheduled: null,
+              start: null,
+              created: null,
+              priority: "high",
+              ordinal: 0,
+            }],
+          }],
+        },
+      }),
+    });
+    expect(answer).toEqual({
+      kind: "ok",
+      notes: [{
+        path: "Inbox.md",
+        title: "Inbox",
+        conflicts: 0,
+        tasks: [{
+          blockId: null,
+          text: "Ship it",
+          due: "2026-09-10",
+          scheduled: null,
+          start: null,
+          created: null,
+          priority: "high",
+          ordinal: 0,
+        }],
+      }],
+    });
+  });
+
   it("drops an entry with the wrong shape rather than rendering it", async () => {
     // AGENTS.md §4.3: a `path` that is not a string reaches a DOM attribute.
     const answer = await fetchNotes("personal", {

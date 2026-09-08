@@ -23,6 +23,7 @@ import { TagView } from "./tags.svelte.js";
 import { stubReplica } from "../offline/testing.js";
 import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
+import { DailyView } from "./daily.svelte.js";
 
 /** jsdom implements `<dialog>` as an element but not as a dialog. See `MobileWorkspace`. */
 function teachJsdomAboutDialogs(): void {
@@ -81,6 +82,7 @@ function render(
     createNote?: typeof createNoteRequest;
     tags?: TagView;
     pins?: PinnedNotes;
+    daily?: DailyView;
   } = {},
 ) {
   const ids = sessionIds();
@@ -115,6 +117,7 @@ function render(
       ...(options.createNote === undefined ? {} : { createNote: options.createNote }),
       ...(options.tags === undefined ? {} : { tags: options.tags }),
       ...(options.pins === undefined ? {} : { pins: options.pins }),
+      ...(options.daily === undefined ? {} : { daily: options.daily }),
     },
   });
   return { store, teardown: () => unmount(app) };
@@ -257,6 +260,86 @@ describe("the command palette", () => {
       expect(store.groups).toHaveLength(1);
       // Still open, because nothing was chosen.
       expect(palette()?.open).toBe(true);
+    } finally {
+      teardown();
+    }
+  });
+});
+
+describe("periodic note commands", () => {
+  it("creates this week's note through the ordinary note creation boundary", async () => {
+    const daily = new DailyView({
+      vault: "personal",
+      formatPath: async (period, folder, _format, date) => period === "weekly"
+        ? `${folder}2026-W37.md`
+        : `${folder}${date.slice(0, 7)}.md`,
+      load: async () => ({
+        folder: "Daily",
+        format: "%Y-%m-%d.md",
+        notes: [],
+        weekly: { folder: "Weekly", format: "%G-W%V.md", notes: [] },
+        monthly: { folder: "Monthly", format: "%Y-%m.md", notes: [] },
+      }),
+    });
+    await daily.refresh();
+    const created: string[] = [];
+    const { store, teardown } = render({
+      daily,
+      createNote: async (_vault, path) => {
+        created.push(path);
+        return { ok: { path } };
+      },
+    });
+    try {
+      await flush();
+      shortcut("P", { shiftKey: true });
+      await flush();
+      await type("Open this week");
+      await key("Enter");
+      for (let attempt = 0; attempt < 10 && created.length === 0; attempt += 1) await flush();
+
+      expect(created).toHaveLength(1);
+      expect(created[0]).toMatch(/^Weekly\/\d{4}-W\d{2}\.md$/);
+      expect(store.activeTab?.note).toBe(created[0]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("opens an existing monthly note without trying to create it", async () => {
+    const now = new Date();
+    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const path = `Monthly/${date.slice(0, 7)}.md`;
+    const daily = new DailyView({
+      vault: "personal",
+      formatPath: async (_period, folder, _format, value) => `${folder}${value.slice(0, 7)}.md`,
+      load: async () => ({
+        folder: "Daily",
+        format: "%Y-%m-%d.md",
+        notes: [],
+        weekly: { folder: "Weekly", format: "%G-W%V.md", notes: [] },
+        monthly: { folder: "Monthly", format: "%Y-%m.md", notes: [{ date: `${date.slice(0, 7)}-01`, path }] },
+      }),
+    });
+    await daily.refresh();
+    let creates = 0;
+    const { store, teardown } = render({
+      daily,
+      createNote: async () => {
+        creates += 1;
+        return { refused: "must not create" };
+      },
+    });
+    try {
+      await flush();
+      shortcut("P", { shiftKey: true });
+      await flush();
+      await type("Open this month");
+      await key("Enter");
+      for (let attempt = 0; attempt < 10 && store.activeTab?.note !== path; attempt += 1) await flush();
+
+      expect(store.activeTab?.note).toBe(path);
+      expect(creates).toBe(0);
     } finally {
       teardown();
     }

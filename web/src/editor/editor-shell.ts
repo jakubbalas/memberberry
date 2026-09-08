@@ -14,6 +14,8 @@ import { mountOutline } from "./outline.js";
 import { applySourceMarkdown, copyMarkdown, editorMarkdown, longNoteMode, setLongNoteMode } from "./source.js";
 import { TASK_CHIP_EVENT, type TaskChipEventDetail } from "./task-view.js";
 import type { TaskChipField, TaskPriority } from "./task-metadata.js";
+import { expandTemplate } from "../notes.js";
+import { openTemplatePalette, TEMPLATE_EVENT, templateContext, type TemplateEventDetail } from "../shell/templates.js";
 
 export interface EditorShell {
   destroy(): void;
@@ -26,7 +28,11 @@ export interface MountEditorShellOptions {
   readonly status: HTMLElement;
   readonly awareness?: Awareness;
   readonly connection?: ConnectionStatus;
+  readonly user?: string;
+  readonly title?: string;
 }
+
+let focusedEditor: Editor | undefined;
 
 /** Mounts the M3 editor controls and releases every listener when the note closes. */
 export function mountEditorShell(options: MountEditorShellOptions): EditorShell {
@@ -75,6 +81,27 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     : mountPresence(options.panel, options.awareness, options.connection);
 
   const slash = slashMenu(options.editor, toolbar);
+  const onTemplate = (event: Event): void => {
+    if (focusedEditor !== options.editor) return;
+    if (!(event instanceof CustomEvent)) return;
+    const detail: unknown = event.detail;
+    if (typeof detail !== "object" || detail === null || !("body" in detail) || typeof (detail as TemplateEventDetail).body !== "string") return;
+    const selection = options.editor.state.doc.textBetween(
+      options.editor.state.selection.from,
+      options.editor.state.selection.to,
+      "\n",
+    );
+    void expandTemplate((detail as TemplateEventDetail).body, templateContext(options.title ?? "", options.user ?? "", selection))
+      .then((expanded) => {
+        const from = options.editor.state.selection.from;
+        const cursor = expanded.cursor === null ? expanded.text.length : expanded.cursor;
+        const offset = expanded.text.slice(0, cursor).length;
+        options.editor.chain().focus().insertContent(expanded.text).setTextSelection(from + offset).run();
+      });
+  };
+  window.addEventListener(TEMPLATE_EVENT, onTemplate);
+  const rememberFocus = (): void => { focusedEditor = options.editor; };
+  options.editor.view.dom.addEventListener("focusin", rememberFocus);
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key === "Escape") slash.hide();
     if (event.key !== "Enter") return;
@@ -214,6 +241,9 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       clearPress();
       controls.remove();
       slash.destroy();
+      window.removeEventListener(TEMPLATE_EVENT, onTemplate);
+      options.editor.view.dom.removeEventListener("focusin", rememberFocus);
+      if (focusedEditor === options.editor) focusedEditor = undefined;
     },
   };
 }
@@ -422,6 +452,10 @@ function slashMenu(editor: Editor, toolbar: HTMLElement) {
     menu.append(item);
     return { command, item };
   });
+  const template = button("Template", "Insert a template");
+  template.setAttribute("role", "menuitem");
+  template.addEventListener("click", openTemplatePalette);
+  menu.append(template);
   toolbar.after(menu);
 
   const blockText = (): string => editor.state.selection.$from.parent.textContent;
@@ -448,12 +482,15 @@ function slashMenu(editor: Editor, toolbar: HTMLElement) {
         item.hidden = !shown;
         if (shown) matches += 1;
       }
+      template.hidden = !"template".startsWith(typed);
+      if (!template.hidden) matches += 1;
       // No match is the same as no menu: an empty popover over the note is an obstruction.
       menu.hidden = matches === 0;
     },
     /** Opens the full menu with no `/` typed — the mobile long-press route (§8.3). */
     show: (): void => {
       for (const { item } of items) item.hidden = false;
+      template.hidden = false;
       menu.hidden = false;
     },
     hide: () => { menu.hidden = true; },

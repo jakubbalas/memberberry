@@ -24,9 +24,16 @@ const LINK = {
   anchor: null,
 };
 
+const MENTION = {
+  path: "Mentions.md",
+  title: "Mentions",
+  contexts: ["The Roadmap is agreed."],
+};
+
 const BODY = {
   note: "Projects/Roadmap.md",
   sources: [{ path: "Q3.md", title: "Third quarter", links: [LINK] }],
+  mentions: [MENTION],
 };
 
 /** A `fetch` that answers every request with `body`, recording the URLs asked for. */
@@ -53,6 +60,7 @@ describe("readBacklinks", () => {
   it("reads an anchor and an embed", () => {
     const parsed = readBacklinks({
       note: "A.md",
+      mentions: [],
       sources: [
         {
           path: "B.md",
@@ -69,7 +77,17 @@ describe("readBacklinks", () => {
   });
 
   it("rejects a body that is not a backlinks response", () => {
-    for (const body of [null, 42, "sources", {}, { note: "A.md" }, { sources: [] }]) {
+    for (const body of [
+      null,
+      42,
+      "sources",
+      {},
+      { note: "A.md" },
+      { sources: [] },
+      // A response with links but no mentions field at all: a server this client did not
+      // come from, which is a refusal rather than a silently missing section.
+      { note: "A.md", sources: [] },
+    ]) {
       expect(readBacklinks(body)).toBeUndefined();
     }
   });
@@ -79,6 +97,7 @@ describe("readBacklinks", () => {
     // crash in the renderer at best.
     const parsed = readBacklinks({
       note: "A.md",
+      mentions: [],
       sources: [
         { path: 7, title: null, links: [LINK] },
         { path: "", title: null, links: [LINK] },
@@ -91,6 +110,7 @@ describe("readBacklinks", () => {
   it("drops a source whose every link is malformed rather than naming it with no reason", () => {
     const parsed = readBacklinks({
       note: "A.md",
+      mentions: [],
       sources: [
         { path: "Bad.md", title: null, links: [{ context: 7 }] },
         { path: "AlsoBad.md", title: null, links: [{ ...LINK, anchor_kind: "elsewhere" }] },
@@ -103,30 +123,67 @@ describe("readBacklinks", () => {
   it("keeps the good links from a source that also has a bad one", () => {
     const parsed = readBacklinks({
       note: "A.md",
+      mentions: [],
       sources: [{ path: "B.md", title: null, links: [{ context: 7 }, LINK] }],
     });
     expect(parsed?.sources[0]?.links).toHaveLength(1);
   });
 
+  it("keeps a mention with its contexts in the order the server sent them", () => {
+    const parsed = readBacklinks({
+      note: "A.md",
+      sources: [],
+      mentions: [{ path: "B.md", title: null, contexts: ["second", "first"] }],
+    });
+    expect(parsed?.mentions).toEqual([
+      { path: "B.md", title: null, contexts: ["second", "first"] },
+    ]);
+  });
+
+  it("drops a mention with no usable path, title or sentence", () => {
+    // why: a mention row is a path reaching a click handler and prose reaching the DOM, with
+    // no link behind it to make either self-evident. A row with no sentence would name a note
+    // and give no reason, which is the one thing a mention has to do.
+    const parsed = readBacklinks({
+      note: "A.md",
+      sources: [],
+      mentions: [
+        { path: 7, title: null, contexts: ["text"] },
+        { path: "", title: null, contexts: ["text"] },
+        { path: "NoTitleType.md", title: 7, contexts: ["text"] },
+        { path: "NoContexts.md", title: null, contexts: [] },
+        { path: "NotAnArray.md", title: null, contexts: "text" },
+        { path: "AllNumbers.md", title: null, contexts: [1, 2] },
+        { path: "Good.md", title: null, contexts: [3, "kept"] },
+      ],
+    });
+    expect(parsed?.mentions.map((mention) => mention.path)).toEqual(["Good.md"]);
+    expect(parsed?.mentions[0]?.contexts).toEqual(["kept"]);
+  });
+
   it("accepts a null title and rejects a non-string one", () => {
-    expect(readBacklinks({ note: "A.md", sources: [{ ...BODY.sources[0], title: null }] })
-      ?.sources[0]?.title).toBeNull();
     expect(
-      readBacklinks({ note: "A.md", sources: [{ ...BODY.sources[0], title: 7 }] })?.sources,
+      readBacklinks({
+        note: "A.md",
+        mentions: [],
+        sources: [{ ...BODY.sources[0], title: null }],
+      })?.sources[0]?.title,
+    ).toBeNull();
+    expect(
+      readBacklinks({ note: "A.md", mentions: [], sources: [{ ...BODY.sources[0], title: 7 }] })
+        ?.sources,
     ).toEqual([]);
   });
 });
 
 describe("sourceLabel", () => {
   it("prefers the title", () => {
-    expect(sourceLabel({ path: "Q3.md", title: "Third quarter", links: [] })).toBe(
-      "Third quarter",
-    );
+    expect(sourceLabel({ path: "Q3.md", title: "Third quarter" })).toBe("Third quarter");
   });
 
   it("falls back to the filename without its extension or folders", () => {
-    expect(sourceLabel({ path: "Projects/Q3.md", title: null, links: [] })).toBe("Q3");
-    expect(sourceLabel({ path: "Projects/Q3.md", title: "", links: [] })).toBe("Q3");
+    expect(sourceLabel({ path: "Projects/Q3.md", title: null })).toBe("Q3");
+    expect(sourceLabel({ path: "Projects/Q3.md", title: "" })).toBe("Q3");
   });
 });
 
@@ -189,7 +246,34 @@ describe("BacklinkView", () => {
     expect(view.loading).toBe(true);
     await vi.waitUntil(() => !view.loading);
     expect(view.sources[0]?.path).toBe("Q3.md");
+    expect(view.mentions[0]?.path).toBe("Mentions.md");
     expect(view.empty).toBe(false);
+  });
+
+  it("reports no links as empty even when the note is mentioned", async () => {
+    // The two sections are separate statements: "nothing links here yet" is exactly the
+    // thing worth saying when six notes name the note without linking to it.
+    const load = (async () => ({
+      note: "A.md",
+      sources: [],
+      mentions: [MENTION],
+    })) as unknown as typeof fetchBacklinks;
+    const view = new BacklinkView({ vault: "v", load });
+    view.show("A.md");
+    await vi.waitUntil(() => !view.loading);
+    expect(view.empty).toBe(true);
+    expect(view.mentions).toHaveLength(1);
+  });
+
+  it("clears the previous note's mentions before the next answer arrives", async () => {
+    const { load, pending } = deferred();
+    const view = new BacklinkView({ vault: "v", load });
+    view.show("First.md");
+    pending.get("First.md")?.(PARSED);
+    await vi.waitUntil(() => !view.loading);
+    expect(view.mentions).toHaveLength(1);
+    view.show("Second.md");
+    expect(view.mentions).toEqual([]);
   });
 
   it("does not re-fetch the note it is already showing", async () => {
@@ -219,7 +303,7 @@ describe("BacklinkView", () => {
     const view = new BacklinkView({ vault: "v", load });
     view.show("First.md");
     view.show("Second.md");
-    pending.get("Second.md")?.({ note: "Second.md", sources: [] });
+    pending.get("Second.md")?.({ note: "Second.md", sources: [], mentions: [] });
     pending.get("First.md")?.(PARSED);
     await vi.waitUntil(() => !view.loading);
     expect(view.note).toBe("Second.md");

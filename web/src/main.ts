@@ -9,8 +9,9 @@
 
 import { mount } from "svelte";
 
-import { localReplica } from "./offline/local.js";
+import { localOfflineStore, localReplica } from "./offline/local.js";
 import { noteFetcher, prefetchPinned } from "./offline/prefetch.js";
+import { syncClientIndex } from "./offline/search-index.js";
 import {
   afterLoad,
   registerOfflineShell,
@@ -71,8 +72,13 @@ async function start(): Promise<void> {
     // §7.2's pinned tier: the notes this device promised to keep are fetched now, in the
     // background, one at a time. After the load event for the same reason the precache is —
     // nothing on screen is waiting for it.
-    void keepPinnedNotes();
+    void reconcileOfflineData();
   });
+
+  const reconnect = (): void => {
+    void reconcileOfflineData();
+  };
+  window.addEventListener("online", reconnect);
 
   /**
    * Downloads whatever is pinned and not already here (§7.2).
@@ -93,11 +99,26 @@ async function start(): Promise<void> {
     });
   }
 
+  /** Reconciles permissions before any background work can retain stale offline bytes. */
+  async function reconcileOfflineData(): Promise<void> {
+    if (bootstrap === undefined) return;
+    const store = await localOfflineStore();
+    if (store !== undefined) {
+      // The compact index owns a separate, stricter replica: zone bytes leave IndexedDB
+      // before pinned-body work begins, exactly as §7.4 orders reconnection.
+      await syncClientIndex({ vault: bootstrap.vault, store }).catch(() => undefined);
+    }
+    await keepPinnedNotes();
+  }
+
   // why: `pagehide` rather than `beforeunload`. `beforeunload` is unreliable on mobile, where
   // a backgrounded tab is often discarded without it ever firing — and mobile is the primary
   // target (§21.1). The layout is debounced, so without this the last few hundred
   // milliseconds of pane arrangement would be lost on every navigation.
-  window.addEventListener("pagehide", () => void started.destroy(), { once: true });
+  window.addEventListener("pagehide", () => {
+    window.removeEventListener("online", reconnect);
+    void started.destroy();
+  }, { once: true });
 }
 
 void start();

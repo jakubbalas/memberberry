@@ -16,24 +16,32 @@
   import NotePane from "./NotePane.svelte";
   import TabSheet from "./TabSheet.svelte";
   import type { NoteBootstrap } from "./bootstrap.js";
-  import type { openNoteSurface } from "./note-surface.js";
+  import type { openNoteSurface, TaskEditAction } from "./note-surface.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { canGoBack, canGoForward } from "./workspace.js";
+  import type { DailyView } from "./daily.svelte.js";
 
   interface Props {
     readonly store: WorkspaceStore;
     readonly session?: Pick<NoteBootstrap, "vault" | "user"> | undefined;
     readonly open?: typeof openNoteSurface | undefined;
     readonly titleOf?: ((path: string) => string | null) | undefined;
+    readonly taskEdit?: { readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined;
+    readonly daily?: DailyView | undefined;
   }
 
-  const { store, session, open, titleOf }: Props = $props();
+  const { store, session, open, titleOf, taskEdit, daily }: Props = $props();
 
   let sheetOpen = $state(false);
 
   const active = $derived(store.activeTab);
   const back = $derived(active !== undefined && canGoBack(active));
   const forward = $derived(active !== undefined && canGoForward(active));
+
+  function editFor(path: string | undefined): { readonly ordinal: number; readonly action: TaskEditAction } | undefined {
+    if (taskEdit === undefined || path === undefined || taskEdit.path !== path) return undefined;
+    return { ordinal: taskEdit.ordinal, action: taskEdit.action };
+  }
 </script>
 
 <div class="mobile-main">
@@ -46,6 +54,9 @@
     {session}
     {open}
     onscroll={active === undefined ? undefined : (scroll) => store.setScroll(active.id, scroll)}
+    taskEdit={editFor(active?.note)}
+    {daily}
+    ondailyopen={(path) => store.open(path)}
   />
 
   <nav class="mobile-bar" aria-label="Navigation">

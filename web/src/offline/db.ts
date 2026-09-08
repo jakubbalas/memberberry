@@ -16,9 +16,24 @@
  */
 
 /** One note's metadata, as `SPEC.md` §7.2's "always replicated" tier. */
+export interface ReplicatedTask {
+  /** Optional source block anchor. */
+  readonly blockId: string | null;
+  /** Plain task text. */
+  readonly text: string;
+  /** Optional task dates in `YYYY-MM-DD` form. */
+  readonly due: string | null;
+  readonly scheduled: string | null;
+  readonly start: string | null;
+  readonly created: string | null;
+  readonly priority: "highest" | "high" | "medium" | "low" | "lowest" | null;
+  readonly ordinal: number;
+}
+
 export interface ReplicatedNote {
   readonly path: string;
   readonly title: string | null;
+  readonly tasks?: readonly ReplicatedTask[];
   /**
    * Unresolved conflicts in the note, for §3.5's badge in the tree.
    *
@@ -81,6 +96,18 @@ export interface PinnedNote {
   readonly note: string;
 }
 
+/** One ACL zone the server currently permits this browser to hold (E6). */
+export interface SearchZone {
+  readonly vault: string;
+  readonly zoneId: string;
+  readonly aclHash: string;
+}
+
+/** Validated compact-index bytes for one currently permitted ACL zone. */
+export interface SearchSegment extends SearchZone {
+  readonly bytes: Uint8Array;
+}
+
 export interface OfflineStore {
   /** Replaces the metadata replica for one vault. */
   putNotes(vault: string, notes: readonly ReplicatedNote[]): Promise<void>;
@@ -99,6 +126,12 @@ export interface OfflineStore {
   /** Every pinned note in a vault. */
   pins(vault: string): Promise<readonly PinnedNote[]>;
   deletePin(vault: string, note: string): Promise<void>;
+  /** Replaces a vault's permitted zone manifest and drops revoked segment bytes first. */
+  reconcileSearchZones(vault: string, zones: readonly SearchZone[]): Promise<readonly SearchZone[]>;
+  /** Stores bytes only if their zone and epoch are still in the permitted manifest. */
+  putSearchSegment(segment: SearchSegment): Promise<boolean>;
+  /** The compact segments whose manifest entries still permit them. */
+  searchSegments(vault: string): Promise<readonly SearchSegment[]>;
   /** Forgets everything about a vault: metadata, resident records and pins. */
   deleteVault(vault: string): Promise<void>;
   close(): void;
@@ -113,10 +146,12 @@ const DATABASE = "memberberry:offline";
  * over — the replica is a cache of things the server sent, but re-fetching a 10 000-note
  * index because a store was added is a bad first impression of an upgrade.
  */
-const VERSION = 2;
+const VERSION = 3;
 const NOTES = "notes";
 const BODIES = "bodies";
 const PINS = "pins";
+const SEARCH_ZONES = "search-zones";
+const SEARCH_SEGMENTS = "search-segments";
 const BY_VAULT = "by-vault";
 
 /**
@@ -142,6 +177,14 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
       // notes sharing a record.
       const bodies = database.createObjectStore(BODIES, { keyPath: ["vault", "note"] });
       bodies.createIndex(BY_VAULT, "vault", { unique: false });
+    }
+    if (!database.objectStoreNames.contains(SEARCH_ZONES)) {
+      const zones = database.createObjectStore(SEARCH_ZONES, { keyPath: ["vault", "zoneId"] });
+      zones.createIndex(BY_VAULT, "vault", { unique: false });
+    }
+    if (!database.objectStoreNames.contains(SEARCH_SEGMENTS)) {
+      const segments = database.createObjectStore(SEARCH_SEGMENTS, { keyPath: ["vault", "zoneId"] });
+      segments.createIndex(BY_VAULT, "vault", { unique: false });
     }
   };
   const database = await promised(open);
@@ -185,9 +228,59 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
     async deletePin(vault: string, note: string): Promise<void> {
       await promised(transaction(PINS, "readwrite").delete([vault, note]));
     },
+    async reconcileSearchZones(vault, zones): Promise<readonly SearchZone[]> {
+      const permitted = new Map(zones.map((zone) => [zone.zoneId, zone]));
+      const whole = database.transaction([SEARCH_ZONES, SEARCH_SEGMENTS], "readwrite");
+      const zoneStore = whole.objectStore(SEARCH_ZONES);
+      const segmentStore = whole.objectStore(SEARCH_SEGMENTS);
+      const existing: unknown = await promised(zoneStore.index(BY_VAULT).getAll(vault));
+      const current = Array.isArray(existing) ? existing.flatMap(readSearchZone) : [];
+      for (const zone of current) {
+        const replacement = permitted.get(zone.zoneId);
+        if (replacement?.aclHash === zone.aclHash) continue;
+        await promised(zoneStore.delete([vault, zone.zoneId]));
+        await promised(segmentStore.delete([vault, zone.zoneId]));
+      }
+      const needed: SearchZone[] = [];
+      for (const zone of zones) {
+        await promised(zoneStore.put({ ...zone }));
+        const segment = readSearchSegment(await promised(segmentStore.get([vault, zone.zoneId])))[0];
+        if (segment?.aclHash !== zone.aclHash) needed.push(zone);
+      }
+      await completed(whole);
+      return needed;
+    },
+    async putSearchSegment(segment): Promise<boolean> {
+      const whole = database.transaction([SEARCH_ZONES, SEARCH_SEGMENTS], "readwrite");
+      const zoneStore = whole.objectStore(SEARCH_ZONES);
+      const allowed = readSearchZone(
+        await promised(zoneStore.get([segment.vault, segment.zoneId])),
+      )[0];
+      if (allowed?.aclHash !== segment.aclHash) {
+        whole.abort();
+        return false;
+      }
+      await promised(whole.objectStore(SEARCH_SEGMENTS).put({ ...segment, bytes: segment.bytes.slice() }));
+      await completed(whole);
+      return true;
+    },
+    async searchSegments(vault): Promise<readonly SearchSegment[]> {
+      const zones: unknown = await promised(
+        transaction(SEARCH_ZONES, "readonly").index(BY_VAULT).getAll(vault),
+      );
+      const permitted = new Map(
+        (Array.isArray(zones) ? zones.flatMap(readSearchZone) : []).map((zone) => [zone.zoneId, zone]),
+      );
+      const segments: unknown = await promised(
+        transaction(SEARCH_SEGMENTS, "readonly").index(BY_VAULT).getAll(vault),
+      );
+      return (Array.isArray(segments) ? segments.flatMap(readSearchSegment) : []).filter(
+        (segment) => permitted.get(segment.zoneId)?.aclHash === segment.aclHash,
+      );
+    },
     async deleteVault(vault: string): Promise<void> {
       await promised(transaction(NOTES, "readwrite").delete(vault));
-      for (const name of [BODIES, PINS]) {
+      for (const name of [BODIES, PINS, SEARCH_ZONES, SEARCH_SEGMENTS]) {
         const store = database.transaction(name, "readwrite").objectStore(name);
         const keys: unknown = await promised(store.index(BY_VAULT).getAllKeys(vault));
         if (!Array.isArray(keys)) continue;
@@ -209,6 +302,15 @@ function promised<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
+/** Resolves only after an IndexedDB transaction commits. */
+function completed(transaction: IDBTransaction): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = (): void => resolve();
+    transaction.onabort = (): void => reject(transaction.error ?? new Error("the offline store aborted a transaction"));
+    transaction.onerror = (): void => reject(transaction.error ?? new Error("the offline store refused a transaction"));
+  });
+}
+
 /**
  * Reads a stored metadata record back.
  *
@@ -223,10 +325,45 @@ function readNotes(record: unknown): readonly ReplicatedNote[] | undefined {
   if (!Array.isArray(notes)) return undefined;
   return notes.flatMap((entry): ReplicatedNote[] => {
     if (typeof entry !== "object" || entry === null) return [];
-    const { path, title, conflicts } = entry as Record<string, unknown>;
+    const { path, title, conflicts, tasks } = entry as Record<string, unknown>;
     if (typeof path !== "string" || path === "") return [];
     if (title !== null && typeof title !== "string") return [];
-    return [{ path, title, conflicts: typeof conflicts === "number" ? conflicts : 0 }];
+    return [{
+      path,
+      title,
+      ...(Array.isArray(tasks) ? { tasks: readReplicatedTasks(tasks) } : {}),
+      conflicts: typeof conflicts === "number" ? conflicts : 0,
+    }];
+  });
+}
+
+/** Validates task metadata received with a permission-filtered note summary. */
+export function readReplicatedTasks(value: unknown): readonly ReplicatedTask[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): ReplicatedTask[] => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const record = entry as Record<string, unknown>;
+    const blockId = record["block_id"];
+    const text = record["text"];
+    const ordinal = record["ordinal"];
+    if (blockId !== null && typeof blockId !== "string") return [];
+    if (typeof text !== "string" || typeof ordinal !== "number" || !Number.isInteger(ordinal) || ordinal < 0) return [];
+    const fields = ["due", "scheduled", "start", "created"] as const;
+    const dates = Object.fromEntries(fields.map((field) => [field, record[field] ?? null]));
+    if (fields.some((field) => dates[field] !== null && typeof dates[field] !== "string")) return [];
+    const priority = record["priority"];
+    const priorities = new Set(["highest", "high", "medium", "low", "lowest"]);
+    if (priority !== null && priority !== undefined && (typeof priority !== "string" || !priorities.has(priority))) return [];
+    return [{
+      blockId,
+      text,
+      due: dates["due"] as string | null,
+      scheduled: dates["scheduled"] as string | null,
+      start: dates["start"] as string | null,
+      created: dates["created"] as string | null,
+      priority: typeof priority === "string" ? priority as ReplicatedTask["priority"] : null,
+      ordinal,
+    }];
   });
 }
 
@@ -235,6 +372,22 @@ function readPin(record: unknown): PinnedNote[] {
   const { vault, note } = record as Record<string, unknown>;
   if (typeof vault !== "string" || typeof note !== "string") return [];
   return [{ vault, note }];
+}
+
+function readSearchZone(record: unknown): SearchZone[] {
+  if (typeof record !== "object" || record === null) return [];
+  const { vault, zoneId, aclHash } = record as Record<string, unknown>;
+  if (typeof vault !== "string" || typeof zoneId !== "string" || typeof aclHash !== "string") return [];
+  if (vault === "" || !/^[a-f0-9]{64}$/.test(zoneId) || !/^[a-f0-9]{64}$/.test(aclHash)) return [];
+  return [{ vault, zoneId, aclHash }];
+}
+
+function readSearchSegment(record: unknown): SearchSegment[] {
+  const [zone] = readSearchZone(record);
+  if (zone === undefined || typeof record !== "object" || record === null) return [];
+  const bytes = (record as Record<string, unknown>)["bytes"];
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) return [];
+  return [{ ...zone, bytes: bytes.slice() }];
 }
 
 function readResident(record: unknown): ResidentBody[] {

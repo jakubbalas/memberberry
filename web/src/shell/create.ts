@@ -24,6 +24,7 @@ export type CreateResult = { readonly ok: Created } | { readonly refused: string
 export interface CreateOptions {
   /** Defaults to `globalThis.fetch`. */
   readonly fetch?: typeof globalThis.fetch;
+  readonly content?: string | undefined;
 }
 
 /**
@@ -70,7 +71,7 @@ export async function createNote(
     response = await request(`/api/v1/vaults/${encodeURIComponent(vault)}/notes`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ path }),
+      body: JSON.stringify(options.content === undefined ? { path } : { path, content: options.content }),
     });
   } catch {
     return { refused: "The server could not be reached." };

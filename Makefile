@@ -100,6 +100,7 @@ fuzz-build: ## Compile the fuzz targets without running them — what CI checks
 .PHONY: bench
 bench: ## Hot-path benchmarks (AGENTS.md 4.5). Laptop numbers; the budget target is a phone.
 	$(CARGO) bench -p mb-server --bench sync
+	$(CARGO) bench -p mb-search --bench compact
 
 .PHONY: coverage
 coverage: ## Per-file coverage report (needs cargo-llvm-cov)
@@ -128,7 +129,9 @@ token-check: ## Enforce the design-token contract, both directions (SPEC 20.1, 2
 wasm: ## Build the WebAssembly bindings into web/src/wasm (needs wasm-pack)
 	@command -v wasm-pack >/dev/null 2>&1 || { \
 		echo "Install first: cargo install wasm-pack"; exit 1; }
-	wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb
+	@# why: wasm-pack installs wasm-opt into XDG's cache. Keeping it under target makes the
+	@# optimizer usable in restricted build environments without disabling the production pass.
+	XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb
 
 .PHONY: web
 web: wasm ## Vite dev server on 9011, against the freshly built wasm
@@ -190,10 +193,10 @@ perf-record: web-build ## Run the harness and print the breaches.json entries it
 	npm --prefix web run perf -- --record
 
 .PHONY: wasm-check
-wasm-check: ## mb-core must stay wasm32-clean at all times (AGENTS.md 4.2)
+wasm-check: ## mb-core and mb-search must stay wasm32-clean (AGENTS.md 4.2)
 	@rustup target list --installed | grep -q wasm32-unknown-unknown \
 		|| rustup target add wasm32-unknown-unknown
-	$(CARGO) check -p mb-core --target wasm32-unknown-unknown
+	$(CARGO) check -p mb-core -p mb-search --target wasm32-unknown-unknown
 
 # ---------------------------------------------------------------- vaults
 

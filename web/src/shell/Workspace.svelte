@@ -22,6 +22,9 @@
   import PaneTree from "./PaneTree.svelte";
   import Sidebar from "./Sidebar.svelte";
   import TagPane from "./TagPane.svelte";
+  import SearchPane from "./SearchPane.svelte";
+  import InboxPane from "./InboxPane.svelte";
+  import CalendarPane from "./CalendarPane.svelte";
   import { BacklinkView } from "./backlinks.svelte.js";
   import { GraphView } from "./graph.svelte.js";
   import type { VaultGraphView } from "./vault-graph.svelte.js";
@@ -39,6 +42,10 @@
   import type { createNote as createNoteRequest } from "./create.js";
   import type { renameNote as renameNoteRequest, renameTag as renameTagRequest } from "./rename.js";
   import { TagView } from "./tags.svelte.js";
+  import { SearchView } from "./search.svelte.js";
+  import { InboxView } from "./tasks.svelte.js";
+  import { DailyView } from "./daily.svelte.js";
+  import type { TaskEditAction } from "./note-surface.js";
   import type { Platform } from "./hotkeys.js";
   import { type SwipeStart, swipeProgress, swipeStart } from "./gestures.js";
   import { type LayoutMode, currentLayoutMode, watchLayoutMode } from "./layout.js";
@@ -77,6 +84,8 @@
     readonly backlinks?: BacklinkView | undefined;
     /** The vault's tags. Supplied by a test; built from the session otherwise. */
     readonly tags?: TagView | undefined;
+    /** The task inbox (§10.3). Supplied by a test; built from the session otherwise. */
+    readonly inbox?: InboxView | undefined;
     /** The notes kept offline (§7.2). Supplied by a test; built from the session otherwise. */
     readonly pins?: PinnedNotes | undefined;
     /** The focused note's neighbourhood. Supplied by a test; built from the session otherwise. */
@@ -91,6 +100,7 @@
     readonly renameNote?: typeof renameNoteRequest | undefined;
     readonly renameTag?: typeof renameTagRequest | undefined;
     readonly createNote?: typeof createNoteRequest | undefined;
+    readonly daily?: DailyView | undefined;
   }
 
   const {
@@ -107,6 +117,7 @@
     bookmarks: suppliedBookmarks,
     backlinks: suppliedBacklinks,
     tags: suppliedTags,
+    inbox: suppliedInbox,
     pins: suppliedPins,
     graph: suppliedGraph,
     vaultGraph: suppliedVaultGraph,
@@ -115,6 +126,7 @@
     renameNote,
     renameTag,
     createNote,
+    daily: suppliedDaily,
   }: Props = $props();
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
@@ -140,6 +152,13 @@
   const tags = untrack(
     () => suppliedTags ?? new TagView({ vault: session?.vault ?? "local-demo" }),
   );
+  const inbox = untrack(
+    () => suppliedInbox ?? new InboxView({ vault: session?.vault ?? "local-demo" }),
+  );
+  const daily = untrack(
+    () => suppliedDaily ?? new DailyView({ vault: session?.vault ?? "local-demo" }),
+  );
+  const search = untrack(() => new SearchView({ vault: session?.vault ?? "local-demo" }));
   const graph = untrack(
     () => suppliedGraph ?? new GraphView({ vault: session?.vault ?? "local-demo" }),
   );
@@ -168,6 +187,12 @@
   let vaultGraph = $state<VaultGraphView | undefined>(untrack(() => suppliedVaultGraph));
   let GraphPane = $state<GlobalGraphComponent | undefined>();
   let showGraph = $state(false);
+  let taskEdit = $state<{ readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined>(undefined);
+
+  function editTask(path: string, ordinal: number, action: TaskEditAction): void {
+    taskEdit = { path, ordinal, action };
+    store.open(path);
+  }
 
   async function openGraph(): Promise<void> {
     const [pane, state, wire] = await Promise.all([
@@ -354,8 +379,8 @@
     label="Navigation"
     collapsed={collapsed.left}
     ontoggle={() => toggle("left")}
-    awaiting="search in M9"
   >
+    <SearchPane view={search} onopen={(path) => store.open(path)} />
     <NoteTree
       {catalog}
       {bookmarks}
@@ -363,6 +388,8 @@
       onopen={(path) => store.open(path)}
     />
     <TagPane view={tags} onopen={(path) => store.open(path)} />
+    <InboxPane view={inbox} onopen={(path) => store.open(path)} onedit={editTask} />
+    <CalendarPane view={daily} onopen={(path) => store.open(path)} />
   </Sidebar>
 
   <main class="workspace-main" aria-label="Open notes">
@@ -379,9 +406,9 @@
       />
     {/if}
     {#if layout === "mobile"}
-      <MobileMain {store} {session} {open} {titleOf} />
+      <MobileMain {store} {session} {open} {titleOf} {taskEdit} {daily} />
     {:else}
-      <PaneTree node={store.current.root} {store} {panes} {session} {open} {titleOf} />
+      <PaneTree node={store.current.root} {store} {panes} {session} {open} {titleOf} {taskEdit} {daily} />
     {/if}
   </main>
 
@@ -390,7 +417,6 @@
     label="Context"
     collapsed={collapsed.right}
     ontoggle={() => toggle("right")}
-    awaiting="tasks in M14"
   >
     <Outline view={outline} note={store.activeTab?.note} />
     <Backlinks
@@ -419,5 +445,7 @@
   {platform}
   {loadVaults}
   {onvault}
+  {daily}
+  user={session?.user}
   ongraph={() => void openGraph()}
 />

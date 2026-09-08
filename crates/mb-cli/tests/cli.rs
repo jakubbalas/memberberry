@@ -576,11 +576,12 @@ fn stops_on(signal: &str, label: &str) {
     .expect("pinning the bind address to an ephemeral port");
 
     let log = dir.path().join("serve.log");
+    let log_file = fs::File::create(&log).expect("log file");
     let mut child = Command::new(env!("CARGO_BIN_EXE_memberberry"))
         .args(["serve", "--config", &config])
         .stdin(Stdio::null())
-        .stdout(Stdio::from(fs::File::create(&log).expect("log file")))
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(log_file.try_clone().expect("cloning log file")))
+        .stderr(Stdio::from(log_file))
         .spawn()
         .expect("spawning the server");
 

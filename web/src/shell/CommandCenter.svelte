@@ -44,6 +44,8 @@
   import type { TagView } from "./tags.svelte.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { groups } from "./workspace.js";
+  import { dispatchTemplate, fetchTemplates, readTemplate, TEMPLATE_PALETTE_EVENT, type TemplateSummary } from "./templates.js";
+  import { DailyView } from "./daily.svelte.js";
 
   interface Props {
     readonly store: WorkspaceStore;
@@ -83,6 +85,8 @@
      * which is the palette's own convention for a command that cannot run right now.
      */
     readonly pins?: PinnedNotes | undefined;
+    readonly daily?: DailyView | undefined;
+    readonly user?: string | undefined;
   }
 
   const {
@@ -101,9 +105,11 @@
     renameTag = renameTagRequest,
     createNote = createNoteRequest,
     pins,
+    daily,
+    user,
   }: Props = $props();
 
-  type Mode = "commands" | "notes" | "vaults";
+  type Mode = "commands" | "notes" | "vaults" | "templates";
 
   /**
    * What the name prompt is currently asking about. `undefined` means it is closed.
@@ -131,6 +137,40 @@
   let renameBusy = $state(false);
   let renameError = $state<string | undefined>(undefined);
   let renameNotice = $state("");
+  let templates = $state<readonly TemplateSummary[]>([]);
+
+  async function openPeriod(period: "daily" | "weekly" | "monthly", offset = 0): Promise<void> {
+    if (daily === undefined) return;
+    daily.ensure();
+    if (!daily.ready) {
+      await daily.refresh();
+    }
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + offset);
+    const date = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, "0")}-${String(targetDate.getDate()).padStart(2, "0")}`;
+    const existing = await daily.existing(period, date);
+    if (existing !== undefined) {
+      store.open(existing.path);
+      return;
+    }
+    const path = await daily.pathFor(period, date);
+    if (path === undefined) return;
+    let result;
+    try {
+      result = await daily.createPeriod(period, date, user ?? "", createNote);
+    } catch {
+      renameNotice = `The ${period} note template is unavailable.`;
+      return;
+    }
+    if (result === undefined) return;
+    if ("ok" in result) {
+      store.open(result.ok.path);
+      void daily.refresh();
+      void catalog.refresh();
+    } else {
+      renameNotice = result.refused;
+    }
+  }
 
   function openPalette(next: Mode): void {
     mode = next;
@@ -144,6 +184,9 @@
     if (next === "commands") pins?.ensure();
     if (next === "vaults" && vaults.length === 0) {
       void loadVaults().then((list) => (vaults = list));
+    }
+    if (next === "templates" && templates.length === 0) {
+      void fetchTemplates(vault).then((list) => (templates = list.templates)).catch(() => (templates = []));
     }
   }
 
@@ -338,6 +381,35 @@
       run: () => ask({ kind: "create", from: store.activeTab?.note ?? "", initial: "" }),
     },
     {
+      id: "note.template",
+      title: "Insert template…",
+      group: "Note",
+      enabled: () => store.activeTab !== undefined,
+      run: () => openPalette("templates"),
+    },
+    {
+      id: "daily.today",
+      title: "Open today’s note",
+      group: "Navigation",
+      binding: "Mod+Shift+d",
+      enabled: () => daily !== undefined,
+      run: () => void openPeriod("daily"),
+    },
+    {
+      id: "weekly.current",
+      title: "Open this week’s note",
+      group: "Navigation",
+      enabled: () => daily !== undefined,
+      run: () => void openPeriod("weekly"),
+    },
+    {
+      id: "monthly.current",
+      title: "Open this month’s note",
+      group: "Navigation",
+      enabled: () => daily !== undefined,
+      run: () => void openPeriod("monthly"),
+    },
+    {
       id: "note.rename",
       title: "Rename note…",
       group: "Note",
@@ -422,6 +494,12 @@
     return () => host.removeEventListener("keydown", onkeydown);
   });
 
+  $effect(() => {
+    const onTemplatePalette = (): void => openPalette("templates");
+    window.addEventListener(TEMPLATE_PALETTE_EVENT, onTemplatePalette);
+    return () => window.removeEventListener(TEMPLATE_PALETTE_EVENT, onTemplatePalette);
+  });
+
   /** The palette's list, for whichever mode is open. */
   const items = $derived.by((): readonly PaletteItem[] => {
     if (mode === "commands") {
@@ -456,6 +534,13 @@
         disabled: item.slug === vault,
       }));
     }
+    if (mode === "templates") {
+      return fuzzyRank(query, templates, { key: (entry) => entry.name }).map(({ item, match }) => ({
+        id: item.path,
+        label: item.name,
+        positions: match.positions,
+      }));
+    }
     return [];
   });
 
@@ -475,6 +560,12 @@
       // the workspace layout are all per-vault, and the server hands them over on the way in.
       if (onvault !== undefined) onvault(id);
       else window.location.assign(`/v/${encodeURIComponent(id)}`);
+      return;
+    }
+    if (chosen === "templates") {
+      void readTemplate(vault, id).then(dispatchTemplate).catch((error: unknown) => {
+        renameNotice = error instanceof Error ? error.message : "That template is unavailable.";
+      });
     }
   }
 
@@ -490,6 +581,7 @@
       empty: "No note matches.",
     },
     vaults: { title: "Switch vault", placeholder: "Search vaults…", empty: "No vault matches." },
+    templates: { title: "Insert template", placeholder: "Search templates…", empty: "No template matches." },
   };
 
   function promptTitle(prompt: Prompting | undefined): string {

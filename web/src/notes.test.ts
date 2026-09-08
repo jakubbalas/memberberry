@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { extract, load, normalize, schema, title, toHtml } from "./notes.js";
+import { extract, load, normalize, periodicPath, schema, title, toHtml, validateSearchSegment } from "./notes.js";
 
 beforeAll(async () => {
   // Node cannot fetch a relative URL, so the bytes are handed in directly.
@@ -30,6 +30,15 @@ describe("normalize", () => {
   it("converges in one pass", async () => {
     const once = await normalize("# Title\n\n1) a\n2) b\n");
     expect(await normalize(once)).toBe(once);
+  });
+});
+
+describe("calendar paths", () => {
+  it("formats ISO weekly and monthly paths through the Rust boundary", async () => {
+    await expect(periodicPath("weekly", "Weekly/", "%G-W%V.md", "2021-01-01"))
+      .resolves.toBe("Weekly/2020-W53.md");
+    await expect(periodicPath("monthly", "Monthly/", "%Y-%m.md", "2021-01-31"))
+      .resolves.toBe("Monthly/2021-01.md");
   });
 });
 
@@ -120,5 +129,11 @@ describe("load", () => {
     await load();
     await load();
     expect(await normalize("x\n")).toBe("x\n");
+  });
+});
+
+describe("compact client search", () => {
+  it("rejects bytes that are not a validated binary-v1 segment", async () => {
+    await expect(validateSearchSegment(new Uint8Array([1, 2, 3]))).rejects.toThrow("truncated");
   });
 });

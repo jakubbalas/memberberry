@@ -23,11 +23,18 @@ const FILTERED: &[&str] = &[
     "v_resolved",
     "v_tags",
     "v_blocks",
+    "v_tasks",
     "readable",
 ];
 
 /// Modules whose job is to define the filter or to write the index.
-const NOT_A_READ_PATH: &[&str] = &["readable.rs", "schema.rs", "write.rs", "testing.rs"];
+const NOT_A_READ_PATH: &[&str] = &[
+    "readable.rs",
+    "schema.rs",
+    "write.rs",
+    "testing.rs",
+    "zones.rs",
+];
 
 /// Every table or view named directly after `FROM` or `JOIN` in `source`.
 fn tables_named(source: &str) -> Vec<String> {

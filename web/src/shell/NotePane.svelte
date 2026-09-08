@@ -15,8 +15,9 @@
   import { untrack } from "svelte";
 
   import type { NoteBootstrap } from "./bootstrap.js";
-  import { type NoteSurface, openNoteSurface } from "./note-surface.js";
+  import { type NoteSurface, type TaskEditAction, openNoteSurface } from "./note-surface.js";
   import type { Tab } from "./workspace.js";
+  import type { DailyView } from "./daily.svelte.js";
 
   interface Props {
     readonly tab: Tab | undefined;
@@ -25,15 +26,20 @@
     readonly onscroll?: ((scroll: number) => void) | undefined;
     /** Injectable so a layout test can render panes without editors or sockets. */
     readonly open?: typeof openNoteSurface | undefined;
+    readonly taskEdit?: { readonly ordinal: number; readonly action: TaskEditAction } | undefined;
+    readonly daily?: DailyView | undefined;
+    readonly ondailyopen?: ((path: string) => void) | undefined;
   }
 
-  const { tab, session, onscroll, open = openNoteSurface }: Props = $props();
+  const { tab, session, onscroll, open = openNoteSurface, taskEdit, daily, ondailyopen }: Props = $props();
 
   let pane = $state<HTMLElement | undefined>(undefined);
   let surface = $state<HTMLElement | undefined>(undefined);
   let panel = $state<HTMLElement | undefined>(undefined);
   let status = $state<HTMLElement | undefined>(undefined);
   let failure = $state<string | undefined>(undefined);
+  let liveSurface = $state<NoteSurface | undefined>(undefined);
+  let appliedEdit: object | undefined;
 
   const bootstrap = $derived(
     session === undefined || tab === undefined
@@ -57,6 +63,8 @@
    */
   const editorTab = $derived(tab?.id);
   const editorNote = $derived(tab?.note);
+  const previousDaily = $derived(tab === undefined ? undefined : daily?.neighbourForPath(tab.note, -1));
+  const nextDaily = $derived(tab === undefined ? undefined : daily?.neighbourForPath(tab.note, 1));
 
   $effect(() => {
     if (editorTab === undefined || editorNote === undefined) return;
@@ -78,6 +86,7 @@
           return;
         }
         opened = result;
+        liveSurface = result;
         // why: the pane, not the surface. `.note-pane` is what has `overflow: auto`
         // (`app.css`); the surface inside it never scrolls, so both the restore and the
         // `onscroll` below used to address an element whose `scrollTop` is always 0 — §8.1's
@@ -93,7 +102,14 @@
       live = false;
       void opened?.destroy();
       opened = undefined;
+      liveSurface = undefined;
     };
+  });
+
+  $effect(() => {
+    if (taskEdit === undefined || liveSurface === undefined || appliedEdit === taskEdit) return;
+    liveSurface.editTask?.(taskEdit.ordinal, taskEdit.action);
+    appliedEdit = taskEdit;
   });
 
   /**
@@ -126,6 +142,12 @@
 {:else}
   {#key `${tab.id}:${tab.note}`}
     <div class="note-pane" bind:this={pane} onscroll={reportScroll}>
+      {#if previousDaily !== undefined || nextDaily !== undefined}
+        <nav class="daily-navigation" aria-label="Daily note navigation">
+          <button type="button" aria-label="Previous day" disabled={previousDaily === undefined} onclick={() => previousDaily && ondailyopen?.(previousDaily.path)}>Previous day</button>
+          <button type="button" aria-label="Next day" disabled={nextDaily === undefined} onclick={() => nextDaily && ondailyopen?.(nextDaily.path)}>Next day</button>
+        </nav>
+      {/if}
       <section
         class="editor-panel"
         aria-label={`Note editor: ${tab.note}`}

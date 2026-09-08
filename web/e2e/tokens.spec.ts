@@ -112,7 +112,7 @@ test("the task inspector's controls clear the touch floor when a task is selecte
   // route to completing a task on a phone. A control nobody can hit is not a route.
   await signIn(page);
   await page.goto("/v/personal/Projects/Roadmap.md");
-  await page.getByText("Ship the workspace shell").click();
+  await page.locator(".editor-surface").getByText("Ship the workspace shell").click();
 
   const inspector = page.locator(".task-inspector");
   await expect(inspector).toBeVisible();

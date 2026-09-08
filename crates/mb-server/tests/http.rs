@@ -858,7 +858,7 @@ fn an_unknown_route_is_not_found() {
     assert!(is_not_found(&server.status("/nonsense")));
     // The API surface is added milestone by milestone; anything not yet built is absent
     // rather than stubbed, because a route that answers is a route someone will use.
-    assert!(is_not_found(&server.status("/api/v1/vaults/v/search")));
+    assert!(is_not_found(&server.status("/api/v1/vaults/v/history")));
     assert!(is_not_found(&server.status("/api/v1/vaults/v/clip")));
 }
 
@@ -1591,13 +1591,19 @@ fn the_note_index_lists_only_readable_notes_with_their_titles() {
     // — which makes this the largest single disclosure surface in the application, and the
     // one where a missing filter is least likely to be noticed by looking at the screen.
     let dir = TempDir::new("http-note-index");
-    dir.write("Public.md", "# The Public One\n\nBody.\n");
+    dir.write(
+        "Public.md",
+        "# The Public One\n\nBody.\n\n- [ ] Shared task\n",
+    );
     dir.write("Untitled.md", "");
     dir.write(
         "Conflicted.md",
         "# Conflicted\n\nMine.\n\n> [!conflict] Conflicting version — external edit, now\n>\n> Theirs.\n",
     );
-    dir.write("Private/Salary.md", "# Salary Review\n");
+    dir.write(
+        "Private/Salary.md",
+        "# Salary Review\n\n- [ ] Secret compensation task\n",
+    );
     dir.write(
         "access.toml",
         "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
@@ -1656,6 +1662,10 @@ fn the_note_index_lists_only_readable_notes_with_their_titles() {
         body.contains("\"path\":\"Public.md\",\"title\":\"The Public One\",\"conflicts\":0"),
         "and be zero for a note without one: {body}"
     );
+    assert!(
+        body.contains("Shared task"),
+        "task metadata should be eager: {body}"
+    );
 
     // The viewer denied `Private` sees neither the path nor the title.
     let (status, body) = server.get_with_headers(route, &bob_header);
@@ -1666,6 +1676,10 @@ fn the_note_index_lists_only_readable_notes_with_their_titles() {
         "a denied note must not be named: {body}"
     );
     assert!(!body.contains("Private"), "nor its folder: {body}");
+    assert!(
+        !body.contains("Secret compensation task"),
+        "nor its task text: {body}"
+    );
 
     // A non-member gets the same answer as an unknown vault — not an empty list, which would
     // confirm the vault exists (§6.5).
@@ -2595,6 +2609,35 @@ fn backlinks_accept_a_note_path_with_its_separators_encoded() {
     assert!(body.contains("Q3.md"), "{body}");
 }
 
+#[test]
+fn the_backlinks_route_separates_unlinked_mentions_from_links() {
+    // §9.5, over real HTTP: the two halves of the panel come from one request, and a note
+    // that links here belongs to exactly one of them.
+    let dir = TempDir::new("http-mentions");
+    dir.write("Projects/Roadmap.md", "# Product Roadmap\n\nBody.\n");
+    dir.write("Linked.md", "# Linked\n\nsee [[Projects/Roadmap]]\n");
+    dir.write(
+        "Mentions.md",
+        "# Mentions\n\nThe Product Roadmap is agreed.\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/backlinks/Projects/Roadmap.md");
+    assert!(is_ok(&status), "{status}");
+    let response: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let sources = response["sources"].as_array().expect("sources");
+    let mentions = response["mentions"].as_array().expect("mentions");
+    assert_eq!(sources.len(), 1, "{body}");
+    assert_eq!(sources[0]["path"], "Linked.md", "{body}");
+    assert_eq!(mentions.len(), 1, "{body}");
+    assert_eq!(mentions[0]["path"], "Mentions.md", "{body}");
+    assert_eq!(mentions[0]["title"], "Mentions", "{body}");
+    assert_eq!(
+        mentions[0]["contexts"][0], "The Product Roadmap is agreed.",
+        "{body}"
+    );
+}
+
 // ------------------------------------------------------------------------ graph
 
 #[test]
@@ -2988,6 +3031,208 @@ fn a_whole_vault_graph_is_never_cached() {
     assert!(
         headers.to_lowercase().contains("cache-control: no-store"),
         "{headers}"
+    );
+}
+
+// ------------------------------------------------------------------------ search
+
+// ------------------------------------------------------------------------- tasks
+
+#[test]
+fn task_inbox_filters_sorts_and_is_never_cached() {
+    let dir = TempDir::new("http-tasks");
+    dir.write(
+        "Projects/Plan.md",
+        "---\ntags: [work/shipping]\n---\n\n- [ ] Ship 📅 2026-09-10 ➕ 2026-09-01 ⏫ ^ship\n- [x] Done ✅ 2026-09-02\n",
+    );
+    dir.write(
+        "Projects/Other.md",
+        "---\ntags: [work]\n---\n\n- [ ] Lower priority 📅 2026-09-09 🔽\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let route = "/api/v1/vaults/v/tasks?folder=Projects&tag=work&priority=high&due_from=2026-09-09&due_to=2026-09-11&sort=created";
+
+    let (status, body) = server.get(route);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Projects/Plan.md"), "{body}");
+    assert!(body.contains("\"block_id\":\"ship\""), "{body}");
+    assert!(body.contains("\"priority\":\"high\""), "{body}");
+    assert!(!body.contains("Lower priority"), "{body}");
+    assert!(!body.contains("Done"), "{body}");
+    assert!(
+        server
+            .headers(route)
+            .to_lowercase()
+            .contains("cache-control: no-store")
+    );
+}
+
+#[test]
+fn task_inbox_rejects_invalid_filter_values() {
+    let dir = TempDir::new("http-tasks-invalid");
+    dir.write("A.md", "- [ ] Task\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for query in [
+        "priority=urgent",
+        "due_from=2026-02-30",
+        "due_from=2026-09-11&due_to=2026-09-10",
+        "sort=rank",
+    ] {
+        let (status, body) = server.get(&format!("/api/v1/vaults/v/tasks?{query}"));
+        assert!(status.contains("400"), "{query}: {status}");
+        assert!(body.contains("error"), "{query}: {body}");
+    }
+}
+
+#[test]
+fn search_returns_matched_block_context_and_is_never_cached() {
+    let dir = TempDir::new("http-search");
+    dir.write(
+        "Projects/Roadmap.md",
+        "# Product Roadmap\n\nThe orchard release ships Friday.\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/search?q=orchard");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Projects/Roadmap.md"), "{body}");
+    assert!(
+        body.contains("The orchard release ships Friday."),
+        "the matched block is the context: {body}"
+    );
+    assert!(
+        server
+            .headers("/api/v1/vaults/v/search?q=orchard")
+            .to_lowercase()
+            .contains("cache-control: no-store")
+    );
+}
+
+#[test]
+fn client_search_manifest_and_segments_are_acl_filtered_and_never_cached() {
+    let dir = TempDir::new("http-client-search-segments");
+    dir.write("Shared.md", "# Visible Canary\n\nordinary text\n");
+    dir.write(
+        "Private/Salary.md",
+        "# Forbidden Canary\n\nclassified salary\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, manifest) = server.get("/api/v1/vaults/v/search/segments");
+    assert!(is_ok(&status), "{status}");
+    let manifest: serde_json::Value = serde_json::from_str(&manifest).expect("manifest JSON");
+    let segments = manifest["segments"].as_array().expect("segments array");
+    assert_eq!(segments.len(), 1, "the owner has one root zone");
+    let zone_id = segments[0]["zoneId"].as_str().expect("zone ID");
+    let acl_hash = segments[0]["aclHash"].as_str().expect("ACL hash");
+
+    let route = format!("/api/v1/vaults/v/search/segments/{zone_id}?acl_hash={acl_hash}");
+    let (head, bytes) = server.get_raw(&route, "");
+    assert!(head.contains("200"), "{head}");
+    assert!(head.contains("cache-control: no-store"), "{head}");
+    assert!(
+        head.contains("application/vnd.memberberry.search-index;version=1"),
+        "{head}"
+    );
+    assert!(
+        bytes
+            .windows(b"Visible Canary".len())
+            .any(|window| window == b"Visible Canary")
+    );
+    assert!(
+        bytes
+            .windows(b"Forbidden Canary".len())
+            .any(|window| window == b"Forbidden Canary")
+    );
+
+    let (status, _) = server.get(&format!(
+        "/api/v1/vaults/v/search/segments/{zone_id}?acl_hash=not-the-current-epoch"
+    ));
+    assert!(
+        is_not_found(&status),
+        "a stale manifest must not retrieve bytes: {status}"
+    );
+}
+
+#[test]
+fn search_names_only_notes_the_caller_can_read() {
+    let dir = TempDir::new("http-search-acl");
+    dir.write("Public.md", "ordinary visible words\n");
+    dir.write("Private/Salary.md", "The canary salary is private.\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("viewer");
+    let header = |id| {
+        let token = auth.create_session(id, 4_102_444_800).expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("sign cookie")
+        )
+    };
+    let alice_header = header(alice.id);
+    let bob_header = header(bob.id);
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("state");
+    let server = TestServer::start(state);
+    let route = "/api/v1/vaults/v/search?q=canary";
+
+    let (status, body) = server.get_with_headers(route, &alice_header);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Salary.md"), "{body}");
+
+    let (status, body) = server.get_with_headers(route, &bob_header);
+    assert!(is_ok(&status), "{status}");
+    assert_eq!(body, "{\"hits\":[]}");
+}
+
+#[test]
+fn malformed_search_syntax_is_a_bounded_client_error() {
+    let dir = TempDir::new("http-search-invalid");
+    dir.write("A.md", "some words\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/search?q=title%3A%28");
+    assert!(status.contains("400"), "{status}");
+    assert!(body.contains("error"), "{body}");
+}
+
+#[test]
+fn search_follows_an_external_edit_on_the_next_index_tick() {
+    let dir = TempDir::new("http-search-edit");
+    dir.write("A.md", "beforeword\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    assert!(
+        server
+            .get("/api/v1/vaults/v/search?q=afterword")
+            .1
+            .contains("\"hits\":[]")
+    );
+
+    dir.write("A.md", "afterword with a changed length\n");
+    server.tick();
+    let (_, body) = server.get("/api/v1/vaults/v/search?q=afterword");
+    assert!(body.contains("A.md"), "{body}");
+    assert!(
+        !body.contains("beforeword"),
+        "stale context survived: {body}"
     );
 }
 
@@ -3616,7 +3861,8 @@ fn resolving_a_reference_is_never_cached() {
 #[test]
 fn backlinks_are_never_cached() {
     // Note titles and note text, filtered per user. A shared cache would serve one user's
-    // filtered view to another.
+    // filtered view to another — and since §9.5's unlinked mentions ride this same response,
+    // it would serve whole sentences out of notes the second user cannot read.
     let dir = TempDir::new("http-backlinks-cache");
     dir.write("A.md", "# A\n");
     dir.write("B.md", "[[A]]\n");
@@ -3863,6 +4109,44 @@ fn a_created_note_is_in_the_note_index_on_the_very_next_request() {
     // not see a vault that has forgotten what it just did.
     let (_, body) = server.get("/api/v1/vaults/v/notes");
     assert!(body.contains("Fresh.md"), "{body}");
+}
+
+#[test]
+fn daily_index_reports_configured_readable_dates_only() {
+    let dir = TempDir::new("http-daily");
+    dir.write(
+        ".memberberry/config.toml",
+        "daily_folder = \"Journal\"\ndaily_note_format = \"%d-%m-%Y.md\"\n\
+         weekly_folder = \"Periods/Weeks\"\nweekly_note_format = \"%G/week-%V.md\"\n\
+         monthly_folder = \"Periods/Months\"\nmonthly_note_format = \"%Y/%m.md\"\n",
+    );
+    dir.write("Journal/08-09-2026.md", "# Public day\n");
+    dir.write("Journal/09-09-2026.md", "# Private day\n");
+    dir.write("Periods/Weeks/2026/week-37.md", "# Public week\n");
+    dir.write("Periods/Weeks/2026/week-38.md", "# Private week\n");
+    dir.write("Periods/Months/2026/09.md", "# Public month\n");
+    dir.write("Periods/Months/2026/10.md", "# Private month\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[rules]]\npath = \"Journal/09-09-2026.md\"\n[rules.grant]\nalice = \"none\"\n\n\
+         [[rules]]\npath = \"Periods/Weeks/2026/week-38.md\"\n[rules.grant]\nalice = \"none\"\n\n\
+         [[rules]]\npath = \"Periods/Months/2026/10.md\"\n[rules.grant]\nalice = \"none\"\n",
+    );
+    let server = TestServer::authenticated(vec![
+        Vault::open(Slug::parse("v").expect("slug"), "V", dir.path()).expect("open"),
+    ]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/daily");
+
+    assert!(is_ok(&status), "{status} {body}");
+    assert!(body.contains("\"folder\":\"Journal\""), "{body}");
+    assert!(body.contains("\"date\":\"2026-09-08\""), "{body}");
+    assert!(!body.contains("2026-09-09"), "{body}");
+    assert!(body.contains("Periods/Weeks/2026/week-37.md"), "{body}");
+    assert!(body.contains("Periods/Months/2026/09.md"), "{body}");
+    assert!(!body.contains("week-38"), "{body}");
+    assert!(!body.contains("Periods/Months/2026/10.md"), "{body}");
 }
 
 #[test]
