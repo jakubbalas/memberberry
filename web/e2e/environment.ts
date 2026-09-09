@@ -137,6 +137,16 @@ function scratchBody(purpose: string, project: string): string {
 /** Notes the suite can rely on being present. Kept small and canonical on purpose. */
 export const E2E_NOTES: Readonly<Record<string, string>> = {
   "Welcome.md": "# Welcome\n\nA note that already exists, for the reader to open.\n",
+  "Drawings/Host.desktop.md": "# Drawing host\n\n![[Diagram.desktop.excalidraw]]\n",
+  "Drawings/Host.mobile.md": "# Drawing host\n\n![[Diagram.mobile.excalidraw]]\n",
+  "drawings/Diagram.desktop.excalidraw.md":
+    "---\nexcalidraw-plugin: parsed\n---\n\n# Drawing\n```compressed-json\n"
+    + '{"type":"excalidraw","version":2,"source":"https://excalidraw.com","elements":[{"id":"rect","type":"rectangle","x":0,"y":0,"width":120,"height":80,"angle":0,"strokeColor":"#1e1e1e","backgroundColor":"#ffffff","fillStyle":"solid","strokeWidth":2,"strokeStyle":"solid","roughness":1,"opacity":100,"groupIds":[],"frameId":null,"index":"a0","roundness":{"type":3},"seed":1,"version":1,"versionNonce":1,"isDeleted":false,"boundElements":[],"updated":1,"link":null,"locked":false}],"appState":{"viewBackgroundColor":"#ffffff","collaborators":[]},"files":{}}'
+    + "\n```\n",
+  "drawings/Diagram.mobile.excalidraw.md":
+    "---\nexcalidraw-plugin: parsed\n---\n\n# Drawing\n```compressed-json\n"
+    + '{"type":"excalidraw","version":2,"source":"https://excalidraw.com","elements":[{"id":"rect","type":"rectangle","x":0,"y":0,"width":120,"height":80,"angle":0,"strokeColor":"#1e1e1e","backgroundColor":"#ffffff","fillStyle":"solid","strokeWidth":2,"strokeStyle":"solid","roughness":1,"opacity":100,"groupIds":[],"frameId":null,"index":"a0","roundness":{"type":3},"seed":1,"version":1,"versionNonce":1,"isDeleted":false,"boundElements":[],"updated":1,"link":null,"locked":false}],"appState":{"viewBackgroundColor":"#ffffff","collaborators":[]},"files":{}}'
+    + "\n```\n",
   [CURRENT_PERIODIC_NOTES.weekly]: "# Current week\n\nA readable weekly note.\n",
   [CURRENT_PERIODIC_NOTES.monthly]: "# Current month\n\nA readable monthly note.\n",
   // Read-only: nothing in the suite may edit this one, which is what lets a test assert on

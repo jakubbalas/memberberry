@@ -1128,6 +1128,73 @@ fn a_note_renders_as_html() {
 }
 
 #[test]
+fn an_editor_can_save_and_read_an_excalidraw_markdown_scene() {
+    let dir = TempDir::new("http-drawing");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let markdown = "---\nexcalidraw-plugin: parsed\n---\n\n# Drawing\n```compressed-json\n{\"type\":\"excalidraw\",\"elements\":[]}\n```\n";
+    let request = serde_json::json!({ "markdown": markdown }).to_string();
+
+    let (status, body) =
+        server.put_json("/api/v1/vaults/v/drawings/plan.excalidraw.md", "", &request);
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(body.contains("\"type\":\"excalidraw\""), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("drawings/plan.excalidraw.md"))
+            .expect("saved drawing"),
+        markdown
+    );
+
+    let (status, body) = server.get("/api/v1/vaults/v/drawings/plan.excalidraw.md");
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(body.contains("\"elements\":[]"), "{body}");
+
+    let exports = serde_json::json!({
+        "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+        "png": "data:image/png;base64,iVBORw0KGgo="
+    })
+    .to_string();
+    let (status, body) = server.put_json(
+        "/api/v1/vaults/v/drawing-exports/plan.excalidraw.md",
+        "",
+        &exports,
+    );
+    assert!(status.contains("204 No Content"), "{status}: {body}");
+    assert!(dir.path().join("drawings/plan.excalidraw.svg").is_file());
+    assert!(dir.path().join("drawings/plan.excalidraw.png").is_file());
+
+    let stale = serde_json::json!({ "markdown": markdown, "base": "stale" }).to_string();
+    let (status, _) = server.put_json("/api/v1/vaults/v/drawings/plan.excalidraw.md", "", &stale);
+    assert!(status.contains("409 Conflict"), "{status}");
+}
+
+#[test]
+fn an_unreadable_or_unsafe_excalidraw_path_is_not_found() {
+    let dir = TempDir::new("http-drawing-denied");
+    dir.write(
+        "drawings/private.excalidraw.md",
+        "# Drawing\n```json\n{\"type\":\"excalidraw\",\"elements\":[]}\n```\n",
+    );
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n[[rules]]\npath = \"drawings/private.excalidraw.md\"\ngrant = { alice = \"none\" }\n",
+    );
+    let server = TestServer::authenticated(vec![
+        Vault::open(Slug::parse("v").expect("slug"), "V", dir.path()).expect("vault"),
+    ]);
+
+    assert!(is_not_found(
+        &server
+            .get("/api/v1/vaults/v/drawings/private.excalidraw.md")
+            .0
+    ));
+    assert!(is_not_found(
+        &server
+            .get("/api/v1/vaults/v/drawings/../private.excalidraw.md")
+            .0
+    ));
+}
+
+#[test]
 fn a_note_resolves_without_its_extension() {
     // That is the shape a wikilink produces, so the links on the page have to work.
     let dir = TempDir::new("http-ext");

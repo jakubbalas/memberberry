@@ -174,6 +174,16 @@ body {
 .note-embed-body .mb-tag { color: var(--text-muted); }
 .note-embed-body :is(pre, code) { font-family: var(--font-mono); }
 .note-embed-body pre { overflow-x: auto; padding: var(--space-4); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.note-drawing { display: block; min-height: 12rem; margin: var(--editor-block-gap) 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); overflow: hidden; }
+.drawing-preview { display: block; width: 100%; min-height: 12rem; padding: var(--space-4); border: 0; color: var(--text-primary); background: var(--surface-raised); cursor: pointer; }
+.drawing-preview:hover { background: var(--surface-sunken); }
+.drawing-preview:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-offset)); }
+[data-drawing-preview] { display: block; min-height: 9rem; }
+[data-drawing-preview] svg { display: block; width: 100%; max-height: 24rem; }
+.drawing-preview-label { display: block; margin-top: var(--space-2); color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.drawing-editor { height: 32rem; min-height: 32rem; }
+.drawing-editor .excalidraw { width: 100%; height: 100%; }
+.drawing-error { margin: 0; padding: var(--space-3) var(--space-4); color: var(--state-danger); background: var(--surface-sunken); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
 
 .task-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .task-chip-inline { display: inline-flex; align-items: baseline; gap: var(--space-2); padding: var(--space-1) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-raised); font: var(--weight-medium) var(--text-2xs)/var(--leading-snug) var(--font-ui); white-space: nowrap; }

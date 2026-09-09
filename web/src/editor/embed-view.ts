@@ -34,6 +34,7 @@ import {
   resolveEmbed,
 } from "./embed.js";
 import { type OpenNoteIntent, openIntent, referenceOf, requestOpenNote } from "./links.js";
+import { DrawingBlock, drawingExportsUrl, drawingUrl, readDrawing } from "./drawing.js";
 
 /** What an embed needs to know about the note it is written in. */
 export interface EmbedContext {
@@ -42,6 +43,8 @@ export interface EmbedContext {
   readonly note: string;
   /** Injectable so a test can drive the outcomes without a server. */
   readonly resolve?: typeof resolveEmbed;
+  /** Whether an expanded drawing may write back to its Markdown source. */
+  readonly editable?: boolean;
 }
 
 /**
@@ -261,6 +264,7 @@ export class EmbedBlock {
   }
 }
 
+
 /**
  * The ProseMirror node view for a wikilink.
  *
@@ -273,6 +277,7 @@ export class EmbedBlock {
 class WikiLinkView implements NodeView {
   readonly dom: HTMLElement;
   private readonly embed: EmbedBlock | undefined;
+  private readonly drawing: DrawingBlock | undefined;
   private readonly onClick: ((event: MouseEvent) => void) | undefined;
 
   constructor(context: EmbedContext, private node: ProseMirrorNode) {
@@ -295,6 +300,32 @@ class WikiLinkView implements NodeView {
         });
       };
       this.dom.addEventListener("click", this.onClick);
+      return;
+    }
+    if (isDrawingTarget(node.attrs["target"])) {
+      const target = String(node.attrs["target"]);
+      this.drawing = new DrawingBlock(
+        { vault: context.vault, target },
+        context.editable ?? false,
+        async (markdown, base, exports) => {
+          const response = await fetch(drawingUrl(context.vault, target), {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ markdown, base }),
+          });
+          if (!response.ok) throw new Error("drawing could not be saved");
+          const saved: unknown = await response.json();
+          const revision = readDrawing(saved).revision;
+          const exportResponse = await fetch(drawingExportsUrl(context.vault, target), {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ...exports, base: revision }),
+          });
+          if (!exportResponse.ok) throw new Error("drawing exports could not be saved");
+          return revision;
+        },
+      );
+      this.dom = this.drawing.dom;
       return;
     }
     const anchorKind = node.attrs["anchor_kind"];
@@ -333,8 +364,13 @@ class WikiLinkView implements NodeView {
 
   destroy(): void {
     this.embed?.destroy();
+    this.drawing?.destroy();
     if (this.onClick !== undefined) this.dom.removeEventListener("click", this.onClick);
   }
+}
+
+function isDrawingTarget(target: unknown): target is string {
+  return typeof target === "string" && /(?:^|\/)\S+\.excalidraw(?:\.md)?$/i.test(target);
 }
 
 /** The reference a wikilink *node* carries, as `links.ts` reads one off an element. */

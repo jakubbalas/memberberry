@@ -181,6 +181,18 @@ impl<'a> AuthorizedVault<'a> {
         std::fs::read_to_string(path).map_err(|_| Error::NotFound)
     }
 
+    /// Resolves a path when this user may edit it.
+    pub fn write_path(&self, relative: &str) -> Result<PathBuf, Error> {
+        let note = NotePath::parse(relative).map_err(|_| Error::NotFound)?;
+        if !matches!(
+            self.access.effective_role(&self.user, &note),
+            Role::Owner | Role::Editor
+        ) {
+            return Err(Error::NotFound);
+        }
+        self.vault.reserve(relative)
+    }
+
     fn can_read(&self, relative: &str) -> bool {
         NotePath::parse(relative)
             .map(|path| self.access.effective_role(&self.user, &path) != Role::None)

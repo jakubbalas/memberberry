@@ -1,0 +1,3 @@
+{
+  "allow_instructions": "shell commands that only affect this project and run in this project folder are fine to run without asking."
+}

@@ -335,7 +335,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     // nothing to ask and renders an embed as the plain link it was before.
     ...(bootstrap === undefined
       ? {}
-      : { embeds: { vault: bootstrap.vault, note: bootstrap.note } }),
+      : { embeds: { vault: bootstrap.vault, note: bootstrap.note, editable: true } }),
     ...(bootstrap === undefined ? {} : { media: { vault: bootstrap.vault } }),
     ...(remoteSync === undefined ? {} : { remoteSync }),
     ...(options.createPersistence === undefined

@@ -1,11 +1,40 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+function excalidrawFonts(): Plugin {
+  const fonts = join(process.cwd(), "node_modules/@excalidraw/excalidraw/dist/prod/fonts");
+  return {
+    name: "memberberry-excalidraw-fonts",
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        output.code = output.code.replace(
+          "https://esm.sh/${`${Ze.PKG_NAME}@${Ze.PKG_VERSION}`}/dist/prod/",
+          "${window.location.origin}/assets/excalidraw/",
+        );
+      }
+      const visit = (directory: string, relative = ""): void => {
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          const path = join(directory, entry.name);
+          const assetPath = join(relative, entry.name);
+          if (entry.isDirectory()) visit(path, assetPath);
+          else if (entry.name.endsWith(".woff2")) {
+            this.emitFile({ type: "asset", fileName: `assets/excalidraw/fonts/${assetPath}`, source: readFileSync(path) });
+          }
+        }
+      };
+      visit(fonts);
+    },
+  };
+}
 
 // AGENTS.md §5.1 reserves 9011 for the frontend when it runs separately from the server on
 // 9010. `strictPort` so a clash fails loudly instead of silently moving — a moved port is a
 // confusing five minutes when the server's links stop matching.
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte(), excalidrawFonts()],
 
   // why: the manifest is what tells the performance harness which chunks a first visit
   // actually downloads. §21.2 budgets the *initial* JS, and from M8's graph onwards not every

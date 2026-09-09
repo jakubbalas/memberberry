@@ -386,6 +386,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/vaults/{slug}/media/{*media}", get(media))
         .route(
+            "/api/v1/vaults/{slug}/drawings/{*drawing}",
+            get(drawing)
+                .put(drawing_save)
+                .layer(DefaultBodyLimit::max(4 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v1/vaults/{slug}/drawing-exports/{*drawing}",
+            put(drawing_exports).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        .route(
             "/api/v1/vaults/{slug}/search/segments",
             get(search_segments),
         )
@@ -2804,6 +2814,135 @@ async fn media(
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
         bytes,
+    )
+        .into_response()
+}
+
+/// `GET /api/v1/vaults/{slug}/drawings/{drawing}` — one authorized Excalidraw scene.
+async fn drawing(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, drawing)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let relative = format!("drawings/{drawing}");
+    if !is_excalidraw_path(&relative) {
+        return workspace_denied();
+    }
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(path) = view.resolve(&relative) else {
+        return workspace_denied();
+    };
+    match crate::drawings::read(&path) {
+        Ok(drawing) => json_no_store(&drawing),
+        Err(crate::drawings::Error::Io(_)) => workspace_denied(),
+        Err(error) => drawing_bad_request(&error),
+    }
+}
+
+/// `PUT /api/v1/vaults/{slug}/drawings/{drawing}` — replace one scene source.
+async fn drawing_save(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, drawing)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<crate::drawings::SaveDrawing>,
+) -> Response {
+    let relative = format!("drawings/{drawing}");
+    if !is_excalidraw_path(&relative) {
+        return workspace_denied();
+    }
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(user) = state.vault_user(vault.slug(), &headers) else {
+        return workspace_denied();
+    };
+    let view = AuthorizedVault::new(vault, &access, user);
+    if let Some(base) = request.base.as_deref() {
+        let Ok(current_path) = view.resolve(&relative) else {
+            return drawing_conflict();
+        };
+        let Ok(current) = std::fs::read_to_string(current_path) else {
+            return drawing_conflict();
+        };
+        if crate::drawings::revision(&current) != base {
+            return drawing_conflict();
+        }
+    }
+    let Ok(path) = view.write_path(&relative) else {
+        return workspace_denied();
+    };
+    match crate::drawings::write(&path, request.markdown) {
+        Ok(drawing) => json_no_store(&drawing),
+        Err(error) => drawing_bad_request(&error),
+    }
+}
+
+/// `PUT /api/v1/vaults/{slug}/drawing-exports/{drawing}` — stores derived previews.
+async fn drawing_exports(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, drawing)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    Json(exports): Json<crate::drawings::SaveExports>,
+) -> Response {
+    let relative = format!("drawings/{drawing}");
+    if !is_excalidraw_path(&relative) {
+        return workspace_denied();
+    }
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(path) = view.resolve(&relative) else {
+        return workspace_denied();
+    };
+    if let Some(base) = exports.base.as_deref() {
+        let Ok(current) = std::fs::read_to_string(&path) else {
+            return drawing_conflict();
+        };
+        if crate::drawings::revision(&current) != base {
+            return drawing_conflict();
+        }
+    }
+    match crate::drawings::write_exports(&path, exports) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => drawing_bad_request(&error),
+    }
+}
+
+fn is_excalidraw_path(path: &str) -> bool {
+    path.starts_with("drawings/") && path.ends_with(".excalidraw.md")
+}
+
+fn drawing_bad_request(error: &crate::drawings::Error) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::json!({ "error": error.to_string() }).to_string(),
+    )
+        .into_response()
+}
+
+fn drawing_conflict() -> Response {
+    (
+        StatusCode::CONFLICT,
+        [(header::CONTENT_TYPE, "application/json")],
+        r#"{"error":"drawing changed; reload before saving"}"#,
     )
         .into_response()
 }
