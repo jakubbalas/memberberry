@@ -120,6 +120,40 @@ fn an_unknown_command_fails_and_shows_usage() {
     assert!(message.contains("USAGE:"), "{message}");
 }
 
+#[test]
+fn export_materialize_media_is_a_no_op_for_a_local_vault() {
+    let dir = TempDir::new("materialize-local");
+    dir.write("Note.md", "# Note\n");
+    let config = config_for(&dir, dir.path());
+    let (code, out) = run(&[
+        "export",
+        "--materialize-media",
+        "--config",
+        config.to_str().expect("config path"),
+    ]);
+    assert!(is_success(code));
+    assert!(out.contains("materialized 0 media objects"), "{out}");
+}
+
+#[test]
+fn doctor_reports_unreferenced_local_media() {
+    let dir = TempDir::new("doctor-media");
+    dir.write("Note.md", "# Note\n");
+    let vault = mb_server::Vault::open(
+        mb_server::Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let orphan = mb_server::media::LocalStore::new(&vault)
+        .put(b"orphan", "png")
+        .expect("object");
+    let config = config_for(&dir, dir.path());
+    let (code, out) = run(&["doctor", "--config", config.to_str().expect("config path")]);
+    assert!(!is_success(code));
+    assert!(out.contains(&format!("orphaned media {orphan}")), "{out}");
+}
+
 // ---------------------------------------------------------------- users
 
 #[test]

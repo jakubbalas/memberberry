@@ -25,6 +25,16 @@ function element(attributes: Readonly<Record<string, string>>): HTMLElement {
 }
 
 describe("reading the bootstrap", () => {
+  it("accepts the bounded media dimension supplied by the vault", () => {
+    const target = element({
+      "data-vault": "personal",
+      "data-note": "One.md",
+      "data-user": "alice",
+      "data-media-max-dimension": "1440",
+    });
+    expect(readNoteBootstrap(target)?.mediaMaxDimension).toBe(1440);
+  });
+
   it("returns what the server filled in", () => {
     const target = element({
       "data-vault": "personal",

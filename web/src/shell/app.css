@@ -106,6 +106,7 @@ body {
 .task-checkbox:hover { border-color: var(--accent-primary); }
 .task-item[data-task-status="done"] > .task-checkbox { border-color: var(--accent-primary); background: var(--accent-primary); }
 .task-item[data-task-status="cancelled"] > .task-checkbox { border-color: var(--text-muted); background: var(--text-muted); }
+.media-pdf-viewer { display: block; width: 100%; min-height: 32rem; margin: var(--space-4) 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); }
 /* Completed and cancelled text is struck through, which is what the `[x]` and `[-]` in the
    file mean. Only the text: the chips stay legible so a due date is still readable. */
 .task-item[data-task-status="done"] > .task-line > .task-body,

@@ -13,6 +13,7 @@ import { PROSEMIRROR_ROOT, createConnectionStatus, createYjsBinding } from "./co
 import { conflictViews } from "./conflict-view.js";
 import { conflictMessage, connectionMessage, mountEditorShell } from "./editor-shell.js";
 import { PRESENCE_CLIENT_ATTRIBUTE } from "./presence.js";
+import { pdfViews } from "./pdf-view.js";
 import { createMemberberryExtensions } from "./schema.js";
 import { taskItemView } from "./task-view.js";
 
@@ -58,6 +59,163 @@ describe("editor shell", () => {
     expect(controls).not.toBeNull();
     shell.destroy();
     expect(panel.querySelector(".editor-controls")).toBeNull();
+    editor.destroy();
+    ydoc.destroy();
+    panel.remove();
+    status.remove();
+  });
+
+  it("uploads pasted and dropped images, inserts Markdown-relative nodes, and tears down", async () => {
+    const panel = document.createElement("section");
+    const surface = document.createElement("div");
+    const status = document.createElement("p");
+    panel.append(surface);
+    document.body.append(panel, status);
+    const editor = new Editor({
+      element: surface,
+      extensions: createMemberberryExtensions(contract, { vault: "personal" }),
+    });
+    const ydoc = new Doc();
+    applyUpdate(ydoc, await updateFromMarkdown("# Initial\n"));
+    const upload = vi.fn(async (file: File) => ({
+      path: "media/ab/cd/uploaded.png",
+      name: file.name,
+    }));
+    const destroyUploader = vi.fn();
+    const shell = mountEditorShell({
+      editor,
+      document: ydoc,
+      panel,
+      status,
+      mediaUploader: { upload, flush: async () => undefined, destroy: destroyUploader },
+    });
+    const image = new File(["pixels"], "screen.png", { type: "image/png" });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => null,
+    });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: { files: [image], getData: () => "" },
+    });
+    editor.view.dom.dispatchEvent(paste);
+    await tick();
+    expect(paste.defaultPrevented).toBe(true);
+    expect(upload).toHaveBeenCalledWith(image);
+    expect(JSON.stringify(editor.getJSON())).toContain('"media/ab/cd/uploaded.png"');
+    expect(surface.querySelector("img")?.getAttribute("src")).toBe(
+      "/api/v1/vaults/personal/media/media/ab/cd/uploaded.png?thumbnail=1600",
+    );
+
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { files: [image] } });
+    editor.view.dom.dispatchEvent(drop);
+    await tick();
+    expect(drop.defaultPrevented).toBe(true);
+    expect(upload).toHaveBeenCalledTimes(2);
+
+    const svgPaste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(svgPaste, "clipboardData", {
+      value: { files: [new File(["<svg/>"], "active.svg", { type: "image/svg+xml" })], getData: () => "" },
+    });
+    editor.view.dom.dispatchEvent(svgPaste);
+    await tick();
+    expect(svgPaste.defaultPrevented).toBe(false);
+    expect(upload).toHaveBeenCalledTimes(2);
+
+    shell.destroy();
+    expect(destroyUploader).toHaveBeenCalledOnce();
+    expect(panel.querySelector(".media-controls")).toBeNull();
+    editor.destroy();
+    ydoc.destroy();
+    panel.remove();
+    status.remove();
+  });
+
+  it("swaps an optimistic offline image for its flushed content address", async () => {
+    const panel = document.createElement("section");
+    const surface = document.createElement("div");
+    const status = document.createElement("p");
+    panel.append(surface);
+    document.body.append(panel, status);
+    const editor = new Editor({ element: surface, extensions: createMemberberryExtensions(contract) });
+    const ydoc = new Doc();
+    applyUpdate(ydoc, await updateFromMarkdown("# Initial\n"));
+    let resolvePending: ((result: { path: string }) => void) | undefined;
+    const pending = new Promise<{ path: string }>((resolve) => { resolvePending = resolve; });
+    const shell = mountEditorShell({
+      editor,
+      document: ydoc,
+      panel,
+      status,
+      mediaUploader: {
+        upload: async () => ({ path: "blob:optimistic", pending }),
+        flush: async () => undefined,
+        destroy: () => undefined,
+      },
+    });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        files: [new File(["pixels"], "screen.png", { type: "image/png" })],
+        getData: () => "",
+      },
+    });
+    editor.view.dom.dispatchEvent(paste);
+    await tick();
+    expect(JSON.stringify(editor.getJSON())).toContain("blob:optimistic");
+    resolvePending?.({ path: "media/ab/cd/uploaded.png" });
+    await tick();
+    expect(JSON.stringify(editor.getJSON())).not.toContain("blob:optimistic");
+    expect(JSON.stringify(editor.getJSON())).toContain("media/ab/cd/uploaded.png");
+    expect(status.textContent).toBe("Queued image uploaded.");
+    shell.destroy();
+    editor.destroy();
+    ydoc.destroy();
+    panel.remove();
+    status.remove();
+  });
+
+  it("inserts a PDF as canonical Markdown link with an inline viewer", async () => {
+    const panel = document.createElement("section");
+    const surface = document.createElement("div");
+    const status = document.createElement("p");
+    panel.append(surface);
+    document.body.append(panel, status);
+    const editor = new Editor({
+      element: surface,
+      extensions: [
+        ...createMemberberryExtensions(contract),
+        pdfViews({ vault: "personal" }),
+      ],
+    });
+    const ydoc = new Doc();
+    applyUpdate(ydoc, await updateFromMarkdown("# Initial\n"));
+    const shell = mountEditorShell({
+      editor,
+      document: ydoc,
+      panel,
+      status,
+      mediaUploader: {
+        upload: async () => ({ path: "media/ab/cd/document.pdf" }),
+        flush: async () => undefined,
+        destroy: () => undefined,
+      },
+    });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        files: [new File(["pdf"], "document.pdf", { type: "application/pdf" })],
+        getData: () => "",
+      },
+    });
+    editor.view.dom.dispatchEvent(paste);
+    await tick();
+    expect(JSON.stringify(editor.getJSON())).toContain('"href":"media/ab/cd/document.pdf"');
+    expect(surface.querySelector("object")?.getAttribute("data")).toBe(
+      "/api/v1/vaults/personal/media/media/ab/cd/document.pdf",
+    );
+    shell.destroy();
     editor.destroy();
     ydoc.destroy();
     panel.remove();

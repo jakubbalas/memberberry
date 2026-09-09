@@ -53,6 +53,33 @@ impl<'a> AuthorizedVault<'a> {
         Ok(!self.notes()?.is_empty())
     }
 
+    /// Returns whether this user may write anywhere in the vault.
+    pub fn has_any_write_access(&self) -> Result<bool, Error> {
+        if self.access.members().any(|(member, role)| {
+            member == &self.user && matches!(role, Role::Owner | Role::Editor)
+        }) {
+            return Ok(true);
+        }
+        if self.access.rules().any(|rule| {
+            matches!(
+                self.access.effective_role(&self.user, &rule.path),
+                Role::Owner | Role::Editor
+            )
+        }) {
+            return Ok(true);
+        }
+        Ok(self.vault.notes()?.into_iter().any(|relative| {
+            NotePath::parse(&relative)
+                .map(|path| {
+                    matches!(
+                        self.access.effective_role(&self.user, &path),
+                        Role::Owner | Role::Editor
+                    )
+                })
+                .unwrap_or(false)
+        }))
+    }
+
     /// Resolves a literal relative path only when the user can read it.
     ///
     /// `NotFound` is returned for both absent and unreadable notes, preserving the

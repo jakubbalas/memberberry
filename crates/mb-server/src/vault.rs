@@ -9,6 +9,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::Error;
+use crate::config::MediaBackendConfig;
 
 /// A registered vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub struct Vault {
     root: PathBuf,
     /// Where notes actually live — see [`Vault::notes_root`].
     notes_root: PathBuf,
+    media_backend: MediaBackendConfig,
 }
 
 /// One note's canonical identity: the file it is, independent of how it was named.
@@ -84,7 +86,21 @@ impl Vault {
             name: name.into(),
             root,
             notes_root,
+            media_backend: MediaBackendConfig::Local,
         })
+    }
+
+    /// Applies the server-owned media backend configuration for this vault.
+    #[must_use]
+    pub fn with_media_backend(mut self, backend: MediaBackendConfig) -> Self {
+        self.media_backend = backend;
+        self
+    }
+
+    /// The server-owned media backend configuration for this vault.
+    #[must_use]
+    pub fn media_backend(&self) -> &MediaBackendConfig {
+        &self.media_backend
     }
 
     #[must_use]
@@ -191,6 +207,15 @@ impl Vault {
         self.periodic_note_template("monthly", "Monthly.md")
     }
 
+    /// Maximum client-side image dimension, with a bounded default (§12.4).
+    #[must_use]
+    pub fn media_max_dimension(&self) -> u32 {
+        self.config_integer("media_max_dimension")
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| (256..=8192).contains(value))
+            .unwrap_or(2560)
+    }
+
     fn periodic_note_template(&self, name: &str, default: &str) -> String {
         self.config_string(&format!("{name}_note_template"))
             .filter(|name| {
@@ -208,6 +233,13 @@ impl Vault {
             .ok()
             .and_then(|source| source.parse::<toml::Table>().ok())
             .and_then(|table| table.get(key)?.as_str().map(str::to_owned))
+    }
+
+    fn config_integer(&self, key: &str) -> Option<i64> {
+        std::fs::read_to_string(self.root.join(".memberberry/config.toml"))
+            .ok()
+            .and_then(|source| source.parse::<toml::Table>().ok())
+            .and_then(|table| table.get(key)?.as_integer())
     }
 
     /// Resolves a request-supplied relative path to a real file inside the vault.

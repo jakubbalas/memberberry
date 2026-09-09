@@ -45,11 +45,15 @@ interface SchemaContract {
   readonly marks: Readonly<Record<string, MarkDefinition>>;
 }
 
+export interface MediaRenderContext {
+  readonly vault: string;
+}
+
 /** Creates the generated Tiptap extension set for one validated schema contract. */
-export function createMemberberryExtensions(contract: unknown): Extensions {
+export function createMemberberryExtensions(contract: unknown, media?: MediaRenderContext): Extensions {
   const parsed = parseContract(contract);
   const nodes = Object.entries(parsed.nodes).map(([name, definition]) =>
-    createNodeExtension(name, definition, parsed.topNode),
+    createNodeExtension(name, definition, parsed.topNode, media),
   );
   const marks = Object.entries(parsed.marks).map(([name, definition]) =>
     createMarkExtension(name, definition),
@@ -57,7 +61,12 @@ export function createMemberberryExtensions(contract: unknown): Extensions {
   return [...nodes, ...marks];
 }
 
-function createNodeExtension(name: string, definition: NodeDefinition, topNode: string) {
+function createNodeExtension(
+  name: string,
+  definition: NodeDefinition,
+  topNode: string,
+  media: MediaRenderContext | undefined,
+) {
   const attributes = definition.attrs;
   return Node.create({
     name,
@@ -70,7 +79,7 @@ function createNodeExtension(name: string, definition: NodeDefinition, topNode: 
     ...(definition.code === undefined ? {} : { code: definition.code }),
     ...(definition.defining === undefined ? {} : { defining: definition.defining }),
     ...(attributes === undefined ? {} : { addAttributes: () => attributesFor(attributes) }),
-    ...(name === "text" ? {} : { renderHTML: (props) => renderNode(name, props.node.attrs, props.HTMLAttributes) }),
+    ...(name === "text" ? {} : { renderHTML: (props) => renderNode(name, props.node.attrs, props.HTMLAttributes, media) }),
   });
 }
 
@@ -96,8 +105,8 @@ export async function loadMemberberrySchema(): Promise<Schema> {
 }
 
 /** Loads the Rust-owned contract through WASM and generates Tiptap extensions from it. */
-export async function loadMemberberryExtensions(): Promise<Extensions> {
-  return createMemberberryExtensions(await loadSchemaContract());
+export async function loadMemberberryExtensions(media?: MediaRenderContext): Promise<Extensions> {
+  return createMemberberryExtensions(await loadSchemaContract(), media);
 }
 
 function attributesFor(attributes: Readonly<Record<string, AttributeDefinition>>) {
@@ -113,6 +122,7 @@ function renderNode(
   name: string,
   attrs: Readonly<Record<string, unknown>>,
   htmlAttributes: Readonly<Record<string, unknown>>,
+  media: MediaRenderContext | undefined,
 ): DOMOutputSpec {
   switch (name) {
     case "doc":
@@ -151,7 +161,11 @@ function renderNode(
     case "hard_break":
       return ["br", htmlAttributes];
     case "image":
-      return ["img", { ...htmlAttributes, src: stringValue(attrs["dest"]), alt: stringValue(attrs["alt"]) }];
+      return ["img", {
+        ...htmlAttributes,
+        src: mediaSource(stringValue(attrs["dest"]), media),
+        alt: stringValue(attrs["alt"]),
+      }];
     case "wikilink":
       return ["span", { ...htmlAttributes, "data-wikilink": "" }, `[[${stringValue(attrs["target"])}]]`];
     case "tag":
@@ -165,6 +179,11 @@ function renderNode(
     default:
       return ["span", htmlAttributes];
   }
+}
+
+function mediaSource(destination: string, media: MediaRenderContext | undefined): string {
+  if (media === undefined || !destination.startsWith("media/")) return destination;
+  return `/api/v1/vaults/${encodeURIComponent(media.vault)}/media/${destination}?thumbnail=1600`;
 }
 
 function renderMark(name: string, htmlAttributes: Readonly<Record<string, unknown>>): DOMOutputSpec {

@@ -24,6 +24,7 @@ const FILTERED: &[&str] = &[
     "v_tags",
     "v_blocks",
     "v_tasks",
+    "v_media_refs",
     "readable",
 ];
 

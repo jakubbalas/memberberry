@@ -92,3 +92,55 @@ fn an_admin_without_a_vault_membership_cannot_read_any_note() {
     assert!(view.notes().expect("list notes").is_empty());
     assert!(matches!(view.read("Journal.md"), Err(Error::NotFound)));
 }
+
+#[test]
+fn viewer_cannot_upload_but_a_path_editor_can() {
+    let dir = TempDir::new("repository-write-access");
+    dir.write("Public.md", "# Public\n");
+    let vault = vault(&dir);
+    let viewer = access();
+    assert!(
+        !AuthorizedVault::new(&vault, &viewer, user("alice"))
+            .has_any_write_access()
+            .expect("viewer access")
+    );
+    let path_editor = Access::new(
+        vec![Member {
+            user: user("alice"),
+            role: Role::Viewer,
+        }],
+        vec![Rule {
+            path: path("Public.md"),
+            grants: BTreeMap::from([(user("alice"), Role::Editor)]),
+        }],
+    )
+    .expect("path editor ACL");
+    assert!(
+        AuthorizedVault::new(&vault, &path_editor, user("alice"))
+            .has_any_write_access()
+            .expect("editor access")
+    );
+}
+
+#[test]
+fn a_path_editor_can_upload_before_the_granted_folder_has_notes() {
+    let dir = TempDir::new("repository-empty-write-access");
+    dir.write("Public.md", "# Public\n");
+    let vault = vault(&dir);
+    let path_editor = Access::new(
+        vec![Member {
+            user: user("alice"),
+            role: Role::Viewer,
+        }],
+        vec![Rule {
+            path: path("Future"),
+            grants: BTreeMap::from([(user("alice"), Role::Editor)]),
+        }],
+    )
+    .expect("path editor ACL");
+    assert!(
+        AuthorizedVault::new(&vault, &path_editor, user("alice"))
+            .has_any_write_access()
+            .expect("editor access")
+    );
+}

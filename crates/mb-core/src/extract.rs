@@ -44,6 +44,14 @@ pub struct TaskRef {
     pub anchor: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaRef {
+    /// Vault-relative object path written in Markdown.
+    pub path: String,
+    /// Image alt text or media-link label used for display.
+    pub original_name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Extracted {
     pub links: Vec<LinkRef>,
@@ -55,6 +63,8 @@ pub struct Extracted {
     pub tasks: Vec<TaskRef>,
     /// Destinations of images and links into `media/`, backing `media_refs` (E11).
     pub media: Vec<String>,
+    /// Display metadata for indexed media rows; Markdown remains the source of truth.
+    pub media_refs: Vec<MediaRef>,
     pub headings: Vec<(u8, String)>,
     /// Visible text of each top-level block, in document order.
     ///
@@ -205,11 +215,11 @@ fn walk_inlines(items: &[Inline], out: &mut Extracted) {
             | Inline::Strikethrough(c)
             | Inline::Highlight(c) => walk_inlines(c, out),
             Inline::Link { dest, content, .. } => {
-                record_media(dest, out);
+                record_media(dest, &plain_text(content), out);
                 walk_inlines(content, out);
             }
             Inline::Image { dest, alt } => {
-                record_media(dest, out);
+                record_media(dest, alt, out);
                 out.word_count += count_words(alt);
             }
             Inline::WikiLink(w) => {
@@ -231,9 +241,20 @@ fn walk_inlines(items: &[Inline], out: &mut Extracted) {
 }
 
 /// Media is referenced by vault-relative path so the vault stays self-contained (§12.3).
-fn record_media(dest: &str, out: &mut Extracted) {
+fn record_media(dest: &str, original_name: &str, out: &mut Extracted) {
     if dest.starts_with("media/") || dest.starts_with("./media/") {
-        push_unique(&mut out.media, dest.trim_start_matches("./").to_string());
+        let path = dest.trim_start_matches("./").to_string();
+        push_unique(&mut out.media, path.clone());
+        if !out
+            .media_refs
+            .iter()
+            .any(|reference| reference.path == path)
+        {
+            out.media_refs.push(MediaRef {
+                path,
+                original_name: original_name.to_string(),
+            });
+        }
     }
 }
 

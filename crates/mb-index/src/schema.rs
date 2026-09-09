@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use crate::Error;
 
 /// Bumped whenever the DDL below changes. A mismatch rebuilds; it never migrates.
-pub(crate) const VERSION: i32 = 4;
+pub(crate) const VERSION: i32 = 5;
 
 /// Every table the reader's views are built over.
 ///
@@ -131,7 +131,8 @@ CREATE INDEX tasks_due ON tasks(due);
 CREATE TABLE media_refs (
     note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
     -- The vault-relative reference as written, e.g. `media/a3/f9/a3f9…e2.png`.
-    path    TEXT    NOT NULL
+    path    TEXT    NOT NULL,
+    original_name TEXT NOT NULL
 ) STRICT;
 
 CREATE INDEX media_refs_path ON media_refs(path);

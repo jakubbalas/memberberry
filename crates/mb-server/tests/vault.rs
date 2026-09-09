@@ -18,7 +18,7 @@ use std::ffi::OsStr;
 
 use mb_server::config::{DEFAULT_BIND, ServerConfig, expand_home};
 use mb_server::vault::Slug;
-use mb_server::{Error, Vault};
+use mb_server::{Error, MediaBackendConfig, Vault};
 use support::TempDir;
 
 fn vault_at(dir: &TempDir) -> Vault {
@@ -134,6 +134,28 @@ fn a_config_round_trips_through_toml() {
 }
 
 #[test]
+fn a_vault_can_select_an_s3_compatible_media_backend() {
+    let dir = TempDir::new("s3-config");
+    let source = format!(
+        "[[vaults]]\nslug = \"work\"\npath = {:?}\n\n[vaults.media]\nbackend = \"s3\"\nbucket = \"notes\"\nregion = \"us-east-1\"\nendpoint = \"http://127.0.0.1:9000\"\naccess_key_id = \"key\"\nsecret_access_key = \"secret\"\nallow_http = true\n",
+        dir.path().display().to_string()
+    );
+    let config = ServerConfig::parse(&source).expect("parse");
+    let vaults = config.open_vaults(None).expect("open");
+    assert!(matches!(
+        vaults[0].media_backend(),
+        MediaBackendConfig::S3 { bucket, allow_http: true, .. } if bucket == "notes"
+    ));
+    assert!(matches!(
+        mb_server::media::Store::new(&vaults[0]).expect("S3 store"),
+        mb_server::media::Store::S3(_)
+    ));
+    let debug = format!("{:?}", vaults[0].media_backend());
+    assert!(!debug.contains("\"key\""), "{debug}");
+    assert!(!debug.contains("\"secret\""), "{debug}");
+}
+
+#[test]
 fn calendar_note_config_has_safe_defaults_and_independent_overrides() {
     let dir = TempDir::new("calendar-config");
     let vault = vault_at(&dir);
@@ -164,6 +186,17 @@ fn calendar_note_config_has_safe_defaults_and_independent_overrides() {
         vault.monthly_note_config(),
         ("Monthly".into(), "%Y-%m.md".into())
     );
+}
+
+#[test]
+fn media_dimension_config_is_bounded() {
+    let dir = TempDir::new("media-dimension");
+    let vault = vault_at(&dir);
+    assert_eq!(vault.media_max_dimension(), 2560);
+    dir.write(".memberberry/config.toml", "media_max_dimension = 1440\n");
+    assert_eq!(vault.media_max_dimension(), 1440);
+    dir.write(".memberberry/config.toml", "media_max_dimension = 999999\n");
+    assert_eq!(vault.media_max_dimension(), 2560);
 }
 
 #[test]

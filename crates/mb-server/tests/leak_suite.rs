@@ -107,6 +107,53 @@ fn e5_search_never_reveals_an_unreadable_note() {
     }
 }
 
+/// E11: content addressing is not authorization. A media path referenced only by a denied
+/// note does not exist for the reader, even if they know the complete hash.
+#[test]
+fn e11_media_from_an_unreadable_note_is_not_fetchable() {
+    let public = format!("media/aa/aa/{}.png", "a".repeat(64));
+    let private = format!("media/bb/bb/{}.png", "b".repeat(64));
+    let mut index = mb_index::Index::in_memory().expect("index");
+    for (ordinal, (path, markdown)) in [
+        ("Shared.md", format!("![public]({public})\n")),
+        (
+            "Private/Salary.md",
+            format!("![private salary chart]({private})\n"),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        index
+            .upsert(&mb_index::NoteInput {
+                path: path.to_string(),
+                stamp: mb_index::Stamp::from_parts(markdown.len() as u64, ordinal as u128),
+                markdown,
+            })
+            .expect("upsert");
+    }
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let reader = index.reader(&access, &alice).expect("reader");
+
+    assert!(reader.references_media(&public).expect("public reference"));
+    assert!(
+        !reader
+            .references_media(&private)
+            .expect("private reference")
+    );
+}
+
 /// E18: an inbox row is a source note's name and text, so task queries are filtered at the
 /// index layer before any row reaches the pane.
 #[test]

@@ -17,6 +17,7 @@ export interface NoteBootstrap {
   readonly vault: string;
   readonly note: string;
   readonly user: string;
+  readonly mediaMaxDimension?: number;
 }
 
 /**
@@ -32,7 +33,11 @@ export interface NoteBootstrap {
 export function readNoteBootstrap(element: HTMLElement): NoteBootstrap | undefined {
   const { vault, note, user } = element.dataset;
   if (!isFilled(vault) || !isFilled(note) || !isFilled(user)) return undefined;
-  return { vault, note, user };
+  const parsedMaximum = Number(element.dataset["mediaMaxDimension"]);
+  const mediaMaxDimension = Number.isInteger(parsedMaximum) && parsedMaximum >= 256 && parsedMaximum <= 8192
+    ? parsedMaximum
+    : undefined;
+  return { vault, note, user, ...(mediaMaxDimension === undefined ? {} : { mediaMaxDimension }) };
 }
 
 function isFilled(value: string | undefined): value is string {

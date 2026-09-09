@@ -15,6 +15,7 @@ pub mod create;
 pub mod http;
 pub mod indexing;
 pub mod invites;
+pub mod media;
 pub mod rename;
 pub mod repository;
 pub mod sync;
@@ -26,7 +27,7 @@ pub mod workspace;
 use std::path::PathBuf;
 
 pub use access::AccessFile;
-pub use config::ServerConfig;
+pub use config::{MediaBackendConfig, ServerConfig};
 pub use vault::{Slug, Vault};
 
 /// Everything that can go wrong starting or serving.
@@ -82,4 +83,13 @@ pub enum Error {
 
     #[error("serving: {0}")]
     Serve(std::io::Error),
+
+    #[error("media I/O at {path}: {source}")]
+    MediaIo {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("media object store: {0}")]
+    MediaStore(String),
 }

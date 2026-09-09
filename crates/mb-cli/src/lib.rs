@@ -28,6 +28,8 @@ USAGE:
     memberberry normalize [--check] [PATH]...   Rewrite notes into canonical Markdown
     memberberry inspect [PATH]                  Show the parsed structure of one note
     memberberry reindex [--slug S] [--config FILE]  Rebuild a vault's index from its notes
+    memberberry export --materialize-media [--slug S]  Download referenced S3 media into the vault
+    memberberry doctor [--slug S] [--config FILE]   Report orphaned media objects
     memberberry gen-vault --out DIR [--notes N] Generate a synthetic vault for scale tests
 
 With no PATH, `normalize` and `inspect` read stdin and write stdout.
@@ -87,6 +89,8 @@ pub fn run(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write) -> Result
         Some("inspect") => inspect(rest, stdin, out),
         Some("gen-vault") => gen_vault(rest, out),
         Some("reindex") => reindex(rest, out),
+        Some("export") => export(rest, out),
+        Some("doctor") => doctor(rest, out),
         Some("--help" | "-h" | "help") | None => {
             write!(out, "{USAGE}").map_err(io("writing usage"))?;
             Ok(ExitCode::SUCCESS)
@@ -239,6 +243,87 @@ fn reindex(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
             .map_err(io("writing report"))?;
     }
     Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn selected_vaults<'a>(
+    args: &[String],
+    config_path: &Path,
+    vaults: &'a [mb_server::Vault],
+) -> Result<Vec<&'a mb_server::Vault>, String> {
+    let wanted = flag(args, "--slug");
+    let selected: Vec<_> = vaults
+        .iter()
+        .filter(|vault| wanted.is_none_or(|slug| vault.slug().as_str() == slug))
+        .collect();
+    if selected.is_empty() {
+        Err(match wanted {
+            Some(slug) => format!("no vault `{slug}` in {}", config_path.display()),
+            None => format!("no vaults registered in {}", config_path.display()),
+        })
+    } else {
+        Ok(selected)
+    }
+}
+
+fn media_runtime() -> Result<tokio::runtime::Runtime, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("starting the media runtime: {error}"))
+}
+
+fn export(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
+    if !args.iter().any(|arg| arg == "--materialize-media") {
+        return Err("export currently needs --materialize-media".to_string());
+    }
+    let path = config_path(args);
+    let config = mb_server::ServerConfig::load(&path).map_err(|error| error.to_string())?;
+    let vaults = config
+        .open_vaults(std::env::var_os("HOME").as_deref())
+        .map_err(|error| error.to_string())?;
+    let selected = selected_vaults(args, &path, &vaults)?;
+    let runtime = media_runtime()?;
+    for vault in selected {
+        let written = runtime
+            .block_on(mb_server::media::materialize(vault))
+            .map_err(|error| error.to_string())?;
+        writeln!(
+            out,
+            "vault {}: materialized {written} media objects",
+            vault.slug()
+        )
+        .map_err(io("writing report"))?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn doctor(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
+    let path = config_path(args);
+    let config = mb_server::ServerConfig::load(&path).map_err(|error| error.to_string())?;
+    let vaults = config
+        .open_vaults(std::env::var_os("HOME").as_deref())
+        .map_err(|error| error.to_string())?;
+    let selected = selected_vaults(args, &path, &vaults)?;
+    let runtime = media_runtime()?;
+    let mut found = false;
+    for vault in selected {
+        for path in runtime
+            .block_on(mb_server::media::orphaned(vault))
+            .map_err(|error| error.to_string())?
+        {
+            found = true;
+            writeln!(out, "vault {}: orphaned media {path}", vault.slug())
+                .map_err(io("writing report"))?;
+        }
+    }
+    if !found {
+        writeln!(out, "media: no orphaned objects").map_err(io("writing report"))?;
+    }
+    Ok(if found {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -459,6 +544,7 @@ fn vault_create(
         slug: slug.clone(),
         name: flag(args, "--name").cloned(),
         path: vault_path.clone(),
+        media: mb_server::MediaBackendConfig::Local,
     });
     // Opening every vault before writing means a bad path is rejected now rather than at
     // the next `serve`, when the message is further from the mistake.

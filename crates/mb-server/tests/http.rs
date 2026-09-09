@@ -254,6 +254,59 @@ impl TestServer {
         )
     }
 
+    fn post_bytes(&self, path: &str, headers: &str, body: &[u8]) -> (String, Vec<u8>) {
+        let mut stream = TcpStream::connect(self.addr).expect("connecting");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("setting a read timeout");
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\n{}{headers}\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            self.default_headers,
+            body.len()
+        )
+        .expect("writing the request headers");
+        stream.write_all(body).expect("writing the request body");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).expect("reading the response");
+        let split = raw
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("a response with a header block");
+        (
+            String::from_utf8_lossy(&raw[..split]).to_string(),
+            raw[split + 4..].to_vec(),
+        )
+    }
+
+    fn get_bytes(&self, path: &str) -> (String, Vec<u8>) {
+        self.get_bytes_with_headers(path, "")
+    }
+
+    fn get_bytes_with_headers(&self, path: &str, headers: &str) -> (String, Vec<u8>) {
+        let mut stream = TcpStream::connect(self.addr).expect("connecting");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("setting a read timeout");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\n{}{headers}Connection: close\r\n\r\n",
+            self.default_headers,
+        )
+        .expect("writing the request");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).expect("reading the response");
+        let split = raw
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("a response with a header block");
+        (
+            String::from_utf8_lossy(&raw[..split]).to_ascii_lowercase(),
+            raw[split + 4..].to_vec(),
+        )
+    }
+
     /// Issues a PUT with a JSON body and the given extra headers.
     fn put_json(&self, path: &str, headers: &str, body: &str) -> (String, String) {
         self.request(
@@ -430,6 +483,9 @@ fn editor_route_injects_trusted_bootstrap_and_assets_stay_contained() {
     assert!(body.contains("data-vault=\"personal\""), "{body}");
     assert!(body.contains("data-note=\"One.md\""), "{body}");
     assert!(body.contains("data-user=\"alice\""), "{body}");
+    assert!(body.contains("data-media-max-dimension=\"2560\""), "{body}");
+    let (head, _) = server.get_raw("/v/personal/One.md", "");
+    assert!(head.contains("object-src 'self'"), "{head}");
     assert!(
         !body.contains("# One"),
         "note content must stay in CRDT, not bootstrap HTML"
@@ -595,6 +651,149 @@ fn an_authenticated_viewer_does_not_receive_notes_denied_by_access_toml() {
     let (status, body) = server.get_with_headers("/v/v/Private/Salary.md", &header);
     assert!(is_not_found(&status), "{status}");
     assert!(!body.contains("Salary"), "{body}");
+}
+
+#[test]
+fn media_upload_is_content_addressed_but_not_readable_until_referenced() {
+    let dir = TempDir::new("http-media");
+    let vault = vault(&dir, "v", "V");
+    let public_path = mb_server::media::LocalStore::new(&vault)
+        .put(b"public", "png")
+        .expect("public object");
+    let private_path = mb_server::media::LocalStore::new(&vault)
+        .put(b"private", "png")
+        .expect("private object");
+    let mut source_image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(400, 200)
+        .write_to(&mut source_image, image::ImageFormat::Png)
+        .expect("source image");
+    let thumbnail_path = mb_server::media::LocalStore::new(&vault)
+        .put(&source_image.into_inner(), "png")
+        .expect("thumbnail source");
+    dir.write(
+        "Public.md",
+        &format!("![public]({public_path})\n![large]({thumbnail_path})\n"),
+    );
+    dir.write(
+        "Private/Secret.md",
+        &format!("![private]({private_path})\n"),
+    );
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"editor\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let server = TestServer::authenticated(vec![vault]);
+
+    let (status, body) = server.get(&format!("/api/v1/vaults/v/media/{public_path}"));
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("public"), "{body}");
+    let (head, thumbnail) = server.get_bytes(&format!(
+        "/api/v1/vaults/v/media/{thumbnail_path}?thumbnail=100"
+    ));
+    assert!(head.contains("200"), "{head}");
+    assert!(head.contains("content-type: image/webp"), "{head}");
+    let decoded = image::load_from_memory_with_format(&thumbnail, image::ImageFormat::WebP)
+        .expect("thumbnail webp");
+    assert_eq!((decoded.width(), decoded.height()), (100, 50));
+    let (status, body) = server.get(&format!("/api/v1/vaults/v/media/{private_path}"));
+    assert!(is_not_found(&status), "{status}");
+    assert!(body.contains("Not found"), "{body}");
+
+    let mut uploaded_image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut uploaded_image, image::ImageFormat::Png)
+        .expect("uploaded image");
+    let uploaded_image = uploaded_image.into_inner();
+    let (head, uploaded) = server.post_bytes(
+        "/api/v1/vaults/v/media",
+        "Content-Type: image/png\r\nX-Memberberry-Filename: screenshot.png\r\n",
+        &uploaded_image,
+    );
+    assert!(head.contains("201"), "{head}");
+    let uploaded_path =
+        mb_server::media::LocalStore::object_path(&uploaded_image, "png").expect("uploaded path");
+    assert!(String::from_utf8_lossy(&uploaded).contains(&uploaded_path));
+    let (head, body) = server.get_bytes(&format!("/api/v1/vaults/v/media/{uploaded_path}"));
+    assert!(head.contains("200"), "{head}");
+    assert_eq!(body, uploaded_image);
+
+    let (head, _) = server.post_bytes(
+        "/api/v1/vaults/v/media",
+        "Content-Type: image/svg+xml\r\nX-Memberberry-Filename: active.svg\r\n",
+        b"<svg><script>alert(1)</script></svg>",
+    );
+    assert!(head.contains("400"), "{head}");
+}
+
+#[test]
+fn an_unreferenced_upload_is_visible_only_to_its_uploader() {
+    let dir = TempDir::new("http-media-staging");
+    dir.write("Public.md", "# Public\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"editor\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"editor\"\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("bob");
+    let alice_token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let bob_token = auth.create_session(bob.id, 4_102_444_800).expect("session");
+    let alice_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&alice_token).expect("cookie")
+    );
+    let bob_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&bob_token).expect("cookie")
+    );
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("state");
+    let server = TestServer::start(state);
+    let mut staged_image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut staged_image, image::ImageFormat::Png)
+        .expect("staged image");
+    let staged_image = staged_image.into_inner();
+    let (head, body) = server.post_bytes(
+        "/api/v1/vaults/v/media",
+        &format!("{alice_header}Content-Type: image/png\r\nX-Memberberry-Filename: staged.png\r\n"),
+        &staged_image,
+    );
+    assert!(head.contains("201"), "{head}");
+    let path = mb_server::media::LocalStore::object_path(&staged_image, "png").expect("path");
+    assert!(String::from_utf8_lossy(&body).contains(&path));
+    let (status, body) =
+        server.get_with_headers(&format!("/api/v1/vaults/v/media/{path}"), &bob_header);
+    assert!(is_not_found(&status), "{status}");
+    assert!(body.contains("Not found"), "{body}");
+    let (head, body) =
+        server.get_bytes_with_headers(&format!("/api/v1/vaults/v/media/{path}"), &alice_header);
+    assert!(head.contains("200"), "{head}");
+    assert_eq!(body, staged_image);
+
+    let (head, _) = server.post_bytes(
+        "/api/v1/vaults/v/media",
+        &format!(
+            "{bob_header}Content-Type: image/png\r\nX-Memberberry-Filename: display.png\r\nX-Memberberry-Original: {path}\r\n"
+        ),
+        &staged_image,
+    );
+    assert!(head.contains("400"), "{head}");
 }
 
 #[test]

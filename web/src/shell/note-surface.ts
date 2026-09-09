@@ -32,6 +32,7 @@ import { localReplica } from "../offline/local.js";
 import { notDownloaded } from "../offline/not-downloaded.js";
 import type { Replica } from "../offline/replica.js";
 import { type NoteBootstrap, remoteSyncFor } from "./bootstrap.js";
+import { createMediaUploader } from "../editor/media-upload.js";
 
 export interface NoteSurfaceElements {
   /** Where Tiptap mounts. */
@@ -334,6 +335,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     ...(bootstrap === undefined
       ? {}
       : { embeds: { vault: bootstrap.vault, note: bootstrap.note } }),
+    ...(bootstrap === undefined ? {} : { media: { vault: bootstrap.vault } }),
     ...(remoteSync === undefined ? {} : { remoteSync }),
     ...(options.createPersistence === undefined
       ? {}
@@ -363,6 +365,13 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     panel,
     status,
     ...(bootstrap === undefined ? {} : { user: bootstrap.user, title: bootstrap.note }),
+    ...(bootstrap === undefined ? {} : {
+      mediaUploader: createMediaUploader(
+        bootstrap.vault,
+        undefined,
+        bootstrap.mediaMaxDimension === undefined ? {} : { maxDimension: bootstrap.mediaMaxDimension },
+      ),
+    }),
   });
 
   // A note this device already holds is open now, and the write moves it to the front of

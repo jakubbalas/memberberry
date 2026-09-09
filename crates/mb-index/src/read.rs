@@ -178,6 +178,24 @@ impl Reader<'_> {
         Ok(self.note_id(path)?.is_some())
     }
 
+    /// Whether a readable note references this vault-relative media path (E11).
+    ///
+    /// The content store is addressed by an unguessable hash, but that is not an
+    /// authorization boundary. This query is the only permission-filtered answer used by
+    /// the media route, so a blob referenced only by a private note remains invisible.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the query itself fails.
+    pub fn references_media(&self, path: &str) -> Result<bool, Error> {
+        let exists = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM v_media_refs WHERE path = ?1)",
+            [path],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    }
+
     /// Every readable note that links to `path`, grouped by source note (E8, §9.5).
     ///
     /// Links from notes the user cannot read are absent, and so is the target itself when

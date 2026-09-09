@@ -260,6 +260,8 @@ fn extraction_reaches_inside_blockquotes_callouts_and_tables() {
 fn media_destinations_are_collected_from_images_and_links() {
     let e = ex("![x](media/ab/cd/h.png)\n\n[file](media/ab/cd/doc.pdf)\n");
     assert_eq!(e.media, vec!["media/ab/cd/h.png", "media/ab/cd/doc.pdf"]);
+    assert_eq!(e.media_refs[0].original_name, "x");
+    assert_eq!(e.media_refs[1].original_name, "file");
 }
 
 #[test]

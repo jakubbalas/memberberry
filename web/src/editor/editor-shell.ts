@@ -16,6 +16,7 @@ import { TASK_CHIP_EVENT, type TaskChipEventDetail } from "./task-view.js";
 import type { TaskChipField, TaskPriority } from "./task-metadata.js";
 import { expandTemplate } from "../notes.js";
 import { openTemplatePalette, TEMPLATE_EVENT, templateContext, type TemplateEventDetail } from "../shell/templates.js";
+import type { MediaUploader } from "./media-upload.js";
 
 export interface EditorShell {
   destroy(): void;
@@ -30,6 +31,7 @@ export interface MountEditorShellOptions {
   readonly connection?: ConnectionStatus;
   readonly user?: string;
   readonly title?: string;
+  readonly mediaUploader?: MediaUploader;
 }
 
 let focusedEditor: Editor | undefined;
@@ -72,6 +74,8 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     toolbar.append(control);
   }
   toolbar.append(sourceToggle, copy);
+  const media = mediaControls(options.editor, options.mediaUploader, options.status);
+  if (media !== undefined) toolbar.append(media.element);
 
   const inspector = taskInspector(options.editor);
   controls.append(inspector.element, source);
@@ -240,6 +244,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       conflicts.remove();
       clearPress();
       controls.remove();
+      media?.destroy();
       slash.destroy();
       window.removeEventListener(TEMPLATE_EVENT, onTemplate);
       options.editor.view.dom.removeEventListener("focusin", rememberFocus);
@@ -247,6 +252,133 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     },
   };
 }
+
+interface MediaControls {
+  readonly element: HTMLElement;
+  destroy(): void;
+}
+
+function mediaControls(
+  editor: Editor,
+  uploader: MediaUploader | undefined,
+  status: HTMLElement,
+): MediaControls | undefined {
+  if (uploader === undefined) return undefined;
+  let destroyed = false;
+  const buttonElement = button("Media", "Insert image or PDF");
+  const container = document.createElement("span");
+  container.className = "media-controls";
+  const picker = document.createElement("input");
+  picker.type = "file";
+  picker.accept = "image/png,image/jpeg,image/gif,image/webp,application/pdf";
+  picker.multiple = false;
+  picker.hidden = true;
+  picker.setAttribute("aria-hidden", "true");
+  const replacePath = (from: string, to: string): void => {
+    const transaction = editor.state.tr;
+    editor.state.doc.descendants((node, position) => {
+      if (node.type.name === "image" && node.attrs["dest"] === from) {
+        transaction.setNodeMarkup(position, undefined, { ...node.attrs, dest: to });
+      }
+      if (!node.isText) return;
+      for (const mark of node.marks) {
+        if (mark.type.name !== "link" || mark.attrs["href"] !== from) continue;
+        transaction.removeMark(position, position + node.nodeSize, mark.type);
+        transaction.addMark(
+          position,
+          position + node.nodeSize,
+          mark.type.create({ ...mark.attrs, href: to }),
+        );
+      }
+    });
+    if (transaction.docChanged) editor.view.dispatch(transaction);
+  };
+  const stopResolved = uploader.onResolved?.(replacePath);
+  const upload = (file: File): void => {
+    const selection = { from: editor.state.selection.from, to: editor.state.selection.to };
+    status.textContent = "Uploading " + file.name + "…";
+    void uploader
+      .upload(file)
+      .then((result) => {
+        if (destroyed) return;
+        const content = file.type === "application/pdf"
+          ? {
+              type: "text",
+              text: file.name,
+              marks: [{ type: "link", attrs: { href: result.path, title: null } }],
+            }
+          : { type: "image", attrs: { dest: result.path, alt: file.name } };
+        editor.chain().focus().insertContentAt(selection, content).run();
+        status.textContent = file.type === "application/pdf" ? "PDF inserted." : "Image inserted.";
+        if (result.pending !== undefined) {
+          status.textContent = "Image queued for upload.";
+          void result.pending
+            .then((uploaded) => {
+              if (destroyed) return;
+              replacePath(result.path, uploaded.path);
+              status.textContent = "Queued image uploaded.";
+            })
+            .catch(() => {
+              if (!destroyed) status.textContent = "Queued image upload failed.";
+            });
+        }
+      })
+      .catch(() => {
+        status.textContent = "Image upload failed.";
+      });
+  };
+  const mediaFrom = (files: FileList | null): File | undefined =>
+    files === null
+      ? undefined
+      : [...files].find((file) => SAFE_MEDIA_TYPES.has(file.type));
+  const onChange = (): void => {
+    const file = mediaFrom(picker.files);
+    if (file !== undefined) upload(file);
+    picker.value = "";
+  };
+  const onPaste = (event: ClipboardEvent): void => {
+    const file = mediaFrom(event.clipboardData?.files ?? null);
+    if (file === undefined) return;
+    event.preventDefault();
+    upload(file);
+  };
+  const onDrop = (event: DragEvent): void => {
+    const file = mediaFrom(event.dataTransfer?.files ?? null);
+    if (file === undefined) return;
+    event.preventDefault();
+    upload(file);
+  };
+  const onDragOver = (event: DragEvent): void => {
+    if (mediaFrom(event.dataTransfer?.files ?? null) !== undefined) event.preventDefault();
+  };
+  picker.addEventListener("change", onChange);
+  buttonElement.addEventListener("click", () => picker.click());
+  editor.view.dom.addEventListener("paste", onPaste);
+  editor.view.dom.addEventListener("drop", onDrop);
+  editor.view.dom.addEventListener("dragover", onDragOver);
+  container.append(buttonElement, picker);
+  return {
+    element: container,
+    destroy: () => {
+      destroyed = true;
+      picker.removeEventListener("change", onChange);
+      editor.view.dom.removeEventListener("paste", onPaste);
+      editor.view.dom.removeEventListener("drop", onDrop);
+      editor.view.dom.removeEventListener("dragover", onDragOver);
+      picker.remove();
+      stopResolved?.();
+      uploader.destroy();
+    },
+  };
+}
+
+const SAFE_MEDIA_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+]);
 
 interface PresenceHandle { destroy(): void; }
 

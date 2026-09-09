@@ -48,6 +48,62 @@ pub struct VaultEntry {
     #[serde(default)]
     pub name: Option<String>,
     pub path: String,
+    /// Where content-addressed media objects live. Local storage is the default.
+    #[serde(default, skip_serializing_if = "MediaBackendConfig::is_local")]
+    pub media: MediaBackendConfig,
+}
+
+/// A vault's media backend (`SPEC.md` §12.1).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MediaBackendConfig {
+    /// Store objects below `<vault>/media`.
+    #[default]
+    Local,
+    /// Store objects in an S3-compatible bucket while Markdown keeps vault-relative paths.
+    S3 {
+        bucket: String,
+        region: String,
+        #[serde(default)]
+        endpoint: Option<String>,
+        access_key_id: String,
+        secret_access_key: String,
+        #[serde(default)]
+        allow_http: bool,
+        #[serde(default)]
+        virtual_hosted_style: bool,
+    },
+}
+
+impl std::fmt::Debug for MediaBackendConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local => formatter.write_str("Local"),
+            Self::S3 {
+                bucket,
+                region,
+                endpoint,
+                allow_http,
+                virtual_hosted_style,
+                ..
+            } => formatter
+                .debug_struct("S3")
+                .field("bucket", bucket)
+                .field("region", region)
+                .field("endpoint", endpoint)
+                .field("access_key_id", &"[REDACTED]")
+                .field("secret_access_key", &"[REDACTED]")
+                .field("allow_http", allow_http)
+                .field("virtual_hosted_style", virtual_hosted_style)
+                .finish(),
+        }
+    }
+}
+
+impl MediaBackendConfig {
+    fn is_local(&self) -> bool {
+        matches!(self, Self::Local)
+    }
 }
 
 impl ServerConfig {
@@ -114,7 +170,7 @@ impl ServerConfig {
             }
             let name = entry.name.clone().unwrap_or_else(|| slug.to_string());
             let root = expand_home(&entry.path, home);
-            opened.push(Vault::open(slug, name, root)?);
+            opened.push(Vault::open(slug, name, root)?.with_media_backend(entry.media.clone()));
         }
         Ok(opened)
     }

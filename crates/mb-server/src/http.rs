@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
@@ -52,6 +53,9 @@ pub struct AppState {
     /// One graph/link/tag index per vault (§9.1), opened on first use and kept in step with
     /// the files by [`AppState::maintain_index`].
     indexes: IndexRegistry,
+    media_manifest: Mutex<()>,
+    /// Short-lived, per-uploader grants bridge upload and the note's next indexed save.
+    media_uploads: Mutex<HashMap<(Slug, mb_core::Username, String), std::time::Instant>>,
     security: Security,
 }
 
@@ -147,6 +151,20 @@ impl AppState {
         errors
     }
 
+    /// Materializes every configured remote media backend into its vault.
+    pub async fn materialize_media(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        for vault in self.vaults.values() {
+            if matches!(vault.media_backend(), crate::MediaBackendConfig::Local) {
+                continue;
+            }
+            if let Err(error) = crate::media::materialize(vault).await {
+                errors.push(format!("vault `{}`: {error}", vault.slug()));
+            }
+        }
+        errors
+    }
+
     /// Every directory whose contents this server must notice changing.
     #[must_use]
     pub fn watch_roots(&self) -> Vec<PathBuf> {
@@ -234,6 +252,8 @@ impl AppState {
             data_dir: None,
             assets: RwLock::new(BTreeMap::new()),
             indexes: IndexRegistry::default(),
+            media_manifest: Mutex::new(()),
+            media_uploads: Mutex::new(HashMap::new()),
             security: Security {
                 auth: Mutex::new(auth),
                 access: RwLock::new(access),
@@ -343,6 +363,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/vaults/{slug}/tasks", get(vault_tasks))
         .route(
+            "/api/v1/vaults/{slug}/media",
+            post(media_upload).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route("/api/v1/vaults/{slug}/media/{*media}", get(media))
+        .route(
             "/api/v1/vaults/{slug}/search/segments",
             get(search_segments),
         )
@@ -392,6 +417,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(create_note_from_form).layer(DefaultBodyLimit::max(8 * 1024)),
         )
         .route("/v/{slug}/", get(vault_index))
+        .route("/v/{slug}/media/{*media}", get(media))
         .route("/v/{slug}/{*note}", get(note))
         .fallback(not_found)
         .with_state(state)
@@ -2419,8 +2445,13 @@ async fn note(
     if let (Some(root), Some(user)) = (&state.web_root, state.authenticated_user(&headers))
         && let Ok(index) = std::fs::read_to_string(root.join("index.html"))
     {
-        let Some(page) = inject_bootstrap(&index, vault.slug().as_str(), &note, user.as_str())
-        else {
+        let Some(page) = inject_bootstrap(
+            &index,
+            vault.slug().as_str(),
+            &note,
+            user.as_str(),
+            vault.media_max_dimension(),
+        ) else {
             // why: loud rather than degraded. `str::replace` on an absent marker is a no-op,
             // so a bundle this server does not recognise would ship a page with an empty
             // bootstrap — and the editor would quietly run against a local-only replica
@@ -2455,6 +2486,225 @@ async fn note(
     body.push_str(&rendered);
     body.push_str("</article>");
     page(&title, &body).into_response()
+}
+
+/// Serves a media object only when a readable note references its exact path (E11).
+///
+/// The local store validates containment independently of this permission check. The order is
+/// intentional: a missing index or unreadable reference is the same neutral 404 as a missing
+/// object, so hashes and object existence cannot be used to probe private notes.
+async fn media(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, media)): AxumPath<(String, String)>,
+    Query(query): Query<MediaQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return not_found().await;
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return not_found().await;
+    };
+    let Some(user) = state.vault_user(vault.slug(), &headers) else {
+        return not_found().await;
+    };
+    let Some(index) = state.indexes.get(vault) else {
+        return not_found().await;
+    };
+    let referenced = match index.lock() {
+        Ok(mut index) => index
+            .reader(&access, &user)
+            .and_then(|reader| reader.references_media(&media))
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+    let staged = state.media_uploads.lock().is_ok_and(|mut uploads| {
+        let now = std::time::Instant::now();
+        uploads.retain(|_, expires| *expires > now);
+        uploads.contains_key(&(vault.slug().clone(), user.clone(), media.clone()))
+    });
+    let permitted = referenced || staged;
+    if !permitted {
+        return not_found().await;
+    }
+    let Ok(store) = crate::media::Store::new(vault) else {
+        return not_found().await;
+    };
+    let Ok(bytes) = store.get(&media).await else {
+        return not_found().await;
+    };
+    let (bytes, content_type) = match query.thumbnail {
+        Some(maximum) => match crate::media::thumbnail(&bytes, maximum) {
+            Ok(thumbnail) => (thumbnail, "image/webp"),
+            Err(_) => return not_found().await,
+        },
+        None => (bytes, media_content_type(&media)),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "private, no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct MediaQuery {
+    thumbnail: Option<u32>,
+}
+
+/// Uploads one local media object and returns its content-addressed path.
+///
+/// Uploading does not grant read access: until a readable note references the returned path,
+/// the GET route still answers with the neutral 404 required by E11. The filename is metadata
+/// only; its extension chooses the display type and the bytes choose the identity.
+async fn media_upload(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(user) = state.vault_user(vault.slug(), &headers) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    if !view.has_any_write_access().unwrap_or(false) {
+        return workspace_denied();
+    }
+    if body.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"error":"empty media"}"#,
+        )
+            .into_response();
+    }
+    let Some(filename) = headers
+        .get("x-memberberry-filename")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"error":"filename required"}"#,
+        )
+            .into_response();
+    };
+    let Some(extension) = filename
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(_, extension)| extension)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"error":"filename extension required"}"#,
+        )
+            .into_response();
+    };
+    let Some(extension) = crate::media::upload_extension(&body, extension) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"error":"media bytes and extension must be PNG, JPEG, GIF, WebP, or PDF"}"#,
+        )
+            .into_response();
+    };
+    let store = match crate::media::Store::new(vault) {
+        Ok(store) => store,
+        Err(error) => return server_error(&error),
+    };
+    let path = match store.put(&body, extension).await {
+        Ok(path) => path,
+        Err(Error::NotFound) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                [(header::CONTENT_TYPE, "application/json")],
+                r#"{"error":"invalid filename extension"}"#,
+            )
+                .into_response();
+        }
+        Err(error) => return server_error(&error),
+    };
+    if let Some(original) = headers
+        .get("x-memberberry-original")
+        .and_then(|value| value.to_str().ok())
+    {
+        let staged = state.media_uploads.lock().is_ok_and(|mut uploads| {
+            let now = std::time::Instant::now();
+            uploads.retain(|_, expires| *expires > now);
+            uploads.contains_key(&(vault.slug().clone(), user.clone(), original.to_string()))
+        });
+        if !staged {
+            return (
+                StatusCode::BAD_REQUEST,
+                [(header::CONTENT_TYPE, "application/json")],
+                r#"{"error":"invalid original media"}"#,
+            )
+                .into_response();
+        }
+        let Ok(_guard) = state.media_manifest.lock() else {
+            return server_error(&Error::MediaStore(
+                "media manifest lock poisoned".to_string(),
+            ));
+        };
+        if let Err(error) = crate::media::retain_original(vault, &path, original) {
+            return server_error(&error);
+        }
+    }
+    let Ok(mut uploads) = state.media_uploads.lock() else {
+        return server_error(&Error::MediaStore(
+            "media upload grant lock poisoned".to_string(),
+        ));
+    };
+    uploads.insert(
+        (vault.slug().clone(), user, path.clone()),
+        std::time::Instant::now() + MEDIA_UPLOAD_GRANT,
+    );
+    let body = match serde_json::to_string(&serde_json::json!({ "path": path })) {
+        Ok(body) => body,
+        Err(error) => return server_error(&Error::Config(error.to_string())),
+    };
+    (
+        StatusCode::CREATED,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+fn media_content_type(path: &str) -> &'static str {
+    match path
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "avif" => "image/avif",
+        "gif" => "image/gif",
+        "jpeg" | "jpg" => "image/jpeg",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    }
 }
 
 #[derive(Deserialize)]
@@ -2703,7 +2953,13 @@ const BOOTSTRAP_MARKER: &str =
 ///
 /// The note's body is deliberately absent (`SPEC.md` §3.3): content reaches the browser over
 /// the CRDT and nowhere else, so this page is never a second source of truth for it.
-fn inject_bootstrap(index: &str, vault: &str, note: &str, user: &str) -> Option<String> {
+fn inject_bootstrap(
+    index: &str,
+    vault: &str,
+    note: &str,
+    user: &str,
+    media_max_dimension: u32,
+) -> Option<String> {
     if !index.contains(BOOTSTRAP_MARKER) {
         return None;
     }
@@ -2717,6 +2973,8 @@ fn inject_bootstrap(index: &str, vault: &str, note: &str, user: &str) -> Option<
     push_escaped_attr(&mut element, note);
     element.push_str("\" data-user=\"");
     push_escaped_attr(&mut element, user);
+    element.push_str("\" data-media-max-dimension=\"");
+    element.push_str(&media_max_dimension.to_string());
     element.push_str("\"></div>");
     Some(index.replace(BOOTSTRAP_MARKER, &element))
 }
@@ -2731,7 +2989,9 @@ fn inject_bootstrap(index: &str, vault: &str, note: &str, user: &str) -> Option<
 /// says so: `'wasm-unsafe-eval'` for instantiating `mb-wasm` (§5.2), `'unsafe-inline'` under
 /// `style-src` because ProseMirror and the presence decorations set `style` attributes on
 /// elements, `blob:` for images the editor creates locally and for the workers §21.3 puts
-/// long work on. `connect-src 'self'` covers the sync socket: a same-origin `ws://` is
+/// long work on. `object-src 'self'` permits only the inline PDF viewer's authenticated
+/// same-origin object; user-authored HTML never reaches the editor DOM. `connect-src 'self'`
+/// covers the sync socket: a same-origin `ws://` is
 /// `'self'` under CSP3. **`form-action 'none'`** is safe here and only here — this page has
 /// no form; putting it on the sign-in page is what broke logging in during M5.
 const EDITOR_CSP: &str = "default-src 'none'; \
@@ -2739,6 +2999,7 @@ const EDITOR_CSP: &str = "default-src 'none'; \
      manifest-src 'self'; \
      style-src 'self' 'unsafe-inline'; \
      img-src 'self' data: blob:; \
+     object-src 'self'; \
      font-src 'self'; \
      connect-src 'self'; \
      worker-src 'self' blob:; \
@@ -3359,6 +3620,13 @@ const RECOVERY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// unwatchable root, a note deleted while the process was down.
 const INDEX_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How often S3-backed vaults are made self-contained on local disk (§12.3).
+const MEDIA_MATERIALIZE_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Time for the note write and index tick to replace an uploader-only preview grant (E11).
+const MEDIA_UPLOAD_GRANT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Serves until the process is asked to stop.
 ///
 /// # Errors
@@ -3398,10 +3666,12 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
         let mut interval = tokio::time::interval(MAINTENANCE_INTERVAL);
         let mut since_sweep = std::time::Duration::ZERO;
         let mut since_index_sweep = std::time::Duration::ZERO;
+        let mut since_media_materialize = std::time::Duration::ZERO;
         loop {
             interval.tick().await;
             since_sweep += MAINTENANCE_INTERVAL;
             since_index_sweep += MAINTENANCE_INTERVAL;
+            since_media_materialize += MAINTENANCE_INTERVAL;
             let mut changed = signal.take();
             if since_sweep >= RECOVERY_SWEEP_INTERVAL {
                 since_sweep = std::time::Duration::ZERO;
@@ -3426,6 +3696,12 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
             .await;
             for error in errors.unwrap_or_default() {
                 eprintln!("memberberry maintenance: {error}");
+            }
+            if since_media_materialize >= MEDIA_MATERIALIZE_INTERVAL {
+                since_media_materialize = std::time::Duration::ZERO;
+                for error in maintenance_state.materialize_media().await {
+                    eprintln!("memberberry media maintenance: {error}");
+                }
             }
         }
     });

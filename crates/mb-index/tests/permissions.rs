@@ -59,6 +59,31 @@ fn e5_an_unreadable_note_is_indistinguishable_from_a_missing_one() {
 }
 
 #[test]
+fn e11_media_referenced_only_by_an_unreadable_note_is_not_visible() {
+    let mut index = indexed(&[
+        ("Shared.md", "![public](media/aa/bb/public.png)\n"),
+        ("Private/Salary.md", "![secret](media/cc/dd/secret.png)\n"),
+    ]);
+    let limited = viewer_except("alice", &["Private"]);
+    let reader = index.reader(&limited, &user("alice")).expect("reader");
+    assert!(
+        reader
+            .references_media("media/aa/bb/public.png")
+            .expect("public media")
+    );
+    assert!(
+        !reader
+            .references_media("media/cc/dd/secret.png")
+            .expect("private media")
+    );
+    assert!(
+        !reader
+            .references_media("media/ee/ff/missing.png")
+            .expect("missing media")
+    );
+}
+
+#[test]
 fn e8_a_backlink_from_an_unreadable_note_is_not_reported() {
     // `Private/Salary.md` links to `Shared.md`. Alice can read the target and not the
     // source, and the source's *name* is the disclosure.

@@ -12,8 +12,10 @@ import {
 import { conflictViews } from "./conflict-view.js";
 import { type EmbedContext, embedViews } from "./embed-view.js";
 import { loadMemberberryExtensions } from "./schema.js";
+import type { MediaRenderContext } from "./schema.js";
 import { memberberryInputRules } from "./commands.js";
 import { taskItemView } from "./task-view.js";
+import { pdfViews } from "./pdf-view.js";
 
 export interface EditorHandle {
   destroy(): void;
@@ -51,6 +53,7 @@ export interface StartNoteEditorOptions extends CreateNoteCollaborationOptions {
    * of every editor, including the ones a test mounts.
    */
   readonly bridge?: NoteBridge | undefined;
+  readonly media?: MediaRenderContext | undefined;
 }
 
 /** A mounted editor and the local Y.Doc it is attached to. */
@@ -70,7 +73,7 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
   const collaboration = createNoteCollaboration(options);
   try {
     await collaboration.whenReady;
-    const extensions = await (options.loadExtensions ?? loadMemberberryExtensions)();
+    const extensions = await (options.loadExtensions ?? (() => loadMemberberryExtensions(options.media)))();
     const createEditor = options.createEditor ?? defaultEditorFactory;
     const editor = createEditor({
       element: options.element,
@@ -79,6 +82,7 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
         memberberryInputRules,
         taskItemView,
         ...(options.embeds === undefined ? [] : [embedViews(options.embeds)]),
+        ...(options.media === undefined ? [] : [pdfViews(options.media)]),
         ...(options.bridge === undefined
           ? []
           : [conflictViews({ document: collaboration.document, bridge: options.bridge })]),

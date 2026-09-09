@@ -394,10 +394,15 @@ fn write_media(
     note_id: i64,
     facts: &Extracted,
 ) -> Result<(), Error> {
-    let mut insert =
-        transaction.prepare_cached("INSERT INTO media_refs (note_id, path) VALUES (?1, ?2)")?;
-    for reference in &facts.media {
-        insert.execute(rusqlite::params![note_id, reference])?;
+    let mut insert = transaction.prepare_cached(
+        "INSERT INTO media_refs (note_id, path, original_name) VALUES (?1, ?2, ?3)",
+    )?;
+    for reference in &facts.media_refs {
+        insert.execute(rusqlite::params![
+            note_id,
+            reference.path,
+            reference.original_name
+        ])?;
     }
     Ok(())
 }
@@ -597,11 +602,11 @@ mod tests {
     }
 
     #[test]
-    fn a_media_reference_is_indexed_by_its_vault_relative_path() {
+    fn a_media_reference_is_indexed_with_its_markdown_display_name() {
         let index = indexed(&[("a.md", "![alt](media/a3/f9/a3f9.png)\n")]);
         assert_eq!(
-            rows(&index, "SELECT path FROM media_refs"),
-            vec![vec!["media/a3/f9/a3f9.png"]]
+            rows(&index, "SELECT path, original_name FROM media_refs"),
+            vec![vec!["media/a3/f9/a3f9.png", "alt"]]
         );
     }
 
