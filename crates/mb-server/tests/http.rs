@@ -571,6 +571,84 @@ fn is_not_found(status: &str) -> bool {
     status.contains("404")
 }
 
+#[test]
+fn custom_emoji_route_resolves_shared_and_vault_local_packs() {
+    let dir = TempDir::new("http-emoji-vault");
+    let data = TempDir::new("http-emoji-data");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    dir.write(
+        ".memberberry/emoji/packs/local/pack.json",
+        r#"{"name":"local","version":1,"emoji":[{"shortcode":"party","file":"local.png"}]}"#,
+    );
+    dir.write(".memberberry/emoji/packs/local/local.png", "local-image");
+    data.write(
+        "emoji/packs/shared/pack.json",
+        r#"{"name":"shared","version":1,"emoji":[{"shortcode":"party","file":"shared.png","aliases":["parrot"]}]}"#,
+    );
+    data.write("emoji/packs/shared/shared.png", "shared-image");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let cookie = auth.signed_session_cookie(&token).expect("cookie");
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth)
+        .expect("state")
+        .with_data_dir(data.path().to_path_buf());
+    let mut server = TestServer::start(state);
+    server.default_headers = format!("Cookie: mb_session={cookie}\r\n");
+
+    let (status, _) = server.put_json(
+        "/api/v1/emoji/packs/adminpack",
+        "",
+        r#"{"manifest":{"name":"adminpack","version":1,"emoji":[{"shortcode":"ship","file":"ship.png"}]},"files":[{"name":"ship.png","content_base64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}]}"#,
+    );
+    assert!(status.contains("204"), "{status}");
+
+    let (status, body) = server.get("/api/v1/vaults/v/emoji");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains(r#""pack":"local""#), "{body}");
+    assert!(body.contains(r#""aliases":[]"#), "{body}");
+    assert!(body.contains(r#""shortcode":"ship""#), "{body}");
+    assert!(
+        !body.contains(r#""shortcode":"party","file":"shared.png""#),
+        "local collision should win: {body}"
+    );
+
+    let (status, body) = server.get("/api/v1/vaults/v/emoji/local/local.png");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("local-image"), "{body}");
+}
+
+#[test]
+fn custom_emoji_route_does_not_disclose_an_unreadable_vault() {
+    let dir = TempDir::new("http-emoji-denied");
+    dir.write("Secret.md", "# Secret\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"bob\"\nrole = \"owner\"\n",
+    );
+    let server = TestServer::authenticated(vec![
+        Vault::open(Slug::parse("v").expect("slug"), "V", dir.path()).expect("vault"),
+    ]);
+    let (status, _) = server.get("/api/v1/vaults/v/emoji");
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.get("/api/v1/vaults/v/emoji/private/secret.png");
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.put_json(
+        "/api/v1/vaults/v/emoji/packs/nope",
+        "",
+        r#"{"manifest":{"name":"nope","version":1,"emoji":[]},"files":[]}"#,
+    );
+    assert!(is_not_found(&status), "{status}");
+}
+
 // ---------------------------------------------------------------- index
 
 #[test]

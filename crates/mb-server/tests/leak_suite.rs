@@ -154,6 +154,34 @@ fn e11_media_from_an_unreadable_note_is_not_fetchable() {
     );
 }
 
+/// E22: custom pack names, aliases, and image paths do not exist outside a readable vault.
+#[test]
+fn e22_custom_emoji_are_filtered_before_resolution() {
+    let dir = TempDir::new("leak-emoji");
+    dir.write(
+        ".memberberry/emoji/packs/canary/pack.json",
+        r#"{"name":"canary","version":1,"emoji":[{"shortcode":"secret_salary","file":"secret.png","aliases":["compensation"]}]}"#,
+    );
+    dir.write(
+        ".memberberry/emoji/packs/canary/secret.png",
+        "private image bytes",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let outsider = Username::parse("server-admin").expect("username");
+    let access = Access::new(Vec::new(), Vec::new()).expect("empty policy");
+    let view = AuthorizedVault::new(&vault, &access, outsider);
+
+    assert!(matches!(
+        view.emoji_entries(None),
+        Err(mb_server::Error::NotFound)
+    ));
+}
+
 /// E18: an inbox row is a source note's name and text, so task queries are filtered at the
 /// index layer before any row reaches the pane.
 #[test]

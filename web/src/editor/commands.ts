@@ -3,6 +3,7 @@
 import { Extension, InputRule, textblockTypeInputRule, wrappingInputRule, type Editor } from "@tiptap/core";
 import { Fragment } from "@tiptap/pm/model";
 import { parseNaturalDate, toggledTaskAttributes, type TaskPriority } from "./task-metadata.js";
+import type { EmojiEntry } from "../notes.js";
 
 export type BlockKind = "paragraph" | "heading" | "bullet_list" | "ordered_list" | "task_item" | "blockquote" | "callout" | "code_block" | "divider" | "table";
 
@@ -27,6 +28,50 @@ export const memberberryInputRules = Extension.create({
     ];
   },
 });
+
+/** Creates the offline shortcode-to-glyph input rule required by §11.3. */
+export function emojiInputRules(catalog: readonly EmojiEntry[]): Extension {
+  return Extension.create({
+    name: "memberberryEmojiInputRules",
+    addInputRules() {
+      return [new InputRule({
+        find: /:([a-z0-9_+\-]{2,}):(?::(skin-tone-[2-6]):)?$/i,
+        handler: ({ range, match, chain }) => {
+          const glyph = resolveEmojiInput(catalog, match[1], match[2]);
+          if (glyph === undefined) return;
+          chain().insertContentAt({ from: range.from, to: range.to }, glyph);
+        },
+      })];
+    },
+  });
+}
+
+/** Resolves the editor's colon-delimited shortcode, preserving unknown custom names. */
+export function resolveEmojiShortcode(
+  catalog: readonly EmojiEntry[],
+  shortcode: string | undefined,
+): string | undefined {
+  if (shortcode === undefined) return undefined;
+  const normalized = shortcode.toLowerCase();
+  return catalog.find((entry) => entry.shortcode === normalized || entry.aliases.includes(normalized))?.glyph;
+}
+
+/** Resolves a Unicode shortcode and its optional Fitzpatrick modifier. */
+export function resolveEmojiInput(
+  catalog: readonly EmojiEntry[],
+  shortcode: string | undefined,
+  tone: string | undefined,
+): string | undefined {
+  if (shortcode === undefined) return undefined;
+  const normalized = shortcode.toLowerCase();
+  const entry = catalog.find((candidate) => candidate.shortcode === normalized || candidate.aliases.includes(normalized));
+  if (entry === undefined) return undefined;
+  if (tone === undefined || !entry.supportsSkinTone) return entry.glyph;
+  const toneNumber = Number(tone.at(-1));
+  return Number.isInteger(toneNumber) && toneNumber >= 2 && toneNumber <= 6
+    ? `${entry.glyph}${String.fromCodePoint(0x1f3fB + toneNumber - 2)}`
+    : entry.glyph;
+}
 
 /** Inserts a generated block at the current selection. */
 export function insertBlock(editor: Editor, kind: BlockKind): boolean {

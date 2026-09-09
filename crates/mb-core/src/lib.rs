@@ -26,6 +26,7 @@
 pub mod canonical;
 pub mod conflict;
 pub mod daily;
+pub mod emoji;
 pub mod extract;
 pub mod frontmatter;
 pub mod html;

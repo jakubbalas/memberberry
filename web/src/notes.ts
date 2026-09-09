@@ -74,6 +74,14 @@ export interface ExpandedTemplate {
   readonly cursor: number | null;
 }
 
+export interface EmojiEntry {
+  readonly shortcode: string;
+  readonly glyph: string;
+  readonly category: string;
+  readonly aliases: readonly string[];
+  readonly supportsSkinTone: boolean;
+}
+
 /** Formats a daily-note path through the shared Rust contract. */
 export async function dailyPath(folder: string, format: string, date: string): Promise<string> {
   await load();

@@ -16,6 +16,9 @@ import type { MediaRenderContext } from "./schema.js";
 import { memberberryInputRules } from "./commands.js";
 import { taskItemView } from "./task-view.js";
 import { pdfViews } from "./pdf-view.js";
+import { emojiInputRules } from "./commands.js";
+import { emojiCatalog } from "../emoji-catalog.js";
+import type { EmojiEntry } from "../notes.js";
 
 export interface EditorHandle {
   destroy(): void;
@@ -54,6 +57,7 @@ export interface StartNoteEditorOptions extends CreateNoteCollaborationOptions {
    */
   readonly bridge?: NoteBridge | undefined;
   readonly media?: MediaRenderContext | undefined;
+  readonly loadEmojiCatalog?: () => Promise<readonly EmojiEntry[]>;
 }
 
 /** A mounted editor and the local Y.Doc it is attached to. */
@@ -74,12 +78,14 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
   try {
     await collaboration.whenReady;
     const extensions = await (options.loadExtensions ?? (() => loadMemberberryExtensions(options.media)))();
+    const catalog = await (options.loadEmojiCatalog ?? emojiCatalog)().catch(() => []);
     const createEditor = options.createEditor ?? defaultEditorFactory;
     const editor = createEditor({
       element: options.element,
       extensions: [
         ...extensions,
         memberberryInputRules,
+        emojiInputRules(catalog),
         taskItemView,
         ...(options.embeds === undefined ? [] : [embedViews(options.embeds)]),
         ...(options.media === undefined ? [] : [pdfViews(options.media)]),

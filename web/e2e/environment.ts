@@ -54,6 +54,7 @@ export function scratchNote(purpose: string, project: string): string {
 const SCRATCH_PURPOSES: readonly string[] = [
   "slash-menu",
   "task-toggle",
+  "emoji-picker",
   "outline",
   // A rename moves a file and rewrites another one, so it needs both ends to itself (§6.6).
   "rename",

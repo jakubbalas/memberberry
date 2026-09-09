@@ -19,7 +19,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -362,6 +362,19 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(template_content),
         )
         .route("/api/v1/vaults/{slug}/tasks", get(vault_tasks))
+        .route("/api/v1/vaults/{slug}/emoji", get(vault_emoji))
+        .route(
+            "/api/v1/vaults/{slug}/emoji/packs/{pack}",
+            put(vault_emoji_upload).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v1/vaults/{slug}/emoji/{*asset}",
+            get(vault_emoji_asset),
+        )
+        .route(
+            "/api/v1/emoji/packs/{pack}",
+            put(shared_emoji_upload).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
         .route(
             "/api/v1/vaults/{slug}/media",
             post(media_upload).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
@@ -1245,6 +1258,152 @@ async fn template_content(
             .into_response(),
         Err(_) => workspace_denied(),
     }
+}
+
+/// Lists the effective custom emoji entries for a readable vault.
+async fn vault_emoji(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let shared = shared_emoji_root(&state);
+    match view.emoji_entries(shared.as_deref()) {
+        Ok(entries) => Json(entries).into_response(),
+        Err(_) => workspace_denied(),
+    }
+}
+
+/// Installs a vault-local pack. Vault-wide emoji administration belongs to owners, not editors.
+async fn vault_emoji_upload(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, pack)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    if !view.is_owner() {
+        return workspace_denied();
+    }
+    let Ok(upload) = serde_json::from_str::<crate::emoji::Upload>(&body) else {
+        return emoji_upload_error(StatusCode::BAD_REQUEST);
+    };
+    let root = vault
+        .root()
+        .join(".memberberry")
+        .join("emoji")
+        .join("packs");
+    emoji_upload_response(crate::emoji::install(&root, &pack, upload))
+}
+
+/// Installs a server-shared pack. This is the one emoji operation requiring server admin.
+async fn shared_emoji_upload(
+    State(state): State<Arc<AppState>>,
+    AxumPath(pack): AxumPath<String>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    if !state.is_server_admin(&headers) {
+        return workspace_denied();
+    }
+    let Some(data_dir) = state.data_dir.as_ref() else {
+        return emoji_upload_error(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let Ok(upload) = serde_json::from_str::<crate::emoji::Upload>(&body) else {
+        return emoji_upload_error(StatusCode::BAD_REQUEST);
+    };
+    let root = data_dir.join("emoji").join("packs");
+    emoji_upload_response(crate::emoji::install(&root, &pack, upload))
+}
+
+fn emoji_upload_response(result: Result<(), crate::emoji::Error>) -> Response {
+    match result {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(crate::emoji::Error::Conflict(_)) => emoji_upload_error(StatusCode::CONFLICT),
+        Err(crate::emoji::Error::Invalid { .. }) => emoji_upload_error(StatusCode::BAD_REQUEST),
+        Err(crate::emoji::Error::Io { .. }) => {
+            emoji_upload_error(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+fn emoji_upload_error(status: StatusCode) -> Response {
+    status.into_response()
+}
+
+/// Serves one custom emoji image only after the caller passes the vault ACL.
+async fn vault_emoji_asset(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, asset)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let mut components = asset.split('/');
+    let Some(pack) = components.next() else {
+        return workspace_denied();
+    };
+    let Some(file) = components.next() else {
+        return workspace_denied();
+    };
+    if components.next().is_some() || pack.is_empty() || file.is_empty() {
+        return workspace_denied();
+    }
+    let shared = shared_emoji_root(&state);
+    let entries = match view.emoji_entries(shared.as_deref()) {
+        Ok(entries) => entries,
+        Err(_) => return workspace_denied(),
+    };
+    let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.pack == pack && entry.file == file)
+    else {
+        return workspace_denied();
+    };
+    let Ok(path) = entry.path.join(&entry.file).canonicalize() else {
+        return workspace_denied();
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return workspace_denied();
+    };
+    let content_type = match path.extension().and_then(|extension| extension.to_str()) {
+        Some("gif") => "image/gif",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("png") => "image/png",
+        _ => return workspace_denied(),
+    };
+    ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+}
+
+fn shared_emoji_root(state: &AppState) -> Option<PathBuf> {
+    state
+        .data_dir
+        .as_ref()
+        .map(|directory| directory.join("emoji").join("packs"))
 }
 
 #[derive(serde::Serialize)]
@@ -3280,6 +3439,18 @@ impl AppState {
         let auth = self.security.auth.lock().ok()?;
         let user = auth.authenticate_signed_session_cookie(token).ok()??;
         Username::parse(&user.username).ok()
+    }
+
+    fn is_server_admin(&self, headers: &HeaderMap) -> bool {
+        let Some(username) = self.authenticated_user(headers) else {
+            return false;
+        };
+        self.security
+            .auth
+            .lock()
+            .ok()
+            .and_then(|auth| auth.user_by_username(username.as_str()).ok().flatten())
+            .is_some_and(|user| user.is_admin && !user.disabled)
     }
 
     /// The vault's current policy. Cloned out of the lock so no caller pins a stale one.

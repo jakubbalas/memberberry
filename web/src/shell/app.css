@@ -66,6 +66,20 @@ body {
 .editor-control, .task-chip { min-height: var(--control-height); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: var(--space-3) var(--space-4); color: var(--text-primary); background: var(--surface-note); font: var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
 .editor-control:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
 .editor-control:focus-visible, .task-chip:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.emoji-picker-wrap { position: relative; }
+.emoji-picker-toggle { min-height: var(--control-height); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: var(--space-3) var(--space-4); color: var(--text-primary); background: var(--surface-note); font: var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.emoji-picker-toggle:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+.emoji-picker-toggle:focus-visible, .emoji-picker-item:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.emoji-picker { position: absolute; z-index: 3; top: calc(100% + var(--space-3)); left: 0; display: grid; gap: var(--space-3); width: min(22rem, calc(100vw - var(--space-8))); padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); box-shadow: var(--shadow-md); }
+.emoji-picker input { min-height: var(--control-height); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); color: var(--text-primary); background: var(--surface-note); font: var(--text-sm)/var(--leading-body) var(--font-ui); }
+.emoji-picker-categories, .emoji-picker-tones { display: flex; gap: var(--space-2); overflow-x: auto; }
+.emoji-picker-category, .emoji-picker-tone { min-height: var(--touch-target-min); border: 1px solid transparent; border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); color: var(--text-muted); background: var(--surface-note); font: var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; white-space: nowrap; }
+.emoji-picker-category[aria-pressed="true"], .emoji-picker-category:hover, .emoji-picker-tone[aria-pressed="true"], .emoji-picker-tone:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+.emoji-picker-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-2); max-height: 15rem; overflow: auto; }
+.emoji-picker-item { min-width: var(--touch-target-min); min-height: var(--touch-target-min); overflow: hidden; border: 1px solid transparent; border-radius: var(--radius-sm); padding: var(--space-1); color: var(--text-primary); background: var(--surface-note); font: var(--text-lg)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.emoji-picker-item:hover { border-color: var(--accent-primary); }
+.emoji-picker-item img { display: block; width: var(--space-6); height: var(--space-6); margin: auto; object-fit: contain; }
+.emoji-picker-more { grid-column: 1 / -1; min-height: var(--control-height); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--surface-note); cursor: pointer; }
 .task-inspector { color: var(--text-muted); font-size: var(--text-xs); }
 .task-inspector::before { content: "Task chips"; margin-right: var(--space-1); font-weight: var(--weight-bold); }
 /* Positioned rather than in flow: the menu opens on a keystroke, and a block appearing in
@@ -672,6 +686,7 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
      whole frame instead puts a 44px strip on top of the tab strip, where it silently eats
      taps meant for the first tab — which is how the E2E mobile project found this. */
   .workspace-shell { position: relative; }
+  .emoji-picker { right: 0; left: auto; }
   .sidebar {
     position: absolute;
     z-index: 3;

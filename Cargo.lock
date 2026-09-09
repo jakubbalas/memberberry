@@ -1502,6 +1502,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mb-emoji-wasm"
+version = "0.1.0"
+dependencies = [
+ "mb-core",
+ "serde",
+ "serde-wasm-bindgen",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "mb-index"
 version = "0.1.0"
 dependencies = [
@@ -1532,6 +1542,7 @@ name = "mb-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "bytes",
  "criterion",
  "flate2",
@@ -1547,6 +1558,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-tungstenite",

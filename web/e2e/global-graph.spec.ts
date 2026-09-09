@@ -140,7 +140,7 @@ test("filters the picture, and says that it is filtering", async ({ page }) => {
   const before = await page.locator(STATUS).textContent();
 
   await page.locator(GRAPH).getByRole("button", { name: /^Filters/ }).click();
-  await page.getByLabel("Path").fill("Graph/**");
+  await page.getByLabel("Path", { exact: true }).fill("Graph/**");
 
   await expect(page.getByRole("button", { name: /^Filters \(on\)/ })).toBeVisible();
   // §9.4's honesty requirement, in its second form: a picture that is hiding notes has to

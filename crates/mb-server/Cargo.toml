@@ -12,6 +12,7 @@ mb-auth.workspace = true
 mb-crdt.workspace = true
 mb-index.workspace = true
 axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
 bytes = "1"
 futures-util = "0.3"
 # why: gzip for the response compression layer. SPEC §21.1 states the problem it solves
@@ -39,6 +40,7 @@ yrs.workspace = true
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "macros", "time", "sync"] }
 tokio-tungstenite = "0.29"
+tempfile = "3"
 
 [lints]
 workspace = true

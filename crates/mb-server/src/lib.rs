@@ -12,6 +12,7 @@ pub mod bookmarks;
 pub mod compress;
 pub mod config;
 pub mod create;
+pub mod emoji;
 pub mod http;
 pub mod indexing;
 pub mod invites;

@@ -5,6 +5,7 @@ members = [
     "crates/mb-core",
     "crates/mb-crdt",
     "crates/mb-index",
+    "crates/mb-emoji-wasm",
     "crates/mb-search",
     "crates/mb-wasm",
     "crates/mb-server",

@@ -110,6 +110,39 @@ test("typing is saved as plain Markdown in the note file", async ({ page }) => {
   expect(markdown.endsWith("\n")).toBe(true);
 });
 
+test("the emoji picker searches offline and writes literal toned Unicode", async ({ page }, info) => {
+  const note = scratchNote("emoji-picker", info.project.name);
+  await signIn(page);
+  await page.goto(`/v/personal/${note}`);
+  const editor = page.locator(EDITOR);
+  const paragraph = editor.getByText("A note this test may edit");
+  await expect(paragraph).toBeVisible();
+  const line = await paragraph.boundingBox();
+  expect(line, "the note body should be laid out").not.toBeNull();
+  await paragraph.click({ position: { x: (line?.width ?? 1) - 2, y: (line?.height ?? 1) - 2 } });
+  await page.keyboard.type(" :party:");
+  await expect(editor).toContainText("🎉");
+
+  await page.getByRole("button", { name: "Insert emoji" }).click();
+  await page.getByRole("searchbox", { name: "Search emoji" }).fill("wave");
+  await page.getByRole("button", { name: "skin-tone-3" }).click();
+  await page.getByRole("button", { name: ":wave:" }).click();
+
+  await page.getByRole("button", { name: "Insert emoji" }).click();
+  await page.getByRole("searchbox", { name: "Search emoji" }).fill("tada");
+  await page.getByRole("button", { name: ":tada:" }).click();
+
+  const path = join(E2E_VAULT, ...note.split("/"));
+  await expect
+    .poll(() => readFileSync(path, "utf8"), { timeout: 15_000, intervals: [100] })
+    .toContain("👋🏼");
+  const markdown = readFileSync(path, "utf8");
+  expect(markdown).toContain("🎉");
+  expect(markdown).not.toContain("🎉🏼");
+  expect(markdown).not.toContain(":wave:");
+  expect(markdown).not.toContain(":party:");
+});
+
 /**
  * What a note actually looks like (`SPEC.md` §8.2, §10.2).
  *

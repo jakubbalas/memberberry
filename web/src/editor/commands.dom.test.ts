@@ -4,7 +4,7 @@ import { Editor } from "@tiptap/core";
 import { describe, expect, it } from "vitest";
 
 import { createMemberberryExtensions } from "./schema.js";
-import { insertBlock, memberberryInputRules, moveCurrentBlock, setTaskDue, setTaskPriority, toggleTask } from "./commands.js";
+import { insertBlock, memberberryInputRules, moveCurrentBlock, resolveEmojiInput, resolveEmojiShortcode, setTaskDue, setTaskPriority, toggleTask } from "./commands.js";
 
 const CONTRACT = {
   version: 1,
@@ -26,6 +26,17 @@ function editor(): Editor {
 }
 
 describe("editor commands", () => {
+  it("resolves known shortcode input and leaves custom names alone", () => {
+    const catalog = [{ shortcode: "tada", glyph: "🎉", category: "activities", aliases: ["party"], supportsSkinTone: false }];
+    expect(resolveEmojiShortcode(catalog, "TADA")).toBe("🎉");
+    expect(resolveEmojiShortcode(catalog, "PARTY")).toBe("🎉");
+    expect(resolveEmojiShortcode(catalog, "partyparrot")).toBeUndefined();
+    expect(resolveEmojiShortcode(catalog, undefined)).toBeUndefined();
+    expect(resolveEmojiInput(catalog, "wave", "skin-tone-3")).toBeUndefined();
+    expect(resolveEmojiInput(catalog, "tada", "skin-tone-3")).toBe("🎉");
+    expect(resolveEmojiInput([{ shortcode: "wave", glyph: "👋", category: "people", aliases: [], supportsSkinTone: true }], "wave", "skin-tone-3")).toBe("👋🏼");
+  });
+
   it("inserts every M3 toolbar block through the generated schema", () => {
     const view = editor();
     expect(insertBlock(view, "task_item")).toBe(true);

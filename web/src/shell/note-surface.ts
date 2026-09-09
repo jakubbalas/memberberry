@@ -33,6 +33,7 @@ import { notDownloaded } from "../offline/not-downloaded.js";
 import type { Replica } from "../offline/replica.js";
 import { type NoteBootstrap, remoteSyncFor } from "./bootstrap.js";
 import { createMediaUploader } from "../editor/media-upload.js";
+import { loadEmojiChoices } from "../editor/emoji-picker.js";
 
 export interface NoteSurfaceElements {
   /** Where Tiptap mounts. */
@@ -355,6 +356,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     throw new Error("the default editor factory must return a Tiptap Editor");
   }
   const tiptap = editor.editor;
+  const emojiChoices = await loadEmojiChoices(bootstrap?.vault);
 
   const { collaboration } = editor;
   const shell = mountEditorShell({
@@ -372,6 +374,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
         bootstrap.mediaMaxDimension === undefined ? {} : { maxDimension: bootstrap.mediaMaxDimension },
       ),
     }),
+    emojiChoices,
   });
 
   // A note this device already holds is open now, and the write moves it to the front of

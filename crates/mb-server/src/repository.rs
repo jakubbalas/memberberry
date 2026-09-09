@@ -3,7 +3,7 @@
 //! Feature code receives this view instead of a raw vault. Every list, name lookup, path
 //! resolution and source read applies the same ACL before returning note metadata or bytes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mb_core::{Access, NotePath, Role, Username};
 
@@ -78,6 +78,30 @@ impl<'a> AuthorizedVault<'a> {
                 })
                 .unwrap_or(false)
         }))
+    }
+
+    /// Returns whether this caller is a vault owner, as required for vault-wide resources.
+    pub fn is_owner(&self) -> bool {
+        self.access
+            .members()
+            .any(|(member, role)| member == &self.user && role == Role::Owner)
+    }
+
+    /// Lists custom emoji only for a caller who may discover this vault.
+    pub fn emoji_entries(
+        &self,
+        shared_root: Option<&Path>,
+    ) -> Result<Vec<crate::emoji::ResolvedEntry>, Error> {
+        if !self.has_any_access()? {
+            return Err(Error::NotFound);
+        }
+        let local_root = self
+            .vault
+            .root()
+            .join(".memberberry")
+            .join("emoji")
+            .join("packs");
+        crate::emoji::resolve(shared_root, &local_root).map_err(|_| Error::NotFound)
     }
 
     /// Resolves a literal relative path only when the user can read it.

@@ -125,13 +125,18 @@ token-check: ## Enforce the design-token contract, both directions (SPEC 20.1, 2
 
 # ---------------------------------------------------------------- web
 
+.PHONY: emoji-catalog
+emoji-catalog: ## Generate the Rust emoji catalog from the vendored Emojibase data
+	node scripts/generate-emoji-catalog.mjs
+
 .PHONY: wasm
-wasm: ## Build the WebAssembly bindings into web/src/wasm (needs wasm-pack)
+wasm: emoji-catalog ## Build the WebAssembly bindings into web/src/wasm (needs wasm-pack)
 	@command -v wasm-pack >/dev/null 2>&1 || { \
 		echo "Install first: cargo install wasm-pack"; exit 1; }
 	@# why: wasm-pack installs wasm-opt into XDG's cache. Keeping it under target makes the
 	@# optimizer usable in restricted build environments without disabling the production pass.
 	XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb
+	XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-emoji-wasm --target web --out-dir ../../web/src/wasm/emoji --out-name emoji
 
 .PHONY: web
 web: wasm ## Vite dev server on 9011, against the freshly built wasm
