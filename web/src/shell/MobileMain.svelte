@@ -26,11 +26,12 @@
     readonly session?: Pick<NoteBootstrap, "vault" | "user"> | undefined;
     readonly open?: typeof openNoteSurface | undefined;
     readonly titleOf?: ((path: string) => string | null) | undefined;
+    readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
     readonly taskEdit?: { readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined;
     readonly daily?: DailyView | undefined;
   }
 
-  const { store, session, open, titleOf, taskEdit, daily }: Props = $props();
+  const { store, session, open, titleOf, iconOf, taskEdit, daily }: Props = $props();
 
   let sheetOpen = $state(false);
 
@@ -48,6 +49,7 @@
   <Breadcrumbs
     path={active?.note}
     title={active === undefined ? undefined : titleOf?.(active.note)}
+    icon={active === undefined ? undefined : iconOf?.(active.note)}
   />
   <NotePane
     tab={active}
@@ -101,6 +103,7 @@
 <TabSheet
   open={sheetOpen}
   tabs={store.tabs}
+  {iconOf}
   activeTab={active?.id}
   onactivate={(tab) => {
     store.activate(tab);

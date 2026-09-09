@@ -28,7 +28,8 @@ USAGE:
     memberberry normalize [--check] [PATH]...   Rewrite notes into canonical Markdown
     memberberry inspect [PATH]                  Show the parsed structure of one note
     memberberry reindex [--slug S] [--config FILE]  Rebuild a vault's index from its notes
-    memberberry export --materialize-media [--slug S]  Download referenced S3 media into the vault
+    memberberry export [--materialize-media] [--materialize-emoji] [--slug S]
+                                                    Materialize referenced remote assets
     memberberry doctor [--slug S] [--config FILE]   Report orphaned media objects
     memberberry gen-vault --out DIR [--notes N] Generate a synthetic vault for scale tests
 
@@ -277,9 +278,8 @@ fn media_runtime() -> Result<tokio::runtime::Runtime, String> {
 }
 
 fn export(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
-    if !args.iter().any(|arg| arg == "--materialize-media") {
-        return Err("export currently needs --materialize-media".to_string());
-    }
+    let materialize_media = args.iter().any(|arg| arg == "--materialize-media");
+    let materialize_emoji = args.iter().any(|arg| arg == "--materialize-emoji");
     let path = config_path(args);
     let config = mb_server::ServerConfig::load(&path).map_err(|error| error.to_string())?;
     let vaults = config
@@ -287,16 +287,30 @@ fn export(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
         .map_err(|error| error.to_string())?;
     let selected = selected_vaults(args, &path, &vaults)?;
     let runtime = media_runtime()?;
+    let data_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let shared_root = data_dir.join("emoji").join("packs");
     for vault in selected {
-        let written = runtime
-            .block_on(mb_server::media::materialize(vault))
-            .map_err(|error| error.to_string())?;
-        writeln!(
-            out,
-            "vault {}: materialized {written} media objects",
-            vault.slug()
-        )
-        .map_err(io("writing report"))?;
+        if materialize_media || !materialize_emoji {
+            let written = runtime
+                .block_on(mb_server::media::materialize(vault))
+                .map_err(|error| error.to_string())?;
+            writeln!(
+                out,
+                "vault {}: materialized {written} media objects",
+                vault.slug()
+            )
+            .map_err(io("writing report"))?;
+        }
+        if materialize_emoji || !materialize_media {
+            let copied = mb_server::emoji::materialize(Some(&shared_root), vault)
+                .map_err(|error| error.to_string())?;
+            writeln!(
+                out,
+                "vault {}: materialized {copied} emoji packs",
+                vault.slug()
+            )
+            .map_err(io("writing report"))?;
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

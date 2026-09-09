@@ -20,9 +20,10 @@
     readonly onactivate: (tab: string) => void;
     readonly onclose: (tab: string) => void;
     readonly onmove: (tab: string, toGroup: GroupId, index: number) => void;
+    readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
   }
 
-  const { group, panes, focused, onactivate, onclose, onmove }: Props = $props();
+  const { group, panes, focused, onactivate, onclose, onmove, iconOf }: Props = $props();
 
   /** The drag in progress, if the pointer started it in this strip. */
   let dragging = $state<string | undefined>(undefined);
@@ -126,6 +127,9 @@
       onclick={() => onactivate(tab.id)}
       onkeydown={(event) => onkeydown(event, tab, at)}
     >
+      {#if iconOf?.(tab.note)}
+        <span class="tab-icon" aria-hidden="true">{iconOf(tab.note)}</span>
+      {/if}
       <span class="tab-label">{label(tab)}</span>
       <button
         type="button"

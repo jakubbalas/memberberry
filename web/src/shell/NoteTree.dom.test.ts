@@ -144,6 +144,20 @@ describe("the tree", () => {
     }
   });
 
+  it("shows a note's frontmatter icon in the tree and title surface", async () => {
+    const { teardown } = render({
+      notes: [{ path: "Ideas.md", title: "Ideas", icon: "🧠", conflicts: 0 }],
+      open: ["Ideas.md"],
+    });
+    try {
+      await flush();
+      expect(target.querySelector(".tree-icon")?.textContent).toBe("🧠");
+      expect(target.querySelector(".breadcrumb-note-icon")?.textContent).toBe("🧠");
+    } finally {
+      teardown();
+    }
+  });
+
   it("badges only notes with unresolved conflicts", async () => {
     const { teardown } = render({
       notes: [

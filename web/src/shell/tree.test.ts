@@ -79,6 +79,14 @@ describe("building the tree", () => {
     expect(note?.name).toBe("2024-01-15");
   });
 
+  it("keeps the note's icon alongside its title", () => {
+    const tree = buildTree([
+      { path: "Ideas.md", title: "Ideas", icon: ":bulb:", conflicts: 0 },
+    ]);
+    const note = tree[0];
+    expect(note?.kind === "note" && note.icon).toBe(":bulb:");
+  });
+
   it("survives paths that are not shaped like paths", () => {
     // The list comes from the server, but a client that falls over on a leading slash or a
     // doubled separator is a client that falls over on someone's real vault.

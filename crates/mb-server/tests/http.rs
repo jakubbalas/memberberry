@@ -620,10 +620,38 @@ fn custom_emoji_route_resolves_shared_and_vault_local_packs() {
         !body.contains(r#""shortcode":"party","file":"shared.png""#),
         "local collision should win: {body}"
     );
+    let headers = server.headers("/api/v1/vaults/v/emoji").to_lowercase();
+    assert!(headers.contains("cache-control: no-store"), "{headers}");
 
     let (status, body) = server.get("/api/v1/vaults/v/emoji/local/local.png");
     assert!(is_ok(&status), "{status}");
     assert!(body.contains("local-image"), "{body}");
+    let headers = server
+        .headers("/api/v1/vaults/v/emoji/local/local.png")
+        .to_lowercase();
+    assert!(
+        headers.contains("cache-control: private, no-store"),
+        "{headers}"
+    );
+
+    let (status, body) = server.get("/api/v1/vaults/v/emoji/packs");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains(r#""name":"local","emoji_count":1"#), "{body}");
+    let headers = server
+        .headers("/api/v1/vaults/v/emoji/packs")
+        .to_lowercase();
+    assert!(headers.contains("cache-control: no-store"), "{headers}");
+    let signed_headers = server.default_headers.clone();
+    let (status, _) = server.request(
+        "DELETE",
+        "/api/v1/vaults/v/emoji/packs/local",
+        &signed_headers,
+        "",
+    );
+    assert!(status.contains("204"), "{status}");
+    let (status, body) = server.get("/api/v1/vaults/v/emoji/packs");
+    assert!(is_ok(&status), "{status}");
+    assert_eq!(body, "[]");
 }
 
 #[test]
@@ -646,6 +674,10 @@ fn custom_emoji_route_does_not_disclose_an_unreadable_vault() {
         "",
         r#"{"manifest":{"name":"nope","version":1,"emoji":[]},"files":[]}"#,
     );
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.get("/api/v1/vaults/v/emoji/packs");
+    assert!(is_not_found(&status), "{status}");
+    let (status, _) = server.request("DELETE", "/api/v1/vaults/v/emoji/packs/nope", "", "");
     assert!(is_not_found(&status), "{status}");
 }
 
@@ -1870,7 +1902,7 @@ fn the_note_index_lists_only_readable_notes_with_their_titles() {
     let dir = TempDir::new("http-note-index");
     dir.write(
         "Public.md",
-        "# The Public One\n\nBody.\n\n- [ ] Shared task\n",
+        "---\nicon: 🧠\n---\n\n# The Public One\n\nBody.\n\n- [ ] Shared task\n",
     );
     dir.write("Untitled.md", "");
     dir.write(
@@ -1932,12 +1964,16 @@ fn the_note_index_lists_only_readable_notes_with_their_titles() {
     assert!(body.contains("Untitled.md"), "{body}");
     // §3.5's badge travels with the summary, so the tree can show it without opening a note.
     assert!(
-        body.contains("\"path\":\"Conflicted.md\",\"title\":\"Conflicted\",\"conflicts\":1"),
+        body.contains(
+            "\"path\":\"Conflicted.md\",\"title\":\"Conflicted\",\"icon\":null,\"conflicts\":1"
+        ),
         "the conflict count must reach the tree: {body}"
     );
     assert!(
-        body.contains("\"path\":\"Public.md\",\"title\":\"The Public One\",\"conflicts\":0"),
-        "and be zero for a note without one: {body}"
+        body.contains(
+            "\"path\":\"Public.md\",\"title\":\"The Public One\",\"icon\":\"🧠\",\"conflicts\":0"
+        ),
+        "the frontmatter icon should reach the note summary: {body}"
     );
     assert!(
         body.contains("Shared task"),

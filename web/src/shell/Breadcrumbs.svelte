@@ -12,9 +12,11 @@
     readonly path?: string | undefined;
     /** The note's title, shown as the last crumb when it differs from the filename. */
     readonly title?: string | null | undefined;
+    /** The note's frontmatter icon, shown with its title (`SPEC.md` §4.2). */
+    readonly icon?: string | null | undefined;
   }
 
-  const { path, title }: Props = $props();
+  const { path, title, icon }: Props = $props();
 
   const segments = $derived(path === undefined ? [] : path.split("/").filter((s) => s !== ""));
   const folders = $derived(segments.slice(0, -1));
@@ -31,6 +33,9 @@
         <li class="breadcrumb"><span class="breadcrumb-folder">{folder}</span></li>
       {/each}
       <li class="breadcrumb">
+        {#if icon !== null && icon !== undefined && icon !== ""}
+          <span class="breadcrumb-note-icon" aria-hidden="true">{icon}</span>
+        {/if}
         <span class="breadcrumb-note" aria-current="page">{leaf}</span>
       </li>
     </ol>

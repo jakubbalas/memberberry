@@ -73,6 +73,16 @@ describe("fetching the note index", () => {
     });
   });
 
+  it("keeps a frontmatter icon with the replicated note metadata", async () => {
+    const answer = await fetchNotes("personal", {
+      fetch: responding({ body: { notes: [{ path: "One.md", title: "One", icon: "🧠", conflicts: 0 }] } }),
+    });
+    expect(answer).toEqual({
+      kind: "ok",
+      notes: [{ path: "One.md", title: "One", icon: "🧠", conflicts: 0 }],
+    });
+  });
+
   it("drops an entry with the wrong shape rather than rendering it", async () => {
     // AGENTS.md §4.3: a `path` that is not a string reaches a DOM attribute.
     const answer = await fetchNotes("personal", {

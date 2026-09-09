@@ -17,7 +17,7 @@ import type { TaskChipField, TaskPriority } from "./task-metadata.js";
 import { expandTemplate } from "../notes.js";
 import { openTemplatePalette, TEMPLATE_EVENT, templateContext, type TemplateEventDetail } from "../shell/templates.js";
 import type { MediaUploader } from "./media-upload.js";
-import { mountEmojiPicker, type EmojiChoice } from "./emoji-picker.js";
+import { mountEmojiPicker, type EmojiChoice, type EmojiImportOptions } from "./emoji-picker.js";
 
 export interface EditorShell {
   destroy(): void;
@@ -34,6 +34,7 @@ export interface MountEditorShellOptions {
   readonly title?: string;
   readonly mediaUploader?: MediaUploader;
   readonly emojiChoices?: readonly EmojiChoice[];
+  readonly emojiImport?: EmojiImportOptions;
 }
 
 let focusedEditor: Editor | undefined;
@@ -78,7 +79,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   toolbar.append(sourceToggle, copy);
   const media = mediaControls(options.editor, options.mediaUploader, options.status);
   if (media !== undefined) toolbar.append(media.element);
-  const emoji = mountEmojiPicker(options.editor, toolbar, options.emojiChoices ?? []);
+  const emoji = mountEmojiPicker(options.editor, toolbar, options.emojiChoices ?? [], options.emojiImport);
 
   const inspector = taskInspector(options.editor);
   controls.append(inspector.element, source);

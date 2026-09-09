@@ -278,6 +278,8 @@
    */
   const titleOf = (path: string): string | null =>
     catalog.notes.find((note) => note.path === path)?.title ?? null;
+  const iconOf = (path: string): string | null | undefined =>
+    catalog.notes.find((note) => note.path === path)?.icon;
 
   /**
    * §8.3: the tablet gets the desktop layout with at most one split, and mobile none at all.
@@ -406,9 +408,9 @@
       />
     {/if}
     {#if layout === "mobile"}
-      <MobileMain {store} {session} {open} {titleOf} {taskEdit} {daily} />
+      <MobileMain {store} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
     {:else}
-      <PaneTree node={store.current.root} {store} {panes} {session} {open} {titleOf} {taskEdit} {daily} />
+      <PaneTree node={store.current.root} {store} {panes} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
     {/if}
   </main>
 

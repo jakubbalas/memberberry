@@ -375,6 +375,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
       ),
     }),
     emojiChoices,
+    ...(bootstrap === undefined ? {} : { emojiImport: { vault: bootstrap.vault, status } }),
   });
 
   // A note this device already holds is open now, and the write moves it to the front of

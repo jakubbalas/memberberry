@@ -365,15 +365,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/vaults/{slug}/emoji", get(vault_emoji))
         .route(
             "/api/v1/vaults/{slug}/emoji/packs/{pack}",
-            put(vault_emoji_upload).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+            put(vault_emoji_upload)
+                .delete(vault_emoji_delete)
+                .layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
+        .route("/api/v1/vaults/{slug}/emoji/packs", get(vault_emoji_packs))
         .route(
             "/api/v1/vaults/{slug}/emoji/{*asset}",
             get(vault_emoji_asset),
         )
         .route(
             "/api/v1/emoji/packs/{pack}",
-            put(shared_emoji_upload).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+            put(shared_emoji_upload)
+                .delete(shared_emoji_delete)
+                .layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
         .route(
             "/api/v1/vaults/{slug}/media",
@@ -1277,7 +1282,7 @@ async fn vault_emoji(
     };
     let shared = shared_emoji_root(&state);
     match view.emoji_entries(shared.as_deref()) {
-        Ok(entries) => Json(entries).into_response(),
+        Ok(entries) => json_no_store(&entries),
         Err(_) => workspace_denied(),
     }
 }
@@ -1312,6 +1317,59 @@ async fn vault_emoji_upload(
     emoji_upload_response(crate::emoji::install(&root, &pack, upload))
 }
 
+async fn vault_emoji_packs(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    if !view.is_owner() {
+        return workspace_denied();
+    }
+    let root = vault
+        .root()
+        .join(".memberberry")
+        .join("emoji")
+        .join("packs");
+    match crate::emoji::list(&root) {
+        Ok(packs) => json_no_store(&packs),
+        Err(_) => workspace_denied(),
+    }
+}
+
+async fn vault_emoji_delete(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, pack)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    if !view.is_owner() {
+        return workspace_denied();
+    }
+    let root = vault
+        .root()
+        .join(".memberberry")
+        .join("emoji")
+        .join("packs");
+    emoji_pack_delete_response(crate::emoji::remove(&root, &pack))
+}
+
 /// Installs a server-shared pack. This is the one emoji operation requiring server admin.
 async fn shared_emoji_upload(
     State(state): State<Arc<AppState>>,
@@ -1332,6 +1390,23 @@ async fn shared_emoji_upload(
     emoji_upload_response(crate::emoji::install(&root, &pack, upload))
 }
 
+async fn shared_emoji_delete(
+    State(state): State<Arc<AppState>>,
+    AxumPath(pack): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !state.is_server_admin(&headers) {
+        return workspace_denied();
+    }
+    let Some(data_dir) = state.data_dir.as_ref() else {
+        return emoji_upload_error(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    emoji_pack_delete_response(crate::emoji::remove(
+        &data_dir.join("emoji").join("packs"),
+        &pack,
+    ))
+}
+
 fn emoji_upload_response(result: Result<(), crate::emoji::Error>) -> Response {
     match result {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -1345,6 +1420,21 @@ fn emoji_upload_response(result: Result<(), crate::emoji::Error>) -> Response {
 
 fn emoji_upload_error(status: StatusCode) -> Response {
     status.into_response()
+}
+
+fn emoji_pack_delete_response(result: Result<(), crate::emoji::Error>) -> Response {
+    match result {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(crate::emoji::Error::Invalid { .. }) => emoji_upload_error(StatusCode::BAD_REQUEST),
+        Err(crate::emoji::Error::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            emoji_upload_error(StatusCode::NOT_FOUND)
+        }
+        Err(crate::emoji::Error::Conflict(_) | crate::emoji::Error::Io { .. }) => {
+            emoji_upload_error(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 /// Serves one custom emoji image only after the caller passes the vault ACL.
@@ -1396,7 +1486,14 @@ async fn vault_emoji_asset(
         Some("png") => "image/png",
         _ => return workspace_denied(),
     };
-    ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "private, no-store"),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 fn shared_emoji_root(state: &AppState) -> Option<PathBuf> {

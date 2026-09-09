@@ -12,7 +12,7 @@
 //! note whose title is already known.
 //!
 //! **This is not the index of §9.1 and M8.** That one is SQLite, holds links, tags, tasks and
-//! headings, and is incrementally maintained. This holds titles and conflict counts and
+//! headings, and is incrementally maintained. This holds titles, icons and conflict counts and
 //! nothing else, because those are what the catalog needs and a half-built index is worse
 //! than an honest cache.
 //!
@@ -50,6 +50,16 @@ struct Cached {
     title: Option<String>,
     /// Unresolved `[!conflict]` callouts, at any depth (`SPEC.md` §3.5).
     conflicts: usize,
+    /// Frontmatter icon, either a literal Unicode glyph or a custom shortcode.
+    icon: Option<String>,
+}
+
+struct ParsedSummary {
+    index: usize,
+    fingerprint: Fingerprint,
+    title: Option<String>,
+    icon: Option<String>,
+    conflicts: usize,
 }
 
 /// One note, as the tree and quick switcher need it.
@@ -59,6 +69,8 @@ pub struct NoteSummary {
     pub path: String,
     /// The note's title, or `None` when it has nothing titleable.
     pub title: Option<String>,
+    /// The frontmatter `icon`, or `None` when the note has no icon.
+    pub icon: Option<String>,
     /// Unresolved conflicts, for §3.5's badge in the note tree. `0` for almost every note.
     pub conflicts: usize,
     /// Open task metadata carried by the eager offline tier (§7.2, §10.3).
@@ -132,6 +144,7 @@ impl TitleCache {
             .map(|path| NoteSummary {
                 path: (*path).to_string(),
                 title: None,
+                icon: None,
                 conflicts: 0,
                 tasks: Vec::new(),
             })
@@ -152,6 +165,7 @@ impl TitleCache {
                     Some(cached) if cached.fingerprint == fingerprint => {
                         if let Some(summary) = summaries.get_mut(index) {
                             summary.title.clone_from(&cached.title);
+                            summary.icon.clone_from(&cached.icon);
                             summary.conflicts = cached.conflicts;
                         }
                     }
@@ -170,34 +184,42 @@ impl TitleCache {
 
         // Parse only what changed, still without the lock held. One parse answers both
         // questions, which is the whole reason the conflict count lives here.
-        let parsed: Vec<(usize, Fingerprint, Option<String>, usize)> = stale
+        let parsed: Vec<ParsedSummary> = stale
             .into_iter()
             .map(|(index, fingerprint, absolute)| {
-                let (title, conflicts) = match std::fs::read_to_string(&absolute) {
+                let (title, icon, conflicts) = match std::fs::read_to_string(&absolute) {
                     Ok(source) => {
                         let document = mb_core::parse(&source);
                         (
                             mb_core::extract::title(&document),
+                            document.frontmatter.icon.clone(),
                             mb_core::conflict::count(&document),
                         )
                     }
-                    Err(_) => (None, 0),
+                    Err(_) => (None, None, 0),
                 };
-                (index, fingerprint, title, conflicts)
+                ParsedSummary {
+                    index,
+                    fingerprint,
+                    title,
+                    icon,
+                    conflicts,
+                }
             })
             .collect();
 
         if let Ok(mut entries) = self.entries.write() {
-            for (index, fingerprint, title, conflicts) in &parsed {
-                let Some(path) = paths.get(*index) else {
+            for item in &parsed {
+                let Some(path) = paths.get(item.index) else {
                     continue;
                 };
                 entries.insert(
                     (*path).to_string(),
                     Cached {
-                        fingerprint: *fingerprint,
-                        title: title.clone(),
-                        conflicts: *conflicts,
+                        fingerprint: item.fingerprint,
+                        title: item.title.clone(),
+                        icon: item.icon.clone(),
+                        conflicts: item.conflicts,
                     },
                 );
             }
@@ -207,10 +229,11 @@ impl TitleCache {
             entries.retain(|path, _| live.contains(path.as_str()));
         }
 
-        for (index, _, title, conflicts) in parsed {
-            if let Some(summary) = summaries.get_mut(index) {
-                summary.title = title;
-                summary.conflicts = conflicts;
+        for item in parsed {
+            if let Some(summary) = summaries.get_mut(item.index) {
+                summary.title = item.title;
+                summary.icon = item.icon;
+                summary.conflicts = item.conflicts;
             }
         }
         summaries

@@ -80,6 +80,15 @@ body {
 .emoji-picker-item:hover { border-color: var(--accent-primary); }
 .emoji-picker-item img { display: block; width: var(--space-6); height: var(--space-6); margin: auto; object-fit: contain; }
 .emoji-picker-more { grid-column: 1 / -1; min-height: var(--control-height); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--surface-note); cursor: pointer; }
+.emoji-import-controls { display: grid; gap: var(--space-2); }
+.emoji-import-controls .emoji-picker-more { width: 100%; }
+.emoji-pack-management { display: grid; gap: var(--space-2); max-height: 10rem; overflow: auto; }
+.emoji-pack-row { display: flex; gap: var(--space-2); align-items: center; justify-content: space-between; color: var(--text-muted); font: var(--text-xs)/var(--leading-body) var(--font-ui); }
+.emoji-import-controls input { display: none; }
+.emoji-autocomplete { position: fixed; z-index: 4; display: grid; min-width: 14rem; max-width: min(24rem, calc(100vw - var(--space-8))); padding: var(--space-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-raised); box-shadow: var(--shadow-md); }
+.emoji-autocomplete-item { min-height: var(--touch-target-min); padding: var(--space-2) var(--space-3); border: 0; color: var(--text-primary); background: transparent; font: var(--text-sm)/var(--leading-flat) var(--font-ui); text-align: left; cursor: pointer; }
+.emoji-autocomplete-item[aria-selected="true"], .emoji-autocomplete-item:hover { background: var(--surface-hover); }
+.emoji-autocomplete-item:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-offset)); }
 .task-inspector { color: var(--text-muted); font-size: var(--text-xs); }
 .task-inspector::before { content: "Task chips"; margin-right: var(--space-1); font-weight: var(--weight-bold); }
 /* Positioned rather than in flow: the menu opens on a keystroke, and a block appearing in
@@ -446,6 +455,7 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .breadcrumb-list { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; padding: 0; list-style: none; color: var(--text-muted); font: var(--text-2xs)/var(--leading-flat) var(--font-ui); }
 .breadcrumb + .breadcrumb::before { content: "/"; margin-right: var(--space-2); color: var(--border-subtle); }
 .breadcrumb-note { color: var(--text-primary); font-weight: var(--weight-medium); }
+.breadcrumb-note-icon { margin-right: var(--space-1); }
 
 /* ---------------------------------------------------------------- palette (SPEC 8.4)
 
@@ -686,7 +696,7 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
      whole frame instead puts a 44px strip on top of the tab strip, where it silently eats
      taps meant for the first tab — which is how the E2E mobile project found this. */
   .workspace-shell { position: relative; }
-  .emoji-picker { right: 0; left: auto; }
+  .emoji-picker { position: fixed; top: auto; right: 0; bottom: 0; left: 0; width: auto; max-height: min(80vh, 36rem); padding: var(--space-5); border-radius: var(--radius-lg) var(--radius-lg) 0 0; box-shadow: var(--shadow-lg); }
   .sidebar {
     position: absolute;
     z-index: 3;

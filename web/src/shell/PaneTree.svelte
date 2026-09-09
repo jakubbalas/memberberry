@@ -30,11 +30,12 @@
     readonly open?: typeof openNoteSurface | undefined;
     /** A note's title, for the breadcrumbs each pane draws. */
     readonly titleOf?: ((path: string) => string | null) | undefined;
+    readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
     readonly taskEdit?: { readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined;
     readonly daily?: DailyView | undefined;
   }
 
-  const { node, store, panes, session, open, titleOf, taskEdit, daily }: Props = $props();
+  const { node, store, panes, session, open, titleOf, iconOf, taskEdit, daily }: Props = $props();
 
   /** The split's own box, which the divider measures a pointer position against. */
   let container = $state<HTMLElement | undefined>(undefined);
@@ -67,10 +68,12 @@
       onactivate={(tab) => store.activate(tab)}
       onclose={(tab) => store.close(tab)}
       onmove={(tab, toGroup, index) => store.move(tab, toGroup, index)}
+      {iconOf}
     />
     <Breadcrumbs
       path={active?.note}
       title={active === undefined ? undefined : titleOf?.(active.note)}
+      icon={active === undefined ? undefined : iconOf?.(active.note)}
     />
     <NotePane
       tab={active}
@@ -92,7 +95,7 @@
     bind:this={container}
   >
     <div class="pane-split-side">
-      <PaneTree node={node.first} {store} {panes} {session} {open} {titleOf} {taskEdit} {daily} />
+      <PaneTree node={node.first} {store} {panes} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
     </div>
     <SplitDivider
       split={node}
@@ -100,7 +103,7 @@
       onresize={(ratio) => store.resize(node.id, ratio)}
     />
     <div class="pane-split-side">
-      <PaneTree node={node.second} {store} {panes} {session} {open} {titleOf} {taskEdit} {daily} />
+      <PaneTree node={node.second} {store} {panes} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
     </div>
   </div>
 {/if}

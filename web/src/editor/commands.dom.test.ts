@@ -4,6 +4,7 @@ import { Editor } from "@tiptap/core";
 import { describe, expect, it } from "vitest";
 
 import { createMemberberryExtensions } from "./schema.js";
+import { emojiAutocomplete, emojiSuggestions } from "./emoji-autocomplete.js";
 import { insertBlock, memberberryInputRules, moveCurrentBlock, resolveEmojiInput, resolveEmojiShortcode, setTaskDue, setTaskPriority, toggleTask } from "./commands.js";
 
 const CONTRACT = {
@@ -26,6 +27,30 @@ function editor(): Editor {
 }
 
 describe("editor commands", () => {
+  it("ranks inline emoji suggestions by a fuzzy shortcode query", () => {
+    const catalog = [
+      { shortcode: "partyparrot", glyph: "🦜", category: "animals", aliases: [], supportsSkinTone: false },
+      { shortcode: "tada", glyph: "🎉", category: "activities", aliases: ["party"], supportsSkinTone: false },
+    ];
+    expect(emojiSuggestions(catalog, "ppr").map((entry) => entry.shortcode)).toEqual(["partyparrot"]);
+  });
+
+  it("opens inline suggestions and replaces the shortcode with a literal glyph", () => {
+    const view = new Editor({
+      element: document.createElement("div"),
+      extensions: [...createMemberberryExtensions(CONTRACT), emojiAutocomplete([
+        { shortcode: "tada", glyph: "🎉", category: "activities", aliases: [], supportsSkinTone: false },
+      ])],
+    });
+    document.body.append(view.view.dom);
+    view.view.dom.focus();
+    view.commands.insertContent(":ta");
+    expect(document.querySelector(".emoji-autocomplete-item")?.textContent).toContain(":tada:");
+    view.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(view.getText()).toBe("🎉");
+    view.destroy();
+  });
+
   it("resolves known shortcode input and leaves custom names alone", () => {
     const catalog = [{ shortcode: "tada", glyph: "🎉", category: "activities", aliases: ["party"], supportsSkinTone: false }];
     expect(resolveEmojiShortcode(catalog, "TADA")).toBe("🎉");

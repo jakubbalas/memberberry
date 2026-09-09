@@ -136,6 +136,35 @@ fn export_materialize_media_is_a_no_op_for_a_local_vault() {
 }
 
 #[test]
+fn export_materialize_emoji_copies_a_referenced_shared_pack() {
+    let dir = TempDir::new("materialize-emoji");
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(&vault).expect("vault");
+    fs::write(vault.join("Note.md"), "# Note\n\n:berry:\n").expect("note");
+    dir.write(
+        "emoji/packs/shared/pack.json",
+        r#"{"name":"shared","version":1,"emoji":[{"shortcode":"berry","file":"berry.png"}]}"#,
+    );
+    dir.write("emoji/packs/shared/berry.png", "image bytes");
+    let config = config_for(&dir, &vault);
+
+    let (code, out) = run(&[
+        "export",
+        "--materialize-emoji",
+        "--config",
+        config.to_str().expect("config path"),
+    ]);
+
+    assert!(is_success(code), "{out}");
+    assert!(out.contains("materialized 1 emoji packs"), "{out}");
+    assert!(
+        vault
+            .join(".memberberry/emoji/packs/shared/berry.png")
+            .is_file()
+    );
+}
+
+#[test]
 fn doctor_reports_unreferenced_local_media() {
     let dir = TempDir::new("doctor-media");
     dir.write("Note.md", "# Note\n");

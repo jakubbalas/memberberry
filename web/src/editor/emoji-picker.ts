@@ -1,5 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { emojiCatalog } from "../emoji-catalog.js";
+import { emojiPackUploadBody, normalizeShortcode, planEmojiImport, planSlackEmojiImport, readEmojiImport, type EmojiImportAsset } from "./emoji-import.js";
 
 /** One item shown by the emoji picker. */
 export interface EmojiChoice {
@@ -12,6 +13,11 @@ export interface EmojiChoice {
   readonly supportsSkinTone?: boolean;
 }
 
+export interface EmojiImportOptions {
+  readonly vault: string;
+  readonly status?: HTMLElement;
+}
+
 const SKIN_TONES = [
   { shortcode: "skin-tone-2", glyph: "🏻" },
   { shortcode: "skin-tone-3", glyph: "🏼" },
@@ -20,6 +26,8 @@ const SKIN_TONES = [
   { shortcode: "skin-tone-6", glyph: "🏿" },
 ] as const;
 const PAGE_SIZE = 120;
+const RECENTS_KEY = "memberberry.emoji.recents";
+const MAX_RECENTS = 24;
 
 /** Loads base emoji offline and best-effort custom entries from the authorized vault route. */
 export async function loadEmojiChoices(vault?: string): Promise<readonly EmojiChoice[]> {
@@ -69,7 +77,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Mounts a searchable, keyboard-accessible emoji picker beside an editor toolbar. */
-export function mountEmojiPicker(editor: Editor, toolbar: HTMLElement, choices: readonly EmojiChoice[]): { destroy(): void } {
+export function mountEmojiPicker(
+  editor: Editor,
+  toolbar: HTMLElement,
+  choices: readonly EmojiChoice[],
+  importOptions?: EmojiImportOptions,
+): { destroy(): void } {
+  let availableChoices = [...choices];
   const wrapper = document.createElement("div");
   wrapper.className = "emoji-picker-wrap";
   const toggle = document.createElement("button");
@@ -83,6 +97,7 @@ export function mountEmojiPicker(editor: Editor, toolbar: HTMLElement, choices: 
   panel.hidden = true;
   panel.setAttribute("role", "dialog");
   panel.setAttribute("aria-label", "Emoji picker");
+  panel.setAttribute("aria-modal", "false");
   const search = document.createElement("input");
   search.type = "search";
   search.placeholder = "Search emoji";
@@ -91,16 +106,16 @@ export function mountEmojiPicker(editor: Editor, toolbar: HTMLElement, choices: 
   categories.className = "emoji-picker-categories";
   categories.setAttribute("role", "group");
   categories.setAttribute("aria-label", "Emoji categories");
-  const customChoices = choices.filter((choice) => choice.custom);
-  const categoryNames = ["custom", ...new Set(choices.filter((choice) => !choice.custom).map((choice) => choice.category))];
+  const categoryNames = ["custom", "recent", ...new Set(availableChoices.filter((choice) => !choice.custom).map((choice) => choice.category))];
   let selectedCategory = "all";
   let selectedTone = "";
   let visibleLimit = PAGE_SIZE;
+  let recentShortcodes = readRecents();
   for (const category of ["all", ...categoryNames]) {
     const tab = document.createElement("button");
     tab.type = "button";
     tab.className = "emoji-picker-category";
-    tab.textContent = category === "all" ? "All" : category === "custom" ? "Custom" : category;
+    tab.textContent = category === "all" ? "All" : category === "custom" ? "Custom" : category === "recent" ? "Recent" : category;
     tab.setAttribute("aria-label", `Show ${category} emoji`);
     tab.addEventListener("click", () => {
       selectedCategory = category;
@@ -144,10 +159,20 @@ export function mountEmojiPicker(editor: Editor, toolbar: HTMLElement, choices: 
   const render = (): void => {
     const query = search.value.trim().toLowerCase();
     grid.replaceChildren();
-    const matches = choices
+    const matches = availableChoices
       .filter((choice) => selectedCategory === "all"
-        || (choice.custom ? selectedCategory === "custom" : selectedCategory === choice.category))
-      .filter((choice) => query.length === 0 || choice.shortcode.includes(query) || choice.aliases?.some((alias) => alias.includes(query)) === true || choice.glyph.includes(query) || choice.category.includes(query));
+        || (selectedCategory === "recent"
+          ? recentShortcodes.includes(choice.shortcode)
+          : choice.custom ? selectedCategory === "custom" : selectedCategory === choice.category))
+      .map((choice, index) => ({ choice, index, score: query.length === 0 ? 0 : bestEmojiMatch(choice, query) }))
+      .filter(({ score }) => query.length === 0 || score !== undefined)
+      .sort((left, right) => {
+        if (selectedCategory === "recent" && left.choice.shortcode !== right.choice.shortcode) {
+          return recentShortcodes.indexOf(left.choice.shortcode) - recentShortcodes.indexOf(right.choice.shortcode);
+        }
+        return left.score === right.score ? left.index - right.index : (right.score ?? 0) - (left.score ?? 0);
+      })
+      .map(({ choice }) => choice);
     matches
       .slice(0, visibleLimit)
       .forEach((choice) => {
@@ -171,6 +196,8 @@ export function mountEmojiPicker(editor: Editor, toolbar: HTMLElement, choices: 
           editor.chain().focus().insertContent(
             choice.custom ? `:${choice.shortcode}:` : `${choice.glyph}${choice.supportsSkinTone === true ? selectedTone : ""}`,
           ).run();
+          recentShortcodes = [choice.shortcode, ...recentShortcodes.filter((shortcode) => shortcode !== choice.shortcode)].slice(0, MAX_RECENTS);
+          writeRecents(recentShortcodes);
           close();
         });
         grid.append(item);
@@ -188,6 +215,14 @@ export function mountEmojiPicker(editor: Editor, toolbar: HTMLElement, choices: 
       grid.append(more);
     }
   };
+  const importer = importOptions === undefined ? undefined : mountEmojiImporter(importOptions, () => availableChoices, (added) => {
+    availableChoices = [...added, ...availableChoices];
+    render();
+  }, (pack) => {
+    availableChoices = availableChoices.filter((choice) => choice.category !== pack);
+    render();
+  });
+  if (importer !== undefined) panel.append(importer.element);
   const close = (): void => {
     panel.hidden = true;
     toggle.setAttribute("aria-expanded", "false");
@@ -219,7 +254,232 @@ export function mountEmojiPicker(editor: Editor, toolbar: HTMLElement, choices: 
       toggle.removeEventListener("click", onToggle);
       search.removeEventListener("input", onSearch);
       panel.removeEventListener("keydown", onKeyDown);
+      importer?.destroy();
       wrapper.remove();
     },
   };
+}
+
+function mountEmojiImporter(
+  options: EmojiImportOptions,
+  getChoices: () => readonly EmojiChoice[],
+  onImported: (choices: readonly EmojiChoice[]) => void,
+  onDeleted: (pack: string) => void,
+): { element: HTMLElement; destroy(): void } {
+  const controls = document.createElement("div");
+  controls.className = "emoji-import-controls";
+  const button = importButton("Import custom emoji", "Import custom emoji from a folder or ZIP file");
+  const slackButton = importButton("Import Slack export", "Import a local Slack emoji export");
+  const manageButton = importButton("Manage custom packs", "Manage vault custom emoji packs");
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".zip,image/gif,image/jpeg,image/png,image/webp";
+  input.multiple = true;
+  input.setAttribute("webkitdirectory", "");
+  input.hidden = true;
+  const management = document.createElement("div");
+  management.className = "emoji-pack-management";
+  management.hidden = true;
+  controls.append(button, slackButton, manageButton, input, management);
+  const setStatus = (message: string): void => {
+    if (options.status !== undefined) options.status.textContent = message;
+  };
+  let mode: "folder" | "slack" = "folder";
+  const onButton = (): void => { mode = "folder"; input.click(); };
+  const onSlackButton = (): void => { mode = "slack"; input.click(); };
+  const onManageButton = (): void => {
+    management.hidden = !management.hidden;
+    if (!management.hidden) void loadManagedPacks();
+  };
+  const onChange = (): void => {
+    const files = input.files === null ? [] : [...input.files];
+    input.value = "";
+    if (files.length === 0) return;
+    void importEmojiFiles(files, mode);
+  };
+  const loadManagedPacks = async (): Promise<void> => {
+    management.replaceChildren();
+    try {
+      const response = await fetch(`/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/packs`, { credentials: "same-origin" });
+      if (!response.ok) {
+        setStatus("Custom pack management is available to vault owners.");
+        return;
+      }
+      const body: unknown = await response.json();
+      if (!Array.isArray(body)) return;
+      for (const value of body) {
+        if (!isPackSummary(value)) continue;
+        const row = document.createElement("div");
+        row.className = "emoji-pack-row";
+        const label = document.createElement("span");
+        label.textContent = `${value.name} (${value.emoji_count})`;
+        const remove = importButton("Delete", `Delete ${value.name} emoji pack`);
+        remove.addEventListener("click", () => void deleteManagedPack(value.name, row));
+        row.append(label, remove);
+        management.append(row);
+      }
+      if (management.childElementCount === 0) management.textContent = "No vault-local packs.";
+    } catch {
+      setStatus("Custom pack management is unavailable.");
+    }
+  };
+  const deleteManagedPack = async (pack: string, row: HTMLElement): Promise<void> => {
+    if (!window.confirm(`Delete the ${pack} emoji pack?`)) return;
+    try {
+      const response = await fetch(`/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/packs/${encodeURIComponent(pack)}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        setStatus("The emoji pack could not be deleted.");
+        return;
+      }
+    } catch {
+      setStatus("The emoji pack could not be deleted.");
+      return;
+    }
+    row.remove();
+    onDeleted(pack);
+    setStatus(`Deleted ${pack} emoji pack.`);
+  };
+  const importEmojiFiles = async (files: readonly File[], importMode: "folder" | "slack"): Promise<void> => {
+    try {
+      const sources = await readEmojiImport(files);
+      const existing = new Set(getChoices().flatMap((choice) => [choice.shortcode, ...(choice.aliases ?? [])]));
+      const plan = importMode === "slack" ? planSlackEmojiImport(sources, existing) : planEmojiImport(sources, existing);
+      if (plan.assets.length === 0) {
+        setStatus("No supported, non-empty emoji images found.");
+        return;
+      }
+      const requestedPackName = window.prompt("Pack name", importMode === "slack" ? "slack-emoji" : "custom-emoji");
+      const packName = requestedPackName === null ? undefined : normalizeShortcode(requestedPackName);
+      if (packName === undefined) {
+        setStatus("Import cancelled: use a simple pack name.");
+        return;
+      }
+      const resolved = resolveCollisions(plan.assets, existing);
+      if (resolved === undefined) return;
+      const response = await fetch(`/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/packs/${encodeURIComponent(packName)}`, {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: emojiPackUploadBody(packName, { ...plan, assets: resolved }),
+      });
+      if (!response.ok) throw new Error(response.status === 409 ? "That pack already exists." : "Emoji pack upload failed.");
+      const packChoices = resolved.map((asset): EmojiChoice => ({
+        shortcode: asset.shortcode,
+        glyph: "",
+        category: packName,
+        custom: true,
+        aliases: asset.aliases,
+        imageUrl: `/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/${encodeURIComponent(packName)}/${encodeURIComponent(asset.file)}`,
+      }));
+      onImported(packChoices);
+      setStatus(`Imported ${packChoices.length} custom emoji.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Emoji import failed.");
+    }
+  };
+  button.addEventListener("click", onButton);
+  slackButton.addEventListener("click", onSlackButton);
+  manageButton.addEventListener("click", onManageButton);
+  input.addEventListener("change", onChange);
+  return {
+    element: controls,
+    destroy: () => {
+      button.removeEventListener("click", onButton);
+      slackButton.removeEventListener("click", onSlackButton);
+      manageButton.removeEventListener("click", onManageButton);
+      input.removeEventListener("change", onChange);
+    },
+  };
+}
+
+function isPackSummary(value: unknown): value is { readonly name: string; readonly emoji_count: number } {
+  return typeof value === "object" && value !== null
+    && "name" in value && typeof value.name === "string"
+    && "emoji_count" in value && typeof value.emoji_count === "number"
+    && Number.isInteger(value.emoji_count) && value.emoji_count >= 0;
+}
+
+function importButton(text: string, label: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "emoji-picker-more";
+  button.textContent = text;
+  button.setAttribute("aria-label", label);
+  return button;
+}
+
+function resolveCollisions(assets: readonly EmojiImportAsset[], existing: ReadonlySet<string>): EmojiImportAsset[] | undefined {
+  const used = new Set(existing);
+  const resolved: EmojiImportAsset[] = [];
+  for (const asset of assets) {
+    const shortcode = resolveName(asset.shortcode, used);
+    if (shortcode === undefined) return undefined;
+    used.add(shortcode);
+    const aliases: string[] = [];
+    for (const alias of asset.aliases) {
+      const resolvedAlias = resolveName(alias, used);
+      if (resolvedAlias === undefined) return undefined;
+      used.add(resolvedAlias);
+      aliases.push(resolvedAlias);
+    }
+    const extension = asset.file.split(".").pop() ?? "png";
+    resolved.push({ ...asset, shortcode, file: `${shortcode}.${extension}`, aliases });
+  }
+  return resolved;
+}
+
+function resolveName(name: string, used: ReadonlySet<string>): string | undefined {
+  if (!used.has(name)) return name;
+  const replacement = window.prompt(`Shortcode :${name}: already exists. Enter a replacement shortcode, or Cancel.`);
+  if (replacement === null) return undefined;
+  const normalized = normalizeShortcode(replacement);
+  if (normalized === undefined || used.has(normalized)) {
+    window.alert("Use a unique shortcode with letters, numbers, underscores, plus signs, or hyphens.");
+    return undefined;
+  }
+  return normalized;
+}
+
+function bestEmojiMatch(choice: EmojiChoice, query: string): number | undefined {
+  const candidates = [choice.shortcode, ...(choice.aliases ?? []), choice.category, choice.glyph];
+  return candidates.reduce<number | undefined>((best, candidate) => {
+    const score = fuzzyScore(candidate.toLowerCase(), query);
+    return score === undefined ? best : best === undefined ? score : Math.max(best, score);
+  }, undefined);
+}
+
+function fuzzyScore(candidate: string, query: string): number | undefined {
+  let queryIndex = 0;
+  let score = 0;
+  let previousIndex = -1;
+  for (let index = 0; index < candidate.length && queryIndex < query.length; index += 1) {
+    if (candidate[index] !== query[queryIndex]) continue;
+    score += previousIndex + 1 === index ? 3 : 1;
+    previousIndex = index;
+    queryIndex += 1;
+  }
+  return queryIndex === query.length ? score + (candidate.length - query.length === 0 ? 2 : 0) : undefined;
+}
+
+function readRecents(): string[] {
+  try {
+    const stored = localStorage.getItem(RECENTS_KEY);
+    const parsed: unknown = stored === null ? [] : JSON.parse(stored);
+    return Array.isArray(parsed) && parsed.every((value) => typeof value === "string")
+      ? parsed.slice(0, MAX_RECENTS)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeRecents(recents: readonly string[]): void {
+  try {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(recents));
+  } catch {
+    // why: private browsing and blocked storage should not disable emoji insertion.
+  }
 }

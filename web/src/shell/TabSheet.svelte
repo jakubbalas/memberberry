@@ -20,9 +20,10 @@
     readonly onactivate: (tab: TabId) => void;
     readonly onclose: (tab: TabId) => void;
     readonly ondismiss: () => void;
+    readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
   }
 
-  const { open, tabs, activeTab, onactivate, onclose, ondismiss }: Props = $props();
+  const { open, tabs, activeTab, onactivate, onclose, ondismiss, iconOf }: Props = $props();
 
   let sheet = $state<HTMLDialogElement | undefined>(undefined);
 
@@ -74,6 +75,9 @@
               aria-current={tab.id === activeTab ? "true" : undefined}
               onclick={() => onactivate(tab.id)}
             >
+              {#if iconOf?.(tab.note)}
+                <span class="tab-sheet-icon" aria-hidden="true">{iconOf(tab.note)}</span>
+              {/if}
               <span class="tab-sheet-name">{label(tab)}</span>
               {#if folder(tab) !== undefined}
                 <span class="tab-sheet-folder">{folder(tab)}</span>

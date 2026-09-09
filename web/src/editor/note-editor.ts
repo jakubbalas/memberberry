@@ -17,6 +17,7 @@ import { memberberryInputRules } from "./commands.js";
 import { taskItemView } from "./task-view.js";
 import { pdfViews } from "./pdf-view.js";
 import { emojiInputRules } from "./commands.js";
+import { emojiAutocomplete } from "./emoji-autocomplete.js";
 import { emojiCatalog } from "../emoji-catalog.js";
 import type { EmojiEntry } from "../notes.js";
 
@@ -86,6 +87,7 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
         ...extensions,
         memberberryInputRules,
         emojiInputRules(catalog),
+        emojiAutocomplete(catalog),
         taskItemView,
         ...(options.embeds === undefined ? [] : [embedViews(options.embeds)]),
         ...(options.media === undefined ? [] : [pdfViews(options.media)]),

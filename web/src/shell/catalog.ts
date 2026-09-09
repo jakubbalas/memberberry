@@ -135,15 +135,18 @@ function readNotes(body: unknown): readonly NoteSummary[] {
     const record = entry as Record<string, unknown>;
     const path = record["path"];
     const title = record["title"];
+    const icon = record["icon"];
     const conflicts = record["conflicts"];
     const tasks = record["tasks"];
     if (typeof path !== "string" || path === "") continue;
     if (title !== null && typeof title !== "string") continue;
+    if (icon !== null && icon !== undefined && typeof icon !== "string") continue;
     // A count that is not a number is dropped to zero rather than rejecting the note: the
     // note still has to be listed, and no badge is better than a wrong one (§3.5).
     valid.push({
       path,
       title,
+      ...(icon === undefined ? {} : { icon }),
       ...(Array.isArray(tasks) ? { tasks: readReplicatedTasks(tasks) } : {}),
       conflicts: typeof conflicts === "number" && conflicts > 0 ? Math.floor(conflicts) : 0,
     });

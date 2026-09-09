@@ -33,6 +33,7 @@ export interface ReplicatedTask {
 export interface ReplicatedNote {
   readonly path: string;
   readonly title: string | null;
+  readonly icon?: string | null;
   readonly tasks?: readonly ReplicatedTask[];
   /**
    * Unresolved conflicts in the note, for §3.5's badge in the tree.

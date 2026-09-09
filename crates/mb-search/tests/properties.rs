@@ -30,7 +30,9 @@ proptest! {
             prop::collection::vec("[a-z]{1,10}", 0..20),
             0..30,
         ),
-        query in "[a-z]{1,5}",
+        query in "[a-z]{1,5}".prop_filter("query must not be a reserved operator", |query| {
+            !matches!(query.as_str(), "and" | "or" | "not")
+        }),
     ) {
         let changes = notes.iter().map(|(id, words)| Change::Upsert(make_note(*id, words)));
         let segment = Segment::build(zone(), acl(), changes).expect("segment");

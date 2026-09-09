@@ -34,6 +34,7 @@ export interface NoteNode {
   /** The vault-relative path, e.g. `Projects/Roadmap.md`. */
   readonly path: string;
   readonly title: string | null;
+  readonly icon?: string | null | undefined;
   /** Unresolved conflicts, shown beside the note without opening it (§3.5). */
   readonly conflicts: number;
 }
@@ -77,6 +78,7 @@ export function buildTree(notes: Iterable<NoteSummary>): readonly TreeNode[] {
       name: filename.replace(/\.md$/, ""),
       path: note.path,
       title: note.title,
+      icon: note.icon,
       conflicts: note.conflicts,
     });
   }

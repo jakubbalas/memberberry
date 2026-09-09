@@ -77,6 +77,11 @@
   const label = (row: (typeof rows)[number]): string =>
     row.node.kind === "note" ? (row.node.title ?? row.node.name) : row.node.name;
 
+  const icon = (row: (typeof rows)[number]): string | undefined =>
+    row.node.kind === "note" && row.node.icon !== undefined && row.node.icon !== null && row.node.icon !== ""
+      ? row.node.icon
+      : undefined;
+
   const conflictLabel = (count: number): string =>
     `${count} unresolved ${count === 1 ? "conflict" : "conflicts"}`;
 </script>
@@ -154,7 +159,7 @@
             }}
           >
             <span class="tree-icon" aria-hidden="true">
-              {#if row.node.kind === "folder"}{row.expanded === true ? "▾" : "▸"}{:else}·{/if}
+              {#if row.node.kind === "folder"}{row.expanded === true ? "▾" : "▸"}{:else}{icon(row) ?? "·"}{/if}
             </span>
             <span class="tree-label">{label(row)}</span>
 
