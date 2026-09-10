@@ -20,6 +20,7 @@
 import { offlinePage, offlinePageHeaders } from "./offline-page.js";
 import { SHELL_URL, cacheName, staleCaches, type PrecachePlan } from "./precache.js";
 import { offlineFallbackFor, strategyFor } from "./routing.js";
+import { receiveShareTarget } from "../clipper/share-inbox.js";
 
 declare const __PRECACHE__: PrecachePlan;
 
@@ -44,6 +45,11 @@ if (
   });
 
   scope.addEventListener("fetch", (event: FetchEvent) => {
+    const requestUrl = new URL(event.request.url);
+    if (event.request.method === "POST" && requestUrl.origin === scope.location.origin && requestUrl.pathname === "/share") {
+      event.respondWith(receiveShareTarget(event.request, scope.indexedDB));
+      return;
+    }
     const strategy = strategyFor(event.request, {
       origin: scope.location.origin,
       precached: PRECACHED,

@@ -88,6 +88,9 @@ export default defineConfig({
         // Reads a directory and shells out to a bundler; the one decision in it is
         // `planPrecache`, which is covered above. The same boundary `perf/run.ts` is.
         "scripts/build-sw.ts",
+        // Like the service-worker builder: a filesystem/bundler boundary. Its integration
+        // test executes the real build and verifies both directly loadable packages.
+        "scripts/build-clipper.ts",
         "perf/run.ts",
         "perf/measure.ts",
         "perf/server.ts",

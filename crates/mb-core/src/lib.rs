@@ -45,6 +45,7 @@ pub mod unicode;
 
 pub use canonical::document as canonicalize;
 pub use extract::{Extracted, extract};
+pub use html::from_html;
 pub use model::{Block, BlockKind, Document, Inline};
 pub use permissions::{Access, AclError, Member, NotePath, Role, Rule, Username};
 

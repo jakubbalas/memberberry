@@ -22,7 +22,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use mb_core::Username;
 use mb_core::html::Urls;
@@ -56,6 +56,7 @@ pub struct AppState {
     media_manifest: Mutex<()>,
     /// Short-lived, per-uploader grants bridge upload and the note's next indexed save.
     media_uploads: Mutex<HashMap<(Slug, mb_core::Username, String), std::time::Instant>>,
+    clip_budgets: Mutex<HashMap<(Slug, mb_core::Username), ClipBudget>>,
     security: Security,
 }
 
@@ -101,6 +102,33 @@ struct FileStamp {
     modified: Option<std::time::SystemTime>,
 }
 
+const MAX_CLIPS_PER_MINUTE: u32 = 12;
+
+#[derive(Debug, Clone, Copy)]
+struct ClipBudget {
+    window: std::time::Instant,
+    used: u32,
+}
+
+impl ClipBudget {
+    fn new() -> Self {
+        Self {
+            window: std::time::Instant::now(),
+            used: 0,
+        }
+    }
+
+    fn allow(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.window) >= std::time::Duration::from_secs(60) {
+            self.window = now;
+            self.used = 0;
+        }
+        self.used = self.used.saturating_add(1);
+        self.used <= MAX_CLIPS_PER_MINUTE
+    }
+}
+
 impl FileStamp {
     fn of(path: &std::path::Path) -> Option<Self> {
         let meta = std::fs::metadata(path).ok()?;
@@ -112,6 +140,23 @@ impl FileStamp {
 }
 
 impl AppState {
+    fn allow_clip(&self, vault: &Slug, actor: &Username) -> bool {
+        self.clip_budgets.lock().is_ok_and(|mut budgets| {
+            budgets
+                .entry((vault.clone(), actor.clone()))
+                .or_insert_with(ClipBudget::new)
+                .allow()
+        })
+    }
+
+    fn staged_media(&self, vault: &Slug, actor: &Username, path: &str) -> bool {
+        self.media_uploads.lock().is_ok_and(|mut uploads| {
+            let now = std::time::Instant::now();
+            uploads.retain(|_, expires| *expires > now);
+            uploads.contains_key(&(vault.clone(), actor.clone(), path.to_string()))
+        })
+    }
+
     /// Runs one maintenance tick. Blocking: callers must keep it off the async runtime.
     ///
     /// Policy is refreshed before documents are, so a broadcast in this tick is filtered by
@@ -254,6 +299,7 @@ impl AppState {
             indexes: IndexRegistry::default(),
             media_manifest: Mutex::new(()),
             media_uploads: Mutex::new(HashMap::new()),
+            clip_budgets: Mutex::new(HashMap::new()),
             security: Security {
                 auth: Mutex::new(auth),
                 access: RwLock::new(access),
@@ -362,6 +408,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(template_content),
         )
         .route("/api/v1/vaults/{slug}/tasks", get(vault_tasks))
+        .route(
+            "/api/v1/vaults/{slug}/clip",
+            post(clip_note).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
         .route("/api/v1/vaults/{slug}/emoji", get(vault_emoji))
         .route(
             "/api/v1/vaults/{slug}/emoji/packs/{pack}",
@@ -439,6 +489,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/sw.js", get(service_worker))
         .route("/manifest.webmanifest", get(web_manifest))
         .route("/icon.svg", get(app_icon))
+        .route("/share", get(app_shell))
         .route("/v/{slug}", get(vault_index))
         .route(
             "/v/{slug}/new",
@@ -2049,6 +2100,284 @@ async fn create_note(
 #[derive(serde::Serialize)]
 struct CreateNoteResponse {
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipRequest {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    html: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    folder: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    template: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    media: Vec<ClipMedia>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipMedia {
+    path: String,
+    #[serde(default)]
+    alt: String,
+}
+
+#[derive(Debug)]
+struct ClipActor {
+    user: Username,
+    token_role: Option<mb_core::Role>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClipResponse {
+    path: String,
+    source: String,
+}
+
+/// `POST /api/v1/vaults/{slug}/clip` — imports a URL or supplied HTML (§16.3).
+async fn clip_note(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<ClipRequest>,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(actor) = state.clip_actor(vault.slug(), &headers) else {
+        return workspace_denied();
+    };
+    let source = match request.url.as_deref() {
+        Some(value) => match crate::clip::validate_url(value) {
+            Ok(url) => Some(url),
+            Err(_) => return clip_denied(),
+        },
+        None if request.html.is_none() && request.text.is_none() && request.media.is_empty() => {
+            return clip_denied();
+        }
+        None => None,
+    };
+    let generated_path = request.path.is_none();
+    let path = request.path.clone().unwrap_or_else(|| {
+        clip_path(
+            request.folder.as_deref(),
+            request.title.as_deref(),
+            source.as_ref(),
+        )
+    });
+    let Some(note_path) = mb_core::NotePath::parse(&path).ok() else {
+        return clip_denied();
+    };
+    if !crate::clip::may_write(access.as_ref(), &actor.user, &note_path, actor.token_role) {
+        return workspace_denied();
+    }
+    if !state.allow_clip(vault.slug(), &actor.user) {
+        return clip_rate_limited();
+    }
+    if request
+        .media
+        .iter()
+        .any(|media| !state.staged_media(vault.slug(), &actor.user, &media.path))
+    {
+        return clip_denied();
+    }
+    let prepared = tokio::time::timeout(crate::clip::MAX_CLIP_DURATION, async {
+        let (html, resolved_source) = match request.html {
+            Some(html) if html.len() <= crate::clip::MAX_HTML_BYTES => {
+                (html, source.as_ref().map(ToString::to_string))
+            }
+            Some(_) => return Err(()),
+            None => match source.as_ref() {
+                Some(source) => crate::clip::fetch(source.as_str())
+                    .await
+                    .map(|(html, source)| (html, Some(source)))
+                    .map_err(|_| ())?,
+                None => (String::new(), None),
+            },
+        };
+        let html = match resolved_source.as_deref() {
+            Some(source) => crate::clip::rehost_images(&html, source, vault).await,
+            None => html,
+        };
+        Ok::<_, ()>((html, resolved_source))
+    })
+    .await;
+    let Ok(Ok((html, source))) = prepared else {
+        return clip_denied();
+    };
+    let mut document = mb_core::from_html(&html);
+    if let Some(text) = request.text.filter(|value| !value.trim().is_empty()) {
+        document.blocks.insert(
+            0,
+            mb_core::Block::new(mb_core::BlockKind::Paragraph(vec![mb_core::Inline::Text(
+                text,
+            )])),
+        );
+    }
+    for media in request.media {
+        document
+            .blocks
+            .push(mb_core::Block::new(mb_core::BlockKind::Paragraph(vec![
+                mb_core::Inline::Image {
+                    dest: media.path,
+                    alt: media.alt,
+                },
+            ])));
+    }
+    if let Some(source) = source.as_ref() {
+        document.frontmatter.extra.insert(
+            "source".to_string(),
+            mb_core::frontmatter::YamlValue::Scalar(source.clone()),
+        );
+        let Some(host) = reqwest::Url::parse(source)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+        else {
+            return clip_denied();
+        };
+        document.frontmatter.extra.insert(
+            "site".to_string(),
+            mb_core::frontmatter::YamlValue::Scalar(host),
+        );
+    }
+    if !request.tags.is_empty() {
+        document.frontmatter.tags = request.tags;
+    }
+    if let Some(title) = request.title.filter(|value| !value.trim().is_empty()) {
+        document.frontmatter.extra.insert(
+            "title".to_string(),
+            mb_core::frontmatter::YamlValue::Scalar(title),
+        );
+    }
+    if let Some(author) = request.author.filter(|value| !value.trim().is_empty()) {
+        document.frontmatter.extra.insert(
+            "author".to_string(),
+            mb_core::frontmatter::YamlValue::Scalar(author),
+        );
+    }
+    if let Some(template) = request.template {
+        document.frontmatter.extra.insert(
+            "template".to_string(),
+            mb_core::frontmatter::YamlValue::Scalar(template),
+        );
+    }
+    document.frontmatter.extra.insert(
+        "clipped".to_string(),
+        mb_core::frontmatter::YamlValue::Scalar(unix_seconds().to_string()),
+    );
+    let body = mb_core::to_markdown(&document);
+    match create_clip_in_vault(&state, &slug, &path, generated_path, &body, &headers).await {
+        Ok(created) => json_no_store(&ClipResponse {
+            path: created.path,
+            source: source.unwrap_or_default(),
+        }),
+        Err(CreateError::Denied) => workspace_denied(),
+        Err(CreateError::InvalidName(_) | CreateError::Exists(_)) => clip_denied(),
+        Err(CreateError::Failed(_)) => {
+            server_error(&Error::Config("clip could not be saved".to_string()))
+        }
+    }
+}
+
+fn clip_path(folder: Option<&str>, title: Option<&str>, source: Option<&reqwest::Url>) -> String {
+    let folder = folder.unwrap_or("Clips").trim_matches('/');
+    let stem = title
+        .filter(|title| !title.trim().is_empty())
+        .map_or_else(|| clip_name(source), clip_name_from_text);
+    if folder.is_empty() {
+        format!("{stem}.md")
+    } else {
+        format!("{folder}/{stem}.md")
+    }
+}
+
+fn clip_name(source: Option<&reqwest::Url>) -> String {
+    let candidate = source
+        .and_then(|url| url.path_segments()?.rfind(|part| !part.is_empty()))
+        .or_else(|| source.and_then(reqwest::Url::host_str))
+        .unwrap_or("Shared clip");
+    clip_name_from_text(candidate)
+}
+
+fn clip_name_from_text(value: &str) -> String {
+    let name = value
+        .chars()
+        .take(80)
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_' | ' ') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let name = name.trim_matches([' ', '-', '_']);
+    if name.is_empty() {
+        "Shared clip".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+async fn create_clip_in_vault(
+    state: &Arc<AppState>,
+    slug: &str,
+    path: &str,
+    generated: bool,
+    body: &str,
+    headers: &HeaderMap,
+) -> Result<crate::create::Created, CreateError> {
+    for ordinal in 1..=1_000usize {
+        let candidate = if ordinal == 1 || !generated {
+            path.to_string()
+        } else {
+            let stem = path.strip_suffix(".md").unwrap_or(path);
+            format!("{stem}-{ordinal}.md")
+        };
+        match create_in_vault(state, slug, &candidate, Some(body), headers).await {
+            Err(CreateError::Exists(_)) if generated => continue,
+            result => return result,
+        }
+    }
+    Err(CreateError::Failed("clip name space exhausted".to_string()))
+}
+
+fn clip_denied() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        r#"{"error":"clip request refused"}"#,
+    )
+        .into_response()
+}
+
+fn clip_rate_limited() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        r#"{"error":"clip rate limit exceeded"}"#,
+    )
+        .into_response()
 }
 
 /// The authorization and blocking-work half both create entry points share.
@@ -3714,6 +4043,30 @@ impl AppState {
             .or_else(|| self.api_token_user(slug, headers))
     }
 
+    fn clip_actor(&self, slug: &Slug, headers: &HeaderMap) -> Option<ClipActor> {
+        if bearer_token(headers).is_none()
+            && let Some(user) = self.authenticated_user(headers)
+        {
+            return Some(ClipActor {
+                user,
+                token_role: None,
+            });
+        }
+        let token = mb_auth::ApiToken::from_secret(bearer_token(headers)?)?;
+        let auth = self.security.auth.lock().ok()?;
+        let scope = auth.authenticate_api_token(&token).ok()??;
+        if scope.vault_slug != slug.as_str()
+            || !matches!(scope.role, mb_core::Role::Owner | mb_core::Role::Editor)
+        {
+            return None;
+        }
+        let user = auth.user_by_id(scope.user_id).ok()??;
+        Some(ClipActor {
+            user: Username::parse(&user.username).ok()?,
+            token_role: Some(scope.role),
+        })
+    }
+
     /// Re-reads any `access.toml` that changed on disk, failing closed on a bad one.
     ///
     /// why: `AGENTS.md` §3.1 requires per-frame authorization, which is only meaningful if
@@ -4210,3 +4563,33 @@ ul,ol{padding-left:var(--space-7)}\
 .mb-form input:focus-visible,.mb-button:focus-visible{outline:var(--focus-ring-width) solid var(--focus-ring);outline-offset:var(--focus-ring-offset)}\
 .mb-form-error{margin:0;color:var(--state-danger);font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
 ";
+
+#[cfg(test)]
+mod clip_tests {
+    use super::{ClipBudget, MAX_CLIPS_PER_MINUTE, clip_name_from_text, clip_path};
+
+    #[test]
+    fn clip_budget_starts_full_and_resets_after_its_window() {
+        let mut budget = ClipBudget::new();
+        for _ in 0..MAX_CLIPS_PER_MINUTE {
+            assert!(budget.allow());
+        }
+        assert!(!budget.allow());
+        budget.window -= std::time::Duration::from_secs(60);
+        assert!(budget.allow());
+    }
+
+    #[test]
+    fn generated_clip_names_are_bounded_sanitized_and_always_markdown() {
+        let source = reqwest::Url::parse("https://example.com/").ok();
+        assert_eq!(
+            clip_path(None, None, source.as_ref()),
+            "Clips/example-com.md"
+        );
+        assert_eq!(
+            clip_path(Some("/"), Some("  ***  "), None),
+            "Shared clip.md"
+        );
+        assert_eq!(clip_name_from_text(&"a".repeat(100)).len(), 80);
+    }
+}

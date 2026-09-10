@@ -4,6 +4,17 @@
   "short_name": "Memberberry",
   "description": "Your notes, as plain Markdown files you own.",
   "start_url": "/",
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [{ "name": "files", "accept": ["image/*"] }]
+    }
+  },
   "scope": "/",
   "display": "standalone",
   "orientation": "any",

@@ -23,6 +23,14 @@ use mb_wasm::{
     schema_json, search_segments_inner, to_html, validate_search_segment_inner,
 };
 
+#[test]
+fn html_conversion_uses_the_core_markdown_contract() {
+    assert_eq!(
+        mb_wasm::html_to_markdown_inner("<h1>Clip</h1><p>A <strong>page</strong>.</p>"),
+        "# Clip\n\nA **page**.\n"
+    );
+}
+
 fn compact_segment(word: &str) -> Vec<u8> {
     Segment::build(
         ZoneId::from_hex(&"a".repeat(64)).expect("zone"),

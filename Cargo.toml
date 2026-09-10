@@ -29,6 +29,7 @@ mb-index = { path = "crates/mb-index" }
 mb-search = { path = "crates/mb-search" }
 mb-server = { path = "crates/mb-server" }
 mb-wasm = { path = "crates/mb-wasm" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 thiserror = "2"
 yrs = "0.27"
 

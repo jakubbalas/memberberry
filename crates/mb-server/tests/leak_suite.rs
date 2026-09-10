@@ -17,6 +17,34 @@ use mb_server::sync::ConnectionId;
 use mb_server::vault::Slug;
 use support::TempDir;
 
+/// E23: both the live ACL and a scoped token independently cap clip writes.
+#[test]
+fn e23_clipper_requires_editor_access_at_the_destination() {
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Clips").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::Editor)]),
+        }],
+    )
+    .expect("policy");
+    let allowed = mb_core::NotePath::parse("Clips/Page.md").expect("path");
+    let denied = mb_core::NotePath::parse("Private/Page.md").expect("path");
+
+    assert!(mb_server::clip::may_write(&access, &alice, &allowed, None));
+    assert!(!mb_server::clip::may_write(&access, &alice, &denied, None));
+    assert!(!mb_server::clip::may_write(
+        &access,
+        &alice,
+        &allowed,
+        Some(Role::Viewer)
+    ));
+}
+
 /// E5: every repository query is pre-filtered and an unreadable note is indistinguishable
 /// from a missing note, including metadata lookup and source reads.
 #[test]

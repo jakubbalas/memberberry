@@ -9,6 +9,7 @@
 pub mod access;
 pub mod audit;
 pub mod bookmarks;
+pub mod clip;
 pub mod compress;
 pub mod config;
 pub mod create;

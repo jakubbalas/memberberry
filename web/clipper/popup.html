@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Clip to Memberberry</title></head>
+  <body>
+    <main>
+      <h1>Clip to Memberberry</h1>
+      <label>Server <input id="server" type="url" placeholder="https://notes.example"></label>
+      <label>Vault <input id="vault" required></label>
+      <label>API token <input id="token" type="password" autocomplete="off"></label>
+      <label>Folder <input id="folder" value="Clips"></label>
+      <label>Tags <input id="tags" placeholder="reading, inbox"></label>
+      <label>Template <input id="template" placeholder="optional path"></label>
+      <label>Mode <select id="mode"><option value="full">Full page</option><option value="selection">Selection</option><option value="article">Article</option></select></label>
+      <button id="clip" type="button">Clip page</button>
+      <output id="status" role="status"></output>
+    </main>
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>

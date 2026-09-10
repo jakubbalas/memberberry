@@ -572,6 +572,217 @@ fn is_not_found(status: &str) -> bool {
 }
 
 #[test]
+fn clip_route_converts_supplied_html_and_writes_markdown_metadata() {
+    let dir = TempDir::new("http-clip-vault");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/clip",
+        "",
+        r#"{"url":"https://example.com/story","path":"Clips/story.md","html":"<h1>Story</h1><p>A <strong>clip</strong>.</p>","tags":["reading"],"template":"Article","title":"Story","author":"Alice"}"#,
+    );
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(body.contains("Clips/story.md"), "{body}");
+    let saved =
+        std::fs::read_to_string(dir.path().join("notes/Clips/story.md")).expect("saved clip");
+    assert!(saved.contains("# Story"));
+    assert!(saved.contains("source: https://example.com/story"));
+    assert!(saved.contains("author: Alice"));
+    assert!(saved.contains("template: Article"));
+    assert!(saved.contains("tags: [reading]"));
+    assert!(saved.contains("A **clip**."));
+}
+
+#[test]
+fn clip_route_generates_markdown_paths_and_retries_name_collisions() {
+    let dir = TempDir::new("http-clip-generated-path");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let request = r#"{"url":"https://example.com/story","folder":"Clips","html":"<p>clip</p>"}"#;
+
+    let (first_status, first_body) = server.post_json("/api/v1/vaults/v/clip", "", request);
+    let (second_status, second_body) = server.post_json("/api/v1/vaults/v/clip", "", request);
+
+    assert!(is_ok(&first_status), "{first_status}: {first_body}");
+    assert!(is_ok(&second_status), "{second_status}: {second_body}");
+    assert!(first_body.contains("Clips/story.md"), "{first_body}");
+    assert!(second_body.contains("Clips/story-2.md"), "{second_body}");
+    assert!(dir.path().join("notes/Clips/story.md").is_file());
+    assert!(dir.path().join("notes/Clips/story-2.md").is_file());
+}
+
+#[test]
+fn clip_route_accepts_text_without_inventing_a_source_url() {
+    let dir = TempDir::new("http-clip-shared-text");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/clip",
+        "",
+        r#"{"title":"Shared thought","folder":"Inbox","text":"A thought from another app."}"#,
+    );
+
+    assert!(is_ok(&status), "{status}: {body}");
+    let saved = std::fs::read_to_string(dir.path().join("notes/Inbox/Shared thought.md"))
+        .expect("shared text note");
+    assert!(saved.contains("A thought from another app."), "{saved}");
+    assert!(!saved.contains("source:"), "{saved}");
+}
+
+#[test]
+fn clip_route_accepts_only_staged_media_and_writes_its_markdown_reference() {
+    let dir = TempDir::new("http-clip-shared-image");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let mut image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut image, image::ImageFormat::Png)
+        .expect("shared image");
+    let bytes = image.into_inner();
+    let (upload_status, upload_body) = server.post_bytes(
+        "/api/v1/vaults/v/media",
+        "Content-Type: image/png\r\nX-Memberberry-Filename: shared.png\r\n",
+        &bytes,
+    );
+    assert!(upload_status.contains("201"), "{upload_status}");
+    let upload: serde_json::Value = serde_json::from_slice(&upload_body).expect("upload reply");
+    let path = upload["path"].as_str().expect("uploaded path");
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/clip",
+        "",
+        &format!(r#"{{"title":"Shared image","media":[{{"path":"{path}","alt":"diagram"}}]}}"#),
+    );
+
+    assert!(is_ok(&status), "{status}: {body}");
+    let saved = std::fs::read_to_string(dir.path().join("notes/Clips/Shared image.md"))
+        .expect("image clip");
+    assert!(saved.contains(&format!("![diagram]({path})")), "{saved}");
+}
+
+#[test]
+fn clip_route_rejects_malformed_or_unstaged_inputs_without_writing() {
+    let dir = TempDir::new("http-clip-invalid-inputs");
+    dir.write("notes/Clips/existing.md", "# Existing\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    for payload in [
+        r#"{}"#,
+        r#"{"url":"file:///etc/passwd"}"#,
+        r#"{"path":"../escape.md","text":"no"}"#,
+        r#"{"path":"Clips/unstaged.md","media":[{"path":"media/aa/bb/not-staged.png"}]}"#,
+        r#"{"path":"Clips/existing.md","text":"replacement"}"#,
+    ] {
+        let (status, body) = server.post_json("/api/v1/vaults/v/clip", "", payload);
+        assert!(status.contains("400"), "{payload}: {status}: {body}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("notes/Clips/existing.md")).expect("existing"),
+        "# Existing\n"
+    );
+    assert!(!dir.path().join("escape.md").exists());
+}
+
+#[test]
+fn clip_route_sanitizes_an_empty_title_to_a_root_markdown_filename() {
+    let dir = TempDir::new("http-clip-sanitized-name");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/clip",
+        "",
+        r#"{"folder":"/","title":"***","text":"shared"}"#,
+    );
+
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(body.contains("Shared clip.md"), "{body}");
+    assert!(dir.path().join("notes/Shared clip.md").is_file());
+}
+
+#[test]
+fn clip_route_rate_limits_each_actor_and_vault() {
+    let dir = TempDir::new("http-clip-rate-limit");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    for ordinal in 0..12 {
+        let (status, body) = server.post_json(
+            "/api/v1/vaults/v/clip",
+            "",
+            &format!(
+                r#"{{"path":"Clips/{ordinal}.md","html":"<p>clip</p>","url":"https://example.com/{ordinal}"}}"#
+            ),
+        );
+        assert!(is_ok(&status), "request {ordinal}: {status}: {body}");
+    }
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/clip",
+        "",
+        r#"{"path":"Clips/refused.md","html":"<p>clip</p>","url":"https://example.com/refused"}"#,
+    );
+    assert!(status.contains("429"), "{status}: {body}");
+    assert!(!dir.path().join("notes/Clips/refused.md").exists());
+}
+
+#[test]
+fn clip_route_requires_authentication_before_accepting_html() {
+    let dir = TempDir::new("http-clip-denied");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    let server = TestServer::start({
+        let auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+        AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("state")
+    });
+    let (status, _) = server.post_json(
+        "/api/v1/vaults/v/clip",
+        "",
+        r#"{"url":"https://example.com/story","html":"<p>secret</p>"}"#,
+    );
+    assert!(is_not_found(&status), "{status}");
+    assert!(!dir.path().join("Clips").exists());
+}
+
+#[test]
+fn clip_route_applies_the_scoped_token_role_even_when_the_user_is_an_owner() {
+    let dir = TempDir::new("http-clip-token-scope");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let viewer = auth
+        .create_api_token(mb_auth::ApiTokenScope {
+            user_id: alice.id,
+            vault_slug: "v".to_string(),
+            role: mb_core::Role::Viewer,
+        })
+        .expect("viewer token");
+    let editor = auth
+        .create_api_token(mb_auth::ApiTokenScope {
+            user_id: alice.id,
+            vault_slug: "v".to_string(),
+            role: mb_core::Role::Editor,
+        })
+        .expect("editor token");
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("state");
+    let server = TestServer::start(state);
+    let body =
+        r#"{"path":"Clips/scoped.md","html":"<p>clip</p>","url":"https://example.com/scoped"}"#;
+
+    let viewer_header = format!("Authorization: Bearer {}\r\n", viewer.expose_secret());
+    let (viewer_status, _) = server.post_json("/api/v1/vaults/v/clip", &viewer_header, body);
+    assert!(is_not_found(&viewer_status), "{viewer_status}");
+    assert!(!dir.path().join("notes/Clips/scoped.md").exists());
+
+    let editor_header = format!("Authorization: Bearer {}\r\n", editor.expose_secret());
+    let (editor_status, editor_body) =
+        server.post_json("/api/v1/vaults/v/clip", &editor_header, body);
+    assert!(is_ok(&editor_status), "{editor_status}: {editor_body}");
+}
+
+#[test]
 fn custom_emoji_route_resolves_shared_and_vault_local_packs() {
     let dir = TempDir::new("http-emoji-vault");
     let data = TempDir::new("http-emoji-data");
@@ -1235,7 +1446,6 @@ fn an_unknown_route_is_not_found() {
     // The API surface is added milestone by milestone; anything not yet built is absent
     // rather than stubbed, because a route that answers is a route someone will use.
     assert!(is_not_found(&server.status("/api/v1/vaults/v/history")));
-    assert!(is_not_found(&server.status("/api/v1/vaults/v/clip")));
 }
 
 #[test]

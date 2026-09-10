@@ -21,6 +21,8 @@ import NoteWorkspace from "./shell/NoteWorkspace.svelte";
 import Workspace from "./shell/Workspace.svelte";
 import { remoteSyncFor, resolveNoteBootstrap } from "./shell/bootstrap.js";
 import { startWorkspace } from "./shell/session.js";
+import ShareTarget from "./clipper/ShareTarget.svelte";
+import { loadShareTarget } from "./clipper/share-target.js";
 
 const target = document.querySelector<HTMLElement>("#app");
 if (target === null) {
@@ -44,6 +46,13 @@ const bootstrap = resolveNoteBootstrap(
  * that decision is coming; it is not this change.)
  */
 async function start(): Promise<void> {
+  if (location.pathname === "/share") {
+    const draft = await loadShareTarget(location.search);
+    if (draft !== null) {
+      mount(ShareTarget, { target: mountPoint, props: { draft } });
+      return;
+    }
+  }
   if (bootstrap === undefined) {
     // No server said which note this is: the Vite dev server serving `index.html`
     // unmodified. One local replica, with no vault to restore a layout for (§3.1, layer 2).

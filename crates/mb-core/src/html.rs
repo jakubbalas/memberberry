@@ -17,10 +17,416 @@
 //! `html_escaping_blocks_script_injection` and friends in `tests/html.rs` are the proof.
 
 use crate::model::{
-    Alignment, Anchor, Block, BlockKind, Callout, Document, Fold, Inline, List, ListItem, Table,
-    WikiLink,
+    Alignment, Anchor, Block, BlockKind, Callout, Document, Fold, HeadingLevel, Inline, List,
+    ListItem, Table, WikiLink,
 };
 use crate::task::TaskStatus;
+
+/// Converts ordinary web HTML into the portable block model used by the clipper.
+///
+/// This intentionally accepts malformed HTML: browsers routinely receive it, and a clip
+/// must never lose all of its text because one page omitted a closing tag. Unsupported
+/// elements are transparent containers; executable elements are discarded together with
+/// their contents. The result contains no raw HTML, so it can be serialized as Markdown.
+#[must_use]
+pub fn from_html(source: &str) -> Document {
+    let root = parse_html(source);
+    let mut blocks = Vec::new();
+    if let Some(body) = root
+        .children
+        .iter()
+        .find(|node| matches!(node, Node::Element(element) if element.tag == "body"))
+    {
+        html_blocks(body, &mut blocks);
+    } else {
+        for child in &root.children {
+            html_blocks(child, &mut blocks);
+        }
+    }
+    Document::new(blocks)
+}
+
+#[derive(Debug, Clone)]
+struct Element {
+    tag: String,
+    attrs: Vec<(String, String)>,
+    children: Vec<Node>,
+}
+
+#[derive(Debug, Clone)]
+enum Node {
+    Text(String),
+    Element(Element),
+}
+
+fn parse_html(source: &str) -> Element {
+    let mut root = Element {
+        tag: "root".to_string(),
+        attrs: Vec::new(),
+        children: Vec::new(),
+    };
+    let mut stack = vec![root];
+    let mut rest = source;
+    while !rest.is_empty() {
+        let Some(start) = rest.find('<') else {
+            append_text(stack.last_mut(), rest);
+            break;
+        };
+        append_text(stack.last_mut(), &rest[..start]);
+        rest = &rest[start + 1..];
+        if rest.starts_with("!--") {
+            if let Some(end) = rest.find("-->") {
+                rest = &rest[end + 3..];
+            } else {
+                break;
+            }
+            continue;
+        }
+        let Some(end) = rest.find('>') else { break };
+        let raw = rest[..end].trim();
+        rest = &rest[end + 1..];
+        if raw.starts_with('!') || raw.starts_with('?') {
+            continue;
+        }
+        if let Some(name) = raw.strip_prefix('/') {
+            let name = name
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if let Some(position) = stack.iter().rposition(|element| element.tag == name) {
+                while stack.len() > position {
+                    let child = stack.pop().unwrap_or_else(|| Element {
+                        tag: "root".to_string(),
+                        attrs: Vec::new(),
+                        children: Vec::new(),
+                    });
+                    if let Some(parent) = stack.last_mut() {
+                        parent.children.push(Node::Element(child));
+                    }
+                }
+            }
+            continue;
+        }
+        let self_closing = raw.ends_with('/');
+        let (tag, attrs) = tag_parts(raw.trim_end_matches('/').trim());
+        if tag.is_empty() {
+            continue;
+        }
+        if matches!(tag.as_str(), "script" | "style" | "template" | "noscript") {
+            if !self_closing {
+                let Some(end) = rest.to_ascii_lowercase().find(&format!("</{tag}")) else {
+                    break;
+                };
+                rest = &rest[end..];
+            }
+            continue;
+        }
+        let element = Element {
+            tag: tag.clone(),
+            attrs,
+            children: Vec::new(),
+        };
+        if self_closing || is_void(&tag) {
+            if let Some(parent) = stack.last_mut() {
+                parent.children.push(Node::Element(element));
+            }
+        } else {
+            stack.push(element);
+        }
+    }
+    while stack.len() > 1 {
+        let child = stack.pop().unwrap_or_else(|| Element {
+            tag: "root".to_string(),
+            attrs: Vec::new(),
+            children: Vec::new(),
+        });
+        if let Some(parent) = stack.last_mut() {
+            parent.children.push(Node::Element(child));
+        }
+    }
+    root = stack.pop().unwrap_or_else(|| Element {
+        tag: "root".to_string(),
+        attrs: Vec::new(),
+        children: Vec::new(),
+    });
+    root
+}
+
+fn append_text(parent: Option<&mut Element>, text: &str) {
+    if !text.is_empty()
+        && let Some(parent) = parent
+    {
+        parent.children.push(Node::Text(decode_entities(text)));
+    }
+}
+
+fn tag_parts(raw: &str) -> (String, Vec<(String, String)>) {
+    let mut parts = raw.splitn(2, char::is_whitespace);
+    let tag = parts.next().unwrap_or("").to_ascii_lowercase();
+    let mut attrs = Vec::new();
+    let mut rest = parts.next().unwrap_or("").trim();
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        let Some(eq) = rest.find(|c: char| c.is_whitespace() || c == '=') else {
+            attrs.push((rest.to_ascii_lowercase(), String::new()));
+            break;
+        };
+        let name = rest[..eq].to_ascii_lowercase();
+        rest = rest[eq..].trim_start();
+        if let Some(value) = rest.strip_prefix('=') {
+            rest = value.trim_start();
+            let (value, remaining) =
+                if let Some(quote) = rest.chars().next().filter(|c| *c == '\'' || *c == '"') {
+                    let body = &rest[1..];
+                    body.find(quote)
+                        .map_or((body, ""), |end| (&body[..end], &body[end + 1..]))
+                } else {
+                    rest.find(char::is_whitespace)
+                        .map_or((rest, ""), |end| (&rest[..end], &rest[end..]))
+                };
+            attrs.push((name, decode_entities(value)));
+            rest = remaining;
+        } else {
+            attrs.push((name, String::new()));
+        }
+    }
+    (tag, attrs)
+}
+
+fn is_void(tag: &str) -> bool {
+    matches!(
+        tag,
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
+}
+
+fn html_blocks(node: &Node, out: &mut Vec<Block>) {
+    let Node::Element(element) = node else { return };
+    match element.tag.as_str() {
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            let level = HeadingLevel::clamped(element.tag[1..].parse().unwrap_or(1));
+            out.push(Block::new(BlockKind::Heading {
+                level,
+                content: html_inlines(&element.children),
+            }));
+        }
+        "p" | "dt" | "dd" => {
+            let content = html_inlines(&element.children);
+            if !content.is_empty() {
+                out.push(Block::new(BlockKind::Paragraph(content)));
+            }
+        }
+        "pre" => out.push(Block::new(BlockKind::CodeBlock {
+            lang: None,
+            code: plain_text(&element.children),
+        })),
+        "hr" => out.push(Block::new(BlockKind::Divider)),
+        "blockquote" => {
+            let mut inner = Vec::new();
+            for child in &element.children {
+                html_blocks(child, &mut inner);
+            }
+            if !inner.is_empty() {
+                out.push(Block::new(BlockKind::Blockquote(inner)));
+            }
+        }
+        "ul" | "ol" => {
+            let items = element
+                .children
+                .iter()
+                .filter_map(|child| {
+                    let Node::Element(item) = child else {
+                        return None;
+                    };
+                    if item.tag != "li" {
+                        return None;
+                    }
+                    let mut content = Vec::new();
+                    let mut inline_run = Vec::new();
+                    for child in &item.children {
+                        if matches!(child, Node::Element(element) if is_block_element(&element.tag))
+                        {
+                            push_inline_block(&mut content, &mut inline_run);
+                            html_blocks(child, &mut content);
+                        } else {
+                            inline_run.push(child.clone());
+                        }
+                    }
+                    push_inline_block(&mut content, &mut inline_run);
+                    Some(ListItem {
+                        task: None,
+                        content,
+                    })
+                })
+                .collect();
+            out.push(Block::new(BlockKind::List(List {
+                ordered: element.tag == "ol",
+                start: 1,
+                items,
+            })));
+        }
+        "html" | "body" | "main" | "article" | "section" | "div" | "header" | "footer" | "nav"
+        | "root" => {
+            for child in &element.children {
+                html_blocks(child, out);
+            }
+        }
+        "head" => {}
+        _ => {
+            let content = html_inlines(&element.children);
+            if !content.is_empty() {
+                out.push(Block::new(BlockKind::Paragraph(content)));
+            }
+        }
+    }
+}
+
+fn is_block_element(tag: &str) -> bool {
+    matches!(
+        tag,
+        "address"
+            | "article"
+            | "aside"
+            | "blockquote"
+            | "div"
+            | "dl"
+            | "fieldset"
+            | "footer"
+            | "form"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "header"
+            | "hr"
+            | "main"
+            | "nav"
+            | "ol"
+            | "p"
+            | "pre"
+            | "section"
+            | "table"
+            | "ul"
+    )
+}
+
+fn push_inline_block(content: &mut Vec<Block>, inline_run: &mut Vec<Node>) {
+    let inline = html_inlines(inline_run);
+    inline_run.clear();
+    if !inline.is_empty() {
+        content.push(Block::new(BlockKind::Paragraph(inline)));
+    }
+}
+
+fn html_inlines(nodes: &[Node]) -> Vec<Inline> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node {
+            Node::Text(text) => push_text(&mut out, text),
+            Node::Element(element) => match element.tag.as_str() {
+                "br" => out.push(Inline::HardBreak),
+                "strong" | "b" => out.push(Inline::Strong(html_inlines(&element.children))),
+                "em" | "i" => out.push(Inline::Emphasis(html_inlines(&element.children))),
+                "del" | "s" | "strike" => {
+                    out.push(Inline::Strikethrough(html_inlines(&element.children)))
+                }
+                "code" => out.push(Inline::Code(plain_text(&element.children))),
+                "a" => out.push(Inline::Link {
+                    dest: attr(element, "href").unwrap_or_default(),
+                    title: attr(element, "title"),
+                    content: html_inlines(&element.children),
+                }),
+                "img" => out.push(Inline::Image {
+                    dest: attr(element, "src").unwrap_or_default(),
+                    alt: attr(element, "alt").unwrap_or_default(),
+                }),
+                _ => out.extend(html_inlines(&element.children)),
+            },
+        }
+    }
+    out
+}
+
+fn push_text(out: &mut Vec<Inline>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(Inline::Text(previous)) = out.last_mut() {
+        previous.push_str(text);
+    } else {
+        out.push(Inline::Text(text.to_string()));
+    }
+}
+
+fn plain_text(nodes: &[Node]) -> String {
+    let mut out = String::new();
+    for node in nodes {
+        match node {
+            Node::Text(text) => out.push_str(text),
+            Node::Element(element) => out.push_str(&plain_text(&element.children)),
+        }
+    }
+    out
+}
+
+fn attr(element: &Element, name: &str) -> Option<String> {
+    element
+        .attrs
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.clone())
+}
+
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find(';') else {
+            out.push_str(&rest[start..]);
+            break;
+        };
+        let entity = &rest[start + 1..start + end];
+        let decoded = match entity {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" | "#39" => Some('\''),
+            "nbsp" => Some(' '),
+            _ if entity.starts_with("#x") => u32::from_str_radix(&entity[2..], 16)
+                .ok()
+                .and_then(char::from_u32),
+            _ if entity.starts_with('#') => entity[1..].parse().ok().and_then(char::from_u32),
+            _ => None,
+        };
+        if let Some(decoded) = decoded {
+            out.push(decoded);
+            rest = &rest[start + end + 1..];
+        } else {
+            out.push('&');
+            rest = &rest[start + 1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
 
 /// Where links point. The renderer is pure, so the caller supplies the routing.
 ///

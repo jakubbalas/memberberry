@@ -17,6 +17,19 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+/// Converts clipped HTML to canonical Markdown through `mb-core`.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = "htmlToMarkdown")]
+pub fn html_to_markdown(html: &str) -> String {
+    html_to_markdown_inner(html)
+}
+
+/// Native HTML conversion implementation, separated for boundary tests.
+#[must_use]
+pub fn html_to_markdown_inner(html: &str) -> String {
+    mb_core::to_markdown(&mb_core::from_html(html))
+}
+
 /// Formats a daily-note path through the same contract used by the server.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(js_name = "dailyPath")]

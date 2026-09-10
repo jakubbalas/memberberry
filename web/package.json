@@ -4,8 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && npm run build:sw",
+    "build": "tsc --noEmit && vite build && npm run build:sw && npm run build:clipper",
     "build:sw": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/build-sw.ts",
+    "build:clipper": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/build-clipper.ts",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -32,6 +33,7 @@
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
+    "@mozilla/readability": "^0.5.0",
     "@tiptap/core": "^3.30.6",
     "fflate": "^0.8.3",
     "react": "^18.3.1",
