@@ -1460,6 +1460,7 @@ name = "mb-auth"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "base64",
  "mb-core",
  "rand_core 0.6.4",
  "rusqlite",

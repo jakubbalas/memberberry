@@ -11,15 +11,19 @@
 //! enforcement points to prevent.
 
 use std::collections::{BTreeMap, HashMap};
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State};
+use axum::extract::{
+    ConnectInfo, DefaultBodyLimit, Form, FromRequestParts, Path as AxumPath, Query, State,
+};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -57,6 +61,8 @@ pub struct AppState {
     /// Short-lived, per-uploader grants bridge upload and the note's next indexed save.
     media_uploads: Mutex<HashMap<(Slug, mb_core::Username, String), std::time::Instant>>,
     clip_budgets: Mutex<HashMap<(Slug, mb_core::Username), ClipBudget>>,
+    share_budgets: Mutex<HashMap<String, ClipBudget>>,
+    share_ip_budgets: Mutex<HashMap<IpAddr, ClipBudget>>,
     security: Security,
 }
 
@@ -103,6 +109,27 @@ struct FileStamp {
 }
 
 const MAX_CLIPS_PER_MINUTE: u32 = 12;
+const MAX_SHARE_REQUESTS_PER_TOKEN_PER_MINUTE: u32 = 60;
+const MAX_SHARE_REQUESTS_PER_IP_PER_MINUTE: u32 = 600;
+
+#[derive(Debug, Clone, Copy)]
+struct PeerIp(Option<IpAddr>);
+
+impl<S> FromRequestParts<S> for PeerIp
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|info| info.0.ip()),
+        ))
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct ClipBudget {
@@ -300,6 +327,8 @@ impl AppState {
             media_manifest: Mutex::new(()),
             media_uploads: Mutex::new(HashMap::new()),
             clip_budgets: Mutex::new(HashMap::new()),
+            share_budgets: Mutex::new(HashMap::new()),
+            share_ip_budgets: Mutex::new(HashMap::new()),
             security: Security {
                 auth: Mutex::new(auth),
                 access: RwLock::new(access),
@@ -412,6 +441,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/vaults/{slug}/clip",
             post(clip_note).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
+        .route(
+            "/api/v1/vaults/{slug}/shares",
+            get(share_links)
+                .post(create_share_link)
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
+        .route(
+            "/api/v1/vaults/{slug}/shares/{id}",
+            delete(revoke_share_link),
+        )
         .route("/api/v1/vaults/{slug}/emoji", get(vault_emoji))
         .route(
             "/api/v1/vaults/{slug}/emoji/packs/{pack}",
@@ -490,6 +529,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/manifest.webmanifest", get(web_manifest))
         .route("/icon.svg", get(app_icon))
         .route("/share", get(app_shell))
+        .route("/s/media/{media_scope}/{*media}", get(public_share_media))
+        .route("/s/{token}", get(public_share).post(public_share_post))
         .route("/v/{slug}", get(vault_index))
         .route(
             "/v/{slug}/new",
@@ -1345,6 +1386,195 @@ async fn vault_emoji(
     match view.emoji_entries(shared.as_deref()) {
         Ok(entries) => json_no_store(&entries),
         Err(_) => workspace_denied(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateShareLinkRequest {
+    note: String,
+    #[serde(default)]
+    include_embeds: bool,
+    #[serde(default)]
+    password: Option<String>,
+    expires_at: Option<i64>,
+    #[serde(default)]
+    never_expires: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ShareLinkCreated {
+    url: String,
+    note: String,
+    include_embeds: bool,
+    expires_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct ShareLinkView {
+    id: i64,
+    note: String,
+    include_embeds: bool,
+    password_protected: bool,
+    expires_at: Option<i64>,
+    access_count: i64,
+    last_accessed_at: Option<i64>,
+    revoked_at: Option<i64>,
+}
+
+/// Resolves the authenticated session and its database identity for share management.
+fn share_manager<'a>(
+    state: &'a AppState,
+    slug: &str,
+    headers: &HeaderMap,
+) -> Option<(Username, mb_auth::UserId, &'a Vault, Arc<mb_core::Access>)> {
+    let user = state.authenticated_user(headers)?;
+    let vault = state.vault(slug)?;
+    let access = state.access_for(vault.slug())?;
+    let view = AuthorizedVault::new(vault, &access, user.clone());
+    if !view.has_any_access().ok()? {
+        return None;
+    }
+    let user_id = state
+        .security
+        .auth
+        .lock()
+        .ok()?
+        .user_by_username(user.as_str())
+        .ok()??
+        .id;
+    Some((user, user_id, vault, access))
+}
+
+/// `POST /api/v1/vaults/{slug}/shares` — creates a link for a readable editable note.
+async fn create_share_link(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    peer: PeerIp,
+    Json(request): Json<CreateShareLinkRequest>,
+) -> Response {
+    let Some((user, user_id, vault, access)) = share_manager(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(note_path) = AuthorizedVault::new(vault, &access, user.clone()).identity(&request.note)
+    else {
+        return workspace_denied();
+    };
+    let Ok(note) = mb_core::NotePath::parse(&note_path) else {
+        return workspace_denied();
+    };
+    if !matches!(
+        access.effective_role(&user, &note),
+        mb_core::Role::Owner | mb_core::Role::Editor
+    ) {
+        return workspace_denied();
+    }
+    if request.never_expires && request.expires_at.is_some() {
+        return (StatusCode::BAD_REQUEST, "{}").into_response();
+    }
+    let expires_at = if request.never_expires {
+        None
+    } else {
+        Some(request.expires_at.unwrap_or_else(|| {
+            i64::try_from(crate::audit::unix_seconds())
+                .unwrap_or(i64::MAX)
+                .saturating_add(30 * 24 * 60 * 60)
+        }))
+    };
+    let token = match state.security.auth.lock() {
+        Ok(auth) => match auth.create_share_link(mb_auth::ShareLinkScope {
+            vault_slug: slug,
+            note_path: note_path.clone(),
+            include_embeds: request.include_embeds,
+            password: request.password,
+            expires_at,
+            created_by: user_id,
+        }) {
+            Ok(token) => token,
+            Err(mb_auth::Error::InvalidPassword | mb_auth::Error::InvalidShareExpiry) => {
+                return (StatusCode::BAD_REQUEST, "{}").into_response();
+            }
+            Err(error) => return server_error(&Error::Auth(error.to_string())),
+        },
+        Err(_) => return server_error(&Error::Auth("authentication lock poisoned".to_string())),
+    };
+    if let Err(error) = state.audit_share(
+        Some(user.as_str()),
+        Some(vault.slug().as_str()),
+        &note_path,
+        AuditResult::Success,
+        peer.0,
+    ) {
+        return server_error(&error);
+    }
+    let body = ShareLinkCreated {
+        url: format!("/s/{}", token.expose_secret()),
+        note: note_path,
+        include_embeds: request.include_embeds,
+        expires_at,
+    };
+    json_no_store_status(StatusCode::CREATED, &body)
+}
+
+/// `GET /api/v1/vaults/{slug}/shares` — lists only links created by this caller.
+async fn share_links(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((_user, user_id, _vault, _access)) = share_manager(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let links = match state.security.auth.lock() {
+        Ok(auth) => match auth.list_share_links(user_id, &slug) {
+            Ok(links) => links
+                .into_iter()
+                .map(|link| ShareLinkView {
+                    id: link.id.get(),
+                    note: link.scope.note_path,
+                    include_embeds: link.scope.include_embeds,
+                    password_protected: link.scope.password.is_some(),
+                    expires_at: link.scope.expires_at,
+                    access_count: link.access_count,
+                    last_accessed_at: link.last_accessed_at,
+                    revoked_at: link.revoked_at,
+                })
+                .collect::<Vec<_>>(),
+            Err(error) => return server_error(&Error::Auth(error.to_string())),
+        },
+        Err(_) => return server_error(&Error::Auth("authentication lock poisoned".to_string())),
+    };
+    json_no_store(&links)
+}
+
+/// `DELETE /api/v1/vaults/{slug}/shares/{id}` — revokes one caller-owned link.
+async fn revoke_share_link(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, id)): AxumPath<(String, i64)>,
+    headers: HeaderMap,
+    peer: PeerIp,
+) -> Response {
+    let Some((user, user_id, vault, _access)) = share_manager(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    match state.security.auth.lock() {
+        Ok(auth) => match auth.revoke_share_link_by_id(user_id, mb_auth::ShareLinkId::from_i64(id))
+        {
+            Ok(()) => {
+                if let Err(error) = state.audit_share(
+                    Some(user.as_str()),
+                    Some(vault.slug().as_str()),
+                    &id.to_string(),
+                    AuditResult::Success,
+                    peer.0,
+                ) {
+                    return server_error(&error);
+                }
+                StatusCode::NO_CONTENT.into_response()
+            }
+            Err(error) => server_error(&Error::Auth(error.to_string())),
+        },
+        Err(_) => server_error(&Error::Auth("authentication lock poisoned".to_string())),
     }
 }
 
@@ -2541,12 +2771,16 @@ fn vault_query(
 
 /// A JSON body nothing should keep a copy of.
 fn json_no_store<T: serde::Serialize>(body: &T) -> Response {
+    json_no_store_status(StatusCode::OK, body)
+}
+
+fn json_no_store_status<T: serde::Serialize>(status: StatusCode, body: &T) -> Response {
     let body = match serde_json::to_string(body) {
         Ok(body) => body,
         Err(error) => return server_error(&Error::Config(error.to_string())),
     };
     (
-        StatusCode::OK,
+        status,
         [
             (header::CONTENT_TYPE, "application/json"),
             (header::CACHE_CONTROL, "no-store"),
@@ -3069,6 +3303,8 @@ async fn note(
         &Urls {
             note: &prefix,
             media: &prefix,
+            wikilinks: true,
+            embeds: true,
         },
     );
 
@@ -3081,6 +3317,431 @@ async fn note(
     body.push_str(&rendered);
     body.push_str("</article>");
     page(&title, &body).into_response()
+}
+
+#[derive(Deserialize, Default)]
+struct PublicShareForm {
+    password: Option<String>,
+}
+
+/// `GET /s/{token}` — the anonymous, read-only share entry point (§17.2).
+async fn public_share(
+    State(state): State<Arc<AppState>>,
+    AxumPath(token): AxumPath<String>,
+    peer: PeerIp,
+) -> Response {
+    render_public_share(&state, &token, None, peer.0).await
+}
+
+/// Password submission for a public share. The token stays in the URL and never enters the
+/// response body, which also keeps compressed responses outside the BREACH threat shape.
+async fn public_share_post(
+    State(state): State<Arc<AppState>>,
+    AxumPath(token): AxumPath<String>,
+    peer: PeerIp,
+    Form(form): Form<PublicShareForm>,
+) -> Response {
+    render_public_share(&state, &token, form.password.as_deref(), peer.0).await
+}
+
+async fn render_public_share(
+    state: &AppState,
+    raw_token: &str,
+    password: Option<&str>,
+    peer: Option<IpAddr>,
+) -> Response {
+    if !state.allow_share_ip(peer) {
+        return share_rate_limited();
+    }
+    let Some(token) = mb_auth::ShareToken::from_secret(raw_token) else {
+        return public_share_denied();
+    };
+    if !state.allow_share_token(&token) {
+        return share_rate_limited();
+    }
+    let link = match state.security.auth.lock() {
+        Ok(auth) => match auth.authenticate_share_link(&token, password) {
+            Ok(Some(link)) => link,
+            Ok(None) => {
+                let requires_password = auth.share_link_requires_password(&token).ok().flatten();
+                return match (requires_password, password.is_some()) {
+                    (Some(true), false) => public_share_password_or_denied(),
+                    _ => public_share_denied(),
+                };
+            }
+            Err(error) => return server_error(&Error::Auth(error.to_string())),
+        },
+        Err(_) => return server_error(&Error::Auth("authentication lock poisoned".to_string())),
+    };
+    let Some(vault) = state.vault(&link.scope.vault_slug) else {
+        return public_share_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return public_share_denied();
+    };
+    let Ok(creator) = state
+        .security
+        .auth
+        .lock()
+        .map_err(|_| ())
+        .and_then(|auth| auth.user_by_id(link.scope.created_by).map_err(|_| ()))
+    else {
+        return public_share_denied();
+    };
+    let Some(creator) = creator.filter(|user| !user.disabled) else {
+        return public_share_denied();
+    };
+    let Ok(creator_name) = Username::parse(&creator.username) else {
+        return public_share_denied();
+    };
+    let view = AuthorizedVault::new(vault, &access, creator_name.clone());
+    let Ok(source) = view.read(&link.scope.note_path) else {
+        return public_share_denied();
+    };
+    let doc = mb_core::parse(&source);
+    let title = mb_core::extract::title(&doc).unwrap_or_else(|| link.scope.note_path.clone());
+    let media_scope = token.media_scope();
+    let media_prefix = format!("/s/media/{media_scope}/");
+    let mut options = PublicRenderOptions {
+        include_embeds: link.scope.include_embeds,
+        media_prefix: &media_prefix,
+        stack: &mut vec![link.scope.note_path.clone()],
+    };
+    let rendered = render_public_document(
+        state,
+        vault,
+        &access,
+        &creator_name,
+        &link.scope.note_path,
+        &doc,
+        &mut options,
+    );
+    let mut body = String::from("<article class=\"mb-note\">");
+    body.push_str(&rendered);
+    body.push_str("</article>");
+    let recorded = state
+        .security
+        .auth
+        .lock()
+        .ok()
+        .and_then(|auth| auth.record_share_link_access(&token).ok());
+    if recorded != Some(true) {
+        return public_share_denied();
+    }
+    if let Err(error) = state.audit_share(
+        None,
+        Some(vault.slug().as_str()),
+        &link.scope.note_path,
+        AuditResult::Success,
+        peer,
+    ) {
+        return server_error(&error);
+    }
+    let mut response = page_with(PagePolicy::PublicContent, &title, &body).into_response();
+    let share_cookie = state
+        .security
+        .auth
+        .lock()
+        .ok()
+        .and_then(|auth| auth.signed_share_cookie(&token).ok());
+    if let Some(share_cookie) = share_cookie
+        && let Ok(value) = HeaderValue::from_str(&format!(
+            "mb_share_{media_scope}={share_cookie}; Path=/s/media/{media_scope}; HttpOnly; SameSite=Lax"
+        ))
+    {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response.headers_mut().insert(
+        HeaderName::from_static("x-robots-tag"),
+        HeaderValue::from_static("noindex, nofollow, noarchive"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+struct PublicRenderOptions<'a> {
+    include_embeds: bool,
+    media_prefix: &'a str,
+    stack: &'a mut Vec<String>,
+}
+
+fn render_public_document(
+    state: &AppState,
+    vault: &Vault,
+    access: &mb_core::Access,
+    creator: &Username,
+    source_path: &str,
+    doc: &mb_core::model::Document,
+    options: &mut PublicRenderOptions<'_>,
+) -> String {
+    let mut rendered = mb_core::html::document(
+        doc,
+        &Urls {
+            note: "",
+            media: options.media_prefix,
+            wikilinks: false,
+            embeds: options.include_embeds,
+        },
+    );
+    if !options.include_embeds {
+        return rendered;
+    }
+    let links = mb_core::extract(doc).links;
+    let mut search_from = 0;
+    for link in links.into_iter().filter(|link| link.embed) {
+        let Some(start) = rendered[search_from..].find("<a class=\"mb-embed\"") else {
+            break;
+        };
+        let start = search_from + start;
+        let Some(end_offset) = rendered[start..].find("</a>") else {
+            break;
+        };
+        let end = start + end_offset + "</a>".len();
+        let label = link.alias.as_deref().unwrap_or(&link.target);
+        let replacement = public_embed(state, vault, access, creator, source_path, &link, options)
+            .unwrap_or_else(|| {
+                let mut text = String::new();
+                mb_core::html::escape_text(label, &mut text);
+                text
+            });
+        rendered.replace_range(start..end, &replacement);
+        search_from = start + replacement.len();
+    }
+    rendered
+}
+
+fn public_embed(
+    state: &AppState,
+    vault: &Vault,
+    access: &mb_core::Access,
+    creator: &Username,
+    source_path: &str,
+    link: &mb_core::extract::LinkRef,
+    options: &mut PublicRenderOptions<'_>,
+) -> Option<String> {
+    if options.stack.len() >= 8 {
+        return None;
+    }
+    let (target_path, doc) =
+        public_embed_document(state, vault, access, creator, source_path, link)?;
+    if options.stack.contains(&target_path) {
+        return None;
+    }
+    options.stack.push(target_path.clone());
+    let output = render_public_document(state, vault, access, creator, &target_path, &doc, options);
+    options.stack.pop();
+    Some(format!("<div class=\"mb-embed-content\">{output}</div>"))
+}
+
+fn public_embed_document(
+    state: &AppState,
+    vault: &Vault,
+    access: &mb_core::Access,
+    creator: &Username,
+    source_path: &str,
+    link: &mb_core::extract::LinkRef,
+) -> Option<(String, mb_core::model::Document)> {
+    let index = state.indexes.get(vault)?;
+    let target = index
+        .lock()
+        .ok()?
+        .reader(access, creator)
+        .ok()?
+        .resolve(source_path, &link.target)
+        .ok()??;
+    let view = AuthorizedVault::new(vault, access, creator.clone());
+    let source = view.read(&target.path).ok()?;
+    let doc = mb_core::parse(&source);
+    let blocks = mb_core::transclude::slice(&doc, link.anchor.as_ref())?;
+    Some((target.path, mb_core::model::Document::new(blocks)))
+}
+
+struct PublicMediaAuthorization<'a> {
+    state: &'a AppState,
+    vault: &'a Vault,
+    access: &'a mb_core::Access,
+    creator: &'a Username,
+    include_embeds: bool,
+    media: &'a str,
+    stack: Vec<String>,
+}
+
+impl PublicMediaAuthorization<'_> {
+    fn document_references(&mut self, source_path: &str, doc: &mb_core::model::Document) -> bool {
+        let facts = mb_core::extract(doc);
+        if facts
+            .media_refs
+            .iter()
+            .any(|reference| reference.path == self.media)
+        {
+            return true;
+        }
+        if !self.include_embeds || self.stack.len() >= 8 {
+            return false;
+        }
+        facts
+            .links
+            .into_iter()
+            .filter(|link| link.embed)
+            .any(|link| {
+                let Some((target_path, embedded)) = public_embed_document(
+                    self.state,
+                    self.vault,
+                    self.access,
+                    self.creator,
+                    source_path,
+                    &link,
+                ) else {
+                    return false;
+                };
+                if self.stack.contains(&target_path) {
+                    return false;
+                }
+                self.stack.push(target_path.clone());
+                let references = self.document_references(&target_path, &embedded);
+                self.stack.pop();
+                references
+            })
+    }
+}
+
+fn public_share_denied() -> Response {
+    let mut response = (
+        StatusCode::NOT_FOUND,
+        [(HeaderName::from_static("x-robots-tag"), "noindex")],
+        page_with(
+            PagePolicy::PublicContent,
+            "Not found",
+            "<p class=\"mb-empty\">This link is unavailable.</p>",
+        ),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn share_rate_limited() -> Response {
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        page_with(
+            PagePolicy::PublicContent,
+            "Temporarily unavailable",
+            "<p class=\"mb-empty\">This link is temporarily unavailable.</p>",
+        ),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
+    response.headers_mut().insert(
+        HeaderName::from_static("x-robots-tag"),
+        HeaderValue::from_static("noindex, nofollow, noarchive"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn public_share_password_or_denied() -> Response {
+    let body = "<p class=\"mb-empty\">This link requires a password.</p>\
+        <form method=\"post\"><label>Password <input name=\"password\" type=\"password\" \
+        autocomplete=\"current-password\" required /></label><button type=\"submit\">Open</button></form>";
+    let mut response =
+        page_with(PagePolicy::PublicPassword, "Password required", body).into_response();
+    response.headers_mut().insert(
+        HeaderName::from_static("x-robots-tag"),
+        HeaderValue::from_static("noindex"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// Serves media referenced by a successfully opened public share, through a token-scoped path.
+async fn public_share_media(
+    State(state): State<Arc<AppState>>,
+    AxumPath((media_scope, media)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    peer: PeerIp,
+) -> Response {
+    if !state.allow_share_ip(peer.0) {
+        return share_rate_limited();
+    }
+    let Some(cookie) = share_cookie(&headers, &media_scope) else {
+        return public_share_denied();
+    };
+    let link = match state.security.auth.lock() {
+        Ok(auth) => auth.authenticate_share_cookie(cookie).ok().flatten(),
+        Err(_) => None,
+    };
+    let Some(link) = link else {
+        return public_share_denied();
+    };
+    if link.token.media_scope() != media_scope || !state.allow_share_token(&link.token) {
+        return public_share_denied();
+    }
+    let Some(vault) = state.vault(&link.scope.vault_slug) else {
+        return public_share_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return public_share_denied();
+    };
+    let Ok(creator) = state
+        .security
+        .auth
+        .lock()
+        .map_err(|_| ())
+        .and_then(|auth| auth.user_by_id(link.scope.created_by).map_err(|_| ()))
+    else {
+        return public_share_denied();
+    };
+    let Some(creator) = creator.filter(|user| !user.disabled) else {
+        return public_share_denied();
+    };
+    let Ok(creator_name) = Username::parse(&creator.username) else {
+        return public_share_denied();
+    };
+    let view = AuthorizedVault::new(vault, &access, creator_name.clone());
+    let Ok(source) = view.read(&link.scope.note_path) else {
+        return public_share_denied();
+    };
+    let doc = mb_core::parse(&source);
+    let referenced = PublicMediaAuthorization {
+        state: &state,
+        vault,
+        access: &access,
+        creator: &creator_name,
+        include_embeds: link.scope.include_embeds,
+        media: &media,
+        stack: vec![link.scope.note_path.clone()],
+    }
+    .document_references(&link.scope.note_path, &doc);
+    if !referenced {
+        return public_share_denied();
+    }
+    let Ok(store) = crate::media::Store::new(vault) else {
+        return public_share_denied();
+    };
+    let Ok(bytes) = store.get(&media).await else {
+        return public_share_denied();
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, media_content_type(&media)),
+            (header::CACHE_CONTROL, "private, no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (HeaderName::from_static("x-robots-tag"), "noindex"),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 /// Serves a media object only when a readable note references its exact path (E11).
@@ -3495,6 +4156,8 @@ async fn note_embed(
     let urls = Urls {
         note: &prefix,
         media: &prefix,
+        wikilinks: true,
+        embeds: true,
     };
     let doc = mb_core::parse(&source);
     let slice = mb_core::transclude::slice(&doc, anchor.as_ref());
@@ -3971,6 +4634,61 @@ async fn login(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) 
 }
 
 impl AppState {
+    fn allow_share_ip(&self, peer: Option<IpAddr>) -> bool {
+        peer.is_none_or(|peer| {
+            let now = std::time::Instant::now();
+            self.share_ip_budgets
+                .lock()
+                .map(|mut budgets| allow_ip_request(&mut budgets, peer, now))
+                .unwrap_or(false)
+        })
+    }
+
+    fn allow_share_token(&self, token: &mb_auth::ShareToken) -> bool {
+        let Ok(mut budgets) = self.share_budgets.lock() else {
+            return false;
+        };
+        let now = std::time::Instant::now();
+        budgets.retain(|_, budget| {
+            now.duration_since(budget.window) < std::time::Duration::from_secs(60)
+        });
+        let budget = budgets
+            .entry(token.media_scope())
+            .or_insert_with(ClipBudget::new);
+        if budget.used >= MAX_SHARE_REQUESTS_PER_TOKEN_PER_MINUTE {
+            return false;
+        }
+        budget.used += 1;
+        true
+    }
+
+    fn audit_share(
+        &self,
+        actor: Option<&str>,
+        vault: Option<&str>,
+        target: &str,
+        result: AuditResult,
+        peer: Option<IpAddr>,
+    ) -> Result<(), Error> {
+        let Some(audit) = &self.security.audit else {
+            return Ok(());
+        };
+        let timestamp = crate::audit::unix_seconds().to_string();
+        let source_ip = peer.map(|address| address.to_string());
+        let targets = [target.to_string()];
+        audit
+            .append(&AuditEvent {
+                timestamp: &timestamp,
+                actor,
+                source_ip: source_ip.as_deref(),
+                vault,
+                action: AuditAction::ShareLink,
+                targets: &targets,
+                result,
+            })
+            .map_err(|error| Error::Auth(format!("writing audit log: {error}")))
+    }
+
     fn audit_login(&self, actor: &str, result: AuditResult) -> Result<(), Error> {
         let Some(audit) = &self.security.audit else {
             return Ok(());
@@ -4180,6 +4898,21 @@ impl AppState {
     }
 }
 
+fn allow_ip_request(
+    budgets: &mut HashMap<IpAddr, ClipBudget>,
+    peer: IpAddr,
+    now: std::time::Instant,
+) -> bool {
+    budgets
+        .retain(|_, budget| now.duration_since(budget.window) < std::time::Duration::from_secs(60));
+    let budget = budgets.entry(peer).or_insert_with(ClipBudget::new);
+    if budget.used >= MAX_SHARE_REQUESTS_PER_IP_PER_MINUTE {
+        return false;
+    }
+    budget.used += 1;
+    true
+}
+
 fn session_cookie(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::COOKIE)?
@@ -4187,6 +4920,26 @@ fn session_cookie(headers: &HeaderMap) -> Option<&str> {
         .ok()?
         .split(';')
         .find_map(|part| part.trim().strip_prefix("mb_session="))
+}
+
+fn share_cookie<'a>(headers: &'a HeaderMap, media_scope: &str) -> Option<&'a str> {
+    if media_scope.len() != 64
+        || !media_scope
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let expected_name = format!("mb_share_{media_scope}");
+    headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|cookie| {
+                let (name, value) = cookie.trim().split_once('=')?;
+                (name == expected_name).then_some(value)
+            })
+        })
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -4285,6 +5038,10 @@ enum PagePolicy {
     SignIn,
     /// The vault index. Carries the create-a-note form, so it posts to this origin too.
     VaultIndex,
+    /// A public shared note. Loads only same-origin media and submits no forms.
+    PublicContent,
+    /// The public link password form, which posts back to its current URL.
+    PublicPassword,
 }
 
 impl PagePolicy {
@@ -4294,9 +5051,13 @@ impl PagePolicy {
             // why: `'none'` on every page made the sign-in form unsubmittable, so nobody
             // could log in with a browser at all. Only this page has a form, and it posts
             // to its own origin; the note pages keep the stricter rule they need.
-            Self::SignIn | Self::VaultIndex => "'self'",
-            Self::Content => "'none'",
+            Self::SignIn | Self::VaultIndex | Self::PublicPassword => "'self'",
+            Self::Content | Self::PublicContent => "'none'",
         }
+    }
+
+    fn is_public(self) -> bool {
+        matches!(self, Self::PublicContent | Self::PublicPassword)
     }
 }
 
@@ -4313,6 +5074,9 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
     let mut out = String::with_capacity(body.len() + TOKENS.len() + STYLE.len() + 512);
     out.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\" />\n");
     out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n");
+    if policy.is_public() {
+        out.push_str("<meta name=\"robots\" content=\"noindex, nofollow, noarchive\" />\n");
+    }
     // why: the notes being rendered are untrusted content. A restrictive CSP is a second
     // line of defence behind the escaping in `mb_core::html` — if an escaping bug ever
     // lands, this stops it becoming script execution.
@@ -4465,9 +5229,12 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
             }
         }
     });
-    let served = axum::serve(listener, router(Arc::clone(&state)))
-        .with_graceful_shutdown(shutdown())
-        .await;
+    let served = axum::serve(
+        listener,
+        router(Arc::clone(&state)).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
+    .await;
     // Stop the timer before flushing so the two are never in a note's writer at once.
     maintenance.abort();
     drop(watcher);
@@ -4566,7 +5333,10 @@ ul,ol{padding-left:var(--space-7)}\
 
 #[cfg(test)]
 mod clip_tests {
-    use super::{ClipBudget, MAX_CLIPS_PER_MINUTE, clip_name_from_text, clip_path};
+    use super::{
+        ClipBudget, MAX_CLIPS_PER_MINUTE, MAX_SHARE_REQUESTS_PER_IP_PER_MINUTE, allow_ip_request,
+        clip_name_from_text, clip_path,
+    };
 
     #[test]
     fn clip_budget_starts_full_and_resets_after_its_window() {
@@ -4591,5 +5361,21 @@ mod clip_tests {
             "Shared clip.md"
         );
         assert_eq!(clip_name_from_text(&"a".repeat(100)).len(), 80);
+    }
+
+    #[test]
+    fn share_ip_budget_refuses_the_next_request_and_expires_old_windows() {
+        let mut budgets = std::collections::HashMap::new();
+        let peer = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let now = std::time::Instant::now();
+        for _ in 0..MAX_SHARE_REQUESTS_PER_IP_PER_MINUTE {
+            assert!(allow_ip_request(&mut budgets, peer, now));
+        }
+        assert!(!allow_ip_request(&mut budgets, peer, now));
+        assert!(allow_ip_request(
+            &mut budgets,
+            peer,
+            now + std::time::Duration::from_secs(61)
+        ));
     }
 }

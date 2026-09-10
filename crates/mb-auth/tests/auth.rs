@@ -9,6 +9,7 @@
 
 use mb_auth::{
     ApiToken, ApiTokenScope, AuthDb, Error, InviteScope, InviteToken, NewUser, SessionToken,
+    ShareLinkScope, ShareToken,
 };
 use mb_core::Role;
 
@@ -245,6 +246,178 @@ fn scoped_api_tokens_are_vault_bound_revocable_and_return_their_scope() {
         db.authenticate_api_token(&second)
             .expect("authenticate token")
             .is_some()
+    );
+}
+
+#[test]
+fn share_links_use_url_safe_opaque_tokens_and_require_their_password() {
+    let mut db = AuthDb::open_in_memory().expect("open auth db");
+    let alice = db.setup_first_user(new_user("alice")).expect("setup user");
+    let token = db
+        .create_share_link(ShareLinkScope {
+            vault_slug: "personal".to_string(),
+            note_path: "Projects/Roadmap.md".to_string(),
+            include_embeds: true,
+            password: Some(PASSWORD.to_string()),
+            expires_at: Some(4_102_444_800),
+            created_by: alice.id,
+        })
+        .expect("create share link");
+    assert_eq!(token.expose_secret().len(), 22);
+    assert!(ShareToken::from_secret(token.expose_secret()).is_some());
+    assert!(
+        db.authenticate_share_link(&token, Some("wrong password"))
+            .expect("wrong password")
+            .is_none()
+    );
+    let link = db
+        .authenticate_share_link(&token, Some(PASSWORD))
+        .expect("authenticate share link")
+        .expect("active link");
+    assert_eq!(link.scope.note_path, "Projects/Roadmap.md");
+    assert_eq!(link.access_count, 0);
+    assert!(link.last_accessed_at.is_none());
+    assert!(db.record_share_link_access(&token).expect("record access"));
+    let listed = db
+        .list_share_links(alice.id, "personal")
+        .expect("list share links");
+    assert_eq!(listed[0].access_count, 1);
+    assert!(listed[0].last_accessed_at.is_some());
+
+    db.revoke_share_link(alice.id, &token)
+        .expect("revoke share link");
+    assert!(
+        db.authenticate_share_link(&token, Some(PASSWORD))
+            .expect("revoked share link")
+            .is_none()
+    );
+}
+
+#[test]
+fn share_links_reject_invalid_paths_expiry_and_passwords() {
+    let mut db = AuthDb::open_in_memory().expect("open auth db");
+    let alice = db.setup_first_user(new_user("alice")).expect("setup user");
+    let scope =
+        |note_path: &str, expires_at: Option<i64>, password: Option<String>| ShareLinkScope {
+            vault_slug: "personal".to_string(),
+            note_path: note_path.to_string(),
+            include_embeds: false,
+            password,
+            expires_at,
+            created_by: alice.id,
+        };
+    assert!(matches!(
+        db.create_share_link(scope("../private.md", Some(4_102_444_800), None)),
+        Err(Error::InvalidSharePath)
+    ));
+    assert!(matches!(
+        db.create_share_link(scope("note.md", Some(1), None)),
+        Err(Error::InvalidShareExpiry)
+    ));
+    assert!(matches!(
+        db.create_share_link(scope(
+            "note.md",
+            Some(4_102_444_800),
+            Some("short".to_string())
+        )),
+        Err(Error::InvalidPassword)
+    ));
+    assert!(db.create_share_link(scope("note.md", None, None)).is_ok());
+    assert!(ShareToken::from_secret("not-a-share-token").is_none());
+}
+
+#[test]
+fn existing_share_tables_are_migrated_to_allow_no_expiry() {
+    let path = std::env::temp_dir().join(format!(
+        "memberberry-auth-share-migration-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    let connection = rusqlite::Connection::open(&path).expect("old database");
+    connection
+        .execute_batch(
+            "CREATE TABLE users (
+                id INTEGER PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE COLLATE BINARY,
+                display_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
+                is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))
+             );
+             INSERT INTO users
+                (id, username, display_name, password_hash, created_at, disabled, is_admin)
+             VALUES (1, 'alice', 'Alice', 'unused', 1, 0, 1);
+             CREATE TABLE share_links (
+                token_hash TEXT PRIMARY KEY,
+                vault_slug TEXT NOT NULL,
+                note_path TEXT NOT NULL,
+                include_embeds INTEGER NOT NULL CHECK (include_embeds IN (0, 1)),
+                password_hash TEXT,
+                expires_at INTEGER NOT NULL,
+                created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at INTEGER NOT NULL,
+                revoked_at INTEGER,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed_at INTEGER
+             );
+             CREATE INDEX share_links_creator ON share_links (created_by, vault_slug);",
+        )
+        .expect("old schema");
+    drop(connection);
+
+    let db = AuthDb::open(&path).expect("migrated auth db");
+    let alice = db
+        .user_by_username("alice")
+        .expect("lookup")
+        .expect("alice");
+    db.create_share_link(ShareLinkScope {
+        vault_slug: "personal".to_string(),
+        note_path: "Welcome.md".to_string(),
+        include_embeds: false,
+        password: None,
+        expires_at: None,
+        created_by: alice.id,
+    })
+    .expect("never-expiring share after migration");
+    drop(db);
+    std::fs::remove_file(path).expect("remove test database");
+}
+
+#[test]
+fn share_media_cookie_is_signed_and_revocation_aware() {
+    let mut db = AuthDb::open_in_memory().expect("open auth db");
+    let alice = db.setup_first_user(new_user("alice")).expect("setup user");
+    let token = db
+        .create_share_link(ShareLinkScope {
+            vault_slug: "personal".to_string(),
+            note_path: "note.md".to_string(),
+            include_embeds: false,
+            password: Some(PASSWORD.to_string()),
+            expires_at: Some(4_102_444_800),
+            created_by: alice.id,
+        })
+        .expect("create share link");
+    let cookie = db.signed_share_cookie(&token).expect("sign cookie");
+    assert!(
+        db.authenticate_share_cookie(&cookie)
+            .expect("authenticate cookie")
+            .is_some()
+    );
+    let tampered = format!("{cookie}0");
+    assert!(
+        db.authenticate_share_cookie(&tampered)
+            .expect("tampered cookie")
+            .is_none()
+    );
+    db.revoke_share_link(alice.id, &token).expect("revoke");
+    assert!(
+        db.authenticate_share_cookie(&cookie)
+            .expect("revoked cookie")
+            .is_none()
     );
 }
 

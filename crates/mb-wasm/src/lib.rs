@@ -394,6 +394,8 @@ pub fn to_html(markdown: &str, note_prefix: &str, media_prefix: &str) -> String 
         &mb_core::html::Urls {
             note: note_prefix,
             media: media_prefix,
+            wikilinks: true,
+            embeds: true,
         },
     )
 }

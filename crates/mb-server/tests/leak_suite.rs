@@ -182,6 +182,81 @@ fn e11_media_from_an_unreadable_note_is_not_fetchable() {
     );
 }
 
+/// E13: public links remain capped by the creator's current ACL, and bearer states are opaque.
+#[test]
+fn e13_share_links_never_expand_creator_access_or_survive_revocation() {
+    let dir = TempDir::new("leak-public-share");
+    dir.write("Shared.md", "# Shared\n\n![[Private/Salary]]\n");
+    dir.write("Private/Salary.md", "private salary canary\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let view = AuthorizedVault::new(&vault, &access, alice.clone());
+    assert!(view.read("Shared.md").is_ok());
+    assert!(matches!(
+        view.read("Private/Salary.md"),
+        Err(mb_server::Error::NotFound)
+    ));
+
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let user = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup user");
+    let token = auth
+        .create_share_link(mb_auth::ShareLinkScope {
+            vault_slug: "personal".to_string(),
+            note_path: "Shared.md".to_string(),
+            include_embeds: true,
+            password: Some("correct horse battery staple".to_string()),
+            expires_at: Some(4_102_444_800),
+            created_by: user.id,
+        })
+        .expect("share link");
+    assert!(
+        auth.authenticate_share_link(&token, Some("wrong password"))
+            .expect("wrong password check")
+            .is_none()
+    );
+    assert!(
+        auth.authenticate_share_link(&token, Some("correct horse battery staple"))
+            .expect("correct password check")
+            .is_some()
+    );
+    auth.revoke_share_link(user.id, &token)
+        .expect("revoke link");
+    assert!(
+        auth.authenticate_share_link(&token, Some("correct horse battery staple"))
+            .expect("revoked check")
+            .is_none()
+    );
+
+    let revoked_access = Access::new(Vec::new(), Vec::new()).expect("deny-all policy");
+    let revoked_view = AuthorizedVault::new(&vault, &revoked_access, alice);
+    assert!(matches!(
+        revoked_view.read("Shared.md"),
+        Err(mb_server::Error::NotFound)
+    ));
+}
+
 /// E22: custom pack names, aliases, and image paths do not exist outside a readable vault.
 #[test]
 fn e22_custom_emoji_are_filtered_before_resolution() {

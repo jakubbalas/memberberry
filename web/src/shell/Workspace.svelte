@@ -54,6 +54,8 @@
   import type { openNoteSurface } from "./note-surface.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { groups } from "./workspace.js";
+  import SharesPane from "./SharesPane.svelte";
+  import { ShareView } from "./shares.js";
 
   interface Props {
     readonly store: WorkspaceStore;
@@ -101,6 +103,8 @@
     readonly renameTag?: typeof renameTagRequest | undefined;
     readonly createNote?: typeof createNoteRequest | undefined;
     readonly daily?: DailyView | undefined;
+    /** Authenticated public-share management, supplied by a test or built from the session. */
+    readonly shares?: ShareView | undefined;
   }
 
   const {
@@ -127,6 +131,7 @@
     renameTag,
     createNote,
     daily: suppliedDaily,
+    shares: suppliedShares,
   }: Props = $props();
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
@@ -210,6 +215,7 @@
   // Fetches nothing, so unlike the three above it costs nothing to build and needs no
   // session: the headings arrive from whichever editor is mounted.
   const outline = untrack(() => suppliedOutline ?? new OutlineView());
+  const shares = untrack(() => suppliedShares ?? new ShareView({ vault: session?.vault ?? "local-demo" }));
 
   // Seeded synchronously, then kept current by the watcher. Starting from a default and
   // waiting for the effect meant the first render used the wrong layout — see
@@ -392,6 +398,7 @@
     <TagPane view={tags} onopen={(path) => store.open(path)} />
     <InboxPane view={inbox} onopen={(path) => store.open(path)} onedit={editTask} />
     <CalendarPane view={daily} onopen={(path) => store.open(path)} />
+    {#if session !== undefined}<SharesPane view={shares} note={store.activeTab?.note} />{/if}
   </Sidebar>
 
   <main class="workspace-main" aria-label="Open notes">

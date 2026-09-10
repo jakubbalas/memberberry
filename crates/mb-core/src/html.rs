@@ -432,12 +432,28 @@ fn decode_entities(text: &str) -> String {
 ///
 /// The default is empty prefixes, which renders relative links — right for a fragment
 /// embedded in a page that already sits at the vault root.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Urls<'a> {
     /// Prefix for a wikilink target: `/v/personal/` gives `/v/personal/Some%20Note`.
     pub note: &'a str,
     /// Prefix for a `media/…` destination.
     pub media: &'a str,
+    /// Whether wikilinks become anchors. Public shares disable these unless embed expansion
+    /// has been authorized separately, so an ordinary link cannot become a vault disclosure.
+    pub wikilinks: bool,
+    /// Whether embed wikilinks may become expansion anchors when ordinary links are inert.
+    pub embeds: bool,
+}
+
+impl<'a> Default for Urls<'a> {
+    fn default() -> Self {
+        Self {
+            note: "",
+            media: "",
+            wikilinks: true,
+            embeds: true,
+        }
+    }
 }
 
 /// Renders a document as an HTML fragment — no `<html>`, no `<body>`.
@@ -738,6 +754,10 @@ fn wrap(tag: &str, content: &[Inline], urls: &Urls<'_>, out: &mut String) {
 }
 
 fn wikilink(w: &WikiLink, urls: &Urls<'_>, out: &mut String) {
+    if !(urls.wikilinks || (w.embed && urls.embeds)) {
+        escape_text(w.alias.as_deref().unwrap_or(&w.target), out);
+        return;
+    }
     let mut href = String::from(urls.note);
     percent_encode(&w.target, &mut href);
     match &w.anchor {

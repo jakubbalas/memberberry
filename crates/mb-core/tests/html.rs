@@ -26,7 +26,15 @@ fn h(md: &str) -> String {
 
 /// Renders with the prefixes the M0 server uses.
 fn h_at(md: &str, note: &str, media: &str) -> String {
-    html::document(&parse(md), &Urls { note, media })
+    html::document(
+        &parse(md),
+        &Urls {
+            note,
+            media,
+            wikilinks: true,
+            embeds: true,
+        },
+    )
 }
 
 // ---------------------------------------------------------------- blocks
@@ -195,6 +203,21 @@ fn a_wikilink_uses_the_note_prefix_and_is_percent_encoded() {
         ),
         "{out}"
     );
+}
+
+#[test]
+fn public_rendering_can_make_wikilinks_inert_text() {
+    let out = html::document(
+        &parse("See [[Private Note|a private note]].\n"),
+        &Urls {
+            note: "/s/secret/",
+            media: "",
+            wikilinks: false,
+            embeds: false,
+        },
+    );
+    assert_eq!(out, "<p>See a private note.</p>\n");
+    assert!(!out.contains("href"));
 }
 
 #[test]

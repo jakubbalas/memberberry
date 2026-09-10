@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 argon2 = "0.5"
+base64 = "0.22"
 mb-core.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

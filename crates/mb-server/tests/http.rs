@@ -68,7 +68,11 @@ impl TestServer {
                     .expect("binding an ephemeral port");
                 let addr = listener.local_addr().expect("local addr");
                 addr_tx.send(addr).expect("reporting the address");
-                let served = axum::serve(listener, app).with_graceful_shutdown(async {
+                let served = axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(async {
                     drop(shutdown_rx.await);
                 });
                 drop(served.await);
@@ -282,6 +286,29 @@ impl TestServer {
 
     fn get_bytes(&self, path: &str) -> (String, Vec<u8>) {
         self.get_bytes_with_headers(path, "")
+    }
+
+    fn get_bytes_raw_headers(&self, path: &str) -> (String, Vec<u8>) {
+        let mut stream = TcpStream::connect(self.addr).expect("connecting");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("setting a read timeout");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\n{}Connection: close\r\n\r\n",
+            self.default_headers,
+        )
+        .expect("writing the request");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).expect("reading the response");
+        let split = raw
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("a response with a header block");
+        (
+            String::from_utf8_lossy(&raw[..split]).to_string(),
+            raw[split + 4..].to_vec(),
+        )
     }
 
     fn get_bytes_with_headers(&self, path: &str, headers: &str) -> (String, Vec<u8>) {
@@ -591,6 +618,281 @@ fn clip_route_converts_supplied_html_and_writes_markdown_metadata() {
     assert!(saved.contains("template: Article"));
     assert!(saved.contains("tags: [reading]"));
     assert!(saved.contains("A **clip**."));
+}
+
+#[test]
+fn public_share_renders_only_after_password_and_never_links_to_vault_notes() {
+    let dir = TempDir::new("http-public-share");
+    dir.write(
+        "Shared.md",
+        "# Shared\n\nVisible text. [[Private Note|private]] ![[Embedded]]\n",
+    );
+    dir.write("Private Note.md", "secret body\n");
+    dir.write("Embedded.md", "# Embedded\n\nEmbedded text. ![[Shared]]\n");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_share_link(mb_auth::ShareLinkScope {
+            vault_slug: "v".to_string(),
+            note_path: "Shared.md".to_string(),
+            include_embeds: true,
+            password: Some("correct horse battery staple".to_string()),
+            expires_at: Some(4_102_444_800),
+            created_by: alice.id,
+        })
+        .expect("share link");
+    let server = TestServer::start(
+        AppState::authenticated(vec![vault(&dir, "v", "V")], auth).expect("state"),
+    );
+    let path = format!("/s/{}", token.expose_secret());
+
+    let (status, body) = server.get(&path);
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("requires a password"), "{body}");
+    assert!(
+        !body.contains(token.expose_secret()),
+        "token leaked into body: {body}"
+    );
+    assert!(
+        body.contains("<meta name=\"robots\" content=\"noindex, nofollow, noarchive\""),
+        "public page lacks the robots meta directive: {body}"
+    );
+
+    let (status, _) = server.post_form(&path, "password=wrong");
+    assert!(is_not_found(&status), "{status}");
+    let (status, body) = server.post_form(&path, "password=correct+horse+battery+staple");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Visible text."), "{body}");
+    assert!(
+        body.contains("Embedded text."),
+        "authorized embed missing: {body}"
+    );
+    assert!(
+        body.contains("mb-embed-content"),
+        "embed wrapper missing: {body}"
+    );
+    assert!(
+        body.contains("private"),
+        "the link label remains readable: {body}"
+    );
+    assert!(
+        !body.contains("class=\"mb-wikilink\""),
+        "private link became active: {body}"
+    );
+    assert!(
+        !body.contains(token.expose_secret()),
+        "token leaked into body: {body}"
+    );
+    for _ in 0..56 {
+        let (status, _) = server.get(&path);
+        assert!(is_ok(&status), "rate limit arrived early: {status}");
+    }
+    assert!(
+        is_ok(&server.get(&path).0),
+        "the sixtieth request is allowed"
+    );
+    assert!(
+        server.get(&path).0.contains("429"),
+        "the sixty-first request must be rate limited"
+    );
+}
+
+#[test]
+fn malformed_public_share_token_is_an_invisible_not_found() {
+    let dir = TempDir::new("http-share-malformed-token");
+    dir.write("notes/Welcome.md", "# Welcome\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let (status, body) = server.get("/s/not-a-share-token");
+    assert!(is_not_found(&status), "{status}: {body}");
+    assert!(!body.contains("not-a-share-token"), "token leaked: {body}");
+}
+
+#[test]
+fn public_share_media_requires_its_signed_cookie_and_exact_note_reference() {
+    let dir = TempDir::new("http-public-share-media");
+    let vault = vault(&dir, "v", "V");
+    let image = b"public image bytes";
+    let media_path = mb_server::media::LocalStore::new(&vault)
+        .put(image, "png")
+        .expect("public media");
+    let private_media_path = mb_server::media::LocalStore::new(&vault)
+        .put(b"private image bytes", "png")
+        .expect("private media");
+    dir.write("Shared.md", "![[Embedded]]\n");
+    dir.write("Embedded.md", &format!("![public]({media_path})\n"));
+    dir.write(
+        "Unembedded.md",
+        &format!("![not part of the public render]({private_media_path})\n"),
+    );
+
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_share_link(mb_auth::ShareLinkScope {
+            vault_slug: "v".to_string(),
+            note_path: "Shared.md".to_string(),
+            include_embeds: true,
+            password: None,
+            expires_at: Some(4_102_444_800),
+            created_by: alice.id,
+        })
+        .expect("share link");
+    let server =
+        TestServer::start(AppState::authenticated(vec![vault], auth).expect("secure state"));
+    let raw_token = token.expose_secret();
+    let media_scope = token.media_scope();
+    let media_url = format!("/s/media/{media_scope}/{media_path}");
+
+    let (head, _) = server.get_bytes(&media_url);
+    assert!(
+        head.contains("404"),
+        "media opened without a cookie: {head}"
+    );
+
+    let (head, page) = server.get_bytes_raw_headers(&format!("/s/{raw_token}"));
+    let page = String::from_utf8(page).expect("public page is UTF-8");
+    assert!(!page.contains(raw_token), "bearer leaked into HTML: {page}");
+    assert!(
+        page.contains(&media_url),
+        "embedded media URL missing: {page}"
+    );
+    let cookie = head
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("set-cookie: ")
+                .or_else(|| line.strip_prefix("Set-Cookie: "))
+        })
+        .and_then(|value| value.split(';').next())
+        .expect("share cookie");
+    let (head, body) = server.get_bytes_with_headers(&media_url, &format!("Cookie: {cookie}\r\n"));
+    assert!(head.contains("200"), "referenced media was denied: {head}");
+    assert_eq!(body, image);
+
+    let (head, _) = server.get_bytes_with_headers(
+        &format!("/s/media/{media_scope}/{private_media_path}"),
+        &format!("Cookie: {cookie}\r\n"),
+    );
+    assert!(
+        head.contains("404"),
+        "media outside the rendered embed graph was served: {head}"
+    );
+}
+
+#[test]
+fn public_share_rechecks_creator_access_before_counting_or_rendering_private_embeds() {
+    let dir = TempDir::new("http-public-share-live-access");
+    dir.write("Shared.md", "# Shared\n\nVisible. ![[Private/Secret]]\n");
+    dir.write("Private/Secret.md", "private embed canary\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n[[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let session = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let session_cookie = auth
+        .signed_session_cookie(&session)
+        .expect("signed session");
+    let token = auth
+        .create_share_link(mb_auth::ShareLinkScope {
+            vault_slug: "v".to_string(),
+            note_path: "Shared.md".to_string(),
+            include_embeds: true,
+            password: None,
+            expires_at: Some(4_102_444_800),
+            created_by: alice.id,
+        })
+        .expect("share link");
+    let audit = mb_server::audit::AuditLog::new(dir.path(), 16_384).expect("audit log");
+    let state = AppState::authenticated_with_audit(vec![vault(&dir, "v", "V")], auth, Some(audit))
+        .expect("state");
+    let mut server = TestServer::start(state);
+    server.default_headers = format!("Cookie: mb_session={session_cookie}\r\n");
+    let public_path = format!("/s/{}", token.expose_secret());
+
+    let (status, body) = server.get(&public_path);
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(body.contains("Visible."), "{body}");
+    assert!(!body.contains("private embed canary"), "{body}");
+
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n[[rules]]\npath = \"Shared.md\"\ngrant = { alice = \"none\" }\n",
+    );
+    assert!(server.state.reload_access().is_empty());
+    let (status, body) = server.get(&public_path);
+    assert!(is_not_found(&status), "{status}: {body}");
+    assert!(!body.contains("Visible."), "{body}");
+
+    let (status, body) = server.get("/api/v1/vaults/v/shares");
+    assert!(is_ok(&status), "{status}: {body}");
+    let links: serde_json::Value = serde_json::from_str(&body).expect("share list");
+    assert_eq!(links[0]["access_count"], 1);
+    let log = std::fs::read_to_string(dir.path().join("audit.log")).expect("audit log");
+    assert!(log.contains("\"action\":\"share_link\""), "{log}");
+    assert!(log.contains("\"source_ip\":\"127.0.0.1\""), "{log}");
+}
+
+#[test]
+fn share_management_creates_lists_and_revokes_without_listing_the_bearer() {
+    let dir = TempDir::new("http-share-management");
+    dir.write("notes/Shared.md", "# Shared\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/shares",
+        "",
+        r#"{"note":"Shared.md","include_embeds":true,"password":"correct horse battery staple"}"#,
+    );
+    assert!(status.contains("201"), "{status}: {body}");
+    let created: serde_json::Value = serde_json::from_str(&body).expect("created response");
+    let url = created["url"].as_str().expect("share URL").to_string();
+    assert!(url.starts_with("/s/"), "{url}");
+    let token = url.trim_start_matches("/s/");
+
+    let (status, body) = server.get("/api/v1/vaults/v/shares");
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(body.contains("Shared.md"), "{body}");
+    assert!(body.contains("password_protected"), "{body}");
+    assert!(
+        !body.contains(token),
+        "bearer leaked from management list: {body}"
+    );
+    let listed: serde_json::Value = serde_json::from_str(&body).expect("share list");
+    let id = listed[0]["id"].as_i64().expect("share ID");
+
+    let (status, body) = server.request(
+        "DELETE",
+        &format!("/api/v1/vaults/v/shares/{id}"),
+        &server.default_headers,
+        "",
+    );
+    assert!(status.contains("204"), "{status}: {body}");
+    let (status, _) = server.get(&url);
+    assert!(
+        is_not_found(&status),
+        "revoked share remained readable: {status}"
+    );
 }
 
 #[test]

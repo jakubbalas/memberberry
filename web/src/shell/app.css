@@ -580,6 +580,17 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
    sections inside one of them — the tag pane sits under the note tree, not against it. */
 .sidebar { display: flex; flex-direction: column; gap: var(--space-6); width: var(--sidebar-width); min-height: 0; overflow: auto; padding: var(--space-5); }
 .sidebar-placeholder { margin: 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.shares-pane { display: flex; flex-direction: column; gap: var(--space-3); }
+.share-create, .share-created { display: flex; flex-direction: column; gap: var(--space-2); color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.share-create input, .share-created input { min-height: var(--touch-target-min); padding: 0 var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-canvas); font: inherit; }
+.share-create button, .share-created button, .share-actions button { min-height: var(--touch-target-min); padding: 0 var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--surface-hover); font: inherit; cursor: pointer; }
+.share-create button:hover, .share-created button:hover, .share-actions button:hover { border-color: var(--accent-primary); }
+.share-checkbox { display: flex; align-items: center; gap: var(--space-2); }
+.share-list { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+.share-row { display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--border-subtle); }
+.share-note { overflow-wrap: anywhere; color: var(--text-primary); font: var(--weight-medium) var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.share-meta { color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.share-actions { display: flex; gap: var(--space-2); }
 /* Collapsed: the toggle stays, the panel goes. The label is dropped rather than the button,
    so the control that reopens it is still reachable — including by keyboard. */
 .sidebar-frame[data-collapsed="true"] .sidebar-toggle-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
