@@ -34,7 +34,9 @@ unicode-normalization = "0.1"
 notify = "8"
 object_store = { version = "0.12", features = ["aws"] }
 reqwest.workspace = true
+rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
+zstd = "0.13"
 yrs.workspace = true
 
 [dev-dependencies]

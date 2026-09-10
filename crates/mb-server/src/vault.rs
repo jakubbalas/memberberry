@@ -216,6 +216,22 @@ impl Vault {
             .unwrap_or(2560)
     }
 
+    /// Whether history snapshots use zstd compression (`SPEC.md` §18.1).
+    #[must_use]
+    pub fn history_compression(&self) -> bool {
+        self.config_bool("history_compression").unwrap_or(true)
+    }
+
+    /// Deleted-note retention in seconds, bounded to one day through ten years.
+    #[must_use]
+    pub fn trash_retention_seconds(&self) -> u64 {
+        self.config_integer("trash_retention_days")
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|days| (1..=3_650).contains(days))
+            .unwrap_or(30)
+            .saturating_mul(24 * 60 * 60)
+    }
+
     fn periodic_note_template(&self, name: &str, default: &str) -> String {
         self.config_string(&format!("{name}_note_template"))
             .filter(|name| {
@@ -240,6 +256,13 @@ impl Vault {
             .ok()
             .and_then(|source| source.parse::<toml::Table>().ok())
             .and_then(|table| table.get(key)?.as_integer())
+    }
+
+    fn config_bool(&self, key: &str) -> Option<bool> {
+        std::fs::read_to_string(self.root.join(".memberberry/config.toml"))
+            .ok()
+            .and_then(|source| source.parse::<toml::Table>().ok())
+            .and_then(|table| table.get(key)?.as_bool())
     }
 
     /// Resolves a request-supplied relative path to a real file inside the vault.

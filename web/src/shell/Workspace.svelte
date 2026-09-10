@@ -56,6 +56,10 @@
   import { groups } from "./workspace.js";
   import SharesPane from "./SharesPane.svelte";
   import { ShareView } from "./shares.js";
+  import HistoryPane from "./HistoryPane.svelte";
+  import { HistoryView } from "./history.js";
+  import TrashPane from "./TrashPane.svelte";
+  import { TrashView } from "./trash.js";
 
   interface Props {
     readonly store: WorkspaceStore;
@@ -216,6 +220,8 @@
   // session: the headings arrive from whichever editor is mounted.
   const outline = untrack(() => suppliedOutline ?? new OutlineView());
   const shares = untrack(() => suppliedShares ?? new ShareView({ vault: session?.vault ?? "local-demo" }));
+  const history = untrack(() => new HistoryView({ vault: session?.vault ?? "local-demo" }));
+  const trash = untrack(() => new TrashView({ vault: session?.vault ?? "local-demo" }));
 
   // Seeded synchronously, then kept current by the watcher. Starting from a default and
   // waiting for the effect meant the first render used the wrong layout — see
@@ -433,6 +439,17 @@
       note={store.activeTab?.note}
       onopen={(path) => store.open(path)}
     />
+    {#if session !== undefined}
+      <HistoryPane view={history} note={store.activeTab?.note} />
+      <TrashPane
+        view={trash}
+        note={store.activeTab?.note}
+        ondeleted={() => {
+          const active = store.activeTab;
+          if (active !== undefined) store.close(active.id);
+        }}
+      />
+    {/if}
     <LocalGraph view={graph} note={store.activeTab?.note} onopen={(path) => store.open(path)} />
   </Sidebar>
 </div>

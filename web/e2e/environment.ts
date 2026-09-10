@@ -67,6 +67,7 @@ const SCRATCH_PURPOSES: readonly string[] = [
   // the second one resolves the conflict and a resolution is not repeatable.
   "conflict",
   "conflict-resolve",
+  "history-trash",
 ];
 const SCRATCH_PROJECTS: readonly string[] = ["desktop", "mobile"];
 

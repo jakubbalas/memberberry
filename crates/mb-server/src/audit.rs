@@ -54,6 +54,10 @@ pub enum AuditAction {
     ApiToken,
     /// A password was reset.
     PasswordReset,
+    /// A note was moved into trash.
+    NoteDeleted,
+    /// A note was restored from trash.
+    NoteRestored,
 }
 
 /// The outcome of an audit event.

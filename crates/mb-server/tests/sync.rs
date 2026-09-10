@@ -56,6 +56,38 @@ fn remote_updates_are_durable_debounced_and_written_as_canonical_markdown() {
 }
 
 #[test]
+fn restoring_a_version_is_a_crdt_edit_for_open_readers() {
+    let dir = TempDir::new("sync-restore");
+    let note = dir.write("One.md", "current\n");
+    let vault = vault(&dir);
+    let canonical = vault.canonical_note("One.md").unwrap();
+    let registry = SyncRegistry::default();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let connection = ConnectionId::issue();
+    let initial = registry
+        .subscribe(
+            &vault,
+            &canonical,
+            "One.md",
+            &Username::parse("alice").unwrap(),
+            connection,
+            sender,
+        )
+        .unwrap();
+    assert!(matches!(initial, ServerFrame::Sync { .. }));
+
+    registry
+        .restore(&vault, &canonical, "restored\n", "alice", &|_, _, _| true)
+        .unwrap();
+
+    assert_eq!(std::fs::read_to_string(note).unwrap(), "restored\n");
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(ServerFrame::Update { .. })
+    ));
+}
+
+#[test]
 fn invalid_remote_structure_is_rejected_without_mutating_live_state() {
     let dir = TempDir::new("sync-invalid");
     dir.write("One.md", "safe\n");

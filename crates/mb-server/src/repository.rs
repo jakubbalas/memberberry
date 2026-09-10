@@ -193,6 +193,13 @@ impl<'a> AuthorizedVault<'a> {
         self.vault.reserve(relative)
     }
 
+    /// Returns whether this caller may still discover a note path, including a path whose
+    /// file is currently in trash.
+    #[must_use]
+    pub fn can_read_path(&self, relative: &str) -> bool {
+        self.can_read(relative)
+    }
+
     fn can_read(&self, relative: &str) -> bool {
         NotePath::parse(relative)
             .map(|path| self.access.effective_role(&self.user, &path) != Role::None)

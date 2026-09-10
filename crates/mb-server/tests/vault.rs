@@ -200,6 +200,28 @@ fn media_dimension_config_is_bounded() {
 }
 
 #[test]
+fn history_and_trash_policy_have_safe_configurable_defaults() {
+    let dir = TempDir::new("history-trash-config");
+    let vault = vault_at(&dir);
+    assert!(vault.history_compression());
+    assert_eq!(vault.trash_retention_seconds(), 30 * 24 * 60 * 60);
+
+    dir.write(
+        ".memberberry/config.toml",
+        "history_compression = false\ntrash_retention_days = 14\n",
+    );
+    assert!(!vault.history_compression());
+    assert_eq!(vault.trash_retention_seconds(), 14 * 24 * 60 * 60);
+
+    dir.write(
+        ".memberberry/config.toml",
+        "history_compression = \"no\"\ntrash_retention_days = 0\n",
+    );
+    assert!(vault.history_compression());
+    assert_eq!(vault.trash_retention_seconds(), 30 * 24 * 60 * 60);
+}
+
+#[test]
 fn a_duplicate_slug_is_refused() {
     let dir = TempDir::new("dupe");
     let path = dir.path().to_string_lossy().into_owned();

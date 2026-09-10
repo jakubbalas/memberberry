@@ -24,6 +24,7 @@ use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 use mb_core::Username;
 
+use crate::history::{HistoryError, HistoryStore};
 use crate::vault::CanonicalNote;
 use crate::watch::Changes;
 use crate::{Error as ServerError, Vault};
@@ -44,6 +45,8 @@ pub enum SyncError {
     Crdt(#[from] CrdtError),
     #[error("CRDT sidecar: {0}")]
     Sidecar(#[from] SidecarError),
+    #[error("note history: {0}")]
+    History(#[from] HistoryError),
     #[error("remote update is not a valid lib0 v1 update: {0}")]
     Update(String),
 }
@@ -379,13 +382,25 @@ impl SyncRegistry {
         update: &[u8],
         authorize: ReadCheck<'_>,
     ) -> Result<(), SyncError> {
+        self.apply_update_as(vault, canonical, update, "system", authorize)
+    }
+
+    /// Applies an update while retaining the authenticated actor for history metadata.
+    pub fn apply_update_as(
+        &self,
+        vault: &Vault,
+        canonical: &CanonicalNote,
+        update: &[u8],
+        actor: &str,
+        authorize: ReadCheck<'_>,
+    ) -> Result<(), SyncError> {
         let mut rooms = self.rooms()?;
         let Some(room) = rooms.get_mut(&room_key(vault, canonical)) else {
             return Err(SyncError::Update("document was not subscribed".to_string()));
         };
         let update = room
             .coordinator
-            .apply_remote_update(update, Instant::now())?;
+            .apply_remote_update_as(update, Instant::now(), actor)?;
         let slug = vault.slug().to_string();
         let room_id = (slug.as_str(), canonical.identity());
         broadcast(&mut room.peers, room_id, authorize, |note| {
@@ -395,6 +410,43 @@ impl SyncRegistry {
                 update: update.clone(),
             }
         });
+        Ok(())
+    }
+
+    /// Applies a historical Markdown version as an ordinary CRDT edit.
+    pub fn restore(
+        &self,
+        vault: &Vault,
+        canonical: &CanonicalNote,
+        markdown: &str,
+        actor: &str,
+        authorize: ReadCheck<'_>,
+    ) -> Result<(), SyncError> {
+        let mut rooms = self.rooms()?;
+        let key = room_key(vault, canonical);
+        if let Some(room) = rooms.get_mut(&key) {
+            let update = room
+                .coordinator
+                .restore_markdown(markdown, Instant::now(), actor)?;
+            if !update.is_empty() {
+                let slug = vault.slug().to_string();
+                let room_id = (slug.as_str(), canonical.identity());
+                broadcast(&mut room.peers, room_id, authorize, |note| {
+                    ServerFrame::Update {
+                        vault: slug.clone(),
+                        note: note.to_string(),
+                        update: update.clone(),
+                    }
+                });
+            }
+            return room.coordinator.flush().map(|_| ());
+        }
+
+        let mut coordinator = NoteCoordinator::open(vault, canonical)?;
+        let update = coordinator.restore_markdown(markdown, Instant::now(), actor)?;
+        if !update.is_empty() {
+            coordinator.flush()?;
+        }
         Ok(())
     }
 
@@ -607,8 +659,10 @@ pub struct NoteCoordinator {
     /// [`NoteCoordinator::inspect_external_change`] for what recording only the first cost.
     marker: PathBuf,
     sidecar: Sidecar,
+    history: HistoryStore,
     doc: Doc,
     last_written_hash: Option<[u8; 32]>,
+    last_actor: String,
     write_due: Option<Instant>,
 }
 
@@ -644,8 +698,11 @@ impl NoteCoordinator {
             markdown_path,
             marker,
             sidecar,
+            history: HistoryStore::new(vault.root(), canonical.identity())
+                .with_compression(vault.history_compression()),
             doc,
             last_written_hash,
+            last_actor: "system".to_string(),
             write_due: None,
         };
         if recovering {
@@ -694,6 +751,16 @@ impl NoteCoordinator {
         update: &[u8],
         now: Instant,
     ) -> Result<Vec<u8>, SyncError> {
+        self.apply_remote_update_as(update, now, "system")
+    }
+
+    /// Applies a client update and records the authenticated actor for the next snapshot.
+    pub fn apply_remote_update_as(
+        &mut self,
+        update: &[u8],
+        now: Instant,
+        actor: &str,
+    ) -> Result<Vec<u8>, SyncError> {
         // why: validation must precede mutation, or a malformed client frame contaminates
         // the live doc even though the frame is reported as rejected.
         let candidate = document_from_update_v1(&self.full_update())?;
@@ -708,7 +775,25 @@ impl NoteCoordinator {
             .apply_update(decode_update(update)?)
             .map_err(|error| SyncError::Update(error.to_string()))?;
         self.write_due = Some(now + MARKDOWN_WRITE_DEBOUNCE);
+        self.last_actor = actor.to_string();
         Ok(update.to_vec())
+    }
+
+    fn restore_markdown(
+        &mut self,
+        markdown: &str,
+        now: Instant,
+        actor: &str,
+    ) -> Result<Vec<u8>, SyncError> {
+        let before = self.doc.transact().state_vector();
+        let changed = apply_external_markdown(&self.doc, markdown)?;
+        if !changed.changed() {
+            return Ok(Vec::new());
+        }
+        self.sidecar.replace(&self.doc)?;
+        self.write_due = Some(now + MARKDOWN_WRITE_DEBOUNCE);
+        self.last_actor = actor.to_string();
+        Ok(self.update_since(&before))
     }
 
     /// Flushes a due Markdown write. Returns `true` only when an atomic write occurred.
@@ -766,15 +851,24 @@ impl NoteCoordinator {
         if !changed.changed() {
             return Ok(ExternalUpdate::Unchanged);
         }
+        self.history
+            .record(&markdown, "external", std::time::SystemTime::now())?;
         self.sidecar.replace(&self.doc)?;
         Ok(ExternalUpdate::Applied(self.update_since(&before)))
     }
 
     fn write_markdown(&mut self) -> Result<(), SyncError> {
         let markdown = mb_core::to_markdown(&document_from_yrs(&self.doc)?);
-        atomic_write(&self.markdown_path, markdown.as_bytes())?;
         let hash = content_hash(markdown.as_bytes());
+        atomic_write(&self.markdown_path, markdown.as_bytes())?;
         write_marker(&self.marker, &hash)?;
+        if self
+            .last_written_hash
+            .is_some_and(|previous| previous != hash)
+        {
+            self.history
+                .record(&markdown, &self.last_actor, std::time::SystemTime::now())?;
+        }
         self.last_written_hash = Some(hash);
         Ok(())
     }
@@ -809,6 +903,17 @@ pub fn relocate_sidecar(vault_root: &Path, from: &str, to: &str) -> Result<(), S
             })?;
         }
         fs::rename(&old, &new).map_err(|source| SyncError::Write { path: old, source })?;
+    }
+    Ok(())
+}
+
+/// Removes a note's derived CRDT sidecar and marker when its trash retention expires.
+pub fn remove_sidecar(vault_root: &Path, identity: &str) -> Result<(), SyncError> {
+    let sidecar = sidecar_path(vault_root, identity);
+    for path in [marker_path(&sidecar), sidecar] {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|source| SyncError::Write { path, source })?;
+        }
     }
     Ok(())
 }

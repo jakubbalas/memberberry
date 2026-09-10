@@ -39,6 +39,7 @@ use crate::rename::{Rename, RenameError};
 use crate::repository::AuthorizedVault;
 use crate::sync::{Announcement, ClientFrame, ConnectionId, ServerFrame, SyncRegistry, Wire};
 use crate::titles::{NoteSummary, NoteTaskSummary, TitleCache};
+use crate::trash::{TrashEntry, TrashError, TrashStore};
 use crate::watch::{Changes, WatchSignal};
 use crate::workspace::{DeviceId, WorkspaceStore};
 use crate::{AccessFile, Error, Slug, Vault};
@@ -209,6 +210,22 @@ impl AppState {
     pub fn maintain_index(&self, changed: &Changes) -> Vec<String> {
         let mut errors = self.indexes.maintain(self.vaults.values(), changed);
         for vault in self.vaults.values() {
+            let now = std::time::SystemTime::now();
+            match vault.notes() {
+                Ok(notes) => {
+                    for note in notes {
+                        if let Err(error) =
+                            crate::history::HistoryStore::new(vault.root(), &note).prune(now)
+                        {
+                            errors.push(format!("vault `{}` history: {error}", vault.slug()));
+                        }
+                    }
+                }
+                Err(error) => errors.push(format!("vault `{}` history: {error}", vault.slug())),
+            }
+            if let Err(error) = TrashStore::new(vault).purge_expired(crate::audit::unix_seconds()) {
+                errors.push(format!("vault `{}` trash: {error}", vault.slug()));
+            }
             let Some(access) = self.access_for(vault.slug()) else {
                 errors.push(format!(
                     "vault `{}`: no live policy is available; ACL zones were not updated",
@@ -421,6 +438,15 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(note_index)
                 .post(create_note)
                 // A create body is one path. Bounded here for the same reason `rename`'s is.
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
+        .route("/api/v1/vaults/{slug}/notes/{*note}", delete(delete_note))
+        .route("/api/v1/vaults/{slug}/trash", get(trash_index))
+        .route("/api/v1/vaults/{slug}/trash/{id}", post(restore_trash))
+        .route(
+            "/api/v1/vaults/{slug}/history/{*note}",
+            get(note_history)
+                .post(restore_note_history)
                 .layer(DefaultBodyLimit::max(8 * 1024)),
         )
         .route(
@@ -728,9 +754,13 @@ fn handle_sync_frame(
             state
                 .security
                 .sync
-                .apply_update(vault, &canonical, &update, &|slug, note, reader| {
-                    state.may_read_note(slug, note, reader)
-                })
+                .apply_update_as(
+                    vault,
+                    &canonical,
+                    &update,
+                    user.as_str(),
+                    &|slug, note, reader| state.may_read_note(slug, note, reader),
+                )
                 .err()
                 .map(|_| ServerFrame::Error {
                     code: "invalid_update",
@@ -1051,6 +1081,292 @@ const MAX_NOTE_INDEX: usize = 20_000;
 struct NoteIndexResponse {
     notes: Vec<NoteSummary>,
     truncated: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct HistoryQuery {
+    version: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryVersion {
+    id: String,
+    timestamp: u64,
+    actor: String,
+    bytes: u64,
+    content_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryListResponse {
+    versions: Vec<HistoryVersion>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RestoreHistoryRequest {
+    version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryDiffResponse {
+    from: String,
+    to: String,
+    parts: Vec<crate::history::DiffPart>,
+}
+
+/// `GET /api/v1/vaults/{slug}/history/{note}` — metadata for readable note versions, or one
+/// historical Markdown snapshot when `?version=` names it.
+///
+/// History has the same E1/E5 boundary as note source: the note is resolved through the
+/// authorized repository before its derived history directory is even named. A caller cannot
+/// probe history by guessing a note path, a version id, or a private note's existence.
+async fn note_history(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, note)): AxumPath<(String, String)>,
+    Query(query): Query<HistoryQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(identity) = view.identity(&note) else {
+        return not_found().await;
+    };
+    let HistoryQuery { version, from, to } = query;
+    let history = crate::history::HistoryStore::new(vault.root(), &identity)
+        .with_compression(vault.history_compression());
+    let has_diff_parameter = from.is_some() || to.is_some();
+    if let (Some(from), Some(to)) = (from, to) {
+        let requested_from = from.clone();
+        let requested_to = to.clone();
+        let result =
+            tokio::task::spawn_blocking(move || history.diff(&requested_from, &requested_to)).await;
+        return match result {
+            Ok(Ok(parts)) => json_no_store(&HistoryDiffResponse { from, to, parts }),
+            Ok(Err(crate::history::HistoryError::NotFound)) => not_found().await,
+            Ok(Err(error)) => server_error(&Error::Config(error.to_string())),
+            Err(error) => server_error(&Error::Config(format!("history diff task: {error}"))),
+        };
+    }
+    if has_diff_parameter {
+        return not_found().await;
+    }
+    match version {
+        None => match history.list() {
+            Ok(snapshots) => json_no_store(&HistoryListResponse {
+                versions: snapshots
+                    .into_iter()
+                    .map(|snapshot| HistoryVersion {
+                        id: crate::history::HistoryStore::version_id(&snapshot),
+                        timestamp: snapshot.timestamp,
+                        actor: snapshot.actor,
+                        bytes: snapshot.bytes,
+                        content_hash: snapshot.content_hash,
+                    })
+                    .collect(),
+            }),
+            Err(error) => server_error(&Error::Config(error.to_string())),
+        },
+        Some(version) => match history.read(&version) {
+            Ok(markdown) => (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, "text/markdown; charset=utf-8"),
+                    (header::CACHE_CONTROL, "no-store"),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                ],
+                markdown,
+            )
+                .into_response(),
+            Err(crate::history::HistoryError::NotFound) => not_found().await,
+            Err(error) => server_error(&Error::Config(error.to_string())),
+        },
+    }
+}
+
+/// `POST /api/v1/vaults/{slug}/history/{note}` — restores a historical version as a normal
+/// CRDT edit. The source file is flushed before the response, while connected readers receive
+/// the same validated update as any other editor transaction.
+async fn restore_note_history(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, note)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RestoreHistoryRequest>,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(identity) = view.identity(&note) else {
+        return not_found().await;
+    };
+    if view.write_path(&identity).is_err() {
+        return not_found().await;
+    }
+    let history = crate::history::HistoryStore::new(vault.root(), &identity)
+        .with_compression(vault.history_compression());
+    let Ok(markdown) = history.read(&request.version) else {
+        return not_found().await;
+    };
+    let Some(actor) = state.vault_user(vault.slug(), &headers) else {
+        return not_found().await;
+    };
+    let Ok(canonical) = vault.canonical_note(&identity) else {
+        return not_found().await;
+    };
+    match state.security.sync.restore(
+        vault,
+        &canonical,
+        &markdown,
+        actor.as_str(),
+        &|slug, note, reader| state.may_read_note(slug, note, reader),
+    ) {
+        Ok(()) => json_no_store(&serde_json::json!({ "restored": request.version })),
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TrashResponse {
+    entries: Vec<TrashEntry>,
+}
+
+/// `DELETE /api/v1/vaults/{slug}/notes/{note}` — moves a note to server-owned trash.
+///
+/// The note is resolved and write-authorized before its path is touched. The sync room is
+/// closed first so a pending debounce cannot resurrect the file after it moves.
+async fn delete_note(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, note)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(identity) = view.identity(&note) else {
+        return not_found().await;
+    };
+    if view.write_path(&identity).is_err() {
+        return not_found().await;
+    }
+    let Some(actor) = state.vault_user(vault.slug(), &headers) else {
+        return not_found().await;
+    };
+    if let Err(error) = state.security.sync.close(vault, &identity) {
+        return server_error(&Error::Config(error.to_string()));
+    }
+    let store = TrashStore::new(vault);
+    match store.delete(
+        vault,
+        &identity,
+        actor.as_str(),
+        crate::audit::unix_seconds(),
+    ) {
+        Ok(entry) => {
+            let _ = state.maintain_index(&Changes::All);
+            if let Err(error) = state.audit_note(AuditAction::NoteDeleted, &actor, vault, &identity)
+            {
+                return server_error(&error);
+            }
+            json_no_store(&entry)
+        }
+        Err(TrashError::NotFound) => not_found().await,
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
+/// `GET /api/v1/vaults/{slug}/trash` — retained deleted notes visible to this caller.
+async fn trash_index(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let store = TrashStore::new(vault);
+    match store.list(crate::audit::unix_seconds()) {
+        Ok(entries) => json_no_store(&TrashResponse {
+            entries: entries
+                .into_iter()
+                .filter(|entry| view.can_read_path(&entry.path))
+                .collect(),
+        }),
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
+/// `POST /api/v1/vaults/{slug}/trash/{id}` — restores a deleted note to its original path.
+async fn restore_trash(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, id)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    let store = TrashStore::new(vault);
+    let entry = match store
+        .list(crate::audit::unix_seconds())
+        .ok()
+        .and_then(|entries| entries.into_iter().find(|entry| entry.id == id))
+    {
+        Some(entry) => entry,
+        None => return not_found().await,
+    };
+    if view.write_path(&entry.path).is_err() {
+        return not_found().await;
+    }
+    let Some(actor) = state.vault_user(vault.slug(), &headers) else {
+        return not_found().await;
+    };
+    match store.restore(vault, &id, crate::audit::unix_seconds()) {
+        Ok(restored) => {
+            let _ = state.maintain_index(&Changes::All);
+            if let Err(error) =
+                state.audit_note(AuditAction::NoteRestored, &actor, vault, &restored.path)
+            {
+                return server_error(&error);
+            }
+            json_no_store(&restored)
+        }
+        Err(TrashError::Occupied) => {
+            rename_refused(StatusCode::CONFLICT, "the original note path is occupied")
+        }
+        Err(TrashError::NotFound) => not_found().await,
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
 }
 
 /// `GET /api/v1/vaults/{slug}/notes` — the readable notes, their titles and their conflicts.
@@ -4685,6 +5001,30 @@ impl AppState {
                 action: AuditAction::ShareLink,
                 targets: &targets,
                 result,
+            })
+            .map_err(|error| Error::Auth(format!("writing audit log: {error}")))
+    }
+
+    fn audit_note(
+        &self,
+        action: AuditAction,
+        actor: &Username,
+        vault: &Vault,
+        target: &str,
+    ) -> Result<(), Error> {
+        let Some(audit) = &self.security.audit else {
+            return Ok(());
+        };
+        let targets = [target.to_string()];
+        audit
+            .append(&AuditEvent {
+                timestamp: &crate::audit::unix_seconds().to_string(),
+                actor: Some(actor.as_str()),
+                source_ip: None,
+                vault: Some(vault.slug().as_str()),
+                action,
+                targets: &targets,
+                result: AuditResult::Success,
             })
             .map_err(|error| Error::Auth(format!("writing audit log: {error}")))
     }

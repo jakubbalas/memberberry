@@ -84,6 +84,95 @@ fn e5_repository_never_reveals_an_unreadable_note() {
     ));
 }
 
+/// E10: history is derived only after the note itself has passed the readable repository view.
+#[test]
+fn e10_history_never_reveals_an_unreadable_note() {
+    let dir = TempDir::new("leak-history");
+    dir.write("Shared.md", "# Shared\n");
+    dir.write("Private.md", "# Private\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private.md").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let visible = mb_server::history::HistoryStore::new(dir.path(), "Shared.md");
+    visible
+        .record("# Shared old\n", "alice", std::time::SystemTime::now())
+        .expect("history");
+    let private = mb_server::history::HistoryStore::new(dir.path(), "Private.md");
+    private
+        .record("# Private old\n", "bob", std::time::SystemTime::now())
+        .expect("history");
+    let view = AuthorizedVault::new(&vault, &access, alice);
+
+    let shared_identity = view.identity("Shared.md").expect("readable identity");
+    assert_eq!(
+        mb_server::history::HistoryStore::new(dir.path(), &shared_identity)
+            .list()
+            .expect("history list")
+            .len(),
+        1
+    );
+    assert!(matches!(
+        view.identity("Private.md"),
+        Err(mb_server::Error::NotFound)
+    ));
+}
+
+/// E24: a deleted note remains invisible when its original path is denied, even though its
+/// Markdown and metadata are present in server-owned trash.
+#[test]
+fn e24_trash_never_reveals_a_deleted_unreadable_note() {
+    let dir = TempDir::new("leak-trash");
+    dir.write("Private.md", "# Private\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private.md").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let store = mb_server::trash::TrashStore::new(&vault);
+    store
+        .delete(&vault, "Private.md", "owner", 1_000)
+        .expect("trash");
+    let entries = store.list(1_000).expect("entries");
+    let view = AuthorizedVault::new(&vault, &access, alice);
+
+    assert_eq!(entries.len(), 1);
+    assert!(entries.iter().all(|entry| !view.can_read_path(&entry.path)));
+    assert!(
+        entries
+            .iter()
+            .all(|entry| view.write_path(&entry.path).is_err())
+    );
+    assert!(!dir.path().join("Private.md").exists());
+}
+
 /// E5: the Tantivy query itself carries the readable set, so no denied title, path, tag or
 /// body can become a hit (`SPEC.md` §14.1).
 #[test]

@@ -258,6 +258,10 @@ impl TestServer {
         )
     }
 
+    fn delete(&self, path: &str) -> (String, String) {
+        self.request("DELETE", path, &self.default_headers, "")
+    }
+
     fn post_bytes(&self, path: &str, headers: &str, body: &[u8]) -> (String, Vec<u8>) {
         let mut stream = TcpStream::connect(self.addr).expect("connecting");
         stream
@@ -1641,6 +1645,79 @@ fn a_note_renders_as_html() {
 }
 
 #[test]
+fn note_history_lists_and_reads_only_versions_of_a_readable_note() {
+    let dir = TempDir::new("http-history");
+    dir.write("Visible.md", "# Visible\n");
+    dir.write("Private.md", "# Private\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"editor\"\n\n[[rules]]\npath = \"Private.md\"\ngrant = { alice = \"none\" }\n",
+    );
+    let start = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+    let visible = mb_server::history::HistoryStore::new(dir.path(), "Visible.md");
+    let snapshot = visible
+        .record("# Visible old\n", "alice", start)
+        .expect("snapshot")
+        .expect("version");
+    let newer = visible
+        .record(
+            "# Visible new\n",
+            "alice",
+            start + std::time::Duration::from_secs(600),
+        )
+        .expect("snapshot")
+        .expect("version");
+    let private = mb_server::history::HistoryStore::new(dir.path(), "Private.md");
+    private
+        .record("# Private old\n", "bob", start)
+        .expect("snapshot")
+        .expect("version");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/history/Visible.md");
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(
+        body.contains(&mb_server::history::HistoryStore::version_id(&snapshot)),
+        "{body}"
+    );
+    assert!(body.contains("\"actor\":\"alice\""), "{body}");
+
+    let version = mb_server::history::HistoryStore::version_id(&snapshot);
+    let (status, body) = server.get(&format!(
+        "/api/v1/vaults/v/history/Visible.md?version={version}"
+    ));
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(body.ends_with("# Visible old\n"), "{body:?}");
+
+    let from = mb_server::history::HistoryStore::version_id(&snapshot);
+    let to = mb_server::history::HistoryStore::version_id(&newer);
+    let (status, body) = server.get(&format!(
+        "/api/v1/vaults/v/history/Visible.md?from={from}&to={to}"
+    ));
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(body.contains("\"kind\":\"removed\""), "{body}");
+    assert!(body.contains("\"kind\":\"added\""), "{body}");
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/history/Visible.md",
+        "",
+        &serde_json::json!({ "version": from }).to_string(),
+    );
+    assert!(is_ok(&status), "{status}: {body}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Visible.md")).expect("restored note"),
+        "# Visible old\n"
+    );
+
+    assert!(is_not_found(
+        &server.status("/api/v1/vaults/v/history/Private.md")
+    ));
+    assert!(is_not_found(&server.status(
+        "/api/v1/vaults/v/history/Private.md?version=1000000-deadbeef"
+    )));
+}
+
+#[test]
 fn an_editor_can_save_and_read_an_excalidraw_markdown_scene() {
     let dir = TempDir::new("http-drawing");
     let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
@@ -2350,7 +2427,8 @@ fn the_workspace_route_stores_a_layout_per_user_and_denies_everyone_else_identic
     dir.write(
         "access.toml",
         "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
-         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n",
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Note.md\"\ngrant = { bob = \"none\" }\n",
     );
     let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
     let alice = auth
@@ -5127,6 +5205,78 @@ fn a_create_body_that_is_not_a_path_is_refused_without_touching_the_vault() {
         assert!(status.contains("400"), "{body} should be refused: {status}");
     }
     assert!(!dir.path().join("../Escaped.md").exists());
+}
+
+// ---------------------------------------------------------------- trash (§4.3, §18.2)
+
+#[test]
+fn deleting_a_note_moves_it_to_trash_and_restores_it_without_overwriting() {
+    let dir = TempDir::new("http-trash-lifecycle");
+    dir.write("Note.md", "# Keep me\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.delete("/api/v1/vaults/v/notes/Note.md");
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(!dir.path().join("Note.md").exists());
+    assert!(body.contains("Note.md"), "{body}");
+
+    let (status, body) = server.get("/api/v1/vaults/v/trash");
+    assert!(is_ok(&status), "{status}: {body}");
+    let response: serde_json::Value = serde_json::from_str(&body).expect("trash response");
+    let id = response["entries"][0]["id"].as_str().expect("trash id");
+    let (status, body) = server.post_json(&format!("/api/v1/vaults/v/trash/{id}"), "", "");
+    assert!(is_ok(&status), "{status}: {body}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Note.md")).expect("restored note"),
+        "# Keep me\n"
+    );
+}
+
+#[test]
+fn a_viewer_cannot_delete_or_discover_an_editors_trash_entry() {
+    let dir = TempDir::new("http-trash-permission");
+    dir.write("Note.md", "# Private\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Note.md\"\ngrant = { bob = \"none\" }\n",
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("alice");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("bob");
+    let token = auth.create_session(bob.id, 4_102_444_800).expect("session");
+    let bob_header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&token).expect("signed cookie")
+    );
+    let vault = vault(&dir, "v", "V");
+    let deleted = mb_server::trash::TrashStore::new(&vault)
+        .delete(&vault, "Note.md", "alice", 100)
+        .expect("trash entry");
+    let state = AppState::authenticated(vec![vault], auth).expect("state");
+    let mut server = TestServer::start(state);
+    server.default_headers = bob_header;
+
+    let (status, _) = server.delete("/api/v1/vaults/v/notes/Note.md");
+    assert!(is_not_found(&status), "{status}");
+    let (status, body) = server.get("/api/v1/vaults/v/trash");
+    assert!(is_ok(&status), "{status}: {body}");
+    assert_eq!(body, "{\"entries\":[]}");
+    let (status, _) = server.post_json(&format!("/api/v1/vaults/v/trash/{}", deleted.id), "", "");
+    assert!(is_not_found(&status), "{status}");
+    assert!(!dir.path().join("Note.md").exists());
 }
 
 // ---------------------------------------------------------------- first run (§6.10)
