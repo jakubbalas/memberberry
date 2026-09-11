@@ -294,6 +294,68 @@ fn share_links_use_url_safe_opaque_tokens_and_require_their_password() {
 }
 
 #[test]
+fn active_share_link_inspection_excludes_expired_revoked_and_other_vault_links() {
+    let mut db = AuthDb::open_in_memory().expect("open auth db");
+    let alice = db.setup_first_user(new_user("alice")).expect("setup user");
+    let create = |vault: &str, note: &str, expires_at: Option<i64>| {
+        db.create_share_link(ShareLinkScope {
+            vault_slug: vault.to_string(),
+            note_path: note.to_string(),
+            include_embeds: false,
+            password: None,
+            expires_at,
+            created_by: alice.id,
+        })
+        .expect("create share")
+    };
+    let active = create("personal", "Active.md", None);
+    create("personal", "Expired.md", Some(4_102_444_800));
+    create("other", "Other.md", None);
+    let revoked = create("personal", "Revoked.md", None);
+    db.revoke_share_link(alice.id, &revoked).expect("revoke");
+
+    let links = db
+        .active_share_links("personal", 4_102_444_801)
+        .expect("inspect active shares");
+
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].scope.note_path, "Active.md");
+    assert_eq!(links[0].scope.created_by, alice.id);
+    assert!(links[0].scope.password.is_none());
+    assert!(db.authenticate_share_link(&active, None).unwrap().is_some());
+}
+
+#[test]
+fn read_only_open_inspects_existing_auth_state_and_refuses_mutation() {
+    let path = std::env::temp_dir().join(format!(
+        "memberberry-auth-readonly-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    let mut writable = AuthDb::open(&path).expect("open writable database");
+    writable
+        .setup_first_user(new_user("alice"))
+        .expect("create user");
+    drop(writable);
+    let before = std::fs::read(&path).expect("read database before inspection");
+
+    let readonly = AuthDb::open_read_only(&path).expect("open read-only database");
+
+    assert!(readonly.user_by_username("alice").unwrap().is_some());
+    assert!(readonly.create_user(new_user("bob")).is_err());
+    drop(readonly);
+    assert_eq!(
+        std::fs::read(&path).expect("read database after inspection"),
+        before,
+        "read-only inspection must not mutate auth.db"
+    );
+    std::fs::remove_file(path).expect("remove test database");
+}
+
+#[test]
 fn share_links_reject_invalid_paths_expiry_and_passwords() {
     let mut db = AuthDb::open_in_memory().expect("open auth db");
     let alice = db.setup_first_user(new_user("alice")).expect("setup user");

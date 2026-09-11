@@ -9,7 +9,8 @@
  *
  * §4.1: "Folders are ordinary folders, not note containers." A folder here is a rendering
  * device inferred from path segments, with no identity of its own beyond its path — there is
- * no folder-as-note magic to model.
+ * no folder-as-note magic to model. Authorized empty directories may also be supplied by
+ * the E28 endpoint; they never stand in for note content.
  *
  * Rendering and keyboard traversal both work from a **flattened list of visible rows** rather
  * than by walking the tree. A tree walk means the keyboard has to reimplement the same
@@ -44,16 +45,29 @@ export type TreeNode = FolderNode | NoteNode;
 /**
  * Builds the tree.
  *
- * A path with no separator is a note at the root. A folder exists only because a note inside
- * it does, which is what makes an empty folder impossible to represent — and correct, since a
- * folder holding only unreadable notes must not appear at all (§6.5).
+ * A path with no separator is a note at the root. Empty folders must come from E28's
+ * permission-filtered list; nonempty folders are inferred from readable note paths.
  */
-export function buildTree(notes: Iterable<NoteSummary>): readonly TreeNode[] {
+export function buildTree(notes: Iterable<NoteSummary>, emptyFolders: readonly string[] = []): readonly TreeNode[] {
   interface Building {
     readonly folders: Map<string, Building>;
     readonly notes: NoteNode[];
   }
   const root: Building = { folders: new Map(), notes: [] };
+
+  for (const folder of emptyFolders) {
+    let level = root;
+    let prefix = "";
+    for (const segment of folder.split("/")) {
+      prefix = prefix === "" ? segment : `${prefix}/${segment}`;
+      let child = level.folders.get(prefix);
+      if (child === undefined) {
+        child = { folders: new Map(), notes: [] };
+        level.folders.set(prefix, child);
+      }
+      level = child;
+    }
+  }
 
   for (const note of notes) {
     const segments = note.path.split("/").filter((segment) => segment !== "");

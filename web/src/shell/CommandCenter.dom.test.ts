@@ -153,10 +153,27 @@ describe("opening", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await tick();
       expect(palette()?.open).toBe(true);
       expect(palette()?.getAttribute("aria-label")).toBe("Command palette");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("opens the quick switcher from the top bar as well as from the keystroke", async () => {
+    // §8.4: one command, reached two ways. The bar is a sibling of the palette rather than
+    // its parent, so this is the whole path — button, `PALETTE_EVENT`, `CommandCenter` —
+    // and a break anywhere along it leaves a button that visibly does nothing.
+    const { teardown } = render();
+    try {
+      await tick();
+      target.querySelector<HTMLButtonElement>(".topbar-find")?.click();
+      await flush();
+      expect(palette()?.open).toBe(true);
+      expect(palette()?.getAttribute("aria-label")).toBe("Open a note");
+      expect(labels()).toContain("Welcome");
     } finally {
       teardown();
     }
@@ -166,7 +183,7 @@ describe("opening", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
       expect(palette()?.getAttribute("aria-label")).toBe("Open a note");
       expect(labels()).toContain("Welcome");
@@ -194,11 +211,11 @@ describe("opening", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
       expect(palette()?.getAttribute("aria-label")).toBe("Open a note");
 
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await tick();
       expect(palette()?.getAttribute("aria-label")).toBe("Open a note");
     } finally {
@@ -212,7 +229,7 @@ describe("the command palette", () => {
     const { teardown } = render(["Welcome.md"].length > 0 ? { notes: ["Welcome.md"] } : {});
     try {
       await tick();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await tick();
       const rows = labels();
       expect(rows.some((row) => row.includes("Split pane right"))).toBe(true);
@@ -227,7 +244,7 @@ describe("the command palette", () => {
     const { store, teardown } = render({ notes: ["Welcome.md"] });
     try {
       await tick();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await tick();
 
       await type("split right");
@@ -249,7 +266,7 @@ describe("the command palette", () => {
     const { store, teardown } = render();
     try {
       await tick();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await tick();
       await type("close pane");
 
@@ -292,7 +309,7 @@ describe("periodic note commands", () => {
     });
     try {
       await flush();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await flush();
       await type("Open this week");
       await key("Enter");
@@ -332,7 +349,7 @@ describe("periodic note commands", () => {
     });
     try {
       await flush();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await flush();
       await type("Open this month");
       await key("Enter");
@@ -353,7 +370,7 @@ describe("the quick switcher", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
 
       await type("sprint");
@@ -367,7 +384,7 @@ describe("the quick switcher", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
       await type("untitled");
       expect(labels()[0]).toContain("Untitled");
@@ -380,7 +397,7 @@ describe("the quick switcher", () => {
     const { store, teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
       await type("roadmap");
       await key("Enter");
@@ -397,7 +414,7 @@ describe("the quick switcher", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
       await type("zzzzzz");
       expect(target.querySelector(".palette-empty")?.textContent).toBe("No note matches.");
@@ -451,7 +468,7 @@ describe("the palette keyboard", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
 
       const field = input();
@@ -468,7 +485,7 @@ describe("the palette keyboard", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
       const count = options().length;
       expect(count).toBeGreaterThan(1);
@@ -492,7 +509,7 @@ describe("the palette keyboard", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
       await key("ArrowDown");
       await key("ArrowDown");
@@ -508,7 +525,7 @@ describe("the palette keyboard", () => {
     const { store, teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
       palette()?.close();
       await tick();
@@ -524,7 +541,7 @@ describe("the palette keyboard", () => {
     const { teardown } = render();
     try {
       await tick();
-      shortcut("k");
+      shortcut("o");
       await flush();
       await type("road");
       // The label is the *title*, "Product roadmap" — so the highlight lands on "road" in
@@ -543,7 +560,7 @@ describe("rename (SPEC 6.6)", () => {
 
   /** Opens the palette and runs the command with this title. */
   async function run(title: string): Promise<void> {
-    shortcut("P", { shiftKey: true });
+    shortcut("p");
     await flush();
     const option = options().find((entry) => entry.textContent?.trim().startsWith(title));
     if (option === undefined) {
@@ -717,7 +734,7 @@ describe("rename (SPEC 6.6)", () => {
     const { teardown } = render();
     try {
       await flush();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await flush();
       const disabled = options()
         .filter((option) => option.getAttribute("aria-disabled") === "true")
@@ -737,7 +754,7 @@ describe("creating a note (SPEC 6.10)", () => {
   const error = (): string => target.querySelector(".rename-error")?.textContent?.trim() ?? "";
 
   async function run(title: string): Promise<void> {
-    shortcut("P", { shiftKey: true });
+    shortcut("p");
     await flush();
     const option = options().find((entry) => entry.textContent?.trim().startsWith(title));
     if (option === undefined) {
@@ -810,7 +827,7 @@ describe("creating a note (SPEC 6.10)", () => {
     const { teardown } = render();
     try {
       await flush();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await flush();
       const entry = options().find((option) => option.textContent?.trim().startsWith("New note…"));
       expect(entry).toBeDefined();
@@ -896,7 +913,7 @@ describe("creating a note (SPEC 6.10)", () => {
 describe("keeping a note offline (SPEC §7.2)", () => {
   /** Opens the command palette and clicks the entry starting with `title`. */
   async function runCommand(title: string): Promise<void> {
-    shortcut("P", { shiftKey: true });
+    shortcut("p");
     await flush();
     const option = options().find((entry) => entry.textContent?.trim().startsWith(title));
     if (option === undefined) {
@@ -938,7 +955,7 @@ describe("keeping a note offline (SPEC §7.2)", () => {
       expect([...store.stored]).toEqual(["Projects/Roadmap.md"]);
       // The command is a toggle, so its wording has to follow the state — otherwise it takes
       // two commands to say one thing.
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await flush();
       expect(labels().some((label) => label.startsWith("Stop keeping this note offline"))).toBe(true);
     } finally {
@@ -951,7 +968,7 @@ describe("keeping a note offline (SPEC §7.2)", () => {
     const { teardown } = render({ notes: ["Projects/Roadmap.md"], pins: store.pins });
     try {
       await flush();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await flush();
       const dialog = palette();
       if (dialog === null) throw new Error("the palette should be open");
@@ -967,7 +984,7 @@ describe("keeping a note offline (SPEC §7.2)", () => {
       option.click();
       await tick();
 
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await flush();
       expect(palette()?.open).toBe(true);
 
@@ -986,7 +1003,7 @@ describe("keeping a note offline (SPEC §7.2)", () => {
     try {
       await flush();
       // The list is loaded when the palette first opens, like the note catalog.
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await flush();
       await flush();
       await runCommand("Stop keeping this note offline");
@@ -1003,7 +1020,7 @@ describe("keeping a note offline (SPEC §7.2)", () => {
     const { teardown } = render({ notes: ["Projects/Roadmap.md"] });
     try {
       await flush();
-      shortcut("P", { shiftKey: true });
+      shortcut("p");
       await flush();
       // Not a vacuous assertion: the palette is open and full of other commands.
       expect(labels().length).toBeGreaterThan(5);

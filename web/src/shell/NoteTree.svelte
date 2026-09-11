@@ -10,6 +10,7 @@
   visible rows — walk the tree twice and they disagree the moment a folder closes.
 -->
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import type { Bookmarks } from "./bookmarks.svelte.js";
   import type { NoteCatalog } from "./note-catalog.svelte.js";
   import { buildTree, treeKeyAction, visibleRows } from "./tree.js";
@@ -20,9 +21,15 @@
     /** The note showing in the focused pane, so the tree can mark it. */
     readonly activeNote?: string | undefined;
     readonly onopen: (path: string) => void;
+    /** Empty folders already filtered by the server. */
+    readonly emptyFolders?: readonly string[];
+    /** Opens note creation from the file-list heading. */
+    readonly oncreate?: () => void;
+    /** Opens folder creation from the file-list heading. */
+    readonly onfolder?: () => void;
   }
 
-  const { catalog, bookmarks, activeNote, onopen }: Props = $props();
+  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder }: Props = $props();
 
   let expanded = $state<ReadonlySet<string>>(new Set());
   let cursor = $state(0);
@@ -32,7 +39,7 @@
     bookmarks.ensure();
   });
 
-  const tree = $derived(buildTree(catalog.notes));
+  const tree = $derived(buildTree(catalog.notes, emptyFolders));
   const rows = $derived(visibleRows(tree, expanded));
 
   /** The bookmark rows, resolved back to their titles so they read like the tree does. */
@@ -115,7 +122,19 @@
   {/if}
 
   <section class="tree-section" aria-labelledby="notes-heading">
-    <h3 class="tree-heading" id="notes-heading">Notes</h3>
+    <div class="tree-section-header">
+      <h3 class="tree-heading" id="notes-heading">Notes</h3>
+      {#if oncreate !== undefined || onfolder !== undefined}
+        <div class="tree-actions" role="group" aria-label="File actions">
+          {#if oncreate !== undefined}
+            <button type="button" class="icon-button" aria-label="New note" title="New note" onclick={oncreate}><Icon name="note-plus" /></button>
+          {/if}
+          {#if onfolder !== undefined}
+            <button type="button" class="icon-button" aria-label="New folder" title="New folder" onclick={onfolder}><Icon name="folder-plus" /></button>
+          {/if}
+        </div>
+      {/if}
+    </div>
 
     {#if !catalog.ready}
       <p class="tree-empty">Loading…</p>
@@ -158,8 +177,21 @@
               else setExpanded(row.node.path, row.expanded !== true);
             }}
           >
+            <!--
+              A drawn mark rather than a typed one. The twisties were `▾`/`▸` and a note with
+              no frontmatter icon was a `·`, which is a middle dot standing in for a document
+              at whatever size and weight the platform font happened to render it. The
+              chevron turns instead of being swapped, which is one element and one rule (the
+              rotation is in `app.css`) rather than two glyphs that can disagree about size.
+            -->
             <span class="tree-icon" aria-hidden="true">
-              {#if row.node.kind === "folder"}{row.expanded === true ? "▾" : "▸"}{:else}{icon(row) ?? "·"}{/if}
+              {#if row.node.kind === "folder"}
+                <Icon name="chevron-right" variant="tree-twisty" />
+              {:else if icon(row) !== undefined && icon(row) !== null}
+                {icon(row)}
+              {:else}
+                <Icon name="note" />
+              {/if}
             </span>
             <span class="tree-label">{label(row)}</span>
 

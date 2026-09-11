@@ -11,6 +11,7 @@ test("shows exact online context and opens a matching note", async ({ page }) =>
   await expect(page.locator(EDITOR).first()).toBeVisible();
   const navigation = page.getByRole("button", { name: /^Show Navigation$/ });
   if (await navigation.isVisible()) await navigation.click();
+  await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Search", exact: true }).click();
 
   const input = page.locator(`${SEARCH} input[type="search"]`);
   await input.fill("workspace shell");

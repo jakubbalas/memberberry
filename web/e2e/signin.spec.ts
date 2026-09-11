@@ -28,6 +28,38 @@ test("the sign-in form can actually be submitted", async ({ page }) => {
   // blocks `form-action` fails here and nowhere else in the suite.
   await signIn(page);
   await expect(page.getByRole("link", { name: "Personal" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Log out" })).toBeVisible();
+});
+
+test("an authenticated visitor can log out", async ({ page, failures }) => {
+  // why: an allowance, which `fixtures.ts` deliberately makes more effort than ignoring.
+  // Revoking the session is what this test *does*, and the panel requests the shell already
+  // had in flight when it happened come back refused — with a 404 rather than a 401, because
+  // an unauthenticated caller is told nothing about whether a vault exists (§6.4). The
+  // browser logs each one. Scoped to this vault's authenticated API: a refused *page*, or a
+  // 404 for an asset, still fails here, because every response >= 400 is recorded with its
+  // URL and only these are allowed. The matching console line carries no URL to scope by.
+  failures.allow(/HTTP 404 .*\/api\/v1\/vaults\/personal\//);
+  failures.allow(/console error: Failed to load resource: .* 404 /);
+  // And the sync socket, for the same reason: it reconnects, the server refuses the
+  // credentials this test just destroyed, and the browser logs it. Scoped to an
+  // *authentication* failure on the sync route — a socket that drops for any other reason,
+  // or on any other route, still fails here.
+  failures.allow(
+    /WebSocket connection to 'ws:\/\/[^']*\/api\/v1\/sync' failed: HTTP Authentication failed/,
+  );
+  await signIn(page);
+  await page.goto("/v/personal/Welcome.md");
+  const navigationToggle = page.getByRole("button", { name: /Navigation/ });
+  if (await navigationToggle.getAttribute("aria-expanded") === "false") {
+    await navigationToggle.click();
+  }
+  await expect(page.getByRole("link", { name: "Log out" })).toBeVisible();
+
+  await page.getByRole("link", { name: "Log out" }).click();
+
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Username" })).toBeVisible();
 });
 
 test("an anonymous visitor is offered the form rather than any vault", async ({ page }) => {

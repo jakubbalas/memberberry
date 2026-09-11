@@ -1474,9 +1474,12 @@ version = "0.1.0"
 dependencies = [
  "mb-auth",
  "mb-core",
+ "mb-index",
  "mb-server",
  "rpassword",
+ "sha2",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

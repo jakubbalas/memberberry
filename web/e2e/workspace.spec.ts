@@ -11,6 +11,7 @@
  * unit suite is structurally incapable of making.
  */
 
+import { scratchNote } from "./environment.js";
 import { expect, signIn, test } from "./fixtures.js";
 
 const PANE = ".pane";
@@ -345,7 +346,7 @@ test.describe("the command palette and switchers (§8.4)", () => {
   test("the command palette opens, filters and runs a command", async ({ page }) => {
     await openWorkspace(page);
 
-    await page.keyboard.press("ControlOrMeta+Shift+P");
+    await page.keyboard.press("ControlOrMeta+P");
     const palette = page.getByRole("dialog", { name: "Command palette" });
     await expect(palette).toBeVisible();
     // Ready to type into, which is the whole point of a palette.
@@ -366,7 +367,7 @@ test.describe("the command palette and switchers (§8.4)", () => {
     // the way out, and the client ranked it. Nothing short of this exercises all three.
     await openWorkspace(page);
 
-    await page.keyboard.press("ControlOrMeta+k");
+    await page.keyboard.press("ControlOrMeta+O");
     const switcher = page.getByRole("dialog", { name: "Open a note" });
     await expect(switcher).toBeVisible();
 
@@ -397,7 +398,7 @@ test.describe("the command palette and switchers (§8.4)", () => {
     await openWorkspace(page);
     const before = await page.getByRole("tab").count();
 
-    await page.keyboard.press("ControlOrMeta+k");
+    await page.keyboard.press("ControlOrMeta+O");
     await expect(page.getByRole("dialog", { name: "Open a note" })).toBeVisible();
     await page.keyboard.press("Escape");
 
@@ -408,18 +409,26 @@ test.describe("the command palette and switchers (§8.4)", () => {
 
   test("a shortcut works from inside the editor, and typing does not trigger one", async ({
     page,
-  }) => {
+  }, info) => {
     // The rule that keeps the shell out of the editor's way: a Mod chord reaches the shell
     // from inside a note, a bare key does not. Getting the second wrong means typing a letter
     // opens a palette.
-    await openWorkspace(page);
+    //
+    // why: its own note. This test *writes* — it typed `pk` into `Welcome.md`, which several
+    // other tests read the title of, so it left the tree with no row named "Welcome" and the
+    // breadcrumb reading "pk" for whatever was running beside it. That is exactly the
+    // §22.6 hazard `scratchNote` exists to close, and it went unnoticed because the order
+    // that exposes it depends on how many specs the suite happens to be running.
+    await signIn(page);
+    await page.goto(`/v/personal/${scratchNote("shortcut-typing", info.project.name)}`);
+    await expect(page.locator(EDITOR).first()).toBeVisible();
     await page.locator(EDITOR).first().click();
 
     await page.keyboard.type("pk");
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.locator(EDITOR).first()).toContainText("pk");
 
-    await page.keyboard.press("ControlOrMeta+k");
+    await page.keyboard.press("ControlOrMeta+O");
     await expect(page.getByRole("dialog", { name: "Open a note" })).toBeVisible();
   });
 });
@@ -524,7 +533,7 @@ test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
     await expect(crumbs).toContainText("Welcome");
 
     // A note in a folder shows the folder too.
-    await page.keyboard.press("ControlOrMeta+k");
+    await page.keyboard.press("ControlOrMeta+O");
     await page.keyboard.type("roadmap");
     await page.keyboard.press("Enter");
     await expect(crumbs).toContainText("Projects");

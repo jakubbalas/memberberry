@@ -27,19 +27,19 @@
   /* ---------------------------------------------------------------- colour: surfaces */
   /* canvas is the page behind everything; note is the reading surface; raised sits above
      the note (toolbars, chips); sunken sits below it (code, text inputs). */
-  --surface-canvas: #f4f0e8;
-  --surface-note: #fffdf8;
-  --surface-raised: #fbf7ef;
-  --surface-sunken: #f7f3ea;
+  --surface-canvas: #f7f7f5;
+  --surface-note: #ffffff;
+  --surface-raised: #f1f1ef;
+  --surface-sunken: #ededeb;
 
   /* ---------------------------------------------------------------- colour: text */
-  --text-primary: #24332c;
-  --text-muted: #69756d;
+  --text-primary: #292927;
+  --text-muted: #62625f;
 
   /* ---------------------------------------------------------------- colour: accent, border */
-  --accent-primary: #ae4d28;
-  --border-subtle: #d9d3c6;
-  --focus-ring: #286d60;
+  --accent-primary: #6651a3;
+  --border-subtle: #e5e5e1;
+  --focus-ring: #6651a3;
   /* Width and offset travel with the colour: a focus ring is only useful if it is the same
      shape everywhere, and §20.3 makes an invisible one a bug rather than a style choice. */
   --focus-ring-width: 0.16rem;
@@ -61,8 +61,9 @@
   --state-conflict: #6a3d9a;
 
   /* ---------------------------------------------------------------- typography: families */
-  --font-body: Georgia, "Times New Roman", serif;
-  --font-ui: ui-rounded, "Avenir Next", system-ui, sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-title: Charter, "Bitstream Charter", Georgia, serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
 
   /* ---------------------------------------------------------------- typography: scale */
@@ -77,18 +78,18 @@
   --text-xl: 1.4rem;
   --text-2xl: 1.75rem;
   /* The one fluid step: the note title, which is the page's only display type. */
-  --text-display: clamp(2.3rem, 7vw, 4.75rem);
+  --text-display: clamp(2rem, 4vw, 2.375rem);
 
   --weight-medium: 500;
   --weight-bold: 700;
 
   --leading-flat: 1;
-  --leading-display: 0.98;
+  --leading-display: 1.15;
   --leading-snug: 1.4;
   --leading-body: 1.65;
 
-  --tracking-display: -0.055em;
-  --tracking-wide: 0.14em;
+  --tracking-display: -0.035em;
+  --tracking-wide: 0.08em;
 
   /* ---------------------------------------------------------------- spacing scale */
   /* A 2px-rooted scale. Component CSS snaps to a step rather than inventing a value, which
@@ -105,14 +106,14 @@
 
   /* ---------------------------------------------------------------- radii */
   --radius-sm: 0.375rem;
-  --radius-md: 0.75rem;
-  --radius-lg: 1.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
   --radius-round: 50%;
 
   /* ---------------------------------------------------------------- shadows */
   --shadow-sm: 0 0.15rem 0.5rem color-mix(in srgb, var(--text-primary) 18%, transparent);
   --shadow-md: 0 0.4rem 1rem color-mix(in srgb, var(--text-primary) 8%, transparent);
-  --shadow-lg: 0 1.5rem 4rem color-mix(in srgb, var(--text-primary) 14%, transparent);
+  --shadow-lg: 0 0.5rem 2rem color-mix(in srgb, var(--text-primary) 5%, transparent);
 
   /* ---------------------------------------------------------------- colour: interaction */
   /* Hover and selected states for the shell chrome — tabs, tree rows, palette entries.
@@ -122,15 +123,32 @@
      substituted where it is *used*, picking up whichever theme is in force. */
   --surface-hover: color-mix(in srgb, var(--accent-primary) 8%, var(--surface-raised));
   --surface-selected: var(--surface-note);
+  /* The row a reader is *on* — the open note in the tree, the active nav entry. Stronger
+     than hover on purpose: hover is where the pointer happens to be and selection is where
+     the reader is, and a shell in which those look the same has no sense of place. */
+  --surface-accent-soft: color-mix(in srgb, var(--accent-primary) 14%, var(--surface-raised));
+
+  /* ---------------------------------------------------------------- motion */
+  /* One duration for chrome feedback — a hover tint, a chevron turning, a drawer sliding.
+     Small enough to feel immediate and large enough to not read as a jump. Every use is
+     inside a `prefers-reduced-motion` guard in `app.css`, never on the keystroke path. */
+  --motion-quick: 0.14s;
 
   /* ---------------------------------------------------------------- workspace shell */
-  --sidebar-width: 15rem;
-  --tab-height: 2.25rem;
+  --sidebar-width: 15.5rem;
+  /* The one strip that spans the whole window (§8.2): the sidebar toggles, the vault
+     switcher, quick find and the appearance control. Deliberately thin — it is orientation
+     and navigation, never a place features accumulate — and exactly `--touch-target-min`
+     tall, so everything in it clears §8.3's floor on a phone without a second rule. */
+  --topbar-height: 2.75rem;
+  /* Inline SVG chrome icons. One size, so a row of them lines up without per-icon nudging. */
+  --icon-size: 1.05rem;
+  --tab-height: 2.75rem;
   /* The mobile bottom bar (§8.3). Tall enough for a 44px target plus its padding. */
   --mobile-bar-height: 3.25rem;
   /* How far each level of the note tree indents (§8.2). */
   --tree-indent: 0.875rem;
-  --tree-row-height: 1.75rem;
+  --tree-row-height: 2rem;
   /* How much of the screen the tab switcher sheet may take before it scrolls. */
   --sheet-max-height: 70dvh;
   /* The command palette and switchers (§8.4). */
@@ -144,7 +162,7 @@
   --divider-thickness: 0.5rem;
 
   /* ---------------------------------------------------------------- controls */
-  --control-height: 2.25rem;
+  --control-height: 2rem;
   /* 44px. SPEC.md §8.3 and §20.3: the floor for anything a finger has to hit. */
   --touch-target-min: 2.75rem;
   /* The task checkbox (§10.2). Sized to the text it sits beside rather than to
@@ -157,7 +175,7 @@
   /* ---------------------------------------------------------------- editor */
   /* measure is the reading column width; block-gap is the vertical rhythm between blocks
      and is typography-driven rather than a step on the spacing scale. */
-  --editor-measure: 52rem;
+  --editor-measure: 48rem;
   --editor-block-gap: 0.65rem;
   --editor-min-height: 25rem;
   --editor-panel-min-height: 32rem;
@@ -186,7 +204,7 @@
   --presence-4: var(--series-4);
   --presence-5: var(--series-5);
   /* Text drawn on top of a presence hue. */
-  --presence-label: #fffdf8;
+  --presence-label: #ffffff;
   /* Set per element by the shell to one of the six above. The default is a real colour so a
      caret is never invisible if the awareness state arrives without one. */
   --presence-color: var(--presence-2);
@@ -213,17 +231,17 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --surface-canvas: #18231f;
-    --surface-note: #22312a;
-    --surface-raised: #26362e;
-    --surface-sunken: #1d2a24;
+    --surface-canvas: #19191c;
+    --surface-note: #222225;
+    --surface-raised: #29292d;
+    --surface-sunken: #1d1d20;
 
-    --text-primary: #f2efe6;
-    --text-muted: #b7c2b6;
+    --text-primary: #ececee;
+    --text-muted: #aaaab2;
 
-    --accent-primary: #f29a70;
-    --border-subtle: #405147;
-    --focus-ring: #7fc9b8;
+    --accent-primary: #b6a1ed;
+    --border-subtle: #34343b;
+    --focus-ring: #b6a1ed;
 
     --state-warning: #e0aa5f;
     --state-danger: #f2a09a;
@@ -236,6 +254,76 @@
     --series-3: #dfa54a;
     --series-4: #7cc98a;
     --series-5: #e58ab9;
-    --presence-label: #18231f;
+    --presence-label: #19191c;
   }
+}
+
+/* Explicit selections come after the system query so a per-device override always wins. */
+:root[data-theme="memberberry-light"] {
+  color-scheme: light;
+  --surface-canvas: #f7f7f5;
+  --surface-note: #ffffff;
+  --surface-raised: #f1f1ef;
+  --surface-sunken: #ededeb;
+  --text-primary: #292927;
+  --text-muted: #62625f;
+  --accent-primary: #6651a3;
+  --border-subtle: #e5e5e1;
+  --focus-ring: #6651a3;
+  --state-warning: #9a5b12;
+  --state-danger: #a52016;
+  --state-conflict: #6a3d9a;
+  --series-0: #b03a2e;
+  --series-1: #0f6e7a;
+  --series-2: #4a56a6;
+  --series-3: #8a5107;
+  --series-4: #2f6b39;
+  --series-5: #8f3468;
+  --presence-label: #ffffff;
+}
+
+:root[data-theme="memberberry-dark"] {
+  color-scheme: dark;
+  --surface-canvas: #19191c;
+  --surface-note: #222225;
+  --surface-raised: #29292d;
+  --surface-sunken: #1d1d20;
+  --text-primary: #ececee;
+  --text-muted: #aaaab2;
+  --accent-primary: #b6a1ed;
+  --border-subtle: #34343b;
+  --focus-ring: #b6a1ed;
+  --state-warning: #e0aa5f;
+  --state-danger: #f2a09a;
+  --state-conflict: #c4a2ef;
+  --series-0: #f08b7d;
+  --series-1: #5fc7d4;
+  --series-2: #9aa4ef;
+  --series-3: #dfa54a;
+  --series-4: #7cc98a;
+  --series-5: #e58ab9;
+  --presence-label: #19191c;
+}
+
+:root[data-theme="memberberry-pastel"] {
+  color-scheme: dark;
+  --surface-canvas: #181825;
+  --surface-note: #1e1e2e;
+  --surface-raised: #262637;
+  --surface-sunken: #11111b;
+  --text-primary: #cdd6f4;
+  --text-muted: #a6adc8;
+  --accent-primary: #cba6f7;
+  --border-subtle: #3e4055;
+  --focus-ring: #b4befe;
+  --state-warning: #f9e2af;
+  --state-danger: #f38ba8;
+  --state-conflict: #cba6f7;
+  --series-0: #f38ba8;
+  --series-1: #89dceb;
+  --series-2: #b4befe;
+  --series-3: #fab387;
+  --series-4: #a6e3a1;
+  --series-5: #f5c2e7;
+  --presence-label: #11111b;
 }

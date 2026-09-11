@@ -17,9 +17,14 @@ path = "src/main.rs"
 [dependencies]
 mb-core.workspace = true
 mb-auth.workspace = true
+mb-index.workspace = true
 mb-server.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread"] }
 rpassword = "7"
+# why: imported notes need the sortable identity required by SPEC §4.3; UUID generation stays
+# at this filesystem boundary rather than making the pure, wasm-clean Markdown crate depend on time.
+uuid = { version = "1", features = ["v7"] }
+sha2 = "0.10"
 
 [lints]
 workspace = true

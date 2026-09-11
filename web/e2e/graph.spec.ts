@@ -132,7 +132,7 @@ test("the picture follows the note in front", async ({ page }, info) => {
   await openWithContext(page, "Welcome.md");
   await expect(page.locator(PANEL)).toContainText("Nothing links to or from this note yet.");
 
-  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.press("ControlOrMeta+O");
   const switcher = page.getByRole("dialog", { name: "Open a note" });
   await expect(switcher).toBeVisible();
   await page.keyboard.type("roadmap");

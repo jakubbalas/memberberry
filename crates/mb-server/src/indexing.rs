@@ -49,16 +49,17 @@ impl IndexRegistry {
         {
             return Some(Arc::clone(index));
         }
-        let index = Self::open(vault)?;
         let Ok(mut open) = self.indexes.write() else {
             // A poisoned map costs the cache, not the request: this index is correct, it
             // just will not be reused. The alternative is a vault with no graph at all.
-            return Some(Arc::new(Mutex::new(index)));
+            return Self::open(vault).map(|index| Arc::new(Mutex::new(index)));
         };
-        Some(Arc::clone(
-            open.entry(vault.slug().clone())
-                .or_insert_with(|| Arc::new(Mutex::new(index))),
-        ))
+        if let Some(index) = open.get(vault.slug()) {
+            return Some(Arc::clone(index));
+        }
+        let index = Arc::new(Mutex::new(Self::open(vault)?));
+        open.insert(vault.slug().clone(), Arc::clone(&index));
+        Some(index)
     }
 
     /// why: a vault directory is not guaranteed writable — a read-only mount, a vault owned

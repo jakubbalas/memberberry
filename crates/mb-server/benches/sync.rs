@@ -163,5 +163,39 @@ fn encode_frame(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, accept_update, materialize, encode_frame);
+/// Compares live vault lookup with the immutable registry it replaces on every sync frame.
+fn vault_lookup(criterion: &mut Criterion) {
+    let scratch = Scratch::new("vault-lookup");
+    let vault = Vault::open(
+        Slug::parse("bench").expect("slug"),
+        "Bench",
+        scratch.0.clone(),
+    )
+    .expect("vault");
+    let baseline = std::collections::BTreeMap::from([(vault.slug().clone(), vault.clone())]);
+    let state = mb_server::http::AppState::authenticated(
+        vec![vault],
+        mb_auth::AuthDb::open_in_memory().expect("auth"),
+    )
+    .expect("state");
+    let mut group = criterion.benchmark_group("sync/vault_lookup");
+    group.bench_function("immutable_baseline", |bench| {
+        bench.iter(|| {
+            let slug = Slug::parse(black_box("bench")).expect("valid slug");
+            black_box(baseline.get(&slug));
+        })
+    });
+    group.bench_function("live_registry", |bench| {
+        bench.iter(|| black_box(state.vault(black_box("bench"))))
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    accept_update,
+    materialize,
+    encode_frame,
+    vault_lookup
+);
 criterion_main!(benches);

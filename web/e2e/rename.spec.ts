@@ -29,7 +29,7 @@ function onDisk(note: string): string {
 
 /** Opens the palette and runs the rename command, returning once the prompt has focus. */
 async function openRenamePrompt(page: import("@playwright/test").Page): Promise<void> {
-  await page.keyboard.press("ControlOrMeta+Shift+P");
+  await page.keyboard.press("ControlOrMeta+P");
   await expect(page.getByRole("option", { name: /^Rename note/ })).toBeVisible();
   await page.getByRole("option", { name: /^Rename note/ }).click();
   const prompt = page.locator(PROMPT);

@@ -26,6 +26,7 @@ export default defineConfig({
   reporter: process.env["CI"] === undefined ? "list" : [["list"], ["html", { open: "never" }]],
 
   use: {
+    channel: "chromium",
     baseURL: E2E_ORIGIN,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",

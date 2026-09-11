@@ -12,12 +12,26 @@
  * and gets validated properly. Not before.
  */
 
+import { shippedTheme, type ShippedTheme } from "./theme.js";
+
 /** A note the server has authorized this user to open. */
 export interface NoteBootstrap {
   readonly vault: string;
   readonly note: string;
   readonly user: string;
   readonly mediaMaxDimension?: number;
+  readonly theme?: ShippedTheme;
+}
+
+/** An authenticated vault home, with no note selected by the route. */
+export type HomeBootstrap = Pick<NoteBootstrap, "vault" | "user" | "theme">;
+
+/** Reads only explicitly marked home pages; incomplete bootstraps remain local-only. */
+export function readHomeBootstrap(element: HTMLElement): HomeBootstrap | undefined {
+  const { vault, user, home } = element.dataset;
+  if (home !== "true" || !isFilled(vault) || !isFilled(user)) return undefined;
+  const theme = shippedTheme(element.dataset["vaultTheme"]);
+  return { vault, user, ...(theme === undefined ? {} : { theme }) };
 }
 
 /**
@@ -37,7 +51,14 @@ export function readNoteBootstrap(element: HTMLElement): NoteBootstrap | undefin
   const mediaMaxDimension = Number.isInteger(parsedMaximum) && parsedMaximum >= 256 && parsedMaximum <= 8192
     ? parsedMaximum
     : undefined;
-  return { vault, note, user, ...(mediaMaxDimension === undefined ? {} : { mediaMaxDimension }) };
+  const theme = shippedTheme(element.dataset["vaultTheme"]);
+  return {
+    vault,
+    note,
+    user,
+    ...(mediaMaxDimension === undefined ? {} : { mediaMaxDimension }),
+    ...(theme === undefined ? {} : { theme }),
+  };
 }
 
 function isFilled(value: string | undefined): value is string {
@@ -88,6 +109,11 @@ export function resolveNoteBootstrap(
   if (served !== undefined) {
     remember(storage, served.user);
     return served;
+  }
+  const home = readHomeBootstrap(element);
+  if (home !== undefined) {
+    remember(storage, home.user);
+    return undefined;
   }
   const route = parseNoteRoute(location.pathname);
   if (route === undefined) return undefined;

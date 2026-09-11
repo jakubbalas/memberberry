@@ -1,9 +1,9 @@
 # Memberberry task runner.
 #
-# `make check` is the gate (AGENTS.md 1). Nothing is "done" until it passes.
+# `make check` is the pre-commit gate (AGENTS.md 1); also run it on explicit request.
 #
-# `make dev` serves the registered vaults read-only on 127.0.0.1:9010. Register one first
-# with `make vault-add SLUG=personal VAULT=~/Notes ADMIN=alice`. The editor is M3; this is read-only.
+# `make dev` supervises the Rust server and Vite HMR server together. Register one vault first
+# with `make vault-add SLUG=personal VAULT=~/Notes ADMIN=alice`.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -27,8 +27,8 @@ help: ## Show this help
 # ---------------------------------------------------------------- everyday loop
 
 .PHONY: dev
-dev: ## Run the server against the registered vaults on 127.0.0.1:9010
-	$(CARGO) run -p mb-cli -- serve
+dev: ## Run the complete app with frontend HMR and Rust auto-restart
+	@python3 scripts/dev.py
 
 .PHONY: watch
 watch: ## Watch files and re-run the fast tests
@@ -43,13 +43,17 @@ watch: ## Watch files and re-run the fast tests
 	fi
 
 .PHONY: prod
-prod: ## Optimised release build of the memberberry binary
-	$(CARGO) build --release --workspace
+prod: prod-build ## Build and run the complete production app
+	@target/release/memberberry serve
+
+.PHONY: prod-build
+prod-build: web-build ## Build the production web bundle and optimised server binary
+	$(CARGO) build --release -p mb-cli
 	@echo
 	@echo "Binary: target/release/memberberry"
 
 .PHONY: check
-check: fmt-check lint test coverage-gate token-check web-check ## THE GATE: fmt + clippy + tests + coverage + tokens
+check: fmt-check lint test coverage-gate token-check deployment-check dev-check web-check ## THE GATE: fmt + clippy + tests + coverage + tokens
 
 # ---------------------------------------------------------------- quality
 
@@ -122,6 +126,18 @@ coverage-gate: ## Enforce the per-crate floors in AGENTS.md 2.1
 .PHONY: token-check
 token-check: ## Enforce the design-token contract, both directions (SPEC 20.1, 20.2)
 	@python3 scripts/token-check.py
+
+.PHONY: deployment-check
+deployment-check: ## Validate the container, Compose, and backup contracts
+	@python3 scripts/deployment-check.py
+
+.PHONY: dev-check
+dev-check: ## Validate the development-process supervisor
+	@python3 scripts/dev.py --self-test
+
+.PHONY: backup
+backup: ## Stop Compose writers, take a checksummed backup, and restart them
+	@deploy/backup.sh
 
 # ---------------------------------------------------------------- web
 

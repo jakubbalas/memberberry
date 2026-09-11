@@ -25,15 +25,18 @@ a rule cannot be checked by CI, it is written so a reviewer can check it in seco
 
 ## 1. Definition of done
 
-A change is done only when **every** box is true. Not most.
+A change is ready to commit only when **every** box is true. Not most.
+During the feedback loop, an iteration may be handed back after focused verification (§5.2).
+Full checks and coverage measurement are deferred until a commit or an explicit user request;
+do not run them merely because an assistant turn or feedback iteration is ending.
 
 - [ ] Implements exactly the specified scope — no more, no less
 - [ ] Tests written **with** the code: happy path, edge cases, failure modes
 - [ ] Coverage floor met (§2.1); new code does not lower the crate/package number
 - [ ] **If it touches a read path: a permission test proving it filters** (§3)
 - [ ] **If it adds an enforcement point: added to `SPEC.md` §6.4 and to the leak suite**
-- [ ] `make check` passes clean — fmt, clippy `-D warnings`, tests, types, lint
-- [ ] **If it touches anything a user sees: `make e2e` passes** (§5.2). `make check` does not
+- [ ] Before committing: `make check` passes clean — fmt, clippy `-D warnings`, tests, types, lint
+- [ ] **Before committing a user-visible change: `make e2e` passes** (§5.2). `make check` does not
       open a browser, and a green unit suite has already shipped a page nobody could use
 - [ ] No new `unwrap`/`expect`/`panic!` in library code (§4.2)
 - [ ] No `any` in TypeScript, no `@ts-ignore` (§4.3)
@@ -43,7 +46,8 @@ A change is done only when **every** box is true. Not most.
 - [ ] **`HANDOFF.md` rewritten to match reality** (§9) — including anything you left open
 - [ ] No TODO/FIXME left without a linked issue and a reason
 
-If you cannot tick a box, say so explicitly in your summary. Do not quietly skip one and
+Report which focused checks ran and whether full checks are deferred during feedback.
+Before committing, if you cannot tick a box, say so explicitly in your summary. Do not quietly skip one and
 report success — an honest "tests for the error path are missing because X" is far more
 useful than a false green.
 
@@ -269,7 +273,7 @@ Production ports remain explicit deployment configuration. Tests that do not nee
 address should ask the OS for an ephemeral port instead of consuming this range.
 
 ```
-make check        # fmt + clippy + test + coverage + tokens — run before done
+make check        # full gate — before committing or on explicit request
 make e2e          # Playwright in a real browser, desktop and mobile (SPEC §22.6)
 make test         # all tests
 make test-fast    # behavioural only, the inner loop
@@ -283,10 +287,14 @@ make bench        # hot-path benchmarks
 make perf         # the SPEC 21 budgets, both device classes, in a real browser
 make perf-bundle  # just the critical-path bundle budget — deterministic, no browser
 make gen-vault    # synthetic 10k-note vault for perf/scale work
-make prod         # release build
+make dev          # Rust auto-restart + Vite HMR; complete app on 9011
+make prod         # release web/server build, then serve on 9010
+make prod-build   # release build without starting the server
 ```
 
-`make check` is the gate. If it does not pass, the change is not done.
+`make check` is the pre-commit gate. If it does not pass, do not commit.
+Run full gates locally only before committing or when the user explicitly requests them.
+CI continues to run its existing checks.
 
 **`make check` does not open a browser.** It is separate from `make e2e` because the browser
 download makes it too slow for the inner loop, and because they answer different questions:
@@ -296,21 +304,23 @@ already shipped an application nobody could log into (§2.3).
 
 ### 5.2 Test cadence
 
-Three tiers. The question is not how *often* to open a browser — a clean full run is about a
-minute — but how *much* to run in it, and *when*.
+Keep the feedback loop focused. Batch related adjustments and verify the affected behavior;
+reserve workspace-wide suites and coverage measurement for the pre-commit gate or an explicit
+request. Tests are still written with code, including regression and permission tests where
+required. Documentation-only iterations need a diff review, not application test suites.
 
 | When | What | Cost |
 |---|---|---|
-| Every edit | `make test-fast` | seconds |
-| **The first time new UI renders anything**, and after any change to CSS, pointer behaviour or layout | one spec: `npm --prefix web run build && npx playwright test e2e/<name>.spec.ts` | ~30s |
-| Before done, and before a commit | `make e2e` | ~1 min (37s of tests plus incremental builds) |
+| Feedback iteration | Relevant unit/integration/regression tests for the changed behavior | seconds |
+| **The first time new UI renders anything**, and after a batch of CSS, pointer or layout adjustments | Rebuild, then one relevant browser spec: `npm --prefix web run build && npm --prefix web run e2e -- <name>.spec.ts` | ~30s |
+| Before committing, or on explicit request | `make check`; also `make e2e` for user-visible changes | full gate; run sequentially locally |
 
 Two rules attached to the middle row, both learned expensively:
 
 - **Rebuild first, every time.** `npx playwright test` does not build. Without the rebuild it
   drives the last bundle you made rather than the code you just wrote, and the failure looks
   exactly like a bug in the feature — a click that "does not work" on an element that is not
-  in the page yet. If you are not going to remember, run `make e2e` instead; it builds.
+  in the page yet. Use the combined build-and-focused-test command in the table during feedback.
 - **Run one spec, not the suite.** A broken interaction costs a 30s timeout per attempt and
   Playwright retries, so the cost of a red run is nothing like the cost of a green one: four
   unreachable click targets once turned a 37-second suite into ten minutes and 23 failures,
@@ -372,6 +382,10 @@ Stated plainly so they are not attempted:
 ---
 
 ## 8. Communication
+
+- **`local/debug/` is the user's feedback inbox for screenshots and other debug material.**
+  When asked to inspect feedback, start with the newest relevant file there. The entire
+  `local/` directory is gitignored; keep these materials local and out of commits.
 
 - Report honestly. If tests fail, show the output. If something was skipped, name it.
 - Do not claim done when partially done. Partial with a clear list of what remains is

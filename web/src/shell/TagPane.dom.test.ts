@@ -152,9 +152,12 @@ describe("the tag pane", () => {
       rows()[0]?.click();
       await flush();
       expect(loadNotes).toHaveBeenCalledWith("personal", "project");
+      // The row's text is the note's name and nothing else. It used to include a `·`,
+      // because the mark in front of the name was a character in the text; it is a drawn
+      // icon now, so this asserts the label rather than the decoration.
       expect(noteRows().map((row) => row.textContent?.trim())).toEqual([
-        "· The Roadmap",
-        "· Untitled",
+        "The Roadmap",
+        "Untitled",
       ]);
     } finally {
       teardown();

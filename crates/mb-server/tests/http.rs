@@ -41,6 +41,377 @@ struct TestServer {
     default_headers: String,
 }
 
+#[test]
+fn empty_server_guides_the_administrator_to_create_a_vault() {
+    let server = TestServer::authenticated(vec![]);
+    let (head, body) = server.get("/");
+    assert!(head.contains("200"), "{head}");
+    assert!(body.contains("Create your first vault"), "{body}");
+    assert!(!body.contains("memberberry vault create"));
+}
+
+#[test]
+fn server_rendered_pages_identify_the_existing_application_icon() {
+    let server = TestServer::authenticated(vec![]);
+    assert!(
+        server
+            .get("/")
+            .1
+            .contains("<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn onboarding_failed_config_write_removes_the_unpublished_vault_and_allows_retry() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = TempDir::new("config-write-failure");
+    let server = managed_server(&directory, true, true);
+    let permissions = std::fs::metadata(directory.path())
+        .expect("metadata")
+        .permissions();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o555))
+        .expect("read-only config parent");
+    let denied = management_post(
+        &server,
+        "/vaults/new",
+        "name=Test&slug=personal",
+        "http://localhost",
+    );
+    std::fs::set_permissions(directory.path(), permissions).expect("restore permissions");
+    assert!(denied.0.contains("409"));
+    assert!(!directory.path().join("vaults/personal").exists());
+    assert!(!directory.path().join("server.toml").exists());
+    assert!(server.state.is_empty());
+    assert!(
+        management_post(
+            &server,
+            "/vaults/new",
+            "name=Test&slug=personal",
+            "http://localhost"
+        )
+        .0
+        .contains("303")
+    );
+}
+
+#[test]
+fn onboarding_unicode_labels_are_escaped_and_overlarge_requests_are_rejected() {
+    let directory = TempDir::new("unicode-management");
+    let server = managed_server(&directory, true, true);
+    assert!(
+        management_post(
+            &server,
+            "/vaults/new",
+            "name=%3Cscript%3E%F0%9F%93%93%3C%2Fscript%3E&slug=unicode",
+            "http://localhost"
+        )
+        .0
+        .contains("303")
+    );
+    let body = server.get("/").1;
+    assert!(body.contains("&lt;script&gt;📓&lt;/script&gt;"));
+    assert!(!body.contains("<script>"));
+    let form = format!("name={}&slug=huge", "a".repeat(9000));
+    assert!(
+        management_post(&server, "/vaults/new", &form, "http://localhost")
+            .0
+            .contains("413")
+    );
+    assert_eq!(server.state.len(), 1);
+}
+
+#[test]
+fn onboarding_creation_requires_an_origin_and_preserves_unrelated_configuration() {
+    let directory = TempDir::new("configuration-preservation");
+    directory.write(
+        "server.toml",
+        "bind = \"127.0.0.1:9010\"\nweb_root = \"custom/web\"\n",
+    );
+    let server = managed_server(&directory, true, true);
+    assert!(
+        server
+            .post_form_signed_in("/vaults/new", "name=Test&slug=personal")
+            .0
+            .contains("404")
+    );
+    assert!(
+        management_post(
+            &server,
+            "/vaults/new",
+            "name=Test&slug=personal",
+            "http://localhost"
+        )
+        .0
+        .contains("303")
+    );
+    let config =
+        mb_server::ServerConfig::load(&directory.path().join("server.toml")).expect("config");
+    assert_eq!(config.bind.as_deref(), Some("127.0.0.1:9010"));
+    assert_eq!(config.web_root.as_deref(), Some("custom/web"));
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_vault_shows_recovery_guidance_only_to_its_member() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = TempDir::new("unreadable-vault");
+    directory.write("notes/Welcome.md", "# Welcome");
+    directory.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        directory.path(),
+    )
+    .expect("vault");
+    let server = TestServer::authenticated(vec![vault]);
+    let notes = directory.path().join("notes");
+    let original = std::fs::metadata(&notes).expect("metadata").permissions();
+    std::fs::set_permissions(&notes, std::fs::Permissions::from_mode(0o000))
+        .expect("deny directory");
+    let member = server.get("/v/personal");
+    let guest = server.request("GET", "/v/personal", "", "");
+    std::fs::set_permissions(&notes, original).expect("restore directory");
+    assert!(member.0.contains("503"), "{}", member.0);
+    assert!(member.1.contains("folder cannot be read"));
+    assert!(!member.1.contains(directory.path().to_str().expect("path")));
+    assert!(guest.0.contains("404"));
+    assert!(!guest.1.contains("folder cannot be read"));
+    assert!(server.get("/v/personal").0.contains("200"));
+}
+
+fn managed_server(directory: &TempDir, initialized: bool, allow_setup: bool) -> TestServer {
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let cookie = if initialized {
+        let user = auth
+            .setup_first_user(mb_auth::NewUser {
+                username: "alice",
+                display_name: "Alice",
+                password: "correct horse battery staple",
+            })
+            .expect("admin");
+        let token = auth
+            .create_session(user.id, 4_102_444_800)
+            .expect("session");
+        format!(
+            "Cookie: mb_session={}\r\n",
+            auth.signed_session_cookie(&token).expect("cookie")
+        )
+    } else {
+        String::new()
+    };
+    let state = AppState::authenticated(vec![], auth)
+        .expect("state")
+        .with_vault_management(directory.path().join("server.toml"), allow_setup)
+        .expect("management");
+    let mut server = TestServer::start(state);
+    server.default_headers = cookie;
+    server
+}
+
+fn management_post(server: &TestServer, path: &str, form: &str, origin: &str) -> (String, String) {
+    server.request("POST", path, &format!(
+        "{}Origin: {origin}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n",
+        server.default_headers, form.len()), form)
+}
+
+#[test]
+fn onboarding_first_run_reaches_account_setup_and_closes_after_creation() {
+    let directory = TempDir::new("onboarding");
+    let server = managed_server(&directory, false, true);
+    assert!(server.headers("/").contains("location: /setup"));
+    assert!(server.get("/setup").1.contains("Create account"));
+    let form = "username=alice&display_name=Alice&password=correct+horse+battery+staple&confirmation=correct+horse+battery+staple";
+    assert!(
+        management_post(&server, "/setup", form, "http://localhost")
+            .0
+            .contains("303")
+    );
+    assert!(server.status("/setup").contains("404"));
+    assert!(
+        management_post(&server, "/setup", form, "http://localhost")
+            .0
+            .contains("404")
+    );
+}
+
+#[test]
+fn onboarding_rejects_cross_origin_setup_and_non_loopback_configuration() {
+    let directory = TempDir::new("onboarding");
+    let server = managed_server(&directory, false, true);
+    let form = "username=alice&display_name=Alice&password=correct+horse+battery+staple&confirmation=correct+horse+battery+staple";
+    assert!(
+        !management_post(&server, "/setup", form, "https://evil.example")
+            .0
+            .contains("303")
+    );
+    assert!(server.get("/setup").1.contains("Create account"));
+    let other = TempDir::new("onboarding");
+    let remote = managed_server(&other, false, false);
+    assert!(remote.status("/setup").contains("403"));
+    assert!(
+        !management_post(&remote, "/setup", form, "http://localhost")
+            .0
+            .contains("303")
+    );
+}
+
+#[test]
+fn onboarding_invalid_accounts_can_be_corrected_without_reflecting_passwords() {
+    let directory = TempDir::new("onboarding");
+    let server = managed_server(&directory, false, true);
+    for form in [
+        "username=alice&display_name=Alice&password=secret123&confirmation=different",
+        "username=INVALID&display_name=Alice&password=secret123&confirmation=secret123",
+    ] {
+        let (head, body) = management_post(&server, "/setup", form, "http://localhost");
+        assert!(head.contains("400"));
+        assert!(body.contains("role=\"alert\""));
+        assert!(!body.contains("secret123"));
+    }
+    assert!(server.get("/setup").1.contains("Create account"));
+}
+
+#[test]
+fn onboarding_vault_creation_is_live_durable_and_grants_only_its_creator() {
+    let directory = TempDir::new("onboarding");
+    let server = managed_server(&directory, true, true);
+    let (head, _) = management_post(
+        &server,
+        "/vaults/new",
+        "name=My+notebook&slug=personal",
+        "http://localhost",
+    );
+    assert!(head.contains("303"), "{head}");
+    let vault = server
+        .state
+        .vault("personal")
+        .expect("registered immediately");
+    assert!(vault.notes_root().ends_with("vaults/personal/notes"));
+    let policy = mb_server::AccessFile::load(vault.root()).expect("durable ACL");
+    let note = mb_core::NotePath::parse("Example.md").expect("path");
+    assert_eq!(
+        policy
+            .policy()
+            .effective_role(&mb_core::Username::parse("alice").expect("user"), &note),
+        mb_core::Role::Owner
+    );
+    assert_eq!(
+        policy
+            .policy()
+            .effective_role(&mb_core::Username::parse("bob").expect("user"), &note),
+        mb_core::Role::None
+    );
+    assert!(server.get("/api/v1/vaults").1.contains("My notebook"));
+    assert!(server.get("/v/personal").1.contains("/v/personal/new"));
+    let config =
+        mb_server::ServerConfig::load(&directory.path().join("server.toml")).expect("persisted");
+    let reopened = config.open_vaults(None).expect("restart");
+    assert_eq!(reopened.len(), 1);
+    assert_eq!(reopened.first().expect("vault").root(), vault.root());
+    server.tick();
+}
+
+#[test]
+fn onboarding_vault_rejects_duplicate_invalid_and_cross_origin_requests_without_changes() {
+    let directory = TempDir::new("onboarding");
+    let server = managed_server(&directory, true, true);
+    for form in [
+        "name=Test&slug=../escape",
+        "name=&slug=personal",
+        "name=Test&slug=-bad",
+        "name=Test&slug=hello/world",
+    ] {
+        assert!(
+            management_post(&server, "/vaults/new", form, "http://localhost")
+                .0
+                .contains("400")
+        );
+    }
+    assert!(
+        !management_post(
+            &server,
+            "/vaults/new",
+            "name=Test&slug=personal",
+            "https://evil.example"
+        )
+        .0
+        .contains("303")
+    );
+    assert!(server.state.is_empty());
+    assert!(
+        management_post(
+            &server,
+            "/vaults/new",
+            "name=Test&slug=personal",
+            "http://localhost"
+        )
+        .0
+        .contains("303")
+    );
+    let before = std::fs::read(directory.path().join("server.toml")).expect("config");
+    assert!(
+        management_post(
+            &server,
+            "/vaults/new",
+            "name=Changed&slug=personal",
+            "http://localhost"
+        )
+        .0
+        .contains("409")
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("server.toml")).expect("config"),
+        before
+    );
+}
+
+#[test]
+fn onboarding_config_failure_rolls_back_only_the_new_empty_vault() {
+    let directory = TempDir::new("onboarding");
+    let server = managed_server(&directory, true, true);
+    std::fs::create_dir(directory.path().join("server.toml")).expect("block config");
+    assert!(
+        management_post(
+            &server,
+            "/vaults/new",
+            "name=Test&slug=personal",
+            "http://localhost"
+        )
+        .0
+        .contains("409")
+    );
+    assert!(server.state.is_empty());
+    assert!(!directory.path().join("vaults/personal").exists());
+}
+
+#[test]
+fn onboarding_existing_directory_is_never_adopted_or_overwritten() {
+    let directory = TempDir::new("onboarding");
+    let server = managed_server(&directory, true, true);
+    let root = directory.path().join("vaults/personal");
+    std::fs::create_dir(&root).expect("existing vault");
+    std::fs::write(root.join("private.md"), "untouched").expect("note");
+    assert!(
+        management_post(
+            &server,
+            "/vaults/new",
+            "name=Test&slug=personal",
+            "http://localhost"
+        )
+        .0
+        .contains("409")
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("private.md")).expect("note"),
+        "untouched"
+    );
+    assert!(!root.join("access.toml").exists());
+}
+
 impl TestServer {
     fn start(state: AppState) -> Self {
         // why: here rather than per test. `serve` builds the index before it serves its
@@ -409,7 +780,7 @@ fn i1_http_restart_rebuilds_readable_content_without_reviving_denied_notes() {
     dir.write("notes/Target.md", "# Target\n");
     dir.write(
         "notes/Private/Secret.md",
-        "# Classified\n\n[[Target]] #hidden\n",
+        "# Classified\n\n[[Target]] #undisclosable\n",
     );
     let policy = "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n[[rules]]\npath = \"Private\"\n[rules.grant]\nalice = \"none\"\n";
     dir.write("access.toml", policy);
@@ -450,10 +821,16 @@ fn i1_http_restart_rebuilds_readable_content_without_reviving_denied_notes() {
     let before: Vec<_> = routes.iter().map(|path| server.get(path)).collect();
     for (path, (status, body)) in routes.iter().zip(&before) {
         assert!(is_ok(status), "{path}: {status}");
+        // Every string only the denied note can produce: its title, its path, and its tag.
+        // why: the tag is `#undisclosable` rather than `#hidden`. A page that draws icons
+        // contains `aria-hidden="true"`, so a bare search for "hidden" reported a leak on a
+        // note page that had leaked nothing — and a leak check that cries wolf is one
+        // somebody eventually relaxes. The token has to be a word only this fixture's
+        // private note could put on a page.
         assert!(
             !body.contains("Classified")
                 && !body.contains("Private/Secret")
-                && !body.contains("hidden"),
+                && !body.contains("undisclosable"),
             "{path}: {body}"
         );
     }
@@ -495,12 +872,13 @@ fn i1_http_restart_rebuilds_readable_content_without_reviving_denied_notes() {
 fn editor_route_injects_trusted_bootstrap_and_assets_stay_contained() {
     let vault_dir = TempDir::new("http-editor-vault");
     vault_dir.write("One.md", "# One\n");
+    vault_dir.write(".memberberry/config.toml", "theme = \"memberberry-dark\"\n");
     // The layout Vite actually produces: `index.html` beside an `assets/` directory, with
     // the HTML referencing `/assets/<file>`. An earlier revision resolved that URL against
     // the build root instead, so every real bundle 404'd and the editor loaded blank — and
     // the test missed it by asking for the doubled path the bug required.
     let web_dir = TempDir::new("http-editor-web");
-    web_dir.write("index.html", "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div><script type=\"module\" src=\"/assets/index-abc123.js\"></script></body>");
+    web_dir.write("index.html", "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\" data-vault-theme=\"\"></div><script type=\"module\" src=\"/assets/index-abc123.js\"></script></body>");
     web_dir.write("assets/index-abc123.js", "console.log('editor')");
     web_dir.write("assets/mb_bg-abc123.wasm", "\0asm");
     web_dir.write("secret.txt", "not part of the bundle");
@@ -515,6 +893,10 @@ fn editor_route_injects_trusted_bootstrap_and_assets_stay_contained() {
     assert!(body.contains("data-note=\"One.md\""), "{body}");
     assert!(body.contains("data-user=\"alice\""), "{body}");
     assert!(body.contains("data-media-max-dimension=\"2560\""), "{body}");
+    assert!(
+        body.contains("data-vault-theme=\"memberberry-dark\""),
+        "{body}"
+    );
     let (head, _) = server.get_raw("/v/personal/One.md", "");
     assert!(head.contains("object-src 'self'"), "{head}");
     assert!(
@@ -546,6 +928,59 @@ fn editor_route_injects_trusted_bootstrap_and_assets_stay_contained() {
 }
 
 #[test]
+fn vault_home_bootstraps_an_empty_workspace_and_denies_unreadable_vaults() {
+    let directory = TempDir::new("http-home");
+    directory.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let private = TempDir::new("http-home-private");
+    private.write(
+        "access.toml",
+        "[[members]]\nuser = \"bob\"\nrole = \"owner\"\n",
+    );
+    private.write("Undisclosable.md", "# Secret\n");
+    let web = pwa_web_root();
+    let server = TestServer::authenticated_with_web_root(
+        vec![
+            vault(&directory, "personal", "Personal"),
+            vault(&private, "private", "Private"),
+        ],
+        web.path().to_path_buf(),
+    );
+    for route in ["/v/personal", "/v/personal/"] {
+        let (status, body) = server.get(route);
+        assert!(is_ok(&status), "{status}");
+        assert!(body.contains("data-home=\"true\""), "{body}");
+        assert!(body.contains("data-note=\"\""));
+        assert!(body.contains("data-user=\"alice\""));
+    }
+    assert_eq!(server.get("/v/private"), server.get("/v/absent"));
+    server.stop();
+}
+
+#[test]
+fn folder_routes_filter_names_and_refuse_unauthorized_creation_without_probing() {
+    let directory = TempDir::new("http-folders");
+    directory.write("access.toml", "[[members]]\nuser = \"alice\"\nrole = \"editor\"\n[[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n");
+    std::fs::create_dir_all(directory.path().join("Private/Empty")).expect("private");
+    let server = TestServer::authenticated(vec![vault(&directory, "personal", "Personal")]);
+    let route = "/api/v1/vaults/personal/folders";
+    let denied = server.post_json(route, "", r#"{"path":"Private/Empty"}"#);
+    assert!(is_not_found(&denied.0));
+    assert_eq!(
+        denied,
+        server.post_json(route, "", r#"{"path":"Private/Missing"}"#)
+    );
+    assert!(is_ok(&server.post_json(route, "", r#"{"path":"Ideas"}"#).0));
+    let listed = server.get(route);
+    assert!(is_ok(&listed.0));
+    assert_eq!(listed.1, r#"{"folders":["Ideas"]}"#);
+    assert!(is_not_found(&server.request("GET", route, "", "").0));
+    server.stop();
+}
+
+#[test]
 fn editor_bootstrap_escapes_a_note_name_that_could_close_its_attribute() {
     // A filename may legally contain a double quote. Unescaped, `data-note` closes early
     // and the remainder of the name becomes attacker-authored markup in the authenticated
@@ -555,7 +990,7 @@ fn editor_bootstrap_escapes_a_note_name_that_could_close_its_attribute() {
     let web_dir = TempDir::new("http-editor-quote-web");
     web_dir.write(
         "index.html",
-        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div></body>",
+        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\" data-vault-theme=\"\"></div></body>",
     );
     let server = TestServer::authenticated_with_web_root(
         vec![vault(&vault_dir, "personal", "Personal")],
@@ -1220,10 +1655,10 @@ fn an_empty_server_says_so_rather_than_showing_a_blank_page() {
     let server = TestServer::authenticated(vec![]);
     let (status, body) = server.get("/");
     assert!(is_ok(&status), "{status}");
-    assert!(body.contains("No vaults registered"), "{body}");
+    assert!(body.contains("Create your first vault"), "{body}");
     assert!(
-        body.contains("vault create"),
-        "it should say how to fix it: {body}"
+        body.contains("href=\"/vaults/new\""),
+        "it should link to browser-based creation: {body}"
     );
 }
 
@@ -1241,6 +1676,18 @@ fn a_vault_lists_its_notes() {
     assert!(body.contains("2 notes"), "{body}");
     assert!(body.contains("href=\"/v/v/alpha.md\""), "{body}");
     assert!(body.contains("href=\"/v/v/folder/beta.md\""), "{body}");
+}
+
+#[test]
+fn vault_library_escapes_note_names_and_folder_labels() {
+    let dir = TempDir::new("http-library-escaping");
+    dir.write("Ideas & plans/<draft> 🧠.md", "# Draft\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let (_, body) = server.get("/v/v");
+    assert!(body.contains("&lt;draft&gt; 🧠</span>"));
+    assert!(body.contains("Ideas &amp; plans</span>"));
+    assert!(body.contains("href=\"/v/v/Ideas%20%26%20plans/%3Cdraft%3E%20%F0%9F%A7%A0.md\""));
+    assert!(!body.contains("<draft>"));
 }
 
 #[test]
@@ -1275,6 +1722,11 @@ fn an_authenticated_viewer_does_not_receive_notes_denied_by_access_toml() {
     assert!(is_ok(&status), "{status}");
     assert!(body.contains("Public"), "{body}");
     assert!(!body.contains("Salary"), "{body}");
+    assert!(
+        !body.contains("Private"),
+        "folder metadata must also be hidden"
+    );
+    assert!(body.contains("1 note</p>"), "count only readable notes");
     let (status, body) = server.get_with_headers("/v/v/Private/Salary.md", &header);
     assert!(is_not_found(&status), "{status}");
     assert!(!body.contains("Salary"), "{body}");
@@ -1535,6 +1987,29 @@ fn a_successful_login_is_recorded_in_the_audit_log() {
     let log = std::fs::read_to_string(dir.path().join("audit.log")).expect("read audit log");
     assert!(log.contains("\"action\":\"login\""), "{log}");
     assert!(log.contains("\"result\":\"success\""), "{log}");
+}
+
+#[test]
+fn logout_revokes_the_session_and_clears_the_cookie() {
+    let dir = TempDir::new("http-logout");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n",
+    );
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("href=\"/logout\">Log out"), "{body}");
+    let (status, _) = server.get("/logout");
+    assert!(status.contains("303"), "{status}");
+    let (status, body) = server.get("/");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("Sign in"), "{body}");
+
+    let (head, _) = server.get_bytes_raw_headers("/logout");
+    assert!(head.contains("set-cookie: mb_session=;"), "{head}");
+    assert!(head.to_ascii_lowercase().contains("max-age=0"), "{head}");
 }
 
 #[test]
@@ -1976,7 +2451,7 @@ fn the_editor_page_carries_a_policy_scoped_to_what_it_actually_does() {
     let web_dir = TempDir::new("http-editor-csp-web");
     web_dir.write(
         "index.html",
-        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div></body>",
+        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\" data-vault-theme=\"\"></div></body>",
     );
     web_dir.write("assets/index-abc123.js", "console.log('editor')");
     let server = TestServer::authenticated_with_web_root(
@@ -2016,7 +2491,7 @@ fn pwa_web_root() -> TempDir {
     let dir = TempDir::new("http-pwa-web");
     dir.write(
         "index.html",
-        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div></body>",
+        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\" data-vault-theme=\"\"></div></body>",
     );
     dir.write("sw.js", "self.addEventListener('fetch', () => {})");
     dir.write("manifest.webmanifest", "{\"name\":\"Memberberry\"}");
@@ -2186,13 +2661,8 @@ fn every_page_that_has_a_form_is_allowed_to_submit_it() {
     // previous CSP test asserted the header was *present*, which this failure satisfied.
     let dir = TempDir::new("http-form-csp");
     dir.write("note.md", "# A\n");
-    let server = TestServer::start(
-        AppState::authenticated(
-            vec![vault(&dir, "v", "V")],
-            mb_auth::AuthDb::open_in_memory().expect("auth db"),
-        )
-        .expect("state"),
-    );
+    let mut server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    server.default_headers.clear();
 
     // Unauthenticated, so this is the sign-in page.
     let (status, body) = server.get("/");
@@ -2287,12 +2757,8 @@ fn every_sign_in_field_is_labelled_and_styled_as_a_stacked_field() {
     // gap is actually painted is not something a string can say — `signin.spec.ts` measures
     // it in a real browser (AGENTS.md §2.3).
     let dir = TempDir::new("http-login-fields");
-    let state = AppState::authenticated(
-        vec![vault(&dir, "v", "V")],
-        mb_auth::AuthDb::open_in_memory().expect("auth db"),
-    )
-    .expect("state");
-    let server = TestServer::start(state);
+    let mut server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    server.default_headers.clear();
 
     let (status, body) = server.get("/");
 
@@ -2318,11 +2784,11 @@ fn a_filesystem_error_does_not_leak_a_path_to_the_page() {
     // An I/O error names a path, and a path describes the shape of someone's private vault.
     let dir = TempDir::new("http-error");
     let vault = vault(&dir, "v", "V");
-    drop(std::fs::remove_dir_all(dir.path()));
     let server = TestServer::authenticated(vec![vault]);
+    std::fs::remove_dir_all(dir.path()).expect("make the authorized vault unavailable");
 
     let (status, body) = server.get("/v/v");
-    assert!(status.contains("500") || status.contains("200"), "{status}");
+    assert!(status.contains("503"), "{status}");
     assert!(
         !body.contains("mb-server-http-error"),
         "path leaked: {body}"
@@ -3016,7 +3482,7 @@ fn compressible_web_root() -> TempDir {
     let web = TempDir::new("http-compress-web");
     web.write(
         "index.html",
-        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div></body>",
+        "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\" data-vault-theme=\"\"></div></body>",
     );
     web.write(
         "assets/index-abc123.js",
@@ -5332,7 +5798,7 @@ fn the_first_note_form_creates_it_and_redirects_to_it() {
     );
     // The vault is no longer empty, and the note it now lists is the one just created.
     let (_, body) = server.get("/v/v");
-    assert!(body.contains("1 notes"), "{body}");
+    assert!(body.contains("1 note</p>"), "{body}");
     assert!(body.contains("/v/v/Welcome.md"), "{body}");
 }
 

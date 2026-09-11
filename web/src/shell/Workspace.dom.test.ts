@@ -105,11 +105,13 @@ function render(
   workspace: WorkspaceStore,
   open?: ReturnType<typeof surfaces>["open"],
   resolveLink?: typeof resolveNote,
+  home = false,
 ) {
   const app = mount(Workspace, {
     target,
     props: {
       store: workspace,
+      home,
       session: { vault: "personal", user: "alice" },
       chrome: chrome(),
       open: open ?? surfaces().open,
@@ -133,6 +135,56 @@ const tabs = (): HTMLElement[] => [...target.querySelectorAll<HTMLElement>('[rol
 const panes = (): HTMLElement[] => [...target.querySelectorAll<HTMLElement>(".pane")];
 
 describe("the shell", () => {
+  it("keeps saved tabs on Home without mounting an editor until a note opens", async () => {
+    const workspace = store(["One.md"]);
+    const opened = surfaces();
+    const teardown = render(workspace, opened.open, undefined, true);
+    try {
+      await flush();
+      expect(target.querySelector("#home-heading")?.textContent).toBe("Home");
+      expect(opened.live).toBe(0);
+      workspace.open("One.md");
+      await flush();
+      expect(target.querySelector("#home-heading")).toBeNull();
+      expect(opened.notes).toEqual(["One.md"]);
+      expect(workspace.tabs).toHaveLength(1);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("starts in Notes and switches tools without discarding their elements", async () => {
+    const teardown = render(store());
+    try {
+      const tools = target.querySelector('[aria-label="Navigation views"]');
+      const search = target.querySelector<HTMLInputElement>('.search-panel input[type="search"]');
+      const searchView = target.querySelector<HTMLElement>('.navigation-view[aria-label="Search"]');
+      expect(searchView?.hidden).toBe(true);
+      tools?.querySelector<HTMLButtonElement>('[aria-label="Search"]')?.click();
+      await flush();
+      expect(searchView?.hidden).toBe(false);
+      expect(target.querySelector<HTMLElement>('.navigation-view[aria-label="Notes"]')?.hidden).toBe(true);
+      tools?.querySelector<HTMLButtonElement>('[aria-label="Notes"]')?.click();
+      await flush();
+      expect(searchView?.hidden).toBe(true);
+      expect(target.querySelector('.search-panel input[type="search"]')).toBe(search);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("shows the authenticated account and a logout link", () => {
+    const teardown = render(store());
+    try {
+      const logout = target.querySelector<HTMLAnchorElement>('.account-logout');
+      expect(target.querySelector('.account-user')?.textContent).toBe("alice");
+      expect(logout?.getAttribute("href")).toBe("/logout");
+      expect(logout?.textContent).toBe("Log out");
+    } finally {
+      teardown();
+    }
+  });
+
   it("renders both sidebars and a main area", () => {
     const teardown = render(store());
     try {
@@ -154,6 +206,9 @@ describe("the shell", () => {
       expect(target.querySelector('[aria-label="Navigation"] .tree-panel')).not.toBeNull();
       expect(target.querySelector('[aria-label="Navigation"] .inbox-panel')).not.toBeNull();
       expect(target.querySelector('[aria-label="Context"] .backlinks-panel')).not.toBeNull();
+      expect(target.querySelector(".topbar .theme-panel")).not.toBeNull();
+      // And not left behind in the panel it used to be a card in.
+      expect(target.querySelector('[aria-label="Context"] .theme-panel')).toBeNull();
     } finally {
       teardown();
     }
@@ -441,11 +496,12 @@ describe("editors", () => {
 describe("sidebars", () => {
   it("collapse and expand, keeping the control that reopens them reachable", async () => {
     // Collapsing a sidebar must not remove the only way back. That is a keyboard trap, not
-    // a styling detail, which is why the toggle lives outside the collapsible region.
+    // a styling detail, which is why the toggle lives outside the collapsible region — in
+    // the top bar, which is outside *both* of them.
     const teardown = render(store());
     try {
       const toggle = target.querySelector<HTMLButtonElement>(
-        '.sidebar-frame[data-side="left"] .sidebar-toggle',
+        '.topbar .sidebar-toggle[data-side="left"]',
       );
       const panel = target.querySelector('[aria-label="Navigation"]');
       expect(toggle?.getAttribute("aria-expanded")).toBe("true");
@@ -456,7 +512,7 @@ describe("sidebars", () => {
       expect(toggle?.getAttribute("aria-expanded")).toBe("false");
       expect(target.querySelector('[aria-label="Navigation"]')?.hasAttribute("hidden")).toBe(true);
       // Still in the document, still focusable.
-      expect(target.querySelector('.sidebar-frame[data-side="left"] .sidebar-toggle')).not.toBeNull();
+      expect(target.querySelector('.topbar .sidebar-toggle[data-side="left"]')).not.toBeNull();
     } finally {
       teardown();
     }
@@ -470,7 +526,7 @@ describe("sidebars", () => {
     const teardown = render(store());
     try {
       const toggle = target.querySelector<HTMLButtonElement>(
-        '.sidebar-frame[data-side="left"] .sidebar-toggle',
+        '.topbar .sidebar-toggle[data-side="left"]',
       );
       expect(toggle?.tagName).toBe("BUTTON");
       toggle?.focus();
@@ -504,7 +560,7 @@ describe("sidebars", () => {
       for (const side of ["left", "right"]) {
         expect(
           target
-            .querySelector(`.sidebar-frame[data-side="${side}"] .sidebar-toggle`)
+            .querySelector(`.topbar .sidebar-toggle[data-side="${side}"]`)
             ?.getAttribute("aria-expanded"),
         ).toBe("false");
       }
@@ -528,7 +584,7 @@ describe("sidebars", () => {
       },
     });
     target
-      .querySelector<HTMLButtonElement>('.sidebar-frame[data-side="left"] .sidebar-toggle')
+      .querySelector<HTMLButtonElement>('.topbar .sidebar-toggle[data-side="left"]')
       ?.click();
     await tick();
     unmount(first);
@@ -548,7 +604,7 @@ describe("sidebars", () => {
     try {
       expect(
         target
-          .querySelector('.sidebar-frame[data-side="left"] .sidebar-toggle')
+          .querySelector('.topbar .sidebar-toggle[data-side="left"]')
           ?.getAttribute("aria-expanded"),
       ).toBe("false");
     } finally {

@@ -1,0 +1,78 @@
+name: memberberry
+
+services:
+  memberberry:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      MEMBERBERRY_ADMIN: ${MEMBERBERRY_ADMIN:?Set MEMBERBERRY_ADMIN in .env}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      MINIO_BUCKET: ${MINIO_BUCKET:-memberberry}
+    ports:
+      - "127.0.0.1:${MEMBERBERRY_PORT:-9010}:9010"
+    volumes:
+      - memberberry-data:/data
+      - memberberry-vault:/vault
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - app
+      - outbound
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - minio-data:/data
+    networks:
+      - app
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      MINIO_BUCKET: ${MINIO_BUCKET:-memberberry}
+    entrypoint:
+      - /bin/sh
+      - -eu
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do sleep 1; done
+        mc mb --ignore-existing "local/$${MINIO_BUCKET}"
+        mc anonymous set none "local/$${MINIO_BUCKET}"
+    depends_on:
+      - minio
+    networks:
+      - app
+
+  backup:
+    image: alpine:3.21
+    profiles: ["backup"]
+    environment:
+      BACKUP_NAME: ${BACKUP_NAME:-manual}
+    entrypoint: ["/opt/memberberry/backup-data.sh"]
+    volumes:
+      - memberberry-data:/sources/data:ro
+      - memberberry-vault:/sources/vault:ro
+      - minio-data:/sources/minio:ro
+      - ${MEMBERBERRY_BACKUP_DIR:-./backups}:/backups
+      - ./deploy/backup-data.sh:/opt/memberberry/backup-data.sh:ro
+
+networks:
+  app:
+    internal: true
+  outbound:
+
+volumes:
+  memberberry-data:
+  memberberry-vault:
+  minio-data:

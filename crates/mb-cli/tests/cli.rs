@@ -165,6 +165,109 @@ fn export_materialize_emoji_copies_a_referenced_shared_pack() {
 }
 
 #[test]
+fn static_site_export_contains_only_the_invoking_users_readable_set() {
+    let dir = TempDir::new("static-export");
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(&vault).expect("vault");
+    fs::write(
+        vault.join("Public.md"),
+        "# Public page\n\nVisible words. [[Also Public]] [[Private]]\n",
+    )
+    .expect("public note");
+    fs::write(vault.join("Also Public.md"), "# Linked page\n").expect("linked note");
+    fs::create_dir_all(vault.join("Projects")).expect("projects folder");
+    fs::create_dir_all(vault.join("Archive")).expect("archive folder");
+    fs::write(vault.join("Projects/Start.md"), "# Start\n\n[[Roadmap]]\n").expect("source note");
+    fs::write(vault.join("Projects/Roadmap.md"), "# Current roadmap\n").expect("near roadmap");
+    fs::write(vault.join("Archive/Roadmap.md"), "# Archived roadmap\n").expect("far roadmap");
+    fs::create_dir_all(vault.join("Private")).expect("private folder");
+    fs::write(
+        vault.join("Private/Payroll.md"),
+        "# Executive payroll\n\nultra-private-amount\n",
+    )
+    .expect("private note");
+    fs::write(
+        vault.join("access.toml"),
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    )
+    .expect("access file");
+    let config = config_for(&dir, &vault);
+    setup_admin(&dir);
+    let destination = dir.path().join("site");
+    fs::create_dir_all(&destination).expect("old export");
+    fs::write(destination.join("stale-private.html"), "old secret").expect("stale page");
+
+    let (code, out) = run(&[
+        "export",
+        "--static-site",
+        destination.to_str().expect("destination"),
+        "--username",
+        "alice",
+        "--slug",
+        "personal",
+        "--config",
+        config.to_str().expect("config"),
+    ]);
+
+    assert!(is_success(code), "{out}");
+    assert!(out.contains("exported 5 readable notes"), "{out}");
+    assert!(destination.join("notes/Public.html").is_file());
+    assert!(destination.join("notes/Also Public.html").is_file());
+    assert!(!destination.join("notes/Private/Payroll.html").exists());
+    assert!(!destination.join("stale-private.html").exists());
+    let all = [
+        "index.html",
+        "graph.html",
+        "site-data.js",
+        "notes/Public.html",
+    ]
+    .into_iter()
+    .map(|path| fs::read_to_string(destination.join(path)).expect("exported text"))
+    .collect::<String>();
+    assert!(!all.contains("ultra-private-amount"), "{all}");
+    assert!(!all.contains("Executive payroll"), "{all}");
+    assert!(all.contains("Linked page"), "{all}");
+    assert!(all.contains("Also Public.html"), "{all}");
+    assert!(
+        all.contains(
+            r#""source":"Projects/Start.md","target":"Roadmap","output":"notes/Projects/Roadmap.html""#
+        ),
+        "{all}"
+    );
+}
+
+#[test]
+fn static_site_export_requires_an_existing_enabled_user_and_one_vault() {
+    let dir = TempDir::new("static-export-identity");
+    dir.write("Note.md", "# Note\n");
+    let config = config_for(&dir, dir.path());
+    let destination = dir.path().join("site");
+
+    let no_slug = run_err(&[
+        "export",
+        "--static-site",
+        destination.to_str().expect("destination"),
+        "--username",
+        "alice",
+        "--config",
+        config.to_str().expect("config"),
+    ]);
+    assert!(no_slug.contains("exactly one vault"), "{no_slug}");
+
+    let no_user = run_err(&[
+        "export",
+        "--static-site",
+        destination.to_str().expect("destination"),
+        "--slug",
+        "personal",
+        "--config",
+        config.to_str().expect("config"),
+    ]);
+    assert!(no_user.contains("--username"), "{no_user}");
+}
+
+#[test]
 fn doctor_reports_unreferenced_local_media() {
     let dir = TempDir::new("doctor-media");
     dir.write("Note.md", "# Note\n");
@@ -180,7 +283,203 @@ fn doctor_reports_unreferenced_local_media() {
     let config = config_for(&dir, dir.path());
     let (code, out) = run(&["doctor", "--config", config.to_str().expect("config path")]);
     assert!(!is_success(code));
-    assert!(out.contains(&format!("orphaned media {orphan}")), "{out}");
+    assert!(out.contains(&format!("orphaned media: {orphan}")), "{out}");
+}
+
+#[test]
+fn doctor_reports_cross_store_integrity_findings_without_changing_notes() {
+    let dir = TempDir::new("doctor-report");
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    fs::write(
+        vault.join("A.md"),
+        "# A\n\n[[Missing]] [[Deleted]] :missing-custom:\n\n> [!conflict] Diverged\n> other\n",
+    )
+    .unwrap();
+    fs::write(vault.join("B.md"), "---\nid: duplicate\n---\n\nB\n").unwrap();
+    fs::write(vault.join("C.md"), "---\nid: duplicate\n---\n\nC\n").unwrap();
+    fs::write(vault.join("Deleted.md"), "deleted\n").unwrap();
+    fs::write(
+        vault.join("access.toml"),
+        "[[members]]\nuser = \"ghost\"\nrole = \"viewer\"\n",
+    )
+    .unwrap();
+    let config = config_for(&dir, &vault);
+    let opened = mb_server::Vault::open(
+        mb_server::Slug::parse("personal").unwrap(),
+        "Personal",
+        &vault,
+    )
+    .unwrap();
+    mb_server::trash::TrashStore::new(&opened)
+        .delete(&opened, "Deleted.md", "alice", 1)
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let old_day = (now / 86_400 - 10) * 86_400;
+    let history = mb_server::history::HistoryStore::new(&vault, "B.md");
+    history
+        .record(
+            "older",
+            "alice",
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(old_day + 100),
+        )
+        .unwrap();
+    history
+        .record(
+            "newer",
+            "alice",
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(old_day + 700),
+        )
+        .unwrap();
+    let before = fs::read_to_string(vault.join("A.md")).unwrap();
+
+    let (code, out) = run(&["doctor", "--config", config.to_str().unwrap()]);
+
+    assert!(!is_success(code));
+    for expected in [
+        "missing note id: A.md",
+        "duplicate note id: C.md",
+        "broken wikilink: A.md -> [[Missing]]",
+        "wikilink points into trash: A.md -> [[Deleted]]",
+        "unresolved conflict callout: A.md (1)",
+        "missing emoji shortcode: A.md -> :missing-custom:",
+        "note without CRDT sidecar",
+        "index drift: index is missing",
+        "oversized history: B.md (1 excess snapshot(s))",
+        "access.toml unknown user: ghost",
+    ] {
+        assert!(out.contains(expected), "missing {expected:?}: {out}");
+    }
+    assert_eq!(fs::read_to_string(vault.join("A.md")).unwrap(), before);
+    assert_eq!(
+        history
+            .retention_excess(std::time::SystemTime::now())
+            .unwrap(),
+        1,
+        "report-only doctor must not prune history"
+    );
+}
+
+#[test]
+fn doctor_fix_reissues_duplicate_ids_without_rewriting_note_bodies() {
+    let dir = TempDir::new("doctor-duplicate-id");
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    let body = "\n# Body\n\n* stays noncanonical\n";
+    fs::write(
+        vault.join("A.md"),
+        format!("---\nid: duplicate\n---\n{body}"),
+    )
+    .unwrap();
+    fs::write(
+        vault.join("B.md"),
+        format!("---\nid: duplicate\n---\n{body}"),
+    )
+    .unwrap();
+    let config = config_for(&dir, &vault);
+
+    let (code, out) = run(&["doctor", "--fix", "--config", config.to_str().unwrap()]);
+
+    assert!(is_success(code), "{out}");
+    assert!(out.contains("fixed duplicate note id: B.md"), "{out}");
+    let a = fs::read_to_string(vault.join("A.md")).unwrap();
+    let b = fs::read_to_string(vault.join("B.md")).unwrap();
+    assert_ne!(
+        mb_core::parse(&a).frontmatter.id,
+        mb_core::parse(&b).frontmatter.id
+    );
+    assert!(a.ends_with(body), "{a}");
+    assert!(b.ends_with(body), "{b}");
+}
+
+#[test]
+fn doctor_fix_repairs_deterministic_state_and_converges_to_a_clean_second_run() {
+    let dir = TempDir::new("doctor-fix");
+    let vault_path = dir.path().join("vault");
+    fs::create_dir_all(&vault_path).unwrap();
+    fs::write(vault_path.join("A.md"), "# A\n").unwrap();
+    let sidecars = vault_path.join(".memberberry/crdt");
+    fs::create_dir_all(&sidecars).unwrap();
+    fs::write(sidecars.join("orphan.bin"), b"orphan").unwrap();
+    let config = config_for(&dir, &vault_path);
+
+    let (code, out) = run(&["doctor", "--fix", "--config", config.to_str().unwrap()]);
+
+    assert!(is_success(code), "{out}");
+    assert!(out.contains("fixed missing note id: A.md"), "{out}");
+    assert!(
+        out.contains("fixed note without CRDT sidecar: A.md"),
+        "{out}"
+    );
+    assert!(
+        out.contains("fixed CRDT sidecar without note: orphan.bin"),
+        "{out}"
+    );
+    assert!(out.contains("fixed index drift: index is missing"), "{out}");
+    assert!(
+        fs::read_to_string(vault_path.join("A.md"))
+            .unwrap()
+            .contains("id: ")
+    );
+
+    let (second_code, second_out) = run(&["doctor", "--config", config.to_str().unwrap()]);
+    assert!(is_success(second_code), "{second_out}");
+    assert_eq!(second_out, "doctor: no integrity problems\n");
+}
+
+#[test]
+fn doctor_reports_an_index_that_fell_behind_the_markdown_files() {
+    let dir = TempDir::new("doctor-index");
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    fs::write(vault.join("A.md"), "---\nid: one\n---\n\n# A\n").unwrap();
+    let config = config_for(&dir, &vault);
+    run(&["reindex", "--config", config.to_str().unwrap()]);
+    fs::write(vault.join("A.md"), "---\nid: one\n---\n\n# Changed\n").unwrap();
+
+    let (code, out) = run(&["doctor", "--config", config.to_str().unwrap()]);
+
+    assert!(!is_success(code));
+    assert!(out.contains("index drift: stale or absent A.md"), "{out}");
+}
+
+#[test]
+fn doctor_fix_revokes_an_active_share_whose_note_was_deleted() {
+    let dir = TempDir::new("doctor-share");
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    let config = config_for(&dir, &vault);
+    let mut auth = mb_auth::AuthDb::open(&dir.path().join("auth.db")).unwrap();
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .unwrap();
+    auth.create_share_link(mb_auth::ShareLinkScope {
+        vault_slug: "personal".to_string(),
+        note_path: "Deleted.md".to_string(),
+        include_embeds: false,
+        password: None,
+        expires_at: Some(4_102_444_800),
+        created_by: alice.id,
+    })
+    .unwrap();
+    drop(auth);
+
+    let (code, out) = run(&["doctor", "--fix", "--config", config.to_str().unwrap()]);
+
+    assert!(is_success(code), "{out}");
+    assert!(
+        out.contains("fixed share link to deleted note: Deleted.md"),
+        "{out}"
+    );
+    let auth = mb_auth::AuthDb::open(&dir.path().join("auth.db")).unwrap();
+    assert!(auth.active_share_links("personal", 0).unwrap().is_empty());
 }
 
 // ---------------------------------------------------------------- users
@@ -423,6 +722,156 @@ fn normalize_is_idempotent_over_a_directory() {
 fn normalize_reports_a_missing_path() {
     let message = run_err(&["normalize", "/definitely/not/here"]);
     assert!(message.contains("/definitely/not/here"), "{message}");
+}
+
+// ---------------------------------------------------------------- import-obsidian
+
+#[test]
+fn obsidian_import_is_dry_by_default_and_reports_migration_findings() {
+    let dir = TempDir::new("obsidian-dry");
+    dir.write(
+        "Projects/Plan.md",
+        "---\naliases: [Roadmap]\n---\n\n# Plan\n\n[[Missing]]\n\n```mermaid\ngraph TD\n```\n",
+    );
+    dir.write("Board.canvas", "{}");
+
+    let (code, out) = run(&["import-obsidian", dir.path().to_str().unwrap()]);
+
+    assert!(!is_success(code), "work remains, so the check must fail");
+    assert!(out.contains("would add id: Projects/Plan.md"), "{out}");
+    assert!(
+        out.contains("unresolved wikilink: Projects/Plan.md -> [[Missing]]"),
+        "{out}"
+    );
+    assert!(
+        out.contains("unsupported Mermaid block (preserved)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("unsupported Canvas file (preserved): Board.canvas"),
+        "{out}"
+    );
+    assert!(!dir.read("Projects/Plan.md").contains("id:"));
+}
+
+#[test]
+fn obsidian_import_write_adds_uuid_v7_without_normalizing_note_content() {
+    let dir = TempDir::new("obsidian-write");
+    let original = "---\ntags: [migration]\ncustom: untouched\n---\n\n* noncanonical item\n";
+    dir.write("Note.md", original);
+
+    let (code, out) = run(&["import-obsidian", "--write", dir.path().to_str().unwrap()]);
+
+    assert!(is_success(code), "{out}");
+    assert!(out.contains("added id: Note.md"), "{out}");
+    let written = dir.read("Note.md");
+    let id = written
+        .lines()
+        .find_map(|line| line.strip_prefix("id: "))
+        .expect("injected id");
+    assert_eq!(id.len(), 36);
+    assert_eq!(id.as_bytes()[14], b'7', "UUID must be version 7: {id}");
+    assert!(written.ends_with("* noncanonical item\n"), "{written}");
+    assert_eq!(written.replacen(&format!("id: {id}\n"), "", 1), original);
+}
+
+#[test]
+fn obsidian_import_write_wraps_a_note_without_frontmatter_and_preserves_its_body() {
+    let dir = TempDir::new("obsidian-no-frontmatter");
+    dir.write("Plain.md", "# Plain\n\nBody\n");
+
+    let (code, out) = run(&["import-obsidian", "--write", dir.path().to_str().unwrap()]);
+
+    assert!(is_success(code), "{out}");
+    let written = dir.read("Plain.md");
+    assert!(written.starts_with("---\nid: "), "{written}");
+    assert!(written.ends_with("---\n\n# Plain\n\nBody\n"), "{written}");
+}
+
+#[test]
+fn obsidian_import_preserves_existing_ids_and_resolves_paths_stems_and_aliases() {
+    let dir = TempDir::new("obsidian-links");
+    dir.write(
+        "A.md",
+        "---\nid: 018f0000-0000-7000-8000-000000000001\naliases: [Alpha]\n---\n\n[[B]] [[Folder/B]] [[Alpha]]\n",
+    );
+    dir.write(
+        "Folder/B.md",
+        "---\nid: 018f0000-0000-7000-8000-000000000002\n---\n\nB\n",
+    );
+
+    let before = dir.read("A.md");
+    let (code, out) = run(&["import-obsidian", "--write", dir.path().to_str().unwrap()]);
+
+    assert!(is_success(code), "{out}");
+    assert!(
+        out.contains("0 missing id(s), 0 unresolved wikilink(s)"),
+        "{out}"
+    );
+    assert_eq!(dir.read("A.md"), before);
+}
+
+#[test]
+fn obsidian_import_reports_known_community_plugin_syntax_without_changing_it() {
+    let dir = TempDir::new("obsidian-plugins");
+    let note =
+        "---\nid: existing\n---\n\nstatus:: active\n<% tp.date.now() %>\n```tasks\nnot done\n```\n";
+    dir.write("Plugins.md", note);
+
+    let (code, out) = run(&["import-obsidian", dir.path().to_str().unwrap()]);
+
+    assert!(!is_success(code));
+    assert!(
+        out.contains("unsupported Dataview field (preserved)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("unsupported Templater expression (preserved)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("unsupported community-plugin block (preserved)"),
+        "{out}"
+    );
+    assert_eq!(dir.read("Plugins.md"), note);
+}
+
+#[test]
+fn obsidian_import_does_not_mistake_literal_code_for_plugin_syntax() {
+    let dir = TempDir::new("obsidian-code");
+    dir.write(
+        "Code.md",
+        "---\nid: existing\n---\n\n```text\nstatus:: active\n<% literal %>\n```\n",
+    );
+
+    let (code, out) = run(&["import-obsidian", dir.path().to_str().unwrap()]);
+
+    assert!(is_success(code), "{out}");
+    assert!(out.contains("0 unsupported construct(s)"), "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn obsidian_import_write_never_follows_a_symlink_outside_the_vault() {
+    use std::os::unix::fs::symlink;
+
+    let vault = TempDir::new("obsidian-contained");
+    let outside = TempDir::new("obsidian-outside");
+    outside.write("Private.md", "outside\n");
+    symlink(outside.path(), vault.path().join("linked")).expect("creating symlink");
+
+    let (code, out) = run(&["import-obsidian", "--write", vault.path().to_str().unwrap()]);
+
+    assert!(!is_success(code));
+    assert!(out.contains("unsafe path outside vault skipped"), "{out}");
+    assert_eq!(outside.read("Private.md"), "outside\n");
+}
+
+#[test]
+fn obsidian_import_requires_exactly_one_directory() {
+    assert!(run_err(&["import-obsidian"]).contains("exactly one VAULT"));
+    let message = run_err(&["import-obsidian", "/definitely/not/here"]);
+    assert!(message.contains("must be a directory"), "{message}");
 }
 
 // ---------------------------------------------------------------- inspect

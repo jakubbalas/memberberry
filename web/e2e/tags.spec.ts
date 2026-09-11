@@ -25,6 +25,7 @@ async function openWithNavigation(page: import("@playwright/test").Page): Promis
   // a no-op.
   const toggle = page.getByRole("button", { name: /^Show Navigation$/ });
   if (await toggle.isVisible()) await toggle.click();
+  await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Tags", exact: true }).click();
   await expect(page.locator(PANE)).toBeVisible();
 }
 

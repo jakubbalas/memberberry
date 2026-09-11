@@ -30,6 +30,7 @@
   } from "./create.js";
   import { fuzzyRank } from "./fuzzy.js";
   import { type Platform, detectPlatform, formatBinding } from "./hotkeys.js";
+  import { obsidianDefaultBinding } from "./default-keymap.js";
   import type { LayoutMode } from "./layout.js";
   import { splitLimitFor } from "./layout.js";
   import type { NoteCatalog } from "./note-catalog.svelte.js";
@@ -45,6 +46,7 @@
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { groups } from "./workspace.js";
   import { dispatchTemplate, fetchTemplates, readTemplate, TEMPLATE_PALETTE_EVENT, type TemplateSummary } from "./templates.js";
+  import { PALETTE_EVENT, paletteRequest } from "./palette.js";
   import { DailyView } from "./daily.svelte.js";
 
   interface Props {
@@ -295,14 +297,14 @@
       id: "palette.commands",
       title: "Command palette",
       group: "Workspace",
-      binding: "Mod+Shift+p",
+      binding: obsidianDefaultBinding("palette.commands"),
       run: () => openPalette("commands"),
     },
     {
       id: "palette.notes",
       title: "Quick switcher: open a note",
       group: "Navigation",
-      binding: "Mod+k",
+      binding: obsidianDefaultBinding("palette.notes"),
       run: () => openPalette("notes"),
     },
     {
@@ -332,7 +334,7 @@
       id: "workspace.closeTab",
       title: "Close note",
       group: "Workspace",
-      binding: "Mod+w",
+      binding: obsidianDefaultBinding("workspace.closeTab"),
       enabled: () => store.activeTab !== undefined,
       run: () => {
         const active = store.activeTab;
@@ -498,6 +500,29 @@
     const onTemplatePalette = (): void => openPalette("templates");
     window.addEventListener(TEMPLATE_PALETTE_EVENT, onTemplatePalette);
     return () => window.removeEventListener(TEMPLATE_PALETTE_EVENT, onTemplatePalette);
+  });
+
+  /**
+   * The same palette, opened by a control instead of a keystroke (§8.4).
+   *
+   * why: an event rather than an exported method the top bar calls. `PALETTE_EVENT` reaches
+   * whichever `CommandCenter` is mounted from anywhere on the page, so quick find in the
+   * chrome and `Mod+O` in the document are one command with one implementation rather than
+   * two paths that can disagree about what "open" means.
+   */
+  $effect(() => {
+    const host = target ?? window;
+    const onRequest = (event: Event): void => {
+      const request = paletteRequest(event);
+      if (request === undefined || mode !== undefined) return;
+      if (request === "create") {
+        ask({ kind: "create", from: "", initial: "" });
+        return;
+      }
+      openPalette(request);
+    };
+    host.addEventListener(PALETTE_EVENT, onRequest);
+    return () => host.removeEventListener(PALETTE_EVENT, onRequest);
   });
 
   /** The palette's list, for whichever mode is open. */

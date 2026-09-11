@@ -47,7 +47,8 @@ use crate::{AccessFile, Error, Slug, Vault};
 /// The vaults this server knows about, keyed by slug.
 #[derive(Debug)]
 pub struct AppState {
-    vaults: BTreeMap<Slug, Vault>,
+    vaults: RwLock<BTreeMap<Slug, Arc<Vault>>>,
+    management: Option<onboarding::VaultManagement>,
     web_root: Option<PathBuf>,
     /// Server-owned storage (§4.1). Bookmarks live here rather than in a vault; see
     /// `bookmarks.rs` for why. `None` leaves the routes that need it answering as denied.
@@ -167,6 +168,8 @@ impl FileStamp {
     }
 }
 
+mod onboarding;
+
 impl AppState {
     fn allow_clip(&self, vault: &Slug, actor: &Username) -> bool {
         self.clip_budgets.lock().is_ok_and(|mut budgets| {
@@ -208,8 +211,11 @@ impl AppState {
     ///
     /// Blocking: callers must keep it off the async runtime.
     pub fn maintain_index(&self, changed: &Changes) -> Vec<String> {
-        let mut errors = self.indexes.maintain(self.vaults.values(), changed);
-        for vault in self.vaults.values() {
+        let vaults = self.vault_snapshot();
+        let mut errors = self
+            .indexes
+            .maintain(vaults.iter().map(Arc::as_ref), changed);
+        for vault in &vaults {
             let now = std::time::SystemTime::now();
             match vault.notes() {
                 Ok(notes) => {
@@ -243,7 +249,7 @@ impl AppState {
     /// Materializes every configured remote media backend into its vault.
     pub async fn materialize_media(&self) -> Vec<String> {
         let mut errors = Vec::new();
-        for vault in self.vaults.values() {
+        for vault in &self.vault_snapshot() {
             if matches!(vault.media_backend(), crate::MediaBackendConfig::Local) {
                 continue;
             }
@@ -257,10 +263,15 @@ impl AppState {
     /// Every directory whose contents this server must notice changing.
     #[must_use]
     pub fn watch_roots(&self) -> Vec<PathBuf> {
-        self.vaults
-            .values()
+        let mut roots: Vec<_> = self
+            .vault_snapshot()
+            .iter()
             .map(|vault| vault.root().to_path_buf())
-            .collect()
+            .collect();
+        if let Some(management) = &self.management {
+            roots.push(management.root.clone());
+        }
+        roots
     }
 
     /// The E3 re-check every outbound sync frame passes through, per recipient.
@@ -333,10 +344,11 @@ impl AppState {
                     source: FileStamp::of(&vault.root().join("access.toml")),
                 },
             );
-            registered.insert(vault.slug().clone(), vault);
+            registered.insert(vault.slug().clone(), Arc::new(vault));
         }
         Ok(Self {
-            vaults: registered,
+            vaults: RwLock::new(registered),
+            management: None,
             web_root: None,
             data_dir: None,
             assets: RwLock::new(BTreeMap::new()),
@@ -407,22 +419,30 @@ impl AppState {
         Some(gzip)
     }
 
+    /// Returns a shared vault handle without holding the registry lock during a request.
     #[must_use]
-    pub fn vault(&self, slug: &str) -> Option<&Vault> {
+    pub fn vault(&self, slug: &str) -> Option<Arc<Vault>> {
         // Parsing first means an unparseable slug can never be used as a map key or reach
         // the filesystem, whatever it contains.
         let slug = Slug::parse(slug).ok()?;
-        self.vaults.get(&slug)
+        self.vaults.read().ok()?.get(&slug).cloned()
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.vaults.len()
+        self.vaults.read().map(|vaults| vaults.len()).unwrap_or(0)
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.vaults.is_empty()
+        self.len() == 0
+    }
+
+    fn vault_snapshot(&self) -> Vec<Arc<Vault>> {
+        self.vaults
+            .read()
+            .map(|vaults| vaults.values().cloned().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -431,8 +451,25 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/login", post(login))
+        .route("/logout", get(logout))
+        .route(
+            "/setup",
+            get(onboarding::setup_page)
+                .post(onboarding::setup)
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
+        .route(
+            "/vaults/new",
+            get(onboarding::new_vault_page)
+                .post(onboarding::create_vault)
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
         .route("/api/v1/sync", get(websocket))
         .route("/api/v1/vaults", get(vault_index_json))
+        .route(
+            "/api/v1/vaults/{slug}/folders",
+            get(folder_index).post(create_folder),
+        )
         .route(
             "/api/v1/vaults/{slug}/notes",
             get(note_index)
@@ -732,7 +769,7 @@ fn handle_sync_frame(
                 state
                     .security
                     .sync
-                    .subscribe(vault, &canonical, &note, &user, connection, outbound)
+                    .subscribe(&vault, &canonical, &note, &user, connection, outbound)
                     .unwrap_or(SYNC_DENIED),
             )
         }
@@ -755,7 +792,7 @@ fn handle_sync_frame(
                 .security
                 .sync
                 .apply_update_as(
-                    vault,
+                    &vault,
                     &canonical,
                     &update,
                     user.as_str(),
@@ -777,7 +814,7 @@ fn handle_sync_frame(
             state
                 .security
                 .sync
-                .unsubscribe(vault, &canonical, connection)
+                .unsubscribe(&vault, &canonical, connection)
                 .err()
                 .map(|_| SYNC_DENIED)
         }
@@ -795,7 +832,7 @@ fn handle_sync_frame(
                 Err(denial) => return Some(denial),
             };
             state.security.sync.broadcast_awareness(
-                vault,
+                &vault,
                 &canonical,
                 Announcement {
                     user: user.as_str(),
@@ -811,38 +848,61 @@ fn handle_sync_frame(
 }
 
 async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if onboarding::needs_setup(&state) {
+        return axum::response::Redirect::to("/setup").into_response();
+    }
     if state.authenticated_user(&headers).is_none() {
         return login_page().into_response();
     }
-    let mut body = String::new();
-    if state.is_empty() {
-        body.push_str(
-            "<p class=\"mb-empty\">No vaults registered yet. Add one with \
-             <code>memberberry vault create --slug personal --path ~/Notes</code>.</p>",
-        );
-    } else {
-        body.push_str("<ul class=\"mb-vault-list\">\n");
-        for (slug, vault) in &state.vaults {
-            let Some(access) = state.access_for(vault.slug()) else {
-                continue;
-            };
-            let Some(view) = state.authorized_vault(vault, &access, &headers) else {
-                continue;
-            };
-            match view.has_any_access() {
-                Ok(true) => {}
-                Ok(false) => continue,
-                Err(error) => return server_error(&error),
-            }
-            body.push_str("<li><a href=\"/v/");
-            push_escaped_attr(&mut body, slug.as_str());
-            body.push_str("\">");
-            push_escaped_text(&mut body, vault.name());
-            body.push_str("</a></li>\n");
+    let mut body = String::from(
+        "<p class=\"mb-empty\">A space for every part of your life. Open a vault and pick up where you left off.</p><ul class=\"mb-vault-list\">",
+    );
+    let mut visible = 0;
+    for vault in &state.vault_snapshot() {
+        let Some(access) = state.access_for(vault.slug()) else {
+            continue;
+        };
+        let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+            continue;
+        };
+        if !view.has_any_access().unwrap_or(false) {
+            continue;
         }
-        body.push_str("</ul>");
+        visible += 1;
+        // The same row the library lists notes with: a mark, a name, where it lives, and an
+        // arrow. One shape for "somewhere to go", so the two listings do not drift apart.
+        body.push_str("<li><a href=\"/v/");
+        push_escaped_attr(&mut body, vault.slug().as_str());
+        body.push_str("\"><span class=\"mb-note-icon\" aria-hidden=\"true\">");
+        body.push_str(VAULT_MARK);
+        body.push_str("</span><span class=\"mb-note-info\"><span class=\"mb-note-name\">");
+        push_escaped_text(&mut body, vault.name());
+        body.push_str("</span><span class=\"mb-note-folder\">/v/");
+        push_escaped_text(&mut body, vault.slug().as_str());
+        body.push_str(
+            "</span></span><span class=\"mb-note-arrow\" aria-hidden=\"true\">→</span></a></li>",
+        );
     }
-    page("Vaults", &body).into_response()
+    body.push_str("</ul>");
+    if !state.is_server_admin(&headers) && visible == 0 {
+        body.push_str("<p class=\"mb-empty\">No vaults are shared with you yet. Ask your administrator for an invitation.</p>");
+    }
+    // why: one primary and one quiet, in a row with a gap. Both used to be `mb-button`, so
+    // the page offered "New vault" and "Log out" as equally likely next steps — with no space
+    // between them, because neither carried a horizontal margin.
+    body.push_str("<div class=\"mb-actions\">");
+    if state.is_server_admin(&headers) {
+        let label = if visible == 0 {
+            "Create your first vault"
+        } else {
+            "New vault"
+        };
+        body.push_str("<a class=\"mb-button mb-action\" href=\"/vaults/new\">");
+        body.push_str(label);
+        body.push_str("</a>");
+    }
+    body.push_str("<a class=\"mb-button mb-quiet mb-action\" href=\"/logout\">Log out</a></div>");
+    page("Your vaults", &body).into_response()
 }
 
 async fn vault_index(
@@ -869,18 +929,38 @@ fn vault_index_page(
     let Some(access) = state.access_for(vault.slug()) else {
         return not_found_page();
     };
-    let Some(view) = state.authorized_vault(vault, &access, headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, headers) else {
         return not_found_page();
     };
+    if !view.has_any_access().unwrap_or(false) {
+        return not_found_page();
+    }
     let notes = match view.notes() {
         Ok(notes) => notes,
-        Err(error) => return server_error(&error),
+        Err(error) => {
+            eprintln!("memberberry vault access: {error}");
+            return (StatusCode::SERVICE_UNAVAILABLE, page("Vault temporarily unavailable",
+                "<p class=\"mb-empty\">This vault's folder cannot be read. Check that the folder still exists and that the server has permission to read it.</p><p class=\"mb-empty\">Check the server's filesystem permissions. On macOS, allow the app that starts Memberberry to access Documents in System Settings → Privacy &amp; Security → Files and Folders, then restart the server.</p><a class=\"mb-button mb-action\" href=\"/\">Back to your vaults</a>"
+            )).into_response();
+        }
     };
 
+    if error.is_none()
+        && let Some(response) = workspace_page(state, &vault, headers, "")
+    {
+        return response;
+    }
     let mut body = String::new();
-    body.push_str("<p class=\"mb-count\">");
+    body.push_str(
+        "<div class=\"mb-library-toolbar\"><div><h2>All notes</h2><p class=\"mb-count\">",
+    );
     body.push_str(&notes.len().to_string());
-    body.push_str(" notes</p>\n");
+    body.push_str(if notes.len() == 1 { " note" } else { " notes" });
+    body.push_str("</p></div><details class=\"mb-create\"");
+    if notes.is_empty() || error.is_some() {
+        body.push_str(" open");
+    }
+    body.push_str("> <summary class=\"mb-button\">New note</summary>");
 
     // why: the form is on this page rather than only in the workspace, and that is the whole
     // point of it. The editor is served from a note URL, so a vault with no notes has no way
@@ -911,22 +991,34 @@ fn vault_index_page(
     }
     body.push_str("/></div>");
     body.push_str("<button class=\"mb-button\" type=\"submit\">Create</button>");
-    body.push_str("</form>");
+    body.push_str("</form></details></div>");
 
     if notes.is_empty() {
         body.push_str(
             "<p class=\"mb-empty\">This vault has no notes yet. Create one to get started.</p>",
         );
     } else {
-        body.push_str("<ul class=\"mb-note-list\">\n");
+        body.push_str("<ul class=\"mb-note-list\" aria-label=\"Notes\">\n");
         for rel in &notes {
             body.push_str("<li><a href=\"/v/");
             push_escaped_attr(&mut body, vault.slug().as_str());
             body.push('/');
             push_escaped_attr(&mut body, &encode_path(rel));
-            body.push_str("\">");
-            push_escaped_text(&mut body, rel.trim_end_matches(".md"));
-            body.push_str("</a></li>\n");
+            body.push_str("\"><span class=\"mb-note-icon\" aria-hidden=\"true\">");
+            body.push_str(NOTE_MARK);
+            body.push_str("</span><span class=\"mb-note-info\"><span class=\"mb-note-name\">");
+            let (folder, filename) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
+            push_escaped_text(&mut body, filename.trim_end_matches(".md"));
+            body.push_str("</span><span class=\"mb-note-folder\">");
+            push_escaped_text(
+                &mut body,
+                if folder.is_empty() {
+                    "Vault root"
+                } else {
+                    folder
+                },
+            );
+            body.push_str("</span></span><span class=\"mb-note-arrow\" aria-hidden=\"true\">↗</span></a></li>\n");
         }
         body.push_str("</ul>");
     }
@@ -1003,15 +1095,15 @@ fn workspace_denied() -> Response {
 ///
 /// The user comes from the session, never from the URL: there is no route parameter naming
 /// whose layout this is, so there is nothing for a caller to substitute.
-fn authorize_workspace<'a>(
-    state: &'a AppState,
+fn authorize_workspace(
+    state: &AppState,
     slug: &str,
     device: &str,
     headers: &HeaderMap,
-) -> Option<(Username, DeviceId, WorkspaceStore<'a>)> {
+) -> Option<(Username, DeviceId, WorkspaceStore)> {
     let vault = state.vault(slug)?;
     let access = state.access_for(vault.slug())?;
-    let view = state.authorized_vault(vault, &access, headers)?;
+    let view = state.authorized_vault(&vault, &access, headers)?;
     // Vault membership, not note-level access: a layout is not a note. A user with no access
     // to this vault at all must not be able to tell it exists.
     if !view.has_any_access().unwrap_or(false) {
@@ -1038,7 +1130,8 @@ struct VaultSummary<'a> {
 /// user has no access to is not listed, so the switcher cannot be used to enumerate a server.
 async fn vault_index_json(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let mut visible: Vec<VaultSummary<'_>> = Vec::new();
-    for vault in state.vaults.values() {
+    let vaults = state.vault_snapshot();
+    for vault in &vaults {
         let Some(access) = state.access_for(vault.slug()) else {
             continue;
         };
@@ -1134,7 +1227,7 @@ async fn note_history(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     let Ok(identity) = view.identity(&note) else {
@@ -1207,7 +1300,7 @@ async fn restore_note_history(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     let Ok(identity) = view.identity(&note) else {
@@ -1228,7 +1321,7 @@ async fn restore_note_history(
         return not_found().await;
     };
     match state.security.sync.restore(
-        vault,
+        &vault,
         &canonical,
         &markdown,
         actor.as_str(),
@@ -1259,7 +1352,7 @@ async fn delete_note(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     let Ok(identity) = view.identity(&note) else {
@@ -1271,19 +1364,20 @@ async fn delete_note(
     let Some(actor) = state.vault_user(vault.slug(), &headers) else {
         return not_found().await;
     };
-    if let Err(error) = state.security.sync.close(vault, &identity) {
+    if let Err(error) = state.security.sync.close(&vault, &identity) {
         return server_error(&Error::Config(error.to_string()));
     }
-    let store = TrashStore::new(vault);
+    let store = TrashStore::new(&vault);
     match store.delete(
-        vault,
+        &vault,
         &identity,
         actor.as_str(),
         crate::audit::unix_seconds(),
     ) {
         Ok(entry) => {
             let _ = state.maintain_index(&Changes::All);
-            if let Err(error) = state.audit_note(AuditAction::NoteDeleted, &actor, vault, &identity)
+            if let Err(error) =
+                state.audit_note(AuditAction::NoteDeleted, &actor, &vault, &identity)
             {
                 return server_error(&error);
             }
@@ -1306,10 +1400,10 @@ async fn trash_index(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
-    let store = TrashStore::new(vault);
+    let store = TrashStore::new(&vault);
     match store.list(crate::audit::unix_seconds()) {
         Ok(entries) => json_no_store(&TrashResponse {
             entries: entries
@@ -1333,10 +1427,10 @@ async fn restore_trash(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
-    let store = TrashStore::new(vault);
+    let store = TrashStore::new(&vault);
     let entry = match store
         .list(crate::audit::unix_seconds())
         .ok()
@@ -1351,11 +1445,11 @@ async fn restore_trash(
     let Some(actor) = state.vault_user(vault.slug(), &headers) else {
         return not_found().await;
     };
-    match store.restore(vault, &id, crate::audit::unix_seconds()) {
+    match store.restore(&vault, &id, crate::audit::unix_seconds()) {
         Ok(restored) => {
             let _ = state.maintain_index(&Changes::All);
             if let Err(error) =
-                state.audit_note(AuditAction::NoteRestored, &actor, vault, &restored.path)
+                state.audit_note(AuditAction::NoteRestored, &actor, &vault, &restored.path)
             {
                 return server_error(&error);
             }
@@ -1391,7 +1485,7 @@ async fn note_index(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     let Ok(mut readable) = view.notes() else {
@@ -1414,7 +1508,7 @@ async fn note_index(
     });
 
     let mut notes = notes;
-    if let Some(index) = state.indexes.get(vault)
+    if let Some(index) = state.indexes.get(&vault)
         && let Some(user) = state.vault_user(vault.slug(), &headers)
         && let Ok(mut index) = index.lock()
         && let Ok(reader) = index.reader(&access, &user)
@@ -1508,7 +1602,7 @@ async fn daily_index(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     if !view.has_any_access().unwrap_or(false) {
@@ -1524,7 +1618,7 @@ async fn daily_index(
         mb_core::daily::Period::Daily,
         folder,
         format,
-        vault,
+        &vault,
         vault.daily_note_template(),
     );
     let (weekly_folder, weekly_format) = vault.weekly_note_config();
@@ -1533,7 +1627,7 @@ async fn daily_index(
         mb_core::daily::Period::Weekly,
         weekly_folder,
         weekly_format,
-        vault,
+        &vault,
         vault.weekly_note_template(),
     );
     let (monthly_folder, monthly_format) = vault.monthly_note_config();
@@ -1542,7 +1636,7 @@ async fn daily_index(
         mb_core::daily::Period::Monthly,
         monthly_folder,
         monthly_format,
-        vault,
+        &vault,
         vault.monthly_note_template(),
     );
     let body = match serde_json::to_string(&DailyIndexResponse {
@@ -1610,7 +1704,7 @@ async fn template_index(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     if !view.has_any_access().unwrap_or(false) {
@@ -1659,7 +1753,7 @@ async fn template_content(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     let path = format!("{}/{}", vault.template_folder(), template);
@@ -1695,7 +1789,7 @@ async fn vault_emoji(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     let shared = shared_emoji_root(&state);
@@ -1738,15 +1832,15 @@ struct ShareLinkView {
 }
 
 /// Resolves the authenticated session and its database identity for share management.
-fn share_manager<'a>(
-    state: &'a AppState,
+fn share_manager(
+    state: &AppState,
     slug: &str,
     headers: &HeaderMap,
-) -> Option<(Username, mb_auth::UserId, &'a Vault, Arc<mb_core::Access>)> {
+) -> Option<(Username, mb_auth::UserId, Arc<Vault>, Arc<mb_core::Access>)> {
     let user = state.authenticated_user(headers)?;
     let vault = state.vault(slug)?;
     let access = state.access_for(vault.slug())?;
-    let view = AuthorizedVault::new(vault, &access, user.clone());
+    let view = AuthorizedVault::new(&vault, &access, user.clone());
     if !view.has_any_access().ok()? {
         return None;
     }
@@ -1772,7 +1866,7 @@ async fn create_share_link(
     let Some((user, user_id, vault, access)) = share_manager(&state, &slug, &headers) else {
         return workspace_denied();
     };
-    let Ok(note_path) = AuthorizedVault::new(vault, &access, user.clone()).identity(&request.note)
+    let Ok(note_path) = AuthorizedVault::new(&vault, &access, user.clone()).identity(&request.note)
     else {
         return workspace_denied();
     };
@@ -1907,7 +2001,7 @@ async fn vault_emoji_upload(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     if !view.is_owner() {
@@ -1935,7 +2029,7 @@ async fn vault_emoji_packs(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     if !view.is_owner() {
@@ -1963,7 +2057,7 @@ async fn vault_emoji_delete(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     if !view.is_owner() {
@@ -2056,7 +2150,7 @@ async fn vault_emoji_asset(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     let mut components = asset.split('/');
@@ -2183,11 +2277,11 @@ async fn note_backlinks(
     let Some(user) = state.vault_user(vault.slug(), &headers) else {
         return workspace_denied();
     };
-    let view = AuthorizedVault::new(vault, &access, user.clone());
+    let view = AuthorizedVault::new(&vault, &access, user.clone());
     let Ok(identity) = view.identity(&note) else {
         return workspace_denied();
     };
-    let Some(index) = state.indexes.get(vault) else {
+    let Some(index) = state.indexes.get(&vault) else {
         return server_error(&Error::Config("no index for this vault".to_string()));
     };
     let Ok(mut index) = index.lock() else {
@@ -2306,11 +2400,11 @@ async fn note_graph(
     let Some(user) = state.vault_user(vault.slug(), &headers) else {
         return workspace_denied();
     };
-    let view = AuthorizedVault::new(vault, &access, user.clone());
+    let view = AuthorizedVault::new(&vault, &access, user.clone());
     let Ok(identity) = view.identity(&note) else {
         return workspace_denied();
     };
-    let Some(index) = state.indexes.get(vault) else {
+    let Some(index) = state.indexes.get(&vault) else {
         return server_error(&Error::Config("no index for this vault".to_string()));
     };
     let Ok(mut index) = index.lock() else {
@@ -2555,7 +2649,7 @@ async fn rename(
     let Some(user) = state.vault_user(vault.slug(), &headers) else {
         return workspace_denied();
     };
-    let Some(index) = state.indexes.get(vault) else {
+    let Some(index) = state.indexes.get(&vault) else {
         return server_error(&Error::Config("no index for this vault".to_string()));
     };
     let worker = Arc::clone(&state);
@@ -2565,7 +2659,7 @@ async fn rename(
             return Err(RenameError::Denied);
         };
         let rename = Rename::new(
-            vault,
+            &vault,
             &access,
             user,
             &index,
@@ -2608,6 +2702,62 @@ struct CreateNoteRequest {
     path: String,
     #[serde(default)]
     content: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FolderList {
+    folders: Vec<String>,
+}
+
+async fn folder_index(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
+        return workspace_denied();
+    };
+    if !view.has_any_access().unwrap_or(false) {
+        return workspace_denied();
+    }
+    match view.empty_folders() {
+        Ok(folders) => json_no_store(&FolderList { folders }),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+async fn create_folder(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<CreateNoteRequest>,
+) -> Response {
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(user) = state.vault_user(vault.slug(), &headers) else {
+        return workspace_denied();
+    };
+    let Some(index) = state.indexes.get(&vault) else {
+        return workspace_denied();
+    };
+    match CreateNote::new(&vault, &access, user, &index).folder(&request.path) {
+        Ok(created) => json_no_store(&CreateNoteResponse { path: created.path }),
+        Err(CreateError::Denied) => workspace_denied(),
+        Err(error @ (CreateError::InvalidName(_) | CreateError::Exists(_))) => {
+            rename_refused(StatusCode::BAD_REQUEST, &error.to_string())
+        }
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
 }
 
 /// `POST /api/v1/vaults/{slug}/notes` — creates a note and says where it landed (§6.10, E17).
@@ -2756,7 +2906,7 @@ async fn clip_note(
             },
         };
         let html = match resolved_source.as_deref() {
-            Some(source) => crate::clip::rehost_images(&html, source, vault).await,
+            Some(source) => crate::clip::rehost_images(&html, source, &vault).await,
             None => html,
         };
         Ok::<_, ()>((html, resolved_source))
@@ -2943,7 +3093,7 @@ async fn create_in_vault(
     let Some(user) = state.vault_user(vault.slug(), headers) else {
         return Err(CreateError::Denied);
     };
-    let Some(index) = state.indexes.get(vault) else {
+    let Some(index) = state.indexes.get(&vault) else {
         return Err(CreateError::Failed("no index for this vault".to_string()));
     };
     let worker = Arc::clone(state);
@@ -2957,8 +3107,10 @@ async fn create_in_vault(
             return Err(CreateError::Denied);
         };
         match content.as_deref() {
-            Some(body) => CreateNote::new(vault, &access, user, &index).note_with_body(&path, body),
-            None => CreateNote::new(vault, &access, user, &index).note(&path),
+            Some(body) => {
+                CreateNote::new(&vault, &access, user, &index).note_with_body(&path, body)
+            }
+            None => CreateNote::new(&vault, &access, user, &index).note(&path),
         }
     })
     .await;
@@ -3077,11 +3229,11 @@ fn vault_query(
     let vault = state.vault(slug)?;
     let access = state.access_for(vault.slug())?;
     let user = state.vault_user(vault.slug(), headers)?;
-    let view = AuthorizedVault::new(vault, &access, user.clone());
+    let view = AuthorizedVault::new(&vault, &access, user.clone());
     if !view.has_any_access().unwrap_or(false) {
         return None;
     }
-    let index = state.indexes.get(vault)?;
+    let index = state.indexes.get(&vault)?;
     Some((access, user, index))
 }
 
@@ -3427,7 +3579,7 @@ async fn bookmarks_load(
     let Some(allowed) = authorize_bookmarks(&state, &slug, &headers) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(allowed.vault, &allowed.access, &headers) else {
+    let Some(view) = state.authorized_vault(&allowed.vault, &allowed.access, &headers) else {
         return workspace_denied();
     };
     let readable: Vec<String> = allowed
@@ -3465,7 +3617,7 @@ async fn bookmarks_save(
     let Some(allowed) = authorize_bookmarks(&state, &slug, &headers) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(allowed.vault, &allowed.access, &headers) else {
+    let Some(view) = state.authorized_vault(&allowed.vault, &allowed.access, &headers) else {
         return workspace_denied();
     };
     let Ok(paths) = serde_json::from_str::<Vec<String>>(&body) else {
@@ -3490,7 +3642,7 @@ async fn bookmarks_save(
 /// constructs the view from `access`, which keeps the borrow where its owner is.
 struct BookmarkAccess<'a> {
     user: Username,
-    vault: &'a Vault,
+    vault: Arc<Vault>,
     access: Arc<mb_core::Access>,
     store: BookmarkStore<'a>,
 }
@@ -3504,7 +3656,7 @@ fn authorize_bookmarks<'a>(
     let data_dir = state.data_dir.as_deref()?;
     let vault = state.vault(slug)?;
     let access = state.access_for(vault.slug())?;
-    let view = state.authorized_vault(vault, &access, headers)?;
+    let view = state.authorized_vault(&vault, &access, headers)?;
     if !view.has_any_access().unwrap_or(false) {
         return None;
     }
@@ -3581,35 +3733,14 @@ async fn note(
     let Some(access) = state.access_for(vault.slug()) else {
         return not_found().await;
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return not_found().await;
     };
     let Ok(source) = view.read(&note) else {
         return not_found().await;
     };
-    if let (Some(root), Some(user)) = (&state.web_root, state.authenticated_user(&headers))
-        && let Ok(index) = std::fs::read_to_string(root.join("index.html"))
-    {
-        let Some(page) = inject_bootstrap(
-            &index,
-            vault.slug().as_str(),
-            &note,
-            user.as_str(),
-            vault.media_max_dimension(),
-        ) else {
-            // why: loud rather than degraded. `str::replace` on an absent marker is a no-op,
-            // so a bundle this server does not recognise would ship a page with an empty
-            // bootstrap — and the editor would quietly run against a local-only replica
-            // instead of syncing, which looks like working software. That is precisely the
-            // shape of the M5 asset bug, and an operator with a stale `web_root` deserves to
-            // be told rather than to discover it from a user's lost edits.
-            return server_error(&Error::Config(format!(
-                "{}/index.html does not contain the bootstrap element; the frontend build \
-                 does not match this server",
-                root.display()
-            )));
-        };
-        return ([(header::CONTENT_SECURITY_POLICY, EDITOR_CSP)], Html(page)).into_response();
+    if let Some(response) = workspace_page(&state, &vault, &headers, &note) {
+        return response;
     }
     let doc = mb_core::parse(&source);
     let title = mb_core::extract::title(&doc).unwrap_or_else(|| note.clone());
@@ -3710,7 +3841,7 @@ async fn render_public_share(
     let Ok(creator_name) = Username::parse(&creator.username) else {
         return public_share_denied();
     };
-    let view = AuthorizedVault::new(vault, &access, creator_name.clone());
+    let view = AuthorizedVault::new(&vault, &access, creator_name.clone());
     let Ok(source) = view.read(&link.scope.note_path) else {
         return public_share_denied();
     };
@@ -3725,7 +3856,7 @@ async fn render_public_share(
     };
     let rendered = render_public_document(
         state,
-        vault,
+        &vault,
         &access,
         &creator_name,
         &link.scope.note_path,
@@ -4023,14 +4154,14 @@ async fn public_share_media(
     let Ok(creator_name) = Username::parse(&creator.username) else {
         return public_share_denied();
     };
-    let view = AuthorizedVault::new(vault, &access, creator_name.clone());
+    let view = AuthorizedVault::new(&vault, &access, creator_name.clone());
     let Ok(source) = view.read(&link.scope.note_path) else {
         return public_share_denied();
     };
     let doc = mb_core::parse(&source);
     let referenced = PublicMediaAuthorization {
         state: &state,
-        vault,
+        vault: &vault,
         access: &access,
         creator: &creator_name,
         include_embeds: link.scope.include_embeds,
@@ -4041,7 +4172,7 @@ async fn public_share_media(
     if !referenced {
         return public_share_denied();
     }
-    let Ok(store) = crate::media::Store::new(vault) else {
+    let Ok(store) = crate::media::Store::new(&vault) else {
         return public_share_denied();
     };
     let Ok(bytes) = store.get(&media).await else {
@@ -4080,7 +4211,7 @@ async fn media(
     let Some(user) = state.vault_user(vault.slug(), &headers) else {
         return not_found().await;
     };
-    let Some(index) = state.indexes.get(vault) else {
+    let Some(index) = state.indexes.get(&vault) else {
         return not_found().await;
     };
     let referenced = match index.lock() {
@@ -4099,7 +4230,7 @@ async fn media(
     if !permitted {
         return not_found().await;
     }
-    let Ok(store) = crate::media::Store::new(vault) else {
+    let Ok(store) = crate::media::Store::new(&vault) else {
         return not_found().await;
     };
     let Ok(bytes) = store.get(&media).await else {
@@ -4140,7 +4271,7 @@ async fn drawing(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     let Ok(path) = view.resolve(&relative) else {
@@ -4173,7 +4304,7 @@ async fn drawing_save(
     let Some(user) = state.vault_user(vault.slug(), &headers) else {
         return workspace_denied();
     };
-    let view = AuthorizedVault::new(vault, &access, user);
+    let view = AuthorizedVault::new(&vault, &access, user);
     if let Some(base) = request.base.as_deref() {
         let Ok(current_path) = view.resolve(&relative) else {
             return drawing_conflict();
@@ -4211,7 +4342,7 @@ async fn drawing_exports(
     let Some(access) = state.access_for(vault.slug()) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     let Ok(path) = view.resolve(&relative) else {
@@ -4278,7 +4409,7 @@ async fn media_upload(
     let Some(user) = state.vault_user(vault.slug(), &headers) else {
         return workspace_denied();
     };
-    let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+    let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return workspace_denied();
     };
     if !view.has_any_write_access().unwrap_or(false) {
@@ -4324,7 +4455,7 @@ async fn media_upload(
         )
             .into_response();
     };
-    let store = match crate::media::Store::new(vault) {
+    let store = match crate::media::Store::new(&vault) {
         Ok(store) => store,
         Err(error) => return server_error(&error),
     };
@@ -4362,7 +4493,7 @@ async fn media_upload(
                 "media manifest lock poisoned".to_string(),
             ));
         };
-        if let Err(error) = crate::media::retain_original(vault, &path, original) {
+        if let Err(error) = crate::media::retain_original(&vault, &path, original) {
             return server_error(&error);
         }
     }
@@ -4523,13 +4654,13 @@ async fn note_embed(
 /// Every failure is the empty-handed [`workspace_denied`]: an unknown vault, a non-member, a
 /// reference to nothing and a reference to something unreadable are one answer, because
 /// §6.5 does not allow them to be distinguishable.
-fn resolve_reference<'a>(
-    state: &'a Arc<AppState>,
+fn resolve_reference(
+    state: &Arc<AppState>,
     slug: &str,
     target: &str,
     from: &str,
     headers: &HeaderMap,
-) -> Result<(&'a Vault, mb_index::Target, String), Box<Response>> {
+) -> Result<(Arc<Vault>, mb_index::Target, String), Box<Response>> {
     let Some(vault) = state.vault(slug) else {
         return Err(Box::new(workspace_denied()));
     };
@@ -4539,11 +4670,11 @@ fn resolve_reference<'a>(
     let Some(user) = state.vault_user(vault.slug(), headers) else {
         return Err(Box::new(workspace_denied()));
     };
-    let view = AuthorizedVault::new(vault, &access, user.clone());
+    let view = AuthorizedVault::new(&vault, &access, user.clone());
     let Ok(from) = view.identity(from) else {
         return Err(Box::new(workspace_denied()));
     };
-    let Some(index) = state.indexes.get(vault) else {
+    let Some(index) = state.indexes.get(&vault) else {
         return Err(Box::new(server_error(&Error::Config(
             "no index for this vault".to_string(),
         ))));
@@ -4650,7 +4781,32 @@ fn anchor_from(kind: &str, anchor: &str) -> Result<Option<mb_core::model::Anchor
 /// rather than something to recover from. Pulling in an HTML parser to find one known element
 /// would be a dependency on the critical path for no gain (§21.2).
 const BOOTSTRAP_MARKER: &str =
-    "<div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\"></div>";
+    "<div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\" data-vault-theme=\"\"></div>";
+
+fn workspace_page(
+    state: &AppState,
+    vault: &Vault,
+    headers: &HeaderMap,
+    note: &str,
+) -> Option<Response> {
+    let root = state.web_root.as_ref()?;
+    let user = state.authenticated_user(headers)?;
+    let index = std::fs::read_to_string(root.join("index.html")).ok()?;
+    let Some(page) = inject_bootstrap(
+        &index,
+        vault.slug().as_str(),
+        note,
+        user.as_str(),
+        vault.media_max_dimension(),
+        vault.theme(),
+    ) else {
+        return Some(server_error(&Error::Config(format!(
+            "{}/index.html does not contain the bootstrap element; the frontend build does not match this server",
+            root.display()
+        ))));
+    };
+    Some(([(header::CONTENT_SECURITY_POLICY, EDITOR_CSP)], Html(page)).into_response())
+}
 
 /// Fills the bootstrap element in, or `None` if this bundle has no such element.
 ///
@@ -4662,6 +4818,7 @@ fn inject_bootstrap(
     note: &str,
     user: &str,
     media_max_dimension: u32,
+    theme: &str,
 ) -> Option<String> {
     if !index.contains(BOOTSTRAP_MARKER) {
         return None;
@@ -4678,6 +4835,11 @@ fn inject_bootstrap(
     push_escaped_attr(&mut element, user);
     element.push_str("\" data-media-max-dimension=\"");
     element.push_str(&media_max_dimension.to_string());
+    element.push_str("\" data-vault-theme=\"");
+    push_escaped_attr(&mut element, theme);
+    if note.is_empty() {
+        element.push_str("\" data-home=\"true");
+    }
     element.push_str("\"></div>");
     Some(index.replace(BOOTSTRAP_MARKER, &element))
 }
@@ -4949,6 +5111,36 @@ async fn login(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) 
         .into_response()
 }
 
+/// Ends the browser session and returns to the sign-in page.
+///
+/// Logout is deliberately idempotent: an expired or already-revoked cookie still gets
+/// cleared, so a stale browser can always recover without editing its cookies manually.
+async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    // One let-chain rather than five nested `if let`s: every condition here is sequential
+    // and short-circuiting, and clippy refuses the nested form (`collapsible_if`). A session
+    // that cannot be identified is simply not revoked — the cookie is cleared below either
+    // way, so a caller loses the session whether or not the server could name it.
+    if let Some(cookie) = session_cookie(&headers)
+        && let Ok(auth) = state.security.auth.lock()
+        && let Ok(Some(_)) = auth.authenticate_signed_session_cookie(cookie)
+        && let Some((raw_token, _)) = cookie.split_once('.')
+        && let Some(token) = mb_auth::SessionToken::from_secret(raw_token)
+    {
+        drop(auth.revoke_session(&token));
+    }
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::LOCATION, "/"),
+            (
+                header::SET_COOKIE,
+                "mb_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+            ),
+        ],
+    )
+        .into_response()
+}
+
 impl AppState {
     fn allow_share_ip(&self, peer: Option<IpAddr>) -> bool {
         peer.is_none_or(|peer| {
@@ -5136,11 +5328,13 @@ impl AppState {
     /// §3.1 says malformed input denies everything, and silently serving a superseded ACL
     /// is exactly the "permission check you forgot" this project treats as a breach.
     pub fn reload_access(&self) -> Vec<String> {
+        let vaults = self.vault_snapshot();
         let Ok(mut access) = self.security.access.write() else {
             return vec!["access policy lock poisoned".to_string()];
         };
         let mut errors = Vec::new();
-        for (slug, vault) in &self.vaults {
+        for vault in &vaults {
+            let slug = vault.slug();
             let path = vault.root().join("access.toml");
             let stamp = FileStamp::of(&path);
             let Some(current) = access.get(slug) else {
@@ -5203,12 +5397,12 @@ impl AppState {
     ///
     /// Returns only readable targets, so a caller can never act on a role of
     /// [`mb_core::Role::None`]. Every failure yields the same [`SYNC_DENIED`] frame.
-    fn sync_target<'a>(
-        &'a self,
+    fn sync_target(
+        &self,
         user: &Username,
         slug: &str,
         note: &str,
-    ) -> Result<(&'a Vault, crate::vault::CanonicalNote, mb_core::Role), ServerFrame> {
+    ) -> Result<(Arc<Vault>, crate::vault::CanonicalNote, mb_core::Role), ServerFrame> {
         self.vault(slug)
             .and_then(|vault| {
                 // Resolve first: clients must not create arbitrary documents by naming them,
@@ -5426,14 +5620,32 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
     );
     out.push_str(policy.form_action());
     out.push_str("\" />\n");
+    out.push_str("<link rel=\"icon\" href=\"data:image/svg+xml,");
+    out.push_str(&encode_path(include_str!("../../../web/public/icon.svg")));
+    out.push_str("\" type=\"image/svg+xml\" />\n");
     out.push_str("<title>");
     push_escaped_text(&mut out, title);
     out.push_str(" · Memberberry</title>\n<style>");
     out.push_str(TOKENS);
     out.push_str(STYLE);
-    out.push_str(
-        "</style>\n</head>\n<body>\n<header><a href=\"/\">Memberberry</a></header>\n<main>\n",
-    );
+    out.push_str("</style>\n</head>\n<body");
+    // why: a class per page kind rather than a stylesheet per page. Sign-in and onboarding
+    // are one decision each and are centred; the library is a listing and is not. Both are
+    // the same document shell, so the difference is one attribute.
+    match policy {
+        PagePolicy::VaultIndex => out.push_str(" class=\"mb-library\""),
+        PagePolicy::SignIn => out.push_str(" class=\"mb-auth\""),
+        PagePolicy::Content | PagePolicy::PublicContent | PagePolicy::PublicPassword => {}
+    }
+    out.push_str(">\n<header>");
+    out.push_str(BRAND);
+    if policy == PagePolicy::VaultIndex {
+        out.push_str("<details class=\"mb-menu\"><summary>Menu</summary><nav aria-label=\"Account navigation\"><a href=\"/\">Your vaults</a><a href=\"/logout\">Log out</a></nav></details>");
+    }
+    out.push_str("</header>\n<main>\n");
+    if policy == PagePolicy::VaultIndex {
+        out.push_str("<a class=\"mb-library-back\" href=\"/\">← Your vaults</a><p class=\"mb-library-caption\">Your notebook</p>");
+    }
     out.push_str("<h1 class=\"mb-page-title\">");
     push_escaped_text(&mut out, title);
     out.push_str("</h1>\n");
@@ -5630,45 +5842,103 @@ async fn shutdown() {
 /// is the right trade for a read-only fallback that must render with no network round trips.
 const TOKENS: &str = include_str!("../../../web/src/shell/tokens.css");
 
+/// The product lockup in every server-rendered header.
+///
+/// why: a drawn mark rather than the uppercase letter-spaced wordmark this replaces, and
+/// `currentColor` rather than a fill — these pages are themed by the same contract the
+/// application is (§20.1), so the mark has to follow `--accent-primary` into a dark theme
+/// like everything else does.
+const BRAND: &str = "<a class=\"mb-brand\" href=\"/\"><svg class=\"mb-brand-mark\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5.5 5.5A2.5 2.5 0 0 1 8 3h10.5v18H8a2.5 2.5 0 0 1-2.5-2.5z\" /><path d=\"M9.5 3v18\" /></svg><span>Memberberry</span></a>";
+
+/// The mark on a note row. Drawn, for the reason the brand is: `\u{25A4}` is a box-drawing
+/// character standing in for a document, at whatever size the platform font gives it.
+const NOTE_MARK: &str = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\" /><path d=\"M14 3v5h5\" /><path d=\"M9 13h6\" /><path d=\"M9 17h4\" /></svg>";
+
+/// The mark on a vault row.
+const VAULT_MARK: &str = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.5 5.5A2.5 2.5 0 0 1 8 3h10.5v18H8a2.5 2.5 0 0 1-2.5-2.5z\" /><path d=\"M9.5 3v18\" /></svg>";
+
 /// Rules for the server-rendered pages. Colour, type, spacing and radii come from `TOKENS`;
 /// `scripts/token-check.py` fails the build on a literal colour or an undeclared token.
 const STYLE: &str = "\
 *{box-sizing:border-box}\
-body{margin:0;background:var(--surface-canvas);color:var(--text-primary);font:var(--text-md)/var(--leading-body) var(--font-body)}\
-header{border-bottom:1px solid var(--border-subtle);padding:var(--space-5) var(--space-7);font:var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui);letter-spacing:var(--tracking-wide);text-transform:uppercase}\
-header a{color:var(--accent-primary);text-decoration:none}\
-main{max-width:var(--editor-measure);margin:0 auto;padding:var(--space-8) var(--space-7) var(--space-9)}\
+body{margin:0;min-height:100dvh;background:var(--surface-canvas);color:var(--text-primary);font:var(--text-md)/var(--leading-body) var(--font-body)}\
+header{display:flex;align-items:center;justify-content:space-between;gap:var(--space-6);min-height:var(--topbar-height);padding:0 var(--space-5);border-bottom:1px solid var(--border-subtle);background:var(--surface-canvas)}\
+.mb-brand{display:inline-flex;align-items:center;gap:var(--space-4);min-height:var(--touch-target-min);color:var(--text-primary);font:var(--weight-medium) var(--text-sm)/var(--leading-flat) var(--font-ui);text-decoration:none}\
+.mb-brand-mark{flex:0 0 auto;width:var(--space-6);height:var(--space-6);color:var(--accent-primary)}\
+main{max-width:var(--editor-measure);margin:0 auto;padding:var(--space-9) var(--space-7)}\
 h1,h2,h3,h4,h5,h6{line-height:var(--leading-snug);margin:var(--space-8) 0 var(--space-5);letter-spacing:var(--tracking-display)}\
-.mb-page-title{margin-top:0;font-size:var(--text-2xl)}\
+.mb-page-title{margin-top:0;font:var(--weight-medium) var(--text-2xl)/var(--leading-display) var(--font-title)}\
 a{color:var(--accent-primary)}\
-code{background:var(--surface-sunken);padding:.1em .35em;border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:.9em}\
-pre{background:var(--surface-sunken);padding:var(--space-6);border-radius:var(--radius-md);overflow-x:auto;font:var(--text-sm)/var(--leading-body) var(--font-mono)}\
-pre code{background:none;padding:0;font-size:inherit}\
-blockquote{border-left:3px solid var(--border-subtle);margin:var(--space-6) 0;padding:var(--space-2) 0 var(--space-2) var(--space-6);color:var(--text-muted)}\
-table{border-collapse:collapse;width:100%;margin:var(--space-6) 0}\
-th,td{border:1px solid var(--border-subtle);padding:var(--space-3) var(--space-4);text-align:left}\
-hr{border:0;border-top:1px solid var(--border-subtle);margin:var(--space-8) 0}\
+.mb-button{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-3);min-height:var(--touch-target-min);padding:0 var(--space-6);border:1px solid var(--accent-primary);border-radius:var(--radius-sm);color:var(--presence-label);background:var(--accent-primary);font:var(--weight-medium) var(--text-sm)/var(--leading-flat) var(--font-ui);text-decoration:none;cursor:pointer}\
+.mb-button:hover{background:color-mix(in srgb,var(--text-primary) 14%,var(--accent-primary))}\
+.mb-quiet{border-color:var(--border-subtle);color:var(--text-muted);background:var(--surface-note)}\
+.mb-quiet:hover{border-color:var(--accent-primary);color:var(--accent-primary);background:var(--surface-note)}\
+.mb-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-4);margin:var(--space-8) 0 0}\
+.mb-action{display:inline-flex;align-items:center;text-decoration:none}\
+.mb-empty code{overflow-wrap:anywhere}\
+.mb-note-list,.mb-vault-list{margin:var(--space-6) 0 0;padding:0;list-style:none}\
+.mb-note-list li,.mb-vault-list li{padding:0;border:0}\
+.mb-note-list a,.mb-vault-list a{display:flex;align-items:center;gap:var(--space-5);min-height:var(--touch-target-min);padding:var(--space-4) var(--space-5);border-radius:var(--radius-md);color:var(--text-primary);text-decoration:none}\
+.mb-note-list a:hover,.mb-vault-list a:hover,.mb-menu nav a:hover{background:var(--surface-hover)}\
+.mb-note-icon{display:grid;place-items:center;flex-shrink:0;width:var(--space-8);height:var(--space-8);border-radius:var(--radius-sm);color:var(--accent-primary);background:var(--surface-raised)}\
+.mb-note-icon svg{width:var(--icon-size);height:var(--icon-size)}\
+.mb-note-info{display:flex;flex-direction:column;gap:var(--space-1);min-width:0;overflow-wrap:anywhere}\
+.mb-note-name{font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-note-folder{font:var(--text-xs)/var(--leading-snug) var(--font-ui);color:var(--text-muted)}\
+.mb-note-arrow{margin-left:auto;color:var(--text-muted)}\
+.mb-auth main{display:grid;align-content:center;gap:var(--space-6);width:min(26rem,100%);min-height:calc(100dvh - var(--topbar-height) - var(--space-9))}\
+.mb-auth .mb-page-title{text-align:center}\
+.mb-auth .mb-form{width:100%;max-width:none;margin:0}\
+.mb-auth .mb-count,.mb-auth .mb-empty{text-align:center}\
+.mb-form{display:flex;flex-direction:column;gap:var(--space-6);max-width:26rem;margin:var(--space-7) 0;padding:var(--space-7);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);background:var(--surface-note);box-shadow:var(--shadow-md)}\
+.mb-field{display:flex;flex-direction:column;gap:var(--space-3)}\
+.mb-field label{color:var(--text-muted);font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-form input{min-height:var(--touch-target-min);padding:var(--space-4) var(--space-5);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-primary);background:var(--surface-sunken);font:var(--text-md)/var(--leading-flat) var(--font-ui)}\
+.mb-form input:focus-visible,.mb-button:focus-visible{outline:var(--focus-ring-width) solid var(--focus-ring);outline-offset:var(--focus-ring-offset)}\
+.mb-form-error{margin:0;color:var(--state-danger);font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-library main{max-width:64rem;padding-top:var(--space-7)}\
+.mb-library-back{display:inline-flex;align-items:center;gap:var(--space-3);min-height:var(--touch-target-min);color:var(--text-muted);font:var(--text-sm)/var(--leading-snug) var(--font-ui);text-decoration:none}\
+.mb-library-back:hover{color:var(--accent-primary)}\
+.mb-library-caption{margin:var(--space-6) 0 var(--space-3);color:var(--text-muted);font:var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui);letter-spacing:var(--tracking-wide);text-transform:uppercase}\
+.mb-library .mb-page-title{margin-bottom:var(--space-8);overflow-wrap:anywhere;font-size:var(--text-display)}\
+.mb-menu{position:relative;font:var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-menu summary{display:flex;align-items:center;gap:var(--space-3);min-height:var(--control-height);padding:0 var(--space-4);border-radius:var(--radius-sm);color:var(--text-muted);cursor:pointer;list-style:none}\
+.mb-menu summary:hover{color:var(--text-primary);background:var(--surface-hover)}\
+.mb-menu summary::after{content:'▾'}\
+.mb-menu nav{position:absolute;right:0;top:calc(100% + var(--space-3));z-index:2;min-width:12rem;padding:var(--space-3);border:1px solid var(--border-subtle);border-radius:var(--radius-md);background:var(--surface-note);box-shadow:var(--shadow-md)}\
+.mb-menu nav a{display:flex;align-items:center;min-height:var(--touch-target-min);padding:0 var(--space-4);border-radius:var(--radius-sm);color:var(--text-primary);text-decoration:none}\
+.mb-library :is(a,summary):focus-visible{outline:var(--focus-ring-width) solid var(--focus-ring);outline-offset:var(--focus-ring-offset)}\
+.mb-library-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6);padding-bottom:var(--space-5);border-bottom:1px solid var(--border-subtle)}\
+.mb-library-toolbar h2{margin:0;font:var(--weight-medium) var(--text-lg)/var(--leading-snug) var(--font-ui)}\
+.mb-library-toolbar .mb-count{margin:var(--space-3) 0 0}\
+.mb-create{width:min(22rem,65%)}\
+.mb-create summary{display:flex;align-items:center;gap:var(--space-3);width:fit-content;min-height:var(--touch-target-min);margin-left:auto;padding:0 var(--space-5);border:1px solid var(--accent-primary);border-radius:var(--radius-sm);color:var(--presence-label);background:var(--accent-primary);font:var(--weight-medium) var(--text-sm)/var(--leading-flat) var(--font-ui);cursor:pointer;list-style:none}\
+.mb-create summary::before{content:'+';font-size:var(--text-md)}\
+.mb-create[open] summary::before{content:'−'}\
+.mb-library summary::-webkit-details-marker{display:none}\
+.mb-create .mb-form{max-width:none;margin:var(--space-5) 0 0;padding:var(--space-5);gap:var(--space-5);box-shadow:none}\
+.mb-create input{width:100%;min-width:0}\
+.mb-count,.mb-breadcrumb,.mb-empty{color:var(--text-muted);font:var(--text-xs)/var(--leading-snug) var(--font-ui)}\
+.mb-breadcrumb{display:block;margin-bottom:var(--space-5)}\
+code{padding:.1em .35em;border-radius:var(--radius-sm);background:var(--surface-sunken);font-family:var(--font-mono);font-size:.9em}\
+pre{padding:var(--space-6);border-radius:var(--radius-md);background:var(--surface-sunken);overflow-x:auto;font:var(--text-sm)/var(--leading-body) var(--font-mono)}\
+pre code{padding:0;background:none;font-size:inherit}\
+blockquote{margin:var(--space-6) 0;padding:var(--space-2) 0 var(--space-2) var(--space-6);border-left:3px solid var(--border-subtle);color:var(--text-muted)}\
+table{width:100%;margin:var(--space-6) 0;border-collapse:collapse}\
+th,td{padding:var(--space-3) var(--space-4);border:1px solid var(--border-subtle);text-align:left}\
+hr{margin:var(--space-8) 0;border:0;border-top:1px solid var(--border-subtle)}\
 img{max-width:100%;height:auto}\
 ul,ol{padding-left:var(--space-7)}\
-.mb-task-list{list-style:none;padding-left:var(--space-2)}\
+.mb-task-list{padding-left:var(--space-2);list-style:none}\
 .mb-task-done{color:var(--text-muted);text-decoration:line-through}\
 .mb-task-cancelled{color:var(--text-muted);text-decoration:line-through;opacity:.7}\
 .mb-task p{display:inline}\
 .mb-tag{color:var(--accent-primary);font-size:.9em}\
-.mb-callout{border:1px solid var(--border-subtle);border-left:3px solid var(--accent-primary);border-radius:var(--radius-md);padding:var(--space-5) var(--space-6);margin:var(--space-6) 0;background:var(--surface-note)}\
+.mb-callout{margin:var(--space-6) 0;padding:var(--space-5) var(--space-6);border:1px solid var(--border-subtle);border-left:3px solid var(--accent-primary);border-radius:var(--radius-md);background:var(--surface-note)}\
 .mb-callout-title{font-weight:var(--weight-bold);text-transform:capitalize}\
 .mb-math,.mb-math-block{font-family:var(--font-mono)}\
 .mb-math-block{display:block;margin:var(--space-6) 0;text-align:center}\
-.mb-note-list,.mb-vault-list{list-style:none;padding:0}\
-.mb-note-list li,.mb-vault-list li{border-bottom:1px solid var(--border-subtle);padding:var(--space-3) 0}\
-.mb-count,.mb-breadcrumb,.mb-empty{color:var(--text-muted);font:var(--text-xs)/var(--leading-snug) var(--font-ui)}\
-.mb-form{display:flex;flex-direction:column;gap:var(--space-6);max-width:22rem;margin:var(--space-7) 0;padding:var(--space-7);border:1px solid var(--border-subtle);border-radius:var(--radius-md);background:var(--surface-note);box-shadow:var(--shadow-sm)}\
-.mb-field{display:flex;flex-direction:column;gap:var(--space-3)}\
-.mb-field label{color:var(--text-muted);font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
-.mb-form input{min-height:var(--touch-target-min);padding:var(--space-4) var(--space-5);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-primary);background:var(--surface-sunken);font:var(--text-md)/var(--leading-flat) var(--font-ui)}\
-.mb-button{min-height:var(--touch-target-min);padding:var(--space-4) var(--space-6);border:1px solid var(--accent-primary);border-radius:var(--radius-sm);color:var(--presence-label);background:var(--accent-primary);font:var(--weight-bold) var(--text-sm)/var(--leading-flat) var(--font-ui);cursor:pointer}\
-.mb-form input:focus-visible,.mb-button:focus-visible{outline:var(--focus-ring-width) solid var(--focus-ring);outline-offset:var(--focus-ring-offset)}\
-.mb-form-error{margin:0;color:var(--state-danger);font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+@media(max-width:767px){main{padding:var(--space-7) var(--space-5)}header{padding:0 var(--space-4)}.mb-library main{padding:var(--space-5)}.mb-library-toolbar{flex-wrap:wrap}.mb-create{width:auto;max-width:100%}.mb-create[open]{width:100%}.mb-create[open] summary{margin-left:0}}\
 ";
 
 #[cfg(test)]

@@ -15,6 +15,7 @@
   never be one.
 -->
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import type { TagView } from "./tags.svelte.js";
   import { buildTagTree, tagKeyAction, taggedLabel, visibleTagRows } from "./tags.js";
 
@@ -99,7 +100,7 @@
               aria-expanded={row.expanded}
               onclick={() => setExpanded(row.node.key, !row.expanded)}
             >
-              <span aria-hidden="true">{row.expanded ? "▾" : "▸"}</span>
+              <Icon name="chevron-right" variant={row.expanded ? "tag-caret is-open" : "tag-caret"} />
             </button>
           {:else}
             <span class="tag-twisty is-leaf" aria-hidden="true"></span>
@@ -149,7 +150,7 @@
                       title={note.path}
                       onclick={() => onopen(note.path)}
                     >
-                      <span class="tree-icon" aria-hidden="true">·</span>
+                      <span class="tree-icon" aria-hidden="true"><Icon name="note" /></span>
                       <span class="tree-label">{taggedLabel(note)}</span>
                     </button>
                   </li>

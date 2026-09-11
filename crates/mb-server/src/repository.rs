@@ -38,6 +38,44 @@ impl<'a> AuthorizedVault<'a> {
         })
     }
 
+    /// Lists readable empty directories without following symlinks or exposing hidden content.
+    /// Nonempty folders are inferred from the separately filtered note list.
+    pub fn empty_folders(&self) -> Result<Vec<String>, Error> {
+        let root = self.vault.notes_root();
+        let mut pending = vec![root.to_path_buf()];
+        let mut folders = Vec::new();
+        while let Some(directory) = pending.pop() {
+            let entries = std::fs::read_dir(&directory)
+                .and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
+                .map_err(|source| Error::ReadDir {
+                    path: directory.clone(),
+                    source,
+                })?;
+            if entries.is_empty()
+                && directory != root
+                && let Ok(relative) = directory.strip_prefix(root)
+                && let Some(relative) = relative.to_str()
+                && self.can_read(relative)
+            {
+                folders.push(relative.to_string());
+            }
+            for entry in entries {
+                if entry.file_name().to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                let kind = entry.file_type().map_err(|source| Error::ReadDir {
+                    path: directory.clone(),
+                    source,
+                })?;
+                if kind.is_dir() {
+                    pending.push(entry.path());
+                }
+            }
+        }
+        folders.sort();
+        Ok(folders)
+    }
+
     /// Returns whether this user may discover this vault in the switcher.
     ///
     /// A vault-wide membership makes even an empty vault discoverable. A path-specific

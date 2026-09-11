@@ -10,6 +10,7 @@
   buttons, and the close control is a real button inside each tab rather than a click region.
 -->
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import type { GroupId, Tab, TabGroup } from "./workspace.js";
 
   interface Props {
@@ -144,7 +145,7 @@
           onclose(tab.id);
         }}
       >
-        ×
+        <Icon name="close" />
       </button>
     </div>
   {/each}

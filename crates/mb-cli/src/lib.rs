@@ -15,6 +15,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod doctor;
+mod obsidian;
+
 pub const USAGE: &str = "\
 memberberry — self-hosted notes that stay plain Markdown
 
@@ -27,10 +30,11 @@ USAGE:
     memberberry user reset-password --username U --actor A  Replace a user's password
     memberberry normalize [--check] [PATH]...   Rewrite notes into canonical Markdown
     memberberry inspect [PATH]                  Show the parsed structure of one note
+    memberberry import-obsidian [--write] VAULT Scan an Obsidian vault; add IDs only with --write
     memberberry reindex [--slug S] [--config FILE]  Rebuild a vault's index from its notes
     memberberry export [--materialize-media] [--materialize-emoji] [--slug S]
-                                                    Materialize referenced remote assets
-    memberberry doctor [--slug S] [--config FILE]   Report orphaned media objects
+                      [--static-site DIR --username U]  Export assets or a readable static site
+    memberberry doctor [--fix] [--slug S] [--config FILE]  Check vault integrity
     memberberry gen-vault --out DIR [--notes N] Generate a synthetic vault for scale tests
 
 With no PATH, `normalize` and `inspect` read stdin and write stdout.
@@ -88,6 +92,7 @@ pub fn run(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write) -> Result
         Some("user") => user(rest, stdin, out),
         Some("normalize") => normalize(rest, stdin, out),
         Some("inspect") => inspect(rest, stdin, out),
+        Some("import-obsidian") => import_obsidian(rest, out),
         Some("gen-vault") => gen_vault(rest, out),
         Some("reindex") => reindex(rest, out),
         Some("export") => export(rest, out),
@@ -98,6 +103,15 @@ pub fn run(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write) -> Result
         }
         Some(other) => Err(format!("unknown command `{other}`\n\n{USAGE}")),
     }
+}
+
+fn import_obsidian(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
+    let write = args.iter().any(|arg| arg == "--write");
+    let paths: Vec<&String> = args.iter().filter(|arg| !arg.starts_with("--")).collect();
+    let [path] = paths.as_slice() else {
+        return Err("import-obsidian needs exactly one VAULT directory".to_string());
+    };
+    obsidian::run(&expand_home(path)?, write, out)
 }
 
 fn io(what: &str) -> impl Fn(std::io::Error) -> String + '_ {
@@ -135,18 +149,10 @@ fn serve(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
     let addr = config.bind_addr().map_err(|e| e.to_string())?;
     let auth_path = auth_db_path(args);
     let auth = mb_auth::AuthDb::open(&auth_path).map_err(|error| error.to_string())?;
-    if auth.needs_setup().map_err(|error| error.to_string())? {
-        return Err(format!(
-            "no server administrator exists; run `memberberry user setup --config {}` first",
-            path.display()
-        ));
-    }
-
     if vaults.is_empty() {
         writeln!(
             out,
-            "No vaults registered in {}. Add one with:\n  \
-             memberberry vault create --slug personal --path ~/Notes",
+            "No vaults registered in {}. Open Memberberry in your browser to create your first vault.",
             path.display()
         )
         .map_err(io("writing report"))?;
@@ -185,7 +191,9 @@ fn serve(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
             web_root,
         )
         .map_err(|error| error.to_string())?
-        .with_data_dir(data_dir.to_path_buf()),
+        .with_data_dir(data_dir.to_path_buf())
+        .with_vault_management(path, addr.ip().is_loopback())
+        .map_err(|error| error.to_string())?,
     );
     runtime
         .block_on(mb_server::http::serve(state, addr))
@@ -280,6 +288,7 @@ fn media_runtime() -> Result<tokio::runtime::Runtime, String> {
 fn export(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
     let materialize_media = args.iter().any(|arg| arg == "--materialize-media");
     let materialize_emoji = args.iter().any(|arg| arg == "--materialize-emoji");
+    let static_destination = flag(args, "--static-site").map(PathBuf::from);
     let path = config_path(args);
     let config = mb_server::ServerConfig::load(&path).map_err(|error| error.to_string())?;
     let vaults = config
@@ -290,7 +299,7 @@ fn export(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
     let data_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let shared_root = data_dir.join("emoji").join("packs");
     for vault in selected {
-        if materialize_media || !materialize_emoji {
+        if materialize_media || (!materialize_emoji && static_destination.is_none()) {
             let written = runtime
                 .block_on(mb_server::media::materialize(vault))
                 .map_err(|error| error.to_string())?;
@@ -301,13 +310,34 @@ fn export(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
             )
             .map_err(io("writing report"))?;
         }
-        if materialize_emoji || !materialize_media {
+        if materialize_emoji || (!materialize_media && static_destination.is_none()) {
             let copied = mb_server::emoji::materialize(Some(&shared_root), vault)
                 .map_err(|error| error.to_string())?;
             writeln!(
                 out,
                 "vault {}: materialized {copied} emoji packs",
                 vault.slug()
+            )
+            .map_err(io("writing report"))?;
+        }
+        if let Some(destination) = &static_destination {
+            let username =
+                flag(args, "--username").ok_or("static-site export needs --username USER")?;
+            if flag(args, "--slug").is_none() {
+                return Err(
+                    "static-site export needs exactly one vault selected with --slug".to_string(),
+                );
+            }
+            let auth_path = auth_db_path(args);
+            let auth =
+                mb_auth::AuthDb::open_read_only(&auth_path).map_err(|error| error.to_string())?;
+            let notes =
+                mb_server::static_site::write(vault, &auth, username, destination, &runtime)?;
+            writeln!(
+                out,
+                "vault {}: exported {notes} readable notes to {}",
+                vault.slug(),
+                destination.display()
             )
             .map_err(io("writing report"))?;
         }
@@ -323,25 +353,25 @@ fn doctor(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
         .map_err(|error| error.to_string())?;
     let selected = selected_vaults(args, &path, &vaults)?;
     let runtime = media_runtime()?;
-    let mut found = false;
-    for vault in selected {
-        for path in runtime
-            .block_on(mb_server::media::orphaned(vault))
-            .map_err(|error| error.to_string())?
-        {
-            found = true;
-            writeln!(out, "vault {}: orphaned media {path}", vault.slug())
-                .map_err(io("writing report"))?;
+    let auth_path = auth_db_path(args);
+    let auth = if auth_path.is_file() {
+        if args.iter().any(|arg| arg == "--fix") {
+            mb_auth::AuthDb::open(&auth_path)
+        } else {
+            mb_auth::AuthDb::open_read_only(&auth_path)
         }
-    }
-    if !found {
-        writeln!(out, "media: no orphaned objects").map_err(io("writing report"))?;
-    }
-    Ok(if found {
-        ExitCode::FAILURE
     } else {
-        ExitCode::SUCCESS
-    })
+        mb_auth::AuthDb::open_in_memory()
+    }
+    .map_err(|error| error.to_string())?;
+    doctor::run(
+        &selected,
+        &auth,
+        path.parent().unwrap_or_else(|| Path::new(".")),
+        args.iter().any(|arg| arg == "--fix"),
+        &runtime,
+        out,
+    )
 }
 
 /// `memberberry vault {list, create, remove}` — the registry (`SPEC.md` §6.1).

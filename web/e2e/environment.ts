@@ -68,6 +68,8 @@ const SCRATCH_PURPOSES: readonly string[] = [
   "conflict",
   "conflict-resolve",
   "history-trash",
+  // Types two letters into a note to prove a bare key does not reach the shell (§8.4).
+  "shortcut-typing",
 ];
 const SCRATCH_PROJECTS: readonly string[] = ["desktop", "mobile"];
 
@@ -205,6 +207,7 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
   // note that is long enough to scroll. Nothing else links to it, so its backlink count is
   // this one link and stays that way.
   "Outline/Other.md": "# Other\n\nA second tab's worth of note.\n",
+  "Themes/Notebook.md": "# A little space to think\n\nMake room for a good idea.\n\n## On my mind\n\nA place for the things worth remembering, the questions still open, and the small details of an ordinary day.\n\n- Collect a thought before it slips away\n- Follow an interesting question\n- Leave a little room for tomorrow\n\n> You do not need to have it all figured out to begin.\n",
   // Nested-tag fixtures (§9.3). Read-only, in their own folder so the tag counts asserted in
   // `tags.spec.ts` are exactly these three notes and nothing a later fixture adds. The two
   // spellings of `#Project` are the point of the first two: case is not identity, so the pane

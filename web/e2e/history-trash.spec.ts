@@ -9,9 +9,12 @@ import { E2E_VAULT, scratchNote } from "./environment.js";
 const EDITOR = ".editor-surface .tiptap";
 
 async function showContext(page: import("@playwright/test").Page): Promise<void> {
+  await expect(page.locator('.topbar .sidebar-toggle[data-side="right"]')).toBeVisible();
   const toggle = page.getByRole("button", { name: /^Show Context$/ });
   if (await toggle.isVisible()) await toggle.click();
-  await expect(page.getByRole("region", { name: "History", exact: true })).toBeVisible();
+  const history = page.getByRole("region", { name: "History", exact: true });
+  if (!(await history.isVisible())) await page.locator(".notebook-section > summary").filter({ hasText: "Note history" }).click();
+  await expect(history).toBeVisible();
 }
 
 async function hideMobileContext(page: import("@playwright/test").Page): Promise<void> {
@@ -27,7 +30,7 @@ test("restores a saved version, then trashes and restores the Markdown note", as
   await page.goto(`/v/personal/${note}`);
 
   const editor = page.locator(EDITOR).first();
-  await editor.click();
+  await editor.getByText("A note this test may edit.", { exact: true }).click();
   await page.keyboard.press("ControlOrMeta+End");
   await page.keyboard.press("Enter");
   await page.keyboard.type("First saved version.");
@@ -40,7 +43,7 @@ test("restores a saved version, then trashes and restores the Markdown note", as
   await expect(history.locator(".history-row")).toHaveCount(1);
 
   await hideMobileContext(page);
-  await editor.click();
+  await editor.getByText("A note this test may edit.", { exact: true }).click();
   await page.keyboard.press("ControlOrMeta+End");
   await page.keyboard.press("Enter");
   await page.keyboard.type("Unsnapshotted change.");
@@ -53,6 +56,7 @@ test("restores a saved version, then trashes and restores the Markdown note", as
   await expect.poll(() => readFileSync(path, "utf8"), { timeout: 15_000, intervals: [100] })
     .not.toContain("Unsnapshotted change.");
 
+  await page.locator(".notebook-section > summary").filter({ hasText: "Deleted notes" }).click();
   const trash = page.getByRole("region", { name: "Trash", exact: true });
   page.once("dialog", (dialog) => void dialog.accept());
   await trash.getByRole("button", { name: "Move current note to trash" }).click();

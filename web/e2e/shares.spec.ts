@@ -3,10 +3,12 @@
 import { expect, signIn, test } from "./fixtures.js";
 
 async function openSharePanel(page: import("@playwright/test").Page): Promise<import("@playwright/test").Locator> {
+  await expect(page.locator(".editor-surface .tiptap")).toBeVisible();
   const panel = page.getByRole("region", { name: "Public shares" });
   if (await page.getByRole("button", { name: "Show Navigation" }).count() > 0) {
     await page.getByRole("button", { name: "Show Navigation" }).click();
   }
+  await page.locator(".notebook-section > summary").filter({ hasText: "Share a note" }).click();
   await expect(panel).toBeVisible();
   return panel;
 }

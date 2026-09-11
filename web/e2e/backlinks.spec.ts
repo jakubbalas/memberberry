@@ -74,7 +74,7 @@ test("the panel follows the note in front", async ({ page }, info) => {
   await expect(page.locator(PANEL)).toContainText("Nothing links here yet.");
 
   // Open the linked-to note in a second tab and the panel has to change with it.
-  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.press("ControlOrMeta+O");
   const switcher = page.getByRole("dialog", { name: "Open a note" });
   await expect(switcher).toBeVisible();
   await page.keyboard.type("roadmap");

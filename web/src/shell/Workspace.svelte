@@ -20,7 +20,12 @@
   import NoteTree from "./NoteTree.svelte";
   import Outline from "./Outline.svelte";
   import PaneTree from "./PaneTree.svelte";
+  import Icon from "./Icon.svelte";
+  import Home from "./Home.svelte";
+  import NamePrompt from "./NamePrompt.svelte";
+  import { createFolder, fetchFolders } from "./folders.js";
   import Sidebar from "./Sidebar.svelte";
+  import TopBar from "./TopBar.svelte";
   import TagPane from "./TagPane.svelte";
   import SearchPane from "./SearchPane.svelte";
   import InboxPane from "./InboxPane.svelte";
@@ -60,8 +65,14 @@
   import { HistoryView } from "./history.js";
   import TrashPane from "./TrashPane.svelte";
   import { TrashView } from "./trash.js";
+  import type { ShippedTheme } from "./theme.js";
+  import { requestPalette } from "./palette.js";
+  import { detectPlatform, formatBinding, parseBinding } from "./hotkeys.js";
+  import { obsidianDefaultBinding } from "./default-keymap.js";
 
   interface Props {
+    /** Shows the vault home until a workspace action opens a note. */
+    readonly home?: boolean;
     readonly store: WorkspaceStore;
     readonly session?: Pick<NoteBootstrap, "vault" | "user"> | undefined;
     /** Injectable so a layout test can render panes without editors or sockets. */
@@ -109,6 +120,7 @@
     readonly daily?: DailyView | undefined;
     /** Authenticated public-share management, supplied by a test or built from the session. */
     readonly shares?: ShareView | undefined;
+    readonly vaultTheme?: ShippedTheme | undefined;
   }
 
   const {
@@ -136,9 +148,43 @@
     createNote,
     daily: suppliedDaily,
     shares: suppliedShares,
+    vaultTheme,
+    home = false,
   }: Props = $props();
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
+  const initialWorkspace = untrack(() => store.current);
+  const showingHome = $derived(home && store.current === initialWorkspace);
+  let emptyFolders = $state<readonly string[]>([]);
+  let folderPrompt = $state(false);
+  let folderBusy = $state(false);
+  let folderError = $state<string | undefined>();
+  let folderStatus = $state("");
+
+  async function refreshFolders(): Promise<void> {
+    const folders = await fetchFolders(vaultSlug);
+    emptyFolders = folders ?? [];
+    folderStatus = folders === undefined ? "Empty folders are unavailable." : "";
+  }
+
+  $effect(() => {
+    if (session !== undefined) void refreshFolders();
+  });
+
+  async function submitFolder(typed: string): Promise<void> {
+    if (folderBusy) return;
+    folderBusy = true;
+    folderError = undefined;
+    const result = await createFolder(vaultSlug, typed.trim());
+    folderBusy = false;
+    if ("refused" in result) {
+      folderError = result.refused;
+      return;
+    }
+    folderPrompt = false;
+    navigationView = "Notes";
+    await refreshFolders();
+  }
 
   /**
    * Built once, from the session as it was at mount.
@@ -255,14 +301,14 @@
    * viewport they sit beside the content and start open.
    */
   function readCollapsed(): { left: boolean; right: boolean } {
-    const byDefault = { left: narrowViewport, right: narrowViewport };
+    const byDefault = { left: narrowViewport, right: home || narrowViewport };
     try {
       const raw = preferences?.getItem(COLLAPSE_KEY);
       if (raw === null || raw === undefined) return byDefault;
       const parsed: unknown = JSON.parse(raw);
       if (typeof parsed !== "object" || parsed === null) return byDefault;
       const record = parsed as Record<string, unknown>;
-      return { left: record["left"] === true, right: record["right"] === true };
+      return { left: home ? narrowViewport : record["left"] === true, right: home || record["right"] === true };
     } catch {
       // A corrupt preference costs the user nothing worth recovering.
       return byDefault;
@@ -311,6 +357,14 @@
    * (`PaneTree.svelte`), so the focused group *is* the pane the link was clicked in.
    */
   let shell = $state<HTMLElement | undefined>(undefined);
+  const navigationViews = [
+    { name: "Notes", icon: "note" },
+    { name: "Search", icon: "search" },
+    { name: "Tags", icon: "tags" },
+    { name: "Tasks", icon: "tasks" },
+    { name: "Calendar", icon: "calendar" },
+  ] as const;
+  let navigationView = $state<(typeof navigationViews)[number]["name"]>("Notes");
 
   $effect(() => {
     const element = shell;
@@ -354,6 +408,14 @@
     };
   });
 
+  /** How the quick switcher's keystroke is written on this platform, for the bar's hint. */
+  const findHint = $derived.by(() => {
+    const binding = parseBinding(obsidianDefaultBinding("palette.notes"));
+    return binding === undefined
+      ? undefined
+      : formatBinding(binding, platform ?? detectPlatform());
+  });
+
   /** The edge swipes that open the drawers (§8.3). */
   let swipe = $state<SwipeStart | undefined>(undefined);
 
@@ -388,23 +450,67 @@
   onpointerup={endSwipe}
   onpointercancel={endSwipe}
 >
+  <TopBar
+    vault={vaultSlug}
+    leftCollapsed={collapsed.left}
+    rightCollapsed={collapsed.right}
+    ontoggle={toggle}
+    onfind={() => requestPalette("notes", target ?? window)}
+    {findHint}
+    {vaultTheme}
+    themeStorage={preferences}
+  />
+
   <Sidebar
     side="left"
     label="Navigation"
     collapsed={collapsed.left}
-    ontoggle={() => toggle("left")}
+    user={session?.user}
   >
-    <SearchPane view={search} onopen={(path) => store.open(path)} />
-    <NoteTree
-      {catalog}
-      {bookmarks}
-      activeNote={store.activeTab?.note}
-      onopen={(path) => store.open(path)}
-    />
-    <TagPane view={tags} onopen={(path) => store.open(path)} />
-    <InboxPane view={inbox} onopen={(path) => store.open(path)} onedit={editTask} />
-    <CalendarPane view={daily} onopen={(path) => store.open(path)} />
-    {#if session !== undefined}<SharesPane view={shares} note={store.activeTab?.note} />{/if}
+    {#snippet controls()}
+      <div class="navigation-tools" role="group" aria-label="Navigation views">
+        {#each navigationViews as view}
+          <button
+            type="button"
+            aria-label={view.name}
+            title={view.name}
+            aria-pressed={navigationView === view.name}
+            aria-controls={`navigation-${view.name.toLowerCase()}`}
+            onclick={() => (navigationView = view.name)}
+          ><Icon name={view.icon} /></button>
+        {/each}
+      </div>
+    {/snippet}
+    <section class="navigation-view" id="navigation-search" aria-label="Search" hidden={navigationView !== "Search"}>
+      <SearchPane view={search} onopen={(path) => store.open(path)} />
+    </section>
+    <section class="navigation-view" id="navigation-notes" aria-label="Notes" hidden={navigationView !== "Notes"}>
+      <NoteTree
+        {catalog}
+        {bookmarks}
+        {emptyFolders}
+        activeNote={store.activeTab?.note}
+        onopen={(path) => store.open(path)}
+        oncreate={() => requestPalette("create", target ?? window)}
+        onfolder={() => { folderError = undefined; folderPrompt = true; }}
+      />
+      {#if folderStatus}<p class="tree-empty" role="status">{folderStatus}</p>{/if}
+      {#if session !== undefined}
+        <details class="notebook-section">
+          <summary><Icon name="chevron-right" />Share a note</summary>
+          <SharesPane view={shares} note={store.activeTab?.note} />
+        </details>
+      {/if}
+    </section>
+    <section class="navigation-view" id="navigation-tags" aria-label="Tags" hidden={navigationView !== "Tags"}>
+      <TagPane view={tags} onopen={(path) => store.open(path)} />
+    </section>
+    <section class="navigation-view" id="navigation-tasks" aria-label="Tasks" hidden={navigationView !== "Tasks"}>
+      <InboxPane view={inbox} onopen={(path) => store.open(path)} onedit={editTask} />
+    </section>
+    <section class="navigation-view" id="navigation-calendar" aria-label="Calendar" hidden={navigationView !== "Calendar"}>
+      <CalendarPane view={daily} onopen={(path) => store.open(path)} />
+    </section>
   </Sidebar>
 
   <main class="workspace-main" aria-label="Open notes">
@@ -420,19 +526,16 @@
         onclose={() => (showGraph = false)}
       />
     {/if}
-    {#if layout === "mobile"}
+    {#if showingHome}
+      <Home vault={vaultSlug} {catalog} onopen={(path) => store.open(path)} oncreate={() => requestPalette("create", target ?? window)} />
+    {:else if layout === "mobile"}
       <MobileMain {store} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
     {:else}
       <PaneTree node={store.current.root} {store} {panes} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
     {/if}
   </main>
 
-  <Sidebar
-    side="right"
-    label="Context"
-    collapsed={collapsed.right}
-    ontoggle={() => toggle("right")}
-  >
+  <Sidebar side="right" label="Context" collapsed={collapsed.right}>
     <Outline view={outline} note={store.activeTab?.note} />
     <Backlinks
       view={backlinks}
@@ -440,7 +543,12 @@
       onopen={(path) => store.open(path)}
     />
     {#if session !== undefined}
-      <HistoryPane view={history} note={store.activeTab?.note} />
+      <details class="notebook-section">
+        <summary><Icon name="chevron-right" />Note history</summary>
+        <HistoryPane view={history} note={store.activeTab?.note} />
+      </details>
+      <details class="notebook-section">
+        <summary><Icon name="chevron-right" />Deleted notes</summary>
       <TrashPane
         view={trash}
         note={store.activeTab?.note}
@@ -449,10 +557,15 @@
           if (active !== undefined) store.close(active.id);
         }}
       />
+      </details>
     {/if}
     <LocalGraph view={graph} note={store.activeTab?.note} onopen={(path) => store.open(path)} />
   </Sidebar>
 </div>
+
+{#if folderPrompt}
+  <NamePrompt open={folderPrompt} title="New folder" subject="At the vault root. Use / for nested folders." label="Folder name" initial="" busy={folderBusy} error={folderError} confirm="Create folder" confirming="Creating…" onsubmit={(name) => void submitFolder(name)} ondismiss={() => { if (!folderBusy) folderPrompt = false; }} />
+{/if}
 
 <!-- Outside the shell element: the palettes are modal dialogs over the whole page, and the
      hotkeys they register have to work wherever focus is. -->

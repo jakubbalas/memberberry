@@ -24,7 +24,11 @@ const EDITOR = ".editor-surface .tiptap";
 test("opening a note loads the bundle and mounts an editable surface", async ({ page }) => {
   await signIn(page);
   await page.getByRole("link", { name: "Personal" }).click();
-  await page.getByRole("link", { name: "Welcome" }).click();
+  await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+  const showNavigation = page.getByRole("button", { name: "Show Navigation", exact: true });
+  if (await showNavigation.isVisible()) await showNavigation.click();
+  await page.getByRole("tree", { name: "Notes", exact: true })
+    .getByRole("treeitem", { name: /^Welcome (?:Add|Remove) bookmark for Welcome$/ }).click();
 
   const editor = page.locator(EDITOR);
   await expect(editor).toBeVisible();

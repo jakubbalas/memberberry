@@ -23,6 +23,32 @@ import { expect, signIn, test } from "./fixtures.js";
 const EDITOR = ".editor-surface .tiptap";
 const PROMPT = "dialog.rename-prompt";
 
+test("the vault home has account navigation, readable notes and a creation dialog", async ({ page }, info) => {
+  await signIn(page);
+  await page.goto("/v/personal");
+  await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
+  if (await show.isVisible()) await show.click();
+  const navigation = page.getByRole("complementary", { name: "Navigation", exact: true });
+  await expect(page.getByRole("link", { name: /Your vaults/ })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Log out" })).toBeVisible();
+  await navigation.getByRole("button", { name: "New note", exact: true }).click();
+  const prompt = page.getByRole("dialog", { name: "New note", exact: true });
+  await expect(prompt.getByLabel("Name", { exact: true })).toBeFocused();
+  await prompt.getByLabel("Name", { exact: true }).fill("Unsubmitted draft");
+  await page.keyboard.press("Escape");
+  await expect(prompt).toBeHidden();
+  const tree = navigation.getByRole("tree", { name: "Notes", exact: true });
+  await tree.getByRole("treeitem", { name: "Projects", exact: true }).click();
+  const roadmap = tree.getByRole("treeitem", { name: /Roadmap/ });
+  await expect(roadmap).toBeVisible();
+  expect((await roadmap.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(info.project.name === "mobile" ? 44 : 28);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0);
+  await page.screenshot({ path: info.outputPath("vault-home.png") });
+  await roadmap.click();
+  await expect(page.locator(EDITOR)).toBeVisible();
+});
+
 test.describe("first run, on a vault with no notes", () => {
   test("registering a vault grants its creator access to it", async ({ page }, info) => {
     // The original defect. `serve.ts` registers these vaults with no `access.toml` of their
@@ -53,13 +79,14 @@ test.describe("first run, on a vault with no notes", () => {
     // The dead end this feature removes: with no notes there is no link to follow, so the
     // form is the only route into the application.
     await expect(page.getByText("This vault has no notes yet")).toBeVisible();
-    const field = page.getByLabel("New note");
+    await page.locator(".workspace-home").getByRole("button", { name: "New note", exact: true }).click();
+    const field = page.getByRole("dialog", { name: "New note", exact: true }).getByLabel("Name", { exact: true });
     await expect(field).toBeFocused();
     await field.fill(name);
     await page.getByRole("button", { name: "Create" }).click();
 
     // A real editor, not a rendered page: the note is now something to type in.
-    await expect(page).toHaveURL(new RegExp(`/v/${slug}/First%20note\\.md$`));
+    await expect(page.getByRole("region", { name: "Note editor: First note.md", exact: true })).toBeVisible();
     await expect(page.locator(EDITOR)).toBeVisible();
     await expect(page.locator(EDITOR).getByRole("heading", { name })).toBeVisible();
 
@@ -70,18 +97,23 @@ test.describe("first run, on a vault with no notes", () => {
 
   test("a name that is already taken comes back on the form rather than a dead end", async ({
     page,
+    failures,
   }, info) => {
     // Makes its own vault and clash rather than depending on another test's mutation.
     const slug = emptyVaultSlug(info.project.name, "name-clash");
     const name = `Taken ${info.project.name}`;
     await signIn(page);
     await page.goto(`/v/${slug}`);
-    await page.getByLabel("New note").fill(name);
+    await page.locator(".workspace-home").getByRole("button", { name: "New note", exact: true }).click();
+    await page.getByRole("dialog", { name: "New note", exact: true }).getByLabel("Name", { exact: true }).fill(name);
     await page.getByRole("button", { name: "Create" }).click();
     await expect(page.locator(EDITOR)).toBeVisible();
 
     await page.goto(`/v/${slug}`);
-    await page.getByLabel("New note").fill(name);
+    await page.locator(".workspace-home").getByRole("button", { name: "New note", exact: true }).click();
+    await page.getByRole("dialog", { name: "New note", exact: true }).getByLabel("Name", { exact: true }).fill(name);
+    failures.allow(new RegExp(`HTTP 400 .*/api/v1/vaults/${slug}/notes$`));
+    failures.allow(/console error: Failed to load resource: the server responded with a status of 400/);
     await page.getByRole("button", { name: "Create" }).click();
 
     await expect(page.getByRole("alert")).toContainText("already exists");
@@ -103,7 +135,7 @@ test.describe("creating a note from the workspace", () => {
     await page.goto("/v/personal/Projects/Roadmap.md");
     await expect(page.locator(EDITOR)).toBeVisible();
 
-    await page.keyboard.press("ControlOrMeta+Shift+P");
+    await page.keyboard.press("ControlOrMeta+P");
     await page.getByRole("option", { name: /^New note/ }).click();
     const prompt = page.locator(PROMPT);
     await expect(prompt).toBeVisible();

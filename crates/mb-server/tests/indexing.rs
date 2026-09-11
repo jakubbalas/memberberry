@@ -69,6 +69,37 @@ fn a_sweep_indexes_the_whole_vault() {
 }
 
 #[test]
+fn concurrent_first_reads_share_one_durable_index() {
+    let directory = TempDir::new("concurrent-first-index");
+    directory.write("Target.md", "# Target\n");
+    directory.write("Source.md", "[[Target]]\n");
+    let vault = vault(&directory);
+    let registry = IndexRegistry::default();
+    let barrier = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    assert!(
+                        registry
+                            .maintain(std::iter::once(&vault), &Changes::All)
+                            .is_empty()
+                    );
+                    assert_eq!(sources(&registry, &vault, "Target.md"), ["Source.md"]);
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("index worker");
+        }
+    });
+    drop(registry);
+    let reopened = IndexRegistry::default();
+    assert_eq!(sources(&reopened, &vault, "Target.md"), ["Source.md"]);
+}
+
+#[test]
 fn acl_zone_maintenance_changes_only_when_the_live_policy_changes() {
     let dir = TempDir::new("index-zones");
     let vault = vault(&dir);
@@ -284,11 +315,11 @@ fn one_registry_keeps_each_vault_separate() {
 #[test]
 fn maintaining_a_vault_whose_notes_root_disappeared_reports_rather_than_panics() {
     let dir = TempDir::new("index-gone");
-    dir.write("A.md", "# A\n");
+    dir.write("notes/A.md", "# A\n");
     let vault = vault(&dir);
     let registry = IndexRegistry::default();
     registry.maintain(std::iter::once(&vault), &Changes::All);
-    std::fs::remove_dir_all(dir.path()).expect("remove the vault");
+    std::fs::remove_dir_all(vault.notes_root()).expect("remove the notes root");
     let errors = registry.maintain(std::iter::once(&vault), &Changes::All);
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("listing notes"), "{errors:?}");

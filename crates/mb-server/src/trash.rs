@@ -121,6 +121,13 @@ impl TrashStore {
     /// Lists retained entries in stable deletion order and purges expired entries first.
     pub fn list(&self, now: u64) -> Result<Vec<TrashEntry>, TrashError> {
         self.purge(now)?;
+        self.inspect()
+    }
+
+    /// Lists retained entries without running maintenance or changing stored files.
+    ///
+    /// Used by `memberberry doctor`, whose default mode is strictly report-only.
+    pub fn inspect(&self) -> Result<Vec<TrashEntry>, TrashError> {
         let Ok(entries) = fs::read_dir(&self.metadata_root) else {
             return Ok(Vec::new());
         };

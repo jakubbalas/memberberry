@@ -3,6 +3,60 @@ import { defineConfig, type Plugin } from "vite";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+const backendOrigin = "http://127.0.0.1:9010";
+
+function authenticatedBackendPages(): Plugin {
+  return {
+    name: "memberberry-authenticated-backend-pages",
+    configureServer(server) {
+      server.middlewares.use(async (request, response, next) => {
+        if (
+          request.method !== "GET" ||
+          (request.url !== "/" && !request.url?.startsWith("/v/"))
+        ) {
+          next();
+          return;
+        }
+        try {
+          const headers = new Headers();
+          if (request.headers.cookie !== undefined) headers.set("cookie", request.headers.cookie);
+          const upstream = await fetch(new URL(request.url, backendOrigin), {
+            headers,
+            redirect: "manual",
+          });
+          const location = upstream.headers.get("location");
+          if (location !== null) {
+            response.statusCode = upstream.status;
+            response.setHeader("location", location);
+            response.end();
+            return;
+          }
+          if (!upstream.headers.get("content-type")?.startsWith("text/html")) {
+            next();
+            return;
+          }
+          const productionHtml = await upstream.text();
+          const developmentHtml = productionHtml
+            .replace(/<script type="module" crossorigin src="\/assets\/[^\"]+"><\/script>/, "")
+            .replace(
+              /<link rel="stylesheet" crossorigin href="\/assets\/[^\"]+">/,
+              '<link rel="stylesheet" href="/src/shell/app.css"><script type="module" src="/src/main.ts"></script>',
+            );
+          response.statusCode = upstream.status;
+          for (const [name, value] of upstream.headers) {
+            if (!["content-encoding", "content-length", "transfer-encoding"].includes(name)) {
+              response.setHeader(name, value);
+            }
+          }
+          response.end(await server.transformIndexHtml(request.url, developmentHtml));
+        } catch {
+          next();
+        }
+      });
+    },
+  };
+}
+
 function excalidrawFonts(): Plugin {
   const fonts = join(process.cwd(), "node_modules/@excalidraw/excalidraw/dist/prod/fonts");
   return {
@@ -34,13 +88,25 @@ function excalidrawFonts(): Plugin {
 // 9010. `strictPort` so a clash fails loudly instead of silently moving — a moved port is a
 // confusing five minutes when the server's links stop matching.
 export default defineConfig({
-  plugins: [svelte(), excalidrawFonts()],
+  plugins: [authenticatedBackendPages(), svelte(), excalidrawFonts()],
 
   // why: the manifest is what tells the performance harness which chunks a first visit
   // actually downloads. §21.2 budgets the *initial* JS, and from M8's graph onwards not every
   // chunk is initial — see `perf/bundle.ts`.
   build: { manifest: true },
-  server: { port: 9011, strictPort: true },
+  server: {
+    host: "127.0.0.1",
+    port: 9011,
+    strictPort: true,
+    proxy: {
+      "/api": { target: backendOrigin, ws: true },
+      "/login": backendOrigin,
+      "/setup": backendOrigin,
+      "/vaults": backendOrigin,
+      "/s": backendOrigin,
+      "/v": backendOrigin,
+    },
+  },
   preview: { port: 9011, strictPort: true },
 
   // why: under Vitest, Svelte must resolve to its client build. Without this, `mount()` gets

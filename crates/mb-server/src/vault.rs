@@ -216,6 +216,17 @@ impl Vault {
             .unwrap_or(2560)
     }
 
+    /// The shipped theme selected by this vault, or system preference by default (§20.1).
+    #[must_use]
+    pub fn theme(&self) -> &'static str {
+        match self.config_string("theme").as_deref() {
+            Some("memberberry-light") => "memberberry-light",
+            Some("memberberry-dark") => "memberberry-dark",
+            Some("memberberry-pastel") => "memberberry-pastel",
+            _ => "system",
+        }
+    }
+
     /// Whether history snapshots use zstd compression (`SPEC.md` §18.1).
     #[must_use]
     pub fn history_compression(&self) -> bool {

@@ -12,8 +12,8 @@ import { expect, signIn, test, tokenValue } from "./fixtures.js";
 
 /** What the surface and text roles resolve to in each colour scheme. */
 const THEMES = {
-  light: { canvas: "#f4f0e8", text: "#24332c", note: "#fffdf8" },
-  dark: { canvas: "#18231f", text: "#f2efe6", note: "#22312a" },
+  light: { canvas: "#f7f7f5", text: "#292927", note: "#ffffff" },
+  dark: { canvas: "#19191c", text: "#ececee", note: "#222225" },
 } as const;
 
 /** `getComputedStyle` returns colours as `rgb(...)`; the contract writes them as hex. */
@@ -56,14 +56,29 @@ test("the note surface is styled, not merely present", async ({ page }) => {
   await signIn(page);
   await page.goto("/v/personal/Welcome.md");
 
+  // What this test is for is the M5 failure: a page that is structurally perfect and
+  // visually unstyled. It used to look for a radius and a shadow on the note panel, which
+  // were the card the note sat in — the note is a full-bleed page now and has neither, so
+  // those assertions would pass forever on an element nobody styles. These are properties
+  // the current design gives the shell and an unstyled document cannot have.
   const panel = page.locator(".editor-panel");
   await expect(panel).toBeVisible();
-  // An unstyled page has no radius, no border and no shadow. Asserting one of each is how a
-  // "the CSS never loaded" failure shows up as a test result rather than a screenshot
-  // nobody looks at. Deliberately *not* an exact radius: desktop uses `--radius-lg` and
-  // mobile `--radius-md`, so pinning a number here would assert the viewport, not the CSS.
-  await expect(panel).not.toHaveCSS("border-radius", "0px");
-  await expect(panel).not.toHaveCSS("box-shadow", "none");
+  // The reading column is measured rather than the width of the window.
+  const [pane, column] = await Promise.all([
+    page.locator(".note-pane").first().boundingBox(),
+    panel.first().boundingBox(),
+  ]);
+  expect(column?.width ?? 0).toBeGreaterThan(0);
+  expect(column?.width ?? 0).toBeLessThanOrEqual((pane?.width ?? 0) + 1);
+
+  // The top bar is a laid-out strip of the height the contract gives it, not a row of
+  // unstyled controls in the document flow.
+  const bar = page.locator(".topbar");
+  await expect(bar).toBeVisible();
+  const barBox = await bar.boundingBox();
+  expect(barBox?.height ?? 0).toBeCloseTo(44, 0);
+  await expect(bar).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
   // The sidebar toggle is the shell's own chrome rather than the editor's, so it catches a
   // stylesheet that loaded for one and not the other. Chosen over the tab strip because both
   // layouts have it — §8.3 replaces the strip with a nav bar.
@@ -86,6 +101,14 @@ test("every interactive control clears the 44px touch floor on mobile", async ({
   // Only the visible ones: the slash menu is collapsed until opened, and a control with no
   // box is hidden rather than too small. Its size is checked when the menu that owns it is
   // open, not here.
+  //
+  // why: waiting for the first control before enumerating. `locator.all()` does not
+  // auto-wait — it takes a snapshot — and the toolbar is built by `mountEditorShell` a tick
+  // after the surface it is prepended to becomes visible. So this measured *zero* controls
+  // whenever the suite was busy enough to lose that tick, and then failed on a guard about
+  // the editor offering nothing rather than on anything about a touch target. The floor
+  // below is unchanged; only the snapshot is now taken after the toolbar exists.
+  await expect(page.locator(".editor-toolbar .editor-control").first()).toBeVisible();
   const controls = await page.locator(".editor-control").all();
   const measured: Array<{ label: string; width: number; height: number }> = [];
   for (const control of controls) {

@@ -158,6 +158,14 @@ impl HistoryStore {
         self.thin(unix_seconds(now)?)
     }
 
+    /// Counts snapshots the retention policy would remove without changing history.
+    pub fn retention_excess(&self, now: SystemTime) -> Result<usize, HistoryError> {
+        let timestamp = unix_seconds(now)?;
+        Ok(retention_decisions(&self.list_raw()?, timestamp)
+            .filter(|keep| !keep)
+            .count())
+    }
+
     fn list_raw(&self) -> Result<Vec<SnapshotInfo>, HistoryError> {
         if !self.directory.is_dir() {
             return Ok(Vec::new());
@@ -253,19 +261,11 @@ impl HistoryStore {
 
     fn thin(&self, now: u64) -> Result<(), HistoryError> {
         let snapshots = self.list_raw()?;
-        let mut hourly = std::collections::BTreeSet::new();
-        let mut daily = std::collections::BTreeSet::new();
-        for snapshot in snapshots.iter().rev() {
-            let age = now.saturating_sub(snapshot.timestamp);
-            let keep = if age <= ALL_FOR.as_secs() {
-                true
-            } else if age <= HOURLY_FOR.as_secs() {
-                hourly.insert(snapshot.timestamp / 3_600)
-            } else if age <= DAILY_FOR.as_secs() {
-                daily.insert(snapshot.timestamp / 86_400)
-            } else {
-                false
-            };
+        for (snapshot, keep) in snapshots
+            .iter()
+            .rev()
+            .zip(retention_decisions(&snapshots, now))
+        {
             if !keep {
                 let stem = format!("{}-{}", snapshot.timestamp, snapshot.content_hash);
                 for extension in ["md.zst", "md", "json"] {
@@ -280,6 +280,26 @@ impl HistoryStore {
         }
         Ok(())
     }
+}
+
+fn retention_decisions(
+    snapshots: &[SnapshotInfo],
+    now: u64,
+) -> impl Iterator<Item = bool> + use<'_> {
+    let mut hourly = std::collections::BTreeSet::new();
+    let mut daily = std::collections::BTreeSet::new();
+    snapshots.iter().rev().map(move |snapshot| {
+        let age = now.saturating_sub(snapshot.timestamp);
+        if age <= ALL_FOR.as_secs() {
+            true
+        } else if age <= HOURLY_FOR.as_secs() {
+            hourly.insert(snapshot.timestamp / 3_600)
+        } else if age <= DAILY_FOR.as_secs() {
+            daily.insert(snapshot.timestamp / 86_400)
+        } else {
+            false
+        }
+    })
 }
 
 fn unix_seconds(now: SystemTime) -> Result<u64, HistoryError> {
@@ -628,6 +648,7 @@ mod tests {
         }
 
         store.prune(now)?;
+        assert_eq!(store.retention_excess(now)?, 0);
         let snapshots = store.list_raw()?;
         assert_eq!(snapshots.len(), 3);
         assert!(
@@ -635,6 +656,39 @@ mod tests {
                 .iter()
                 .all(|snapshot| snapshot.timestamp >= 10 * 24 * 60 * 60)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn retention_excess_reports_without_removing_snapshots()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let store = HistoryStore::new(root.path(), "One.md");
+        fs::create_dir_all(&store.directory)?;
+        let now = 100 * 24 * 60 * 60;
+        for (timestamp, hash) in [
+            (now - 91 * 24 * 60 * 60, "expired"),
+            (now - 8 * 24 * 60 * 60, "daily-old"),
+            (now - 8 * 24 * 60 * 60 + 600, "daily-new"),
+        ] {
+            let info = SnapshotInfo {
+                timestamp,
+                actor: "alice".to_string(),
+                bytes: 1,
+                content_hash: hash.to_string(),
+                compressed: true,
+            };
+            fs::write(
+                store.directory.join(format!("{timestamp}-{hash}.json")),
+                serde_json::to_vec(&info)?,
+            )?;
+        }
+
+        assert_eq!(
+            store.retention_excess(UNIX_EPOCH + Duration::from_secs(now))?,
+            2
+        );
+        assert_eq!(store.list_raw()?.len(), 3, "inspection must not prune");
         Ok(())
     }
 }

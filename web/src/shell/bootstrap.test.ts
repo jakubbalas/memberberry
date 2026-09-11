@@ -14,6 +14,7 @@ import {
   USER_KEY,
   parseNoteRoute,
   readNoteBootstrap,
+  readHomeBootstrap,
   remoteSyncFor,
   resolveNoteBootstrap,
 } from "./bootstrap.js";
@@ -25,6 +26,19 @@ function element(attributes: Readonly<Record<string, string>>): HTMLElement {
 }
 
 describe("reading the bootstrap", () => {
+  it("remembers the authenticated home user for a subsequent offline note route", () => {
+    const values = new Map<string, string>();
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+    expect(resolveNoteBootstrap(element({ "data-vault": "personal", "data-user": "alice", "data-home": "true" }), { pathname: "/v/personal" }, storage)).toBeUndefined();
+    expect(resolveNoteBootstrap(element({}), { pathname: "/v/personal/One.md" }, storage)).toEqual({ vault: "personal", note: "One.md", user: "alice" });
+  });
+  it("accepts a home bootstrap only with an explicit home marker and authenticated fields", () => {
+    const attributes = { "data-vault": "personal", "data-user": "alice", "data-home": "true" };
+    expect(readHomeBootstrap(element(attributes))).toEqual({ vault: "personal", user: "alice" });
+    expect(readHomeBootstrap(element({ ...attributes, "data-home": "false" }))).toBeUndefined();
+    expect(readHomeBootstrap(element({ ...attributes, "data-user": "" }))).toBeUndefined();
+    expect(readHomeBootstrap(element({ ...attributes, "data-vault": "" }))).toBeUndefined();
+  });
   it("accepts the bounded media dimension supplied by the vault", () => {
     const target = element({
       "data-vault": "personal",
@@ -33,6 +47,21 @@ describe("reading the bootstrap", () => {
       "data-media-max-dimension": "1440",
     });
     expect(readNoteBootstrap(target)?.mediaMaxDimension).toBe(1440);
+  });
+
+  it("accepts only a shipped vault theme", () => {
+    const attributes = {
+      "data-vault": "personal",
+      "data-note": "One.md",
+      "data-user": "alice",
+    };
+    expect(
+      readNoteBootstrap(element({ ...attributes, "data-vault-theme": "memberberry-dark" }))
+        ?.theme,
+    ).toBe("memberberry-dark");
+    expect(
+      readNoteBootstrap(element({ ...attributes, "data-vault-theme": "invented" }))?.theme,
+    ).toBeUndefined();
   });
 
   it("returns what the server filled in", () => {

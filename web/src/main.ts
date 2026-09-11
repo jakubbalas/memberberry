@@ -19,10 +19,11 @@ import {
 } from "./offline/register.js";
 import NoteWorkspace from "./shell/NoteWorkspace.svelte";
 import Workspace from "./shell/Workspace.svelte";
-import { remoteSyncFor, resolveNoteBootstrap } from "./shell/bootstrap.js";
+import { readHomeBootstrap, remoteSyncFor, resolveNoteBootstrap } from "./shell/bootstrap.js";
 import { startWorkspace } from "./shell/session.js";
 import ShareTarget from "./clipper/ShareTarget.svelte";
 import { loadShareTarget } from "./clipper/share-target.js";
+import { applyTheme, readThemeChoice, resolveTheme } from "./shell/theme.js";
 
 const target = document.querySelector<HTMLElement>("#app");
 if (target === null) {
@@ -36,6 +37,15 @@ const bootstrap = resolveNoteBootstrap(
   location,
   typeof localStorage === "undefined" ? undefined : localStorage,
 );
+const homeBootstrap = readHomeBootstrap(mountPoint);
+const session = bootstrap ?? homeBootstrap;
+if (session !== undefined) {
+  const preferences = typeof localStorage === "undefined" ? undefined : localStorage;
+  applyTheme(
+    document.documentElement,
+    resolveTheme(readThemeChoice(preferences, session.vault), session.theme ?? "system"),
+  );
+}
 
 /**
  * Wrapped in a function rather than written as top-level `await`.
@@ -53,17 +63,22 @@ async function start(): Promise<void> {
       return;
     }
   }
-  if (bootstrap === undefined) {
+  if (session === undefined) {
     // No server said which note this is: the Vite dev server serving `index.html`
     // unmodified. One local replica, with no vault to restore a layout for (§3.1, layer 2).
     mount(NoteWorkspace, { target: mountPoint, props: {} });
     return;
   }
 
-  const started = await startWorkspace({ vault: bootstrap.vault, note: bootstrap.note });
+  const started = await startWorkspace({ vault: session.vault, note: bootstrap?.note });
   mount(Workspace, {
     target: mountPoint,
-    props: { store: started.store, session: { vault: bootstrap.vault, user: bootstrap.user } },
+    props: {
+      store: started.store,
+      session: { vault: session.vault, user: session.user },
+      vaultTheme: session.theme,
+      home: homeBootstrap !== undefined,
+    },
   });
 
   // why: registered only from a page a server bootstrapped, and only after it has loaded.

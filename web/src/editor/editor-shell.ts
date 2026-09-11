@@ -18,6 +18,7 @@ import { expandTemplate } from "../notes.js";
 import { openTemplatePalette, TEMPLATE_EVENT, templateContext, type TemplateEventDetail } from "../shell/templates.js";
 import type { MediaUploader } from "./media-upload.js";
 import { mountEmojiPicker, type EmojiChoice, type EmojiImportOptions } from "./emoji-picker.js";
+import { downloadHtml, printPanel, standaloneHtml } from "./export.js";
 
 export interface EditorShell {
   destroy(): void;
@@ -49,6 +50,14 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   toolbar.setAttribute("role", "toolbar");
   toolbar.setAttribute("aria-label", "Block toolbar");
   controls.append(toolbar);
+  const more = document.createElement("details");
+  more.className = "editor-more";
+  const summary = document.createElement("summary");
+  summary.textContent = "More";
+  summary.setAttribute("aria-label", "More editing tools");
+  const secondary = document.createElement("div");
+  secondary.className = "editor-secondary";
+  more.append(summary, secondary);
 
   const source = document.createElement("textarea");
   source.className = "source-view";
@@ -56,6 +65,8 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   source.setAttribute("aria-label", "Markdown source");
   const sourceToggle = button("Source", "Toggle Markdown source view");
   const copy = button("Copy Markdown", "Copy canonical Markdown");
+  const print = button("Print PDF", "Print note or save it as PDF");
+  const html = button("Export HTML", "Export note as self-contained HTML");
   let sourceVisible = false;
   let latestMarkdown = "";
 
@@ -74,12 +85,15 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   ] as const) {
     const control = button(label, `Insert ${label.toLowerCase()} block`);
     control.addEventListener("click", () => action());
-    toolbar.append(control);
+    if (["Text", "H1", "List", "Task"].includes(label)) toolbar.append(control);
+    else secondary.append(control);
   }
-  toolbar.append(sourceToggle, copy);
+  toolbar.append(sourceToggle);
+  secondary.append(copy, print, html);
   const media = mediaControls(options.editor, options.mediaUploader, options.status);
   if (media !== undefined) toolbar.append(media.element);
   const emoji = mountEmojiPicker(options.editor, toolbar, options.emojiChoices ?? [], options.emojiImport);
+  toolbar.append(more);
 
   const inspector = taskInspector(options.editor);
   controls.append(inspector.element, source);
@@ -180,6 +194,26 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   };
   sourceToggle.addEventListener("click", () => { void onSourceToggle(); });
   copy.addEventListener("click", () => { void onCopy(); });
+  let printCleanup: (() => void) | undefined;
+  const onPrint = (): void => {
+    printCleanup?.();
+    printCleanup = printPanel(options.panel);
+  };
+  const onHtml = async (): Promise<void> => {
+    try {
+      const exported = await standaloneHtml({
+        root: options.editor.view.dom,
+        title: options.title ?? "note",
+      });
+      downloadHtml(exported, options.title ?? "note");
+      options.status.textContent = "Self-contained HTML exported.";
+    } catch (error: unknown) {
+      options.status.textContent = error instanceof Error ? error.message : "HTML export failed.";
+    }
+  };
+  const onHtmlClick = (): void => { void onHtml(); };
+  print.addEventListener("click", onPrint);
+  html.addEventListener("click", onHtmlClick);
 
   const visualViewport = window.visualViewport ?? undefined;
   const positionToolbar = (): void => {
@@ -239,6 +273,9 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       options.editor.off("selectionUpdate", refreshControls);
       options.editor.off("update", refreshControls);
       options.editor.off("update", refreshLongNoteMode);
+      print.removeEventListener("click", onPrint);
+      html.removeEventListener("click", onHtmlClick);
+      printCleanup?.();
       visualViewport?.removeEventListener("resize", positionToolbar);
       visualViewport?.removeEventListener("scroll", positionToolbar);
       presence?.destroy();

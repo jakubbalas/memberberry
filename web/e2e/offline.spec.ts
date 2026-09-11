@@ -209,7 +209,7 @@ test("a note can be kept offline, and stays kept across a reload", async ({ page
   await expect(page.getByText("A note that already exists")).toBeVisible();
 
   const palette = async (): Promise<void> => {
-    await page.keyboard.press("ControlOrMeta+Shift+P");
+    await page.keyboard.press("ControlOrMeta+P");
     await expect(page.getByRole("dialog")).toBeVisible();
   };
 

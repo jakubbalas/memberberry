@@ -6,7 +6,7 @@ import { expect, signIn, test } from "./fixtures.js";
 const EDITOR = ".editor-surface .tiptap";
 
 async function openCommand(page: import("@playwright/test").Page, name: string): Promise<void> {
-  await page.keyboard.press("ControlOrMeta+Shift+P");
+  await page.keyboard.press("ControlOrMeta+P");
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox").fill(name);

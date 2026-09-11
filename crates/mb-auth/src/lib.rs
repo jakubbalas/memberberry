@@ -13,7 +13,7 @@ use base64::Engine;
 use mb_core::Role;
 use rand_core::OsRng;
 use rand_core::RngCore;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 /// A durable user identifier.
@@ -271,6 +271,16 @@ impl AuthDb {
         let db = Self { connection };
         db.migrate()?;
         Ok(db)
+    }
+
+    /// Opens an existing authentication database without migrating or writing it.
+    ///
+    /// Intended for report-only integrity inspection. Mutating methods called on the returned
+    /// value fail at SQLite rather than silently upgrading or changing durable server state.
+    pub fn open_read_only(path: &Path) -> Result<Self, Error> {
+        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map(|connection| Self { connection })
+            .map_err(Error::Database)
     }
 
     /// Opens an in-memory database for deterministic tests and embedders.
@@ -1087,6 +1097,48 @@ impl AuthDb {
                     access_count: row.get(6)?,
                     last_accessed_at: row.get(7)?,
                     revoked_at: row.get(8)?,
+                })
+            })
+            .map_err(Error::Database)?;
+        rows.map(|row| row.map_err(Error::Database)).collect()
+    }
+
+    /// Lists every currently active share-link target for one vault without bearer or password data.
+    ///
+    /// This is the server-owned integrity boundary used by `memberberry doctor`: it must find
+    /// links whose Markdown target disappeared without exposing token hashes or credential data.
+    pub fn active_share_links(
+        &self,
+        vault_slug: &str,
+        now: i64,
+    ) -> Result<Vec<ShareLinkRecord>, Error> {
+        validate_vault_slug(vault_slug)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT rowid, note_path, include_embeds, expires_at, created_by,
+                        created_at, access_count, last_accessed_at
+                 FROM share_links
+                 WHERE vault_slug = ?1 AND revoked_at IS NULL
+                   AND (expires_at IS NULL OR expires_at > ?2)
+                 ORDER BY rowid",
+            )
+            .map_err(Error::Database)?;
+        let rows = statement
+            .query_map(params![vault_slug, now], |row| {
+                Ok(ShareLinkRecord {
+                    id: ShareLinkId(row.get(0)?),
+                    scope: ShareLinkScope {
+                        vault_slug: vault_slug.to_string(),
+                        note_path: row.get(1)?,
+                        include_embeds: row.get(2)?,
+                        password: None,
+                        expires_at: row.get(3)?,
+                        created_by: UserId(row.get(4)?),
+                    },
+                    access_count: row.get(6)?,
+                    last_accessed_at: row.get(7)?,
+                    revoked_at: None,
                 })
             })
             .map_err(Error::Database)?;

@@ -100,6 +100,40 @@ impl<'a> CreateNote<'a> {
         self.note_with_body(path, &initial_body(path))
     }
 
+    /// Creates an empty ordinary directory after checking the live role for its path.
+    ///
+    /// # Errors
+    /// Returns a name error, denial, existing-path refusal or filesystem failure.
+    pub fn folder(&self, path: &str) -> Result<Created, CreateError> {
+        let probe = format!("{path}/folder.md");
+        if path.is_empty() || !crate::vault::valid_note_path(&probe) {
+            return Err(CreateError::InvalidName(path.to_string()));
+        }
+        if !self.may_write(path) {
+            return Err(CreateError::Denied);
+        }
+        let reserved = self
+            .vault
+            .reserve(&probe)
+            .map_err(|_| CreateError::InvalidName(path.to_string()))?;
+        let destination = reserved
+            .parent()
+            .ok_or_else(|| CreateError::InvalidName(path.to_string()))?;
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| CreateError::Failed(error.to_string()))?;
+        }
+        match std::fs::create_dir(destination) {
+            Ok(()) => Ok(Created {
+                path: path.to_string(),
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(CreateError::Exists(path.to_string()))
+            }
+            Err(error) => Err(CreateError::Failed(error.to_string())),
+        }
+    }
+
     /// Creates a note with caller-provided Markdown content.
     pub fn note_with_body(&self, path: &str, body: &str) -> Result<Created, CreateError> {
         if !crate::vault::valid_note_path(path) {

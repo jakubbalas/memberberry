@@ -200,6 +200,28 @@ fn media_dimension_config_is_bounded() {
 }
 
 #[test]
+fn theme_accepts_only_the_three_shipped_palettes_or_system() {
+    let dir = TempDir::new("theme");
+    let vault = vault_at(&dir);
+    assert_eq!(vault.theme(), "system");
+
+    dir.write(
+        ".memberberry/config.toml",
+        "theme = \"memberberry-light\"\n",
+    );
+    assert_eq!(vault.theme(), "memberberry-light");
+    dir.write(".memberberry/config.toml", "theme = \"memberberry-dark\"\n");
+    assert_eq!(vault.theme(), "memberberry-dark");
+    dir.write(
+        ".memberberry/config.toml",
+        "theme = \"memberberry-pastel\"\n",
+    );
+    assert_eq!(vault.theme(), "memberberry-pastel");
+    dir.write(".memberberry/config.toml", "theme = \"unknown\"\n");
+    assert_eq!(vault.theme(), "system");
+}
+
+#[test]
 fn history_and_trash_policy_have_safe_configurable_defaults() {
     let dir = TempDir::new("history-trash-config");
     let vault = vault_at(&dir);

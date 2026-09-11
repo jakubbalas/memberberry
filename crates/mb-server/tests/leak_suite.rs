@@ -17,6 +17,240 @@ use mb_server::sync::ConnectionId;
 use mb_server::vault::Slug;
 use support::TempDir;
 
+#[test]
+fn e28_empty_folders_are_filtered_and_creation_authorizes_before_probing() {
+    let directory = TempDir::new("leak-empty-folders");
+    directory.write("Shared/Welcome.md", "# Welcome\n");
+    directory.write("Private/Secret.md", "# Secret\n");
+    directory.write("access.toml", "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[members]]\nuser = \"bob\"\nrole = \"viewer\"\n[[rules]]\npath = \"Shared\"\ngrant = { bob = \"editor\" }\n[[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n");
+    std::fs::create_dir_all(directory.path().join("Shared/Empty")).expect("shared folder");
+    std::fs::create_dir_all(directory.path().join("Private/Empty")).expect("private folder");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        directory.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    assert!(
+        registry
+            .maintain(std::iter::once(&vault), &mb_server::watch::Changes::All)
+            .is_empty()
+    );
+    let index = registry.get(&vault).expect("index");
+    let bob = Username::parse("bob").expect("user");
+    let view = AuthorizedVault::new(&vault, access.policy(), bob.clone());
+    assert_eq!(view.empty_folders().expect("folders"), vec!["Shared/Empty"]);
+    let create = mb_server::create::CreateNote::new(&vault, access.policy(), bob, &index);
+    for path in ["Private/Empty", "Private/Missing", "RootFolder"] {
+        assert!(matches!(
+            create.folder(path),
+            Err(mb_server::create::CreateError::Denied)
+        ));
+    }
+    create.folder("Shared/Ideas 📓").expect("create allowed");
+    assert!(directory.path().join("Shared/Ideas 📓").is_dir());
+    assert_eq!(
+        std::fs::read_dir(directory.path().join("Shared/Ideas 📓"))
+            .expect("empty")
+            .count(),
+        0
+    );
+    assert!(matches!(
+        create.folder("Shared/Ideas 📓"),
+        Err(mb_server::create::CreateError::Exists(_))
+    ));
+    for path in [
+        "",
+        "../escape",
+        "/absolute",
+        ".hidden",
+        "Shared//Bad",
+        "Shared/../Bad",
+    ] {
+        assert!(matches!(
+            create.folder(path),
+            Err(mb_server::create::CreateError::InvalidName(_))
+        ));
+    }
+    let guest = AuthorizedVault::new(
+        &vault,
+        access.policy(),
+        Username::parse("guest").expect("user"),
+    );
+    assert!(guest.empty_folders().expect("guest list").is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn e28_folder_symlinks_cannot_expose_or_create_outside_the_vault() {
+    let directory = TempDir::new("folder-symlink");
+    directory.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let outside = TempDir::new("folder-outside");
+    std::fs::create_dir(outside.path().join("Secret")).expect("outside folder");
+    std::os::unix::fs::symlink(outside.path(), directory.path().join("Escape")).expect("symlink");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        directory.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access");
+    let index = std::sync::Mutex::new(mb_index::Index::in_memory().expect("index"));
+    let actor = Username::parse("alice").expect("user");
+    assert!(
+        AuthorizedVault::new(&vault, access.policy(), actor.clone())
+            .empty_folders()
+            .expect("folders")
+            .is_empty()
+    );
+    assert!(
+        mb_server::create::CreateNote::new(&vault, access.policy(), actor, &index)
+            .folder("Escape/New")
+            .is_err()
+    );
+    assert!(!outside.path().join("New").exists());
+}
+
+#[tokio::test]
+async fn e26_vault_administration_rejects_guests_members_disabled_admins_and_api_tokens() {
+    use axum::http::header;
+    use mb_server::http::{AppState, router};
+    use std::sync::Arc;
+    let directory = TempDir::new("e26-management");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    let admin = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("admin");
+    let member = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("member");
+    let session = |user| {
+        let token = auth.create_session(user, 4_102_444_800).expect("session");
+        format!(
+            "mb_session={}",
+            auth.signed_session_cookie(&token).expect("cookie")
+        )
+    };
+    let admin_cookie = session(admin.id);
+    let member_cookie = session(member.id);
+    let other_admin = auth
+        .create_user(mb_auth::NewUser {
+            username: "charlie",
+            display_name: "Charlie",
+            password: "correct horse battery staple",
+        })
+        .expect("other admin");
+    auth.set_admin(other_admin.id, true).expect("promote");
+    let api_token = auth
+        .create_api_token(mb_auth::ApiTokenScope {
+            user_id: other_admin.id,
+            vault_slug: "personal".to_string(),
+            role: Role::Owner,
+        })
+        .expect("valid scoped token");
+    auth.set_disabled(admin.id, true).expect("disable admin");
+    let state = Arc::new(
+        AppState::authenticated(vec![], auth)
+            .expect("state")
+            .with_vault_management(directory.path().join("server.toml"), true)
+            .expect("management"),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("address"));
+    let app = router(Arc::clone(&state));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    for cookie in ["", member_cookie.as_str(), admin_cookie.as_str()] {
+        for slug in ["personal", "../private"] {
+            let response = client
+                .post(format!("{origin}/vaults/new"))
+                .header(header::ORIGIN, &origin)
+                .header(header::COOKIE, cookie)
+                .form(&[("name", "Private notebook"), ("slug", slug)])
+                .send()
+                .await
+                .expect("response");
+            assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+            let body = response.text().await.expect("body");
+            assert!(!body.contains("Private notebook"));
+            assert!(!body.contains(directory.path().to_str().expect("path")));
+        }
+        let response = client
+            .get(format!("{origin}/vaults/new"))
+            .header(header::COOKIE, cookie)
+            .send()
+            .await
+            .expect("page");
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+    let response = client
+        .post(format!("{origin}/vaults/new"))
+        .header(header::ORIGIN, &origin)
+        .bearer_auth(api_token.expose_secret())
+        .form(&[("name", "Private notebook"), ("slug", "personal")])
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    assert!(state.is_empty());
+    assert!(!directory.path().join("server.toml").exists());
+    assert!(!directory.path().join("vaults/personal").exists());
+    server.abort();
+    let _stopped = server.await;
+}
+
+#[tokio::test]
+async fn e27_initial_setup_denies_requests_without_a_trusted_local_peer() {
+    use mb_server::http::{AppState, router};
+    let directory = TempDir::new("e27-setup");
+    let state = std::sync::Arc::new(
+        AppState::authenticated(vec![], mb_auth::AuthDb::open_in_memory().expect("auth"))
+            .expect("state")
+            .with_vault_management(directory.path().join("server.toml"), true)
+            .expect("management"),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("address"));
+    let app = router(state);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let response = reqwest::Client::new()
+        .post(format!("{origin}/setup"))
+        .header("origin", &origin)
+        .header("x-forwarded-for", "127.0.0.1")
+        .form(&[
+            ("username", "attacker"),
+            ("display_name", "Attacker"),
+            ("password", "correct horse battery staple"),
+            ("confirmation", "correct horse battery staple"),
+        ])
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    server.abort();
+    let _stopped = server.await;
+}
+
 /// E23: both the live ACL and a scoped token independently cap clip writes.
 #[test]
 fn e23_clipper_requires_editor_access_at_the_destination() {
@@ -1735,4 +1969,62 @@ fn e17_creating_a_note_never_reveals_what_is_already_there() {
         Err(mb_server::create::CreateError::Denied)
     ));
     assert!(!dir.path().join("Root.md").exists());
+}
+
+/// E25: every static-site artifact comes from one permission-filtered repository view.
+#[test]
+fn e25_static_export_contains_no_unreadable_note_or_graph_edge() {
+    let dir = TempDir::new("leak-static-export");
+    dir.write("Public.md", "# Public\n\n[[Shared]] [[Private/Salary]]\n");
+    dir.write("Shared.md", "# Shared\n\nreadable-copy\n");
+    dir.write("Private/Salary.md", "# Payroll\n\nprivate-copy\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let media = mb_server::media::LocalStore::new(&vault);
+    let readable_media = media.put(b"readable image", "png").expect("public media");
+    let private_media = media.put(b"private image", "png").expect("private media");
+    dir.write(
+        "Shared.md",
+        &format!("# Shared\n\nreadable-copy\n\n![public]({readable_media})\n"),
+    );
+    dir.write(
+        "Private/Salary.md",
+        &format!("# Payroll\n\nprivate-copy\n\n![private]({private_media})\n"),
+    );
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("user");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let destination = dir.path().join(".site");
+
+    let count = mb_server::static_site::write(&vault, &auth, "alice", &destination, &runtime)
+        .expect("export");
+
+    assert_eq!(count, 2);
+    assert!(!destination.join("notes/Private/Salary.html").exists());
+    assert!(destination.join(&readable_media).is_file());
+    assert!(!destination.join(&private_media).exists());
+    let search = std::fs::read_to_string(destination.join("site-data.js")).expect("search");
+    let graph = std::fs::read_to_string(destination.join("graph.html")).expect("graph");
+    assert!(!search.contains("private-copy"), "{search}");
+    assert!(!search.contains("Private/Salary.html"), "{search}");
+    assert!(!graph.contains("Private/Salary.html"), "{graph}");
+    assert!(search.contains("readable-copy"), "{search}");
+    assert!(graph.contains("Shared.html"), "{graph}");
 }

@@ -71,15 +71,17 @@ impl DeviceId {
 }
 
 /// Layout storage for one vault.
-#[derive(Debug, Clone, Copy)]
-pub struct WorkspaceStore<'a> {
-    vault_root: &'a Path,
+#[derive(Debug, Clone)]
+pub struct WorkspaceStore {
+    vault_root: PathBuf,
 }
 
-impl<'a> WorkspaceStore<'a> {
+impl WorkspaceStore {
     #[must_use]
-    pub fn new(vault_root: &'a Path) -> Self {
-        Self { vault_root }
+    pub fn new(vault_root: &Path) -> Self {
+        Self {
+            vault_root: vault_root.to_path_buf(),
+        }
     }
 
     /// This user's layout for this device, or `None` if they have never saved one.

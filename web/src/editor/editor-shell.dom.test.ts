@@ -57,6 +57,8 @@ describe("editor shell", () => {
 
     const controls = panel.querySelector<HTMLElement>(".editor-controls");
     expect(controls).not.toBeNull();
+    expect(panel.querySelector("[aria-label='Print note or save it as PDF']")).not.toBeNull();
+    expect(panel.querySelector("[aria-label='Export note as self-contained HTML']")).not.toBeNull();
     shell.destroy();
     expect(panel.querySelector(".editor-controls")).toBeNull();
     editor.destroy();

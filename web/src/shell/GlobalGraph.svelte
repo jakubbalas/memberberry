@@ -31,6 +31,7 @@
   import { Quadtree } from "./graph-quadtree.js";
   import type { VaultGraphView } from "./vault-graph.svelte.js";
   import { folderOf } from "./vault-graph.js";
+  import { THEME_CHANGE_EVENT } from "./theme.js";
 
   interface Props {
     readonly view: VaultGraphView;
@@ -48,6 +49,9 @@
   let showFilters = $state(false);
   let renderer: GraphRenderer | undefined;
   let colours: GraphColours | undefined;
+  let themeRevision = $state(0);
+  /** The label font and colour, resolved once: reading them per frame forces a style recalc. */
+  let labelStyle: { colour: string; font: string } | undefined;
   const tree = new Quadtree();
 
   const nodes = $derived(view.nodes);
@@ -118,7 +122,22 @@
     if (gl === undefined) return;
     colours = readColours(gl);
     renderer = GraphRenderer.create(gl, colours);
+    const root = document.documentElement;
+    const system = typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : undefined;
+    const refresh = (): void => {
+      if (gl === undefined || renderer === undefined) return;
+      colours = readColours(gl);
+      renderer.setColours(colours);
+      labelStyle = undefined;
+      themeRevision += 1;
+    };
+    root.addEventListener(THEME_CHANGE_EVENT, refresh);
+    system?.addEventListener("change", refresh);
     return () => {
+      root.removeEventListener(THEME_CHANGE_EVENT, refresh);
+      system?.removeEventListener("change", refresh);
       renderer?.dispose();
       renderer = undefined;
     };
@@ -137,13 +156,11 @@
    * new ones, the filters produce new ones — so identity is a sound test for "this changed".
    */
   let uploaded: { x: Float32Array; radius: Float32Array; edges: Uint32Array } | undefined;
-  /** The label font and colour, resolved once: reading them per frame forces a style recalc. */
-  let labelStyle: { colour: string; font: string } | undefined;
-
   // why: one effect that reads everything the picture depends on and repaints. Svelte's
   // reactivity is what decides *when* — there is no animation loop here, because a settled
   // layout should cost nothing and a frame that changed nothing should not be drawn.
   $effect(() => {
+    void themeRevision;
     const x = view.x;
     const y = view.y;
     const camera = view.camera;

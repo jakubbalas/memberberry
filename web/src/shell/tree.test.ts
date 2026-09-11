@@ -25,6 +25,11 @@ function notes(...paths: readonly string[]): readonly NoteSummary[] {
   return paths.map((path) => ({ path, title: null, conflicts: 0 }));
 }
 
+it("merges authorized empty folders with note-derived folders without duplicates", () => {
+  const tree = buildTree(notes("Projects/Plan.md"), ["Projects/Empty", "Ideas"]);
+  expect(folderPaths(tree)).toEqual(["Ideas", "Projects", "Projects/Empty"]);
+});
+
 /** The tree as an indented outline, which is far easier to read than nested objects. */
 function outline(tree: readonly TreeNode[], depth = 0): string {
   return tree
