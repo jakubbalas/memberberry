@@ -8,7 +8,7 @@
     <!-- The installable-application manifest (SPEC.md §7.4). Served from the build root by
          `mb-server`, alongside `/sw.js` and `/app.html`. -->
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="stylesheet" href="/src/shell/app.css" />
+    <link rel="stylesheet" href="src/shell/app.css" />
   </head>
   <body>
     <!--
@@ -20,6 +20,6 @@
       match, and a test can assert the marker still exists.
     -->
     <div id="app" data-vault="" data-note="" data-user="" data-vault-theme=""></div>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="src/main.ts"></script>
   </body>
 </html>

@@ -27,6 +27,7 @@
     createNote as createNoteRequest,
     newNotePathFor,
     newNoteSubject,
+    titleForNoteName,
   } from "./create.js";
   import { fuzzyRank } from "./fuzzy.js";
   import { type Platform, detectPlatform, formatBinding } from "./hotkeys.js";
@@ -35,6 +36,8 @@
   import { splitLimitFor } from "./layout.js";
   import type { NoteCatalog } from "./note-catalog.svelte.js";
   import {
+    RENAME_EVENT,
+    renameRequest,
     noteNameOf,
     notePathFor,
     renameNote as renameNoteRequest,
@@ -233,7 +236,7 @@
     }
     renameBusy = true;
     renameError = undefined;
-    const result = await createNote(vault, path);
+    const result = await createNote(vault, path, { content: `# ${titleForNoteName(typed)}\n` });
     renameBusy = false;
     if ("refused" in result) {
       renameError = result.refused;
@@ -264,7 +267,7 @@
     renameError = undefined;
     const result =
       subject.kind === "note"
-        ? await renameNote(vault, subject.from, to)
+        ? await renameNote(vault, subject.from, to, { title: titleForNoteName(typed) })
         : await renameTag(vault, subject.from, to);
     renameBusy = false;
     if ("refused" in result) {
@@ -482,6 +485,16 @@
       ...(platform === undefined ? {} : { platform }),
     }),
   );
+
+  $effect(() => {
+    const host = target ?? window;
+    const onRequest = (event: Event): void => {
+      const path = renameRequest(event);
+      if (path !== undefined && mode === undefined) ask({ kind: "note", from: path, initial: noteNameOf(path) });
+    };
+    host.addEventListener(RENAME_EVENT, onRequest);
+    return () => host.removeEventListener(RENAME_EVENT, onRequest);
+  });
 
   $effect(() => {
     const host = target ?? window;

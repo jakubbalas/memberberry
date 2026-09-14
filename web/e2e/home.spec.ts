@@ -1,4 +1,24 @@
 import { expect, signIn, test } from "./fixtures.js";
+import { emptyVaultSlug } from "./environment.js";
+
+test("Home note rows show folder prefixes and titles without duplicate filenames", async ({ page }, info) => {
+  await signIn(page);
+  const vault = emptyVaultSlug(info.project.name, "home-labels");
+  const notes = [
+    { path: "Folder/File.md", title: "Friendly title", label: "Folder / Friendly title" },
+    { path: "Folder/Nested/Deep.md", title: "Deep title", label: "Folder/Nested / Deep title" },
+    ...Array.from({ length: 8 }, (_, index) => ({ path: `Root${index}.md`, title: `Root title ${index}`, label: `Root title ${index}` })),
+  ];
+  for (const note of notes) {
+    const created = await page.request.post(`/api/v1/vaults/${vault}/notes`, { data: { path: note.path, content: `# ${note.title}\n` } });
+    expect(created.ok()).toBe(true);
+  }
+  await page.goto(`/v/${vault}`);
+  const rows = page.locator(".home-notes li button");
+  await expect(rows).toHaveText(notes.slice(0, 8).map((note) => note.label));
+  await expect(page.locator(".home-notes-heading")).toContainText("10 notes");
+  await page.screenshot({ path: info.outputPath("home-note-labels.png") });
+});
 
 test("the vault opens Home with compact file actions and a brand link back home", async ({ page }, info) => {
   await signIn(page);

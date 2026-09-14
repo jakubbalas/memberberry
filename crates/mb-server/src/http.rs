@@ -193,13 +193,19 @@ impl AppState {
     /// Policy is refreshed before documents are, so a broadcast in this tick is filtered by
     /// the ACL as it stands now rather than as it stood when the tick began.
     pub fn maintain_sync(&self, changed: &Changes) -> Vec<String> {
+        self.maintain_sync_with_flushed(changed).0
+    }
+
+    /// Runs sync maintenance and reports Markdown files newly available to the index.
+    pub fn maintain_sync_with_flushed(&self, changed: &Changes) -> (Vec<String>, Vec<PathBuf>) {
         let mut errors = self.reload_access();
-        errors.extend(self.security.sync.maintain(
+        let (sync_errors, flushed) = self.security.sync.maintain_with_flushed(
             std::time::Instant::now(),
             changed,
             &|slug, note, user| self.may_read_note(slug, note, user),
-        ));
-        errors
+        );
+        errors.extend(sync_errors);
+        (errors, flushed)
     }
 
     /// Brings every vault's index in step with its files (§9.1).
@@ -2605,7 +2611,12 @@ struct TaggedNote {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum RenameRequest {
     /// `from` is anything a link can name; `to` is a vault-relative path ending in `.md`.
-    Note { from: String, to: String },
+    Note {
+        from: String,
+        to: String,
+        #[serde(default)]
+        title: Option<String>,
+    },
     /// `from` is a tag or a tag prefix; every tag nested under it moves with it (§9.3).
     Tag { from: String, to: String },
 }
@@ -2667,7 +2678,9 @@ async fn rename(
             worker.audit_log(),
         );
         match request {
-            RenameRequest::Note { from, to } => rename.note(&from, &to),
+            RenameRequest::Note { from, to, title } => {
+                rename.note_with_title(&from, &to, title.as_deref())
+            }
             RenameRequest::Tag { from, to } => rename.tag(&from, &to),
         }
     })
@@ -5763,9 +5776,16 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
             };
             let tick = Arc::clone(&maintenance_state);
             let errors = tokio::task::spawn_blocking(move || {
-                let mut errors = tick.maintain_sync(&changed);
-                if !indexed.is_empty() {
-                    errors.extend(tick.maintain_index(&indexed));
+                let (mut errors, flushed) = tick.maintain_sync_with_flushed(&changed);
+                let index_changes = match indexed {
+                    Changes::All => Changes::All,
+                    Changes::Only(mut paths) => {
+                        paths.extend(flushed);
+                        Changes::Only(paths)
+                    }
+                };
+                if !index_changes.is_empty() {
+                    errors.extend(tick.maintain_index(&index_changes));
                 }
                 errors
             })

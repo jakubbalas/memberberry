@@ -19,6 +19,10 @@ describe("newNotePathFor", () => {
     expect(newNotePathFor("", "Plan")).toBe("Plan.md");
   });
 
+  it("normalizes emoji shortcodes in the filesystem name", () => {
+    expect(newNotePathFor(undefined, ":wave:Intro")).toBe("_wave_Intro.md");
+  });
+
   it("treats a name containing a slash as a path from the vault root", () => {
     expect(newNotePathFor("Projects/Roadmap.md", "Archive/Old")).toBe("Archive/Old.md");
   });

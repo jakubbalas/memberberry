@@ -21,13 +21,16 @@
     readonly onclose: (tab: TabId) => void;
     readonly ondismiss: () => void;
     readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
+    readonly titleOf?: ((path: string) => string | null) | undefined;
   }
 
-  const { open, tabs, activeTab, onactivate, onclose, ondismiss, iconOf }: Props = $props();
+  const { open, tabs, activeTab, onactivate, onclose, ondismiss, iconOf, titleOf }: Props = $props();
 
   let sheet = $state<HTMLDialogElement | undefined>(undefined);
 
   function label(tab: Tab): string {
+    const title = titleOf?.(tab.note);
+    if (title !== undefined && title !== null && title !== "") return title;
     const name = tab.note.split("/").pop() ?? tab.note;
     return name.replace(/\.md$/, "");
   }

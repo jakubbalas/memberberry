@@ -110,6 +110,8 @@ export interface SearchSegment extends SearchZone {
 }
 
 export interface OfflineStore {
+  /** Every vault with a stored metadata replica. */
+  vaults(): Promise<readonly string[]>;
   /** Replaces the metadata replica for one vault. */
   putNotes(vault: string, notes: readonly ReplicatedNote[]): Promise<void>;
   /** The stored metadata, or `undefined` if this device has never held any. */
@@ -194,6 +196,10 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
     database.transaction(store, mode).objectStore(store);
 
   return {
+    async vaults(): Promise<readonly string[]> {
+      const keys: unknown = await promised(transaction(NOTES, "readonly").getAllKeys());
+      return Array.isArray(keys) ? keys.filter((key): key is string => typeof key === "string") : [];
+    },
     async putNotes(vault: string, notes: readonly ReplicatedNote[]): Promise<void> {
       await promised(transaction(NOTES, "readwrite").put({ vault, notes: [...notes] }));
     },

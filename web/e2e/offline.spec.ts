@@ -147,9 +147,13 @@ test("a route that needs a server says so rather than failing", async ({ page, c
   await context.setOffline(true);
   await page.goto("/");
 
-  // The vault list is server-rendered and has no offline form of itself. Handing it the
-  // shell would render an editor over a URL that has never been one (`offlineFallbackFor`).
+  // The vault list is server-rendered and has no offline form of itself. The fallback keeps
+  // that boundary, but gives the reader a link into every resident note body.
   await expect(page.getByRole("heading", { name: "You are offline" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Welcome" })).toHaveAttribute(
+    "href",
+    "/v/personal/Welcome.md",
+  );
 });
 
 test("an edit made offline reaches the server when the network comes back", async ({

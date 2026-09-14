@@ -27,7 +27,7 @@ import { reconcile } from "../editor/conflicts.js";
 import { mountEditorShell } from "../editor/editor-shell.js";
 import { setTaskDue, setTaskPriority, toggleTask } from "../editor/commands.js";
 import type { TaskPriority } from "../editor/task-metadata.js";
-import { startNoteEditor } from "../editor/note-editor.js";
+import { placeCursorBelowTitle, startNoteEditor } from "../editor/note-editor.js";
 import { localReplica } from "../offline/local.js";
 import { notDownloaded } from "../offline/not-downloaded.js";
 import type { Replica } from "../offline/replica.js";
@@ -77,6 +77,7 @@ export interface OpenNoteSurfaceOptions extends NoteSurfaceElements {
    * the cancellation it exists to check.
    */
   readonly setTimer?: (run: () => void, ms: number) => () => void;
+  readonly onTitleChange?: (title: string) => string | undefined;
 }
 
 export interface NoteSurface {
@@ -309,6 +310,9 @@ export const LOCAL_ONLY = { vault: "local-demo", note: "scratch-note" } as const
  */
 export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<NoteSurface> {
   const { bootstrap, surface, panel, status } = options;
+  // Tiptap attaches and paints its document before the controls can be mounted below. Keep the
+  // surface covered across that async gap so switching notes never shows a partially built pane.
+  panel.dataset["editor"] = "loading";
   const location = options.location ?? window.location;
   const remoteSync = bootstrap === undefined ? undefined : remoteSyncFor(bootstrap, location);
   const replica = await (options.replica ?? localReplica)();
@@ -356,6 +360,16 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     throw new Error("the default editor factory must return a Tiptap Editor");
   }
   const tiptap = editor.editor;
+  let removeBodyPlacementListener: (() => void) | undefined;
+  if (!placeCursorBelowTitle(tiptap)) {
+    const placeBody = (): void => {
+      if (!placeCursorBelowTitle(tiptap)) return;
+      tiptap.off("update", placeBody);
+      removeBodyPlacementListener = undefined;
+    };
+    tiptap.on("update", placeBody);
+    removeBodyPlacementListener = () => tiptap.off("update", placeBody);
+  }
   const emojiChoices = await loadEmojiChoices(bootstrap?.vault);
 
   const { collaboration } = editor;
@@ -367,6 +381,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     panel,
     status,
     ...(bootstrap === undefined ? {} : { user: bootstrap.user, title: bootstrap.note }),
+    ...(options.onTitleChange === undefined ? {} : { onTitleChange: options.onTitleChange }),
     ...(bootstrap === undefined ? {} : {
       mediaUploader: createMediaUploader(
         bootstrap.vault,
@@ -377,6 +392,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     emojiChoices,
     ...(bootstrap === undefined ? {} : { emojiImport: { vault: bootstrap.vault, status } }),
   });
+  delete panel.dataset["editor"];
 
   // A note this device already holds is open now, and the write moves it to the front of
   // §7.2's LRU. One it does not is *waiting*, and `waiting` is what removes the notice and
@@ -443,6 +459,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
       // that still resolves when teardown actually finished.
       closing ??= (async () => {
         await accounting?.settle();
+        removeBodyPlacementListener?.();
         conflicts?.destroy();
         waiting?.destroy();
         shell.destroy();

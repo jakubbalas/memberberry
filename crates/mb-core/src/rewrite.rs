@@ -1,4 +1,4 @@
-//! Renaming a note or a tag by rewriting **only the link spans** (`SPEC.md` §6.6).
+//! Renaming a note or a tag by rewriting link spans and the note title (`SPEC.md` §6.6).
 //!
 //! ## Why this is not `parse` → change → `serialize`
 //!
@@ -192,6 +192,45 @@ pub fn rename_tag(source: &str, from: &str, to: &str) -> Result<Rewrite, Rewrite
     });
     edits.sort_by_key(|(range, _)| range.start);
     finish(source, edits, &expected)
+}
+
+/// Makes the first line of a note its non-empty level-one title.
+///
+/// Existing notes without a leading H1 receive one before their current body. This keeps the
+/// filename and title aligned after a rename without reformatting any existing Markdown.
+pub fn rename_title(source: &str, title: &str) -> Result<Rewrite, RewriteError> {
+    if title.is_empty() || title.trim() != title || title.contains(['\n', '\r']) {
+        return Err(RewriteError::InvalidName(title.to_string()));
+    }
+    let (_, body) = frontmatter::split(source);
+    let base = source.len() - body.len();
+    let end = body.find('\n').map_or(body.len(), |index| index + 1);
+    let first = body.get(..end).unwrap_or(body);
+    let replacement = format!("# {title}\n");
+    if first.trim_end_matches(['\r', '\n']).starts_with("# ") {
+        let line_end = first.find('\n').map_or(first.len(), |index| index + 1);
+        let mut text = source.to_string();
+        text.replace_range(base..base + line_end, &replacement);
+        return Ok(Rewrite {
+            text,
+            spans: vec![Span {
+                start: base,
+                end: base + line_end,
+            }],
+        });
+    }
+    let mut text = String::with_capacity(source.len() + replacement.len() + 1);
+    text.push_str(&source[..base]);
+    text.push_str(&replacement);
+    text.push('\n');
+    text.push_str(body);
+    Ok(Rewrite {
+        text,
+        spans: vec![Span {
+            start: base,
+            end: base,
+        }],
+    })
 }
 
 /// Splices the edits and refuses the result unless it parses back to `expected`.

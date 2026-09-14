@@ -26,6 +26,35 @@ beforeAll(async () => {
 });
 
 describe("editor shell", () => {
+  it("does not rename a title received through sync when the caret moves into the body", async () => {
+    const panel = document.createElement("section");
+    const surface = document.createElement("div");
+    const status = document.createElement("p");
+    panel.append(surface);
+    const ydoc = new Doc();
+    const editor = new Editor({ element: surface, extensions: [
+      ...createMemberberryExtensions(contract),
+      createYjsBinding(ydoc.getXmlFragment(PROSEMIRROR_ROOT)),
+    ] });
+    const onTitleChange = vi.fn();
+    const shell = mountEditorShell({ editor, document: ydoc, panel, status, onTitleChange });
+    try {
+      applyUpdate(ydoc, await updateFromMarkdown("# Synced title\n\nBody\n"));
+      editor.commands.setTextSelection((editor.state.doc.firstChild?.nodeSize ?? 0) + 1);
+      editor.view.dom.dispatchEvent(new Event("blur"));
+      expect(onTitleChange).not.toHaveBeenCalled();
+      const heading = editor.state.doc.firstChild;
+      if (heading === null) throw new Error("synced title missing");
+      editor.commands.insertContentAt({ from: 1, to: heading.nodeSize - 1 }, "Local title");
+      editor.view.dom.dispatchEvent(new Event("blur"));
+      expect(onTitleChange).toHaveBeenCalledExactlyOnceWith("Local title");
+    } finally {
+      shell.destroy();
+      editor.destroy();
+      ydoc.destroy();
+    }
+  });
+
   it("mounts controls, drives source mode and removes listeners with the note", async () => {
     const panel = document.createElement("section");
     const surface = document.createElement("div");
@@ -35,7 +64,8 @@ describe("editor shell", () => {
     const editor = new Editor({ element: surface, extensions: createMemberberryExtensions(contract) });
     const ydoc = new Doc();
     applyUpdate(ydoc, await updateFromMarkdown("# Initial\n\nText\n"));
-    const shell = mountEditorShell({ editor, document: ydoc, panel, status });
+    const onTitleChange = vi.fn();
+    const shell = mountEditorShell({ editor, document: ydoc, panel, status, onTitleChange });
 
     const source = panel.querySelector<HTMLTextAreaElement>(".source-view");
     const sourceButton = panel.querySelector<HTMLButtonElement>("[aria-label='Toggle Markdown source view']");
@@ -48,6 +78,15 @@ describe("editor shell", () => {
     sourceButton.click();
     await tick();
     expect(editor.getText()).toContain("Changed");
+    editor.view.dom.dispatchEvent(new Event("blur"));
+    expect(onTitleChange).toHaveBeenCalledWith("Changed");
+    const heading = editor.state.doc.firstChild;
+    if (heading === null) throw new Error("title missing");
+    editor.commands.insertContentAt({ from: 1, to: heading.nodeSize - 1 }, "");
+    editor.view.dom.dispatchEvent(new Event("blur"));
+    expect(editor.state.doc.firstChild?.textContent).toBe("untitled");
+    expect(onTitleChange).toHaveBeenCalledWith("");
+    expect(onTitleChange).toHaveBeenCalledWith("untitled");
 
     panel.querySelector<HTMLButtonElement>("[aria-label='Insert task block']")?.click();
     expect(JSON.stringify(editor.getJSON())).toContain('"task_item"');
@@ -116,6 +155,22 @@ describe("editor shell", () => {
     expect(drop.defaultPrevented).toBe(true);
     expect(upload).toHaveBeenCalledTimes(2);
 
+    const desktopImage = new File(["pixels"], "desktop-image.png", { type: "" });
+    const desktopDrop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(desktopDrop, "dataTransfer", { value: { files: [desktopImage] } });
+    editor.view.dom.dispatchEvent(desktopDrop);
+    await tick();
+    expect(desktopDrop.defaultPrevented).toBe(true);
+    expect(upload).toHaveBeenCalledWith(desktopImage);
+
+    const unsupportedDrop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(unsupportedDrop, "dataTransfer", {
+      value: { files: [new File(["text"], "notes.txt", { type: "text/plain" })] },
+    });
+    editor.view.dom.dispatchEvent(unsupportedDrop);
+    expect(unsupportedDrop.defaultPrevented).toBe(true);
+    expect(upload).toHaveBeenCalledTimes(3);
+
     const svgPaste = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(svgPaste, "clipboardData", {
       value: { files: [new File(["<svg/>"], "active.svg", { type: "image/svg+xml" })], getData: () => "" },
@@ -123,7 +178,7 @@ describe("editor shell", () => {
     editor.view.dom.dispatchEvent(svgPaste);
     await tick();
     expect(svgPaste.defaultPrevented).toBe(false);
-    expect(upload).toHaveBeenCalledTimes(2);
+    expect(upload).toHaveBeenCalledTimes(3);
 
     shell.destroy();
     expect(destroyUploader).toHaveBeenCalledOnce();

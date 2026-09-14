@@ -45,7 +45,8 @@
   import { fromVisiblePane } from "./outline.js";
   import { OutlineView } from "./outline.svelte.js";
   import type { createNote as createNoteRequest } from "./create.js";
-  import type { renameNote as renameNoteRequest, renameTag as renameTagRequest } from "./rename.js";
+  import { notePathFor, renameNote as renameNoteRequest, type renameTag as renameTagRequest } from "./rename.js";
+  import { titleForNoteName } from "./create.js";
   import { TagView } from "./tags.svelte.js";
   import { SearchView } from "./search.svelte.js";
   import { InboxView } from "./tasks.svelte.js";
@@ -249,6 +250,16 @@
     store.open(path);
   }
 
+  function openNavigationNote(path: string, newTab = false): void {
+    if (newTab) {
+      store.open(path, { reuse: false });
+      return;
+    }
+    const active = store.activeTab;
+    if (active === undefined) store.open(path);
+    else store.navigate(active.id, path);
+  }
+
   async function openGraph(): Promise<void> {
     const [pane, state, wire] = await Promise.all([
       import("./GlobalGraph.svelte"),
@@ -317,6 +328,11 @@
 
   let collapsed = $state(readCollapsed());
 
+  $effect(() => {
+    if (!narrowViewport) return;
+    collapsed = { left: true, right: true };
+  });
+
   function toggle(side: "left" | "right"): void {
     collapsed = { ...collapsed, [side]: !collapsed[side] };
     try {
@@ -326,18 +342,69 @@
     }
   }
 
+  async function deleteFromTree(path: string): Promise<void> {
+    if (!globalThis.confirm(`Move ${path} to trash?`)) return;
+    if (!await trash.delete(path)) return;
+    for (const tab of [...store.tabs]) {
+      if (tab.note === path) store.close(tab.id);
+    }
+    void trash.refresh();
+    void catalog.refresh();
+  }
+
   const panes = $derived(groups(store.current.root).map((group) => group.id));
 
-  /**
-   * A note's title, for the breadcrumbs a pane draws.
-   *
-   * Passed as a function rather than handing the catalog down: a pane needs one string, not
-   * the whole index, and the layout components have no other reason to know what a catalog is.
-   */
   const titleOf = (path: string): string | null =>
     catalog.notes.find((note) => note.path === path)?.title ?? null;
+
   const iconOf = (path: string): string | null | undefined =>
     catalog.notes.find((note) => note.path === path)?.icon;
+
+  function untitledTitleFor(path: string): string {
+    const folder = path.includes("/") ? `${path.slice(0, path.lastIndexOf("/") + 1)}` : "";
+    for (let number = 0; ; number += 1) {
+      const title = number === 0 ? "untitled" : `untitled ${number + 1}`;
+      const candidate = `${folder}${title}.md`;
+      if (!catalog.notes.some((note) => note.path === candidate)) return title;
+    }
+  }
+
+  async function renameFromTitleNow(path: string, title: string): Promise<void> {
+    const next = notePathFor(path, title);
+    if (next === undefined) return;
+    const result = await (renameNote ?? renameNoteRequest)(vaultSlug, path, next, { title: titleForNoteName(title) });
+    if ("refused" in result) return;
+    for (const tab of store.tabs) {
+      if (tab.note === path) store.navigate(tab.id, result.ok.to);
+    }
+    void catalog.refresh();
+  }
+
+  async function moveFromTree(from: string, to: string): Promise<void> {
+    const title = catalog.notes.find((note) => note.path === from)?.title;
+    const result = await (renameNote ?? renameNoteRequest)(
+      vaultSlug,
+      from,
+      to,
+      title === null || title === undefined ? {} : { title },
+    );
+    if ("refused" in result) return;
+    for (const tab of store.tabs) {
+      if (tab.note === from) store.navigate(tab.id, result.ok.to);
+    }
+    void catalog.refresh();
+    void refreshFolders();
+  }
+
+  function renameFromTitle(path: string, title: string): void {
+    void renameFromTitleNow(path, title);
+  }
+
+  const handleTitleChange = (path: string, title: string): string | undefined => {
+    if (title.trim() === "") return untitledTitleFor(path);
+    renameFromTitle(path, title);
+    return undefined;
+  };
 
   /**
    * §8.3: the tablet gets the desktop layout with at most one split, and mobile none at all.
@@ -365,6 +432,11 @@
     { name: "Calendar", icon: "calendar" },
   ] as const;
   let navigationView = $state<(typeof navigationViews)[number]["name"]>("Notes");
+
+  function selectNavigationView(name: (typeof navigationViews)[number]["name"]): void {
+    navigationView = name;
+    if (name === "Tags") void tags.refresh();
+  }
 
   $effect(() => {
     const element = shell;
@@ -476,23 +548,26 @@
             title={view.name}
             aria-pressed={navigationView === view.name}
             aria-controls={`navigation-${view.name.toLowerCase()}`}
-            onclick={() => (navigationView = view.name)}
+            onclick={() => selectNavigationView(view.name)}
           ><Icon name={view.icon} /></button>
         {/each}
       </div>
     {/snippet}
     <section class="navigation-view" id="navigation-search" aria-label="Search" hidden={navigationView !== "Search"}>
-      <SearchPane view={search} onopen={(path) => store.open(path)} />
+      <SearchPane view={search} onopen={openNavigationNote} />
     </section>
     <section class="navigation-view" id="navigation-notes" aria-label="Notes" hidden={navigationView !== "Notes"}>
       <NoteTree
         {catalog}
         {bookmarks}
         {emptyFolders}
-        activeNote={store.activeTab?.note}
-        onopen={(path) => store.open(path)}
+        activeNote={showingHome ? undefined : store.activeTab?.note}
+        onopen={openNavigationNote}
+        ondelete={(path) => void deleteFromTree(path)}
+        onmove={(from, to) => void moveFromTree(from, to)}
         oncreate={() => requestPalette("create", target ?? window)}
         onfolder={() => { folderError = undefined; folderPrompt = true; }}
+        {target}
       />
       {#if folderStatus}<p class="tree-empty" role="status">{folderStatus}</p>{/if}
       {#if session !== undefined}
@@ -503,13 +578,13 @@
       {/if}
     </section>
     <section class="navigation-view" id="navigation-tags" aria-label="Tags" hidden={navigationView !== "Tags"}>
-      <TagPane view={tags} onopen={(path) => store.open(path)} />
+      <TagPane view={tags} onopen={openNavigationNote} />
     </section>
     <section class="navigation-view" id="navigation-tasks" aria-label="Tasks" hidden={navigationView !== "Tasks"}>
-      <InboxPane view={inbox} onopen={(path) => store.open(path)} onedit={editTask} />
+      <InboxPane view={inbox} onopen={openNavigationNote} onedit={editTask} />
     </section>
     <section class="navigation-view" id="navigation-calendar" aria-label="Calendar" hidden={navigationView !== "Calendar"}>
-      <CalendarPane view={daily} onopen={(path) => store.open(path)} />
+      <CalendarPane view={daily} onopen={openNavigationNote} />
     </section>
   </Sidebar>
 
@@ -521,17 +596,17 @@
         view={vaultGraph}
         onopen={(path) => {
           showGraph = false;
-          store.open(path);
+          openNavigationNote(path);
         }}
         onclose={() => (showGraph = false)}
       />
     {/if}
     {#if showingHome}
-      <Home vault={vaultSlug} {catalog} onopen={(path) => store.open(path)} oncreate={() => requestPalette("create", target ?? window)} />
+      <Home {catalog} onopen={openNavigationNote} oncreate={() => requestPalette("create", target ?? window)} />
     {:else if layout === "mobile"}
-      <MobileMain {store} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
+      <MobileMain {store} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} ontitlechange={handleTitleChange} />
     {:else}
-      <PaneTree node={store.current.root} {store} {panes} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
+      <PaneTree node={store.current.root} {store} {panes} {session} {open} {iconOf} {taskEdit} {daily} {target} {titleOf} ontitlechange={handleTitleChange} />
     {/if}
   </main>
 
@@ -540,7 +615,7 @@
     <Backlinks
       view={backlinks}
       note={store.activeTab?.note}
-      onopen={(path) => store.open(path)}
+      onopen={openNavigationNote}
     />
     {#if session !== undefined}
       <details class="notebook-section">
@@ -559,7 +634,7 @@
       />
       </details>
     {/if}
-    <LocalGraph view={graph} note={store.activeTab?.note} onopen={(path) => store.open(path)} />
+    <LocalGraph view={graph} note={store.activeTab?.note} onopen={openNavigationNote} />
   </Sidebar>
 </div>
 

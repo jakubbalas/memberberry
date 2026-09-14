@@ -8,7 +8,8 @@
 import { Mark, Node, getSchema, type Extensions } from "@tiptap/core";
 import type { DOMOutputSpec, Schema } from "@tiptap/pm/model";
 
-import { schema as loadSchemaContract } from "../notes.js";
+import { schema as loadSchemaContract, tagInputParser } from "../notes.js";
+import { tagInputRules } from "./commands.js";
 
 type AttributeType = "string" | "boolean" | "integer" | "enum" | "date" | "string[]" | "enum[]";
 
@@ -106,7 +107,7 @@ export async function loadMemberberrySchema(): Promise<Schema> {
 
 /** Loads the Rust-owned contract through WASM and generates Tiptap extensions from it. */
 export async function loadMemberberryExtensions(media?: MediaRenderContext): Promise<Extensions> {
-  return createMemberberryExtensions(await loadSchemaContract(), media);
+  return [...createMemberberryExtensions(await loadSchemaContract(), media), tagInputRules(await tagInputParser())];
 }
 
 function attributesFor(attributes: Readonly<Record<string, AttributeDefinition>>) {

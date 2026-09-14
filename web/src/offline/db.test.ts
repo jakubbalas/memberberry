@@ -34,6 +34,12 @@ describe("the metadata replica", () => {
     ]);
   });
 
+  it("lists only vaults with stored metadata", async () => {
+    await store.putNotes("work", []);
+    await store.putResident({ vault: "orphan", note: "Note.md", openedAt: 1, bytes: 0, dirty: false });
+    expect(await store.vaults()).toEqual(["work"]);
+  });
+
   it("replaces rather than merges, so a deleted note does not survive", async () => {
     await store.putNotes("personal", [
       { path: "One.md", title: "One", conflicts: 0 },

@@ -70,7 +70,8 @@ test("renames the open note and rewrites the links that point at it", async ({ p
   await expect(page.locator(".rename-notice")).toHaveText(/Renamed to Scratch\/.*\. Updated/);
   await expect(page.locator(".rename-notice")).toContainText("you can see");
   // The workspace followed the note rather than leaving a pane on a path that is gone.
-  await expect(page.locator(EDITOR).first()).toContainText("Rename scratch");
+  await expect(page.locator(EDITOR).first().getByRole("heading", { level: 1 })).toHaveText(renamed);
+  await expect(page.locator(EDITOR).first()).toContainText("A note this test may rename.");
   // The tab strip is desktop-only (§8.3), so this is the one assertion with a viewport.
   if (info.project.name === "desktop") {
     await expect(page.locator(".tab", { hasText: renamed })).toBeVisible();
@@ -81,6 +82,7 @@ test("renames the open note and rewrites the links that point at it", async ({ p
   await expect
     .poll(() => onDisk(`Scratch/${renamed}.md`))
     .toContain("A note this test may rename.");
+  expect(onDisk(`Scratch/${renamed}.md`)).toContain(`# ${renamed}\n`);
   const rewritten = onDisk(source);
   expect(rewritten).toContain(`[[${renamed}]]`);
   expect(rewritten).toContain(`![[${renamed}]]`);

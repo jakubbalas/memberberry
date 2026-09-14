@@ -29,9 +29,10 @@
     readonly taskEdit?: { readonly ordinal: number; readonly action: TaskEditAction } | undefined;
     readonly daily?: DailyView | undefined;
     readonly ondailyopen?: ((path: string) => void) | undefined;
+    readonly ontitlechange?: ((title: string) => string | undefined) | undefined;
   }
 
-  const { tab, session, onscroll, open = openNoteSurface, taskEdit, daily, ondailyopen }: Props = $props();
+  const { tab, session, onscroll, open = openNoteSurface, taskEdit, daily, ondailyopen, ontitlechange }: Props = $props();
 
   let pane = $state<HTMLElement | undefined>(undefined);
   let surface = $state<HTMLElement | undefined>(undefined);
@@ -73,10 +74,16 @@
     const elements = { surface, panel, status };
     const scroller = pane;
     const restore = untrack(() => tab?.scroll ?? 0);
+    const openSurface = untrack(() => open);
+    const titleChange = untrack(() => ontitlechange);
 
     let live = true;
     let opened: NoteSurface | undefined;
-    void open({ ...elements, bootstrap: untrack(() => bootstrap) })
+    void openSurface({
+      ...elements,
+      bootstrap: untrack(() => bootstrap),
+      ...(titleChange === undefined ? {} : { onTitleChange: titleChange }),
+    })
       .then((result) => {
         // The pane can be closed, or the tab navigated, while the editor is still restoring
         // from IndexedDB. Dropping the guard leaks an editor on a detached element with its

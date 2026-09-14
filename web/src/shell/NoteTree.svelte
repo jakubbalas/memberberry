@@ -11,28 +11,38 @@
 -->
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
   import type { Bookmarks } from "./bookmarks.svelte.js";
   import type { NoteCatalog } from "./note-catalog.svelte.js";
   import { buildTree, treeKeyAction, visibleRows } from "./tree.js";
+  import { requestRename } from "./rename.js";
 
   interface Props {
     readonly catalog: NoteCatalog;
     readonly bookmarks: Bookmarks;
     /** The note showing in the focused pane, so the tree can mark it. */
     readonly activeNote?: string | undefined;
-    readonly onopen: (path: string) => void;
+    readonly onopen: (path: string, newTab?: boolean) => void;
     /** Empty folders already filtered by the server. */
     readonly emptyFolders?: readonly string[];
     /** Opens note creation from the file-list heading. */
     readonly oncreate?: () => void;
     /** Opens folder creation from the file-list heading. */
     readonly onfolder?: () => void;
+    /** Moves a note to the server-owned trash after confirmation. */
+    readonly ondelete?: (path: string) => void;
+    /** Moves a note to a vault-relative folder, or to the vault root when empty. */
+    readonly onmove?: (from: string, to: string) => void | Promise<void>;
+    readonly target?: EventTarget | undefined;
   }
 
-  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder }: Props = $props();
+  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder, ondelete, onmove, target }: Props = $props();
 
   let expanded = $state<ReadonlySet<string>>(new Set());
   let cursor = $state(0);
+  let context = $state<{ path: string; x: number; y: number } | undefined>(undefined);
+  let draggingPath = $state<string | undefined>(undefined);
+  let dropFolder = $state<string | undefined>(undefined);
 
   $effect(() => {
     catalog.ensure();
@@ -81,6 +91,11 @@
     }
   }
 
+  function openContextMenu(event: MouseEvent, path: string): void {
+    event.preventDefault();
+    context = { path, x: event.clientX, y: event.clientY };
+  }
+
   const label = (row: (typeof rows)[number]): string =>
     row.node.kind === "note" ? (row.node.title ?? row.node.name) : row.node.name;
 
@@ -91,6 +106,44 @@
 
   const conflictLabel = (count: number): string =>
     `${count} unresolved ${count === 1 ? "conflict" : "conflicts"}`;
+
+  function startDrag(event: DragEvent, path: string): void {
+    if (onmove === undefined || event.dataTransfer === null) return;
+    draggingPath = path;
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", path);
+  }
+
+  function dragOver(event: DragEvent, folder: string): void {
+    if (onmove === undefined) return;
+    const transfer = event.dataTransfer;
+    if (transfer === null) return;
+    const source = transfer.getData("text/plain");
+    if (draggingPath === undefined && source !== "") draggingPath = source;
+    if (draggingPath === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    transfer.dropEffect = "move";
+    dropFolder = folder;
+  }
+
+  function drop(event: DragEvent, folder: string): void {
+    if (onmove === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const from = event.dataTransfer?.getData("text/plain") || draggingPath;
+    draggingPath = undefined;
+    dropFolder = undefined;
+    if (from === undefined) return;
+    const filename = from.slice(from.lastIndexOf("/") + 1);
+    const to = folder === "" ? filename : `${folder}/${filename}`;
+    if (from !== to) void onmove(from, to);
+  }
+
+  function endDrag(): void {
+    draggingPath = undefined;
+    dropFolder = undefined;
+  }
 </script>
 
 <div class="tree-panel">
@@ -102,12 +155,20 @@
           <li>
             <button
               type="button"
+              class="tree-bookmark"
+              aria-pressed="true"
+              aria-label={`Remove bookmark for ${entry.label}`}
+              title={`Remove bookmark for ${entry.label}`}
+              onclick={() => bookmarks.toggle(entry.path)}
+            >★</button>
+            <button
+              type="button"
               class="tree-row is-bookmark"
               data-current={entry.path === activeNote}
               title={entry.path}
-              onclick={() => onopen(entry.path)}
+              onclick={(event) => onopen(entry.path, event.metaKey || event.ctrlKey)}
+              oncontextmenu={(event) => openContextMenu(event, entry.path)}
             >
-              <span class="tree-icon" aria-hidden="true">★</span>
               <span class="tree-label">{entry.label}</span>
               {#if entry.conflicts > 0}
                 <span class="tree-conflicts" aria-label={conflictLabel(entry.conflicts)}>
@@ -152,6 +213,10 @@
         tabindex="0"
         aria-activedescendant={rows[cursor] === undefined ? undefined : `tree-row-${cursor}`}
         {onkeydown}
+        data-drop-target={dropFolder === ""}
+        ondragover={(event) => dragOver(event, "")}
+        ondrop={(event) => drop(event, "")}
+        ondragend={endDrag}
       >
         {#each rows as row, index (row.node.path)}
           <!-- svelte-ignore a11y_click_events_have_key_events -- the keyboard path for the
@@ -169,13 +234,20 @@
             aria-selected={index === cursor}
             data-kind={row.node.kind}
             data-current={row.node.kind === "note" && row.node.path === activeNote}
+            data-dragging={row.node.kind === "note" && row.node.path === draggingPath}
+            data-drop-target={row.node.kind === "folder" && row.node.path === dropFolder}
             style={`--tree-depth: ${row.depth}`}
             title={row.node.path}
-            onclick={() => {
+            onclick={(event) => {
               cursor = index;
-              if (row.node.kind === "note") onopen(row.node.path);
+              if (row.node.kind === "note") onopen(row.node.path, event.metaKey || event.ctrlKey);
               else setExpanded(row.node.path, row.expanded !== true);
             }}
+            oncontextmenu={row.node.kind === "note" ? (event) => openContextMenu(event, row.node.path) : undefined}
+            draggable={row.node.kind === "note" && onmove !== undefined}
+            ondragstart={row.node.kind === "note" ? (event) => startDrag(event, row.node.path) : undefined}
+            ondragover={row.node.kind === "folder" ? (event) => dragOver(event, row.node.path) : undefined}
+            ondrop={row.node.kind === "folder" ? (event) => drop(event, row.node.path) : undefined}
           >
             <!--
               A drawn mark rather than a typed one. The twisties were `▾`/`▸` and a note with
@@ -187,6 +259,7 @@
             <span class="tree-icon" aria-hidden="true">
               {#if row.node.kind === "folder"}
                 <Icon name="chevron-right" variant="tree-twisty" />
+                <Icon name={row.expanded === true ? "folder-open" : "folder"} variant="tree-folder" />
               {:else if icon(row) !== undefined && icon(row) !== null}
                 {icon(row)}
               {:else}
@@ -223,3 +296,22 @@
     {/if}
   </section>
 </div>
+
+<ContextMenu
+  open={context !== undefined}
+  x={context?.x ?? 0}
+  y={context?.y ?? 0}
+  onrename={() => {
+    if (context !== undefined) requestRename(context.path, target);
+    context = undefined;
+  }}
+  onopennewtab={() => {
+    if (context !== undefined) onopen(context.path, true);
+    context = undefined;
+  }}
+  ondelete={() => {
+    if (context !== undefined) ondelete?.(context.path);
+    context = undefined;
+  }}
+  ondismiss={() => (context = undefined)}
+/>

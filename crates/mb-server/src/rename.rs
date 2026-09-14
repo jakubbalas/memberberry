@@ -144,6 +144,16 @@ impl<'a> Rename<'a> {
     ///
     /// See [`RenameError`]. Every variant except `Failed` means nothing was written.
     pub fn note(&self, from: &str, to: &str) -> Result<Renamed, RenameError> {
+        self.note_with_title(from, to, None)
+    }
+
+    /// Renames a note and stores the caller's title in its first H1 when supplied.
+    pub fn note_with_title(
+        &self,
+        from: &str,
+        to: &str,
+        requested_title: Option<&str>,
+    ) -> Result<Renamed, RenameError> {
         let view = AuthorizedVault::new(self.vault, self.access, self.actor.clone());
         let identity = view.identity(from).map_err(|_| RenameError::Denied)?;
         // Shape first, then authorization, then the filesystem. The order is the point:
@@ -172,6 +182,34 @@ impl<'a> Rename<'a> {
         let planned = plan(self.vault, &sources, |source, names| {
             rewrite::rename_link_target(source, names, &link_name)
         })?;
+        let title = requested_title.unwrap_or_else(|| {
+            to.trim_end_matches(".md")
+                .rsplit('/')
+                .next()
+                .unwrap_or(to.trim_end_matches(".md"))
+        });
+        let mut planned = planned;
+        let mut title_rewritten = false;
+        for change in &mut planned {
+            if change.path != identity {
+                continue;
+            }
+            let titled =
+                rewrite::rename_title(&change.text, title).map_err(|_| RenameError::Unverified)?;
+            change.text = titled.text().to_string();
+            title_rewritten = true;
+        }
+        if !title_rewritten {
+            let source = std::fs::read_to_string(self.vault.notes_root().join(&identity))
+                .map_err(|error| RenameError::Failed(error.to_string()))?;
+            let titled =
+                rewrite::rename_title(&source, title).map_err(|_| RenameError::Unverified)?;
+            planned.push(Planned {
+                path: identity.clone(),
+                text: titled.text().to_string(),
+                count: 0,
+            });
+        }
 
         self.sync
             .close(self.vault, &identity)
@@ -297,7 +335,7 @@ impl<'a> Rename<'a> {
                 break;
             }
             touched.push(path.clone());
-            if self.may_read(&path) {
+            if change.count > 0 && self.may_read(&path) {
                 notes += 1;
                 references += change.count;
             }

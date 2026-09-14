@@ -15,6 +15,16 @@ describe("the offline page", () => {
     expect(offlinePage()).toContain("You are offline");
   });
 
+  it("links to resident notes without trusting their text as HTML", () => {
+    const html = offlinePage([
+      { vault: "personal", note: "Projects/Plan & ship.md", title: "<Plan>" },
+    ]);
+    expect(html).toContain("Notes available on this device");
+    expect(html).toContain("href=\"/v/personal/Projects%2FPlan%20%26%20ship.md\"");
+    expect(html).toContain("&lt;Plan&gt;");
+    expect(html).not.toContain("<Plan>");
+  });
+
   it("loads nothing at all", () => {
     // No script and no external reference, which is what makes `default-src 'none'` a policy
     // this document can actually be served under.

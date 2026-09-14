@@ -17,7 +17,9 @@
  * build and would go on serving the previous one from cache forever.
  */
 
-import { offlinePage, offlinePageHeaders } from "./offline-page.js";
+import { offlinePage, offlinePageHeaders, type OfflineNoteLink } from "./offline-page.js";
+import { availableOfflineNotes } from "./available-notes.js";
+import { openOfflineStore } from "./db.js";
 import { SHELL_URL, cacheName, staleCaches, type PrecachePlan } from "./precache.js";
 import { offlineFallbackFor, strategyFor } from "./routing.js";
 import { receiveShareTarget } from "../clipper/share-inbox.js";
@@ -58,7 +60,9 @@ if (
     // are not the same: the second makes the worker a proxy for every request in the
     // application, including the ones it has no opinion about.
     if (strategy === "network-only") return;
-    event.respondWith(strategy === "cache-first" ? fromCache(event.request) : navigate(event.request));
+    event.respondWith(
+      strategy === "cache-first" ? fromCache(event.request) : navigate(event.request, scope.indexedDB),
+    );
   });
 }
 
@@ -99,7 +103,7 @@ async function fromCache(request: Request): Promise<Response> {
  * this application a 404 is frequently a permission denial (§6.5), which must never be
  * papered over with a cached page.
  */
-async function navigate(request: Request): Promise<Response> {
+async function navigate(request: Request, factory: IDBFactory): Promise<Response> {
   try {
     return await fetch(request);
   } catch {
@@ -108,6 +112,20 @@ async function navigate(request: Request): Promise<Response> {
       const shell = await cache.match(SHELL_URL);
       if (shell !== undefined) return shell;
     }
-    return new Response(offlinePage(), { status: 503, headers: offlinePageHeaders() });
+    const notes = new URL(request.url).pathname === "/" ? await availableNotes(factory) : [];
+    return new Response(offlinePage(notes), { status: 503, headers: offlinePageHeaders() });
+  }
+}
+
+async function availableNotes(factory: IDBFactory): Promise<readonly OfflineNoteLink[]> {
+  try {
+    const store = await openOfflineStore(factory);
+    try {
+      return await availableOfflineNotes(store);
+    } finally {
+      store.close();
+    }
+  } catch {
+    return [];
   }
 }

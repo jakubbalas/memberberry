@@ -162,7 +162,7 @@ fn renaming_a_note_moves_the_file_and_repoints_every_inbound_link() {
         .expect("the rename should succeed");
 
     assert!(!fixture.exists("Roadmap.md"), "the old file should be gone");
-    assert_eq!(fixture.read("Plan.md"), "# Roadmap\n");
+    assert_eq!(fixture.read("Plan.md"), "# Plan\n");
     assert_eq!(
         fixture.read("One.md"),
         "See [[Plan]] and ![[Plan#Q3]].\n",
@@ -464,10 +464,7 @@ fn a_note_that_links_to_itself_is_rewritten_at_its_new_path() {
         .expect("rename");
 
     assert!(!fixture.exists("Roadmap.md"));
-    assert_eq!(
-        fixture.read("Plan.md"),
-        "# Roadmap\n\nSee [[Plan]] above.\n"
-    );
+    assert_eq!(fixture.read("Plan.md"), "# Plan\n\nSee [[Plan]] above.\n");
 }
 
 #[test]

@@ -11,6 +11,8 @@
 -->
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
+  import { requestRename } from "./rename.js";
   import type { GroupId, Tab, TabGroup } from "./workspace.js";
 
   interface Props {
@@ -19,22 +21,28 @@
     readonly panes: readonly GroupId[];
     readonly focused: boolean;
     readonly onactivate: (tab: string) => void;
+    readonly onopennewtab: (path: string) => void;
     readonly onclose: (tab: string) => void;
     readonly onmove: (tab: string, toGroup: GroupId, index: number) => void;
     readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
+    readonly titleOf?: ((path: string) => string | null) | undefined;
+    readonly target?: EventTarget | undefined;
   }
 
-  const { group, panes, focused, onactivate, onclose, onmove, iconOf }: Props = $props();
+  const { group, panes, focused, onactivate, onopennewtab, onclose, onmove, iconOf, titleOf, target }: Props = $props();
 
   /** The drag in progress, if the pointer started it in this strip. */
   let dragging = $state<string | undefined>(undefined);
   /** Where a drop would land, so the gap is visible before the mouse is released. */
   let dropIndex = $state<number | undefined>(undefined);
+  let context = $state<{ path: string; x: number; y: number } | undefined>(undefined);
 
   const index = $derived(panes.indexOf(group.id));
 
-  /** The note's own name, without its folder or extension — the tab is narrow. */
+  /** The shared note title, falling back to the filename when the note has no title. */
   function label(tab: Tab): string {
+    const title = titleOf?.(tab.note);
+    if (title !== undefined && title !== null && title !== "") return title;
     const name = tab.note.split("/").pop() ?? tab.note;
     return name.replace(/\.md$/, "");
   }
@@ -127,6 +135,10 @@
       ondrop={(event) => ondrop(event, at)}
       onclick={() => onactivate(tab.id)}
       onkeydown={(event) => onkeydown(event, tab, at)}
+      oncontextmenu={(event) => {
+        event.preventDefault();
+        context = { path: tab.note, x: event.clientX, y: event.clientY };
+      }}
     >
       {#if iconOf?.(tab.note)}
         <span class="tab-icon" aria-hidden="true">{iconOf(tab.note)}</span>
@@ -162,3 +174,18 @@
     role="presentation"
   ></div>
 </div>
+
+<ContextMenu
+  open={context !== undefined}
+  x={context?.x ?? 0}
+  y={context?.y ?? 0}
+  onrename={() => {
+    if (context !== undefined) requestRename(context.path, target);
+    context = undefined;
+  }}
+  onopennewtab={() => {
+    if (context !== undefined) onopennewtab(context.path);
+    context = undefined;
+  }}
+  ondismiss={() => (context = undefined)}
+/>

@@ -23,11 +23,24 @@
 mod support;
 
 use mb_core::names;
-use mb_core::rewrite::{Rewrite, RewriteError, Span, rename_link_target, rename_tag};
+use mb_core::rewrite::{Rewrite, RewriteError, Span, rename_link_target, rename_tag, rename_title};
 use proptest::prelude::*;
 
 fn from(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| (*name).to_string()).collect()
+}
+
+#[test]
+fn rename_title_replaces_the_first_h1_and_preserves_the_body() {
+    let result =
+        rename_title("# Old title\n\nBody **stays**.\n", "New title").expect("valid title");
+    assert_eq!(result.text(), "# New title\n\nBody **stays**.\n");
+}
+
+#[test]
+fn rename_title_inserts_a_title_for_a_legacy_note() {
+    let result = rename_title("body\n", "Recovered").expect("valid title");
+    assert_eq!(result.text(), "# Recovered\n\nbody\n");
 }
 
 /// The rewritten text, rebuilt from the source and the spans the rewrite says it replaced.

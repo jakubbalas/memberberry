@@ -32,10 +32,13 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Coverage reuse regression
+        run: python3 scripts/coverage-run-test.py
+
       # The per-crate floors in AGENTS.md §2.1, enforced separately per crate so a crate
       # below its floor cannot hide behind one above it.
       - name: Coverage gate
-        run: cargo llvm-cov --workspace --json --quiet | python3 scripts/coverage-gate.py
+        run: make coverage-gate
 
       # Both pure browser crates compile to wasm32 on every commit so the web build can never
       # silently break on an accidental std::fs or SystemTime (AGENTS.md §4.2).

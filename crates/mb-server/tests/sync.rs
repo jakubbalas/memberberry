@@ -404,11 +404,10 @@ fn maintenance_writes_a_due_note_once_and_does_not_replay_its_own_write() {
         "the debounce has not elapsed"
     );
 
-    assert!(
-        registry
-            .maintain(start + MARKDOWN_WRITE_DEBOUNCE, &Changes::All, &permit_all)
-            .is_empty()
-    );
+    let (errors, flushed) =
+        registry.maintain_with_flushed(start + MARKDOWN_WRITE_DEBOUNCE, &Changes::All, &permit_all);
+    assert!(errors.is_empty());
+    assert_eq!(flushed, vec![note.canonicalize().unwrap()]);
     assert_eq!(std::fs::read_to_string(&note).unwrap(), "after\n");
     assert!(
         inbox.try_recv().is_err(),

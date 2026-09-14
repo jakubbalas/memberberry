@@ -1,7 +1,8 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig, type Plugin } from "vite";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const backendOrigin = "http://127.0.0.1:9010";
 
@@ -9,6 +10,19 @@ function authenticatedBackendPages(): Plugin {
   return {
     name: "memberberry-authenticated-backend-pages",
     configureServer(server) {
+      const sourceRoot = fileURLToPath(new URL("./src/", import.meta.url));
+      server.middlewares.use((request, _response, next) => {
+        const requestUrl = request.url;
+        if (requestUrl?.startsWith("/src/") === true) {
+          const pathSegment = requestUrl.slice("/src/".length).split("?", 1)[0] ?? "";
+          const sourcePath = join(sourceRoot, pathSegment);
+          const outsideSourceRoot = relative(sourceRoot, sourcePath).startsWith("..");
+          if (!isAbsolute(relative(sourceRoot, sourcePath)) && !outsideSourceRoot && existsSync(sourcePath)) {
+            request.url = `/@fs/${sourcePath}${requestUrl.includes("?") ? `?${requestUrl.split("?", 2)[1]}` : ""}`;
+          }
+        }
+        next();
+      });
       server.middlewares.use(async (request, response, next) => {
         if (
           request.method !== "GET" ||
@@ -41,6 +55,14 @@ function authenticatedBackendPages(): Plugin {
             .replace(
               /<link rel="stylesheet" crossorigin href="\/assets\/[^\"]+">/,
               '<link rel="stylesheet" href="/src/shell/app.css"><script type="module" src="/src/main.ts"></script>',
+            )
+            .replace(
+              /<link rel="stylesheet" href="\/?src\/shell\/app\.css"\s*\/?>(?:\n)?/,
+              '<link rel="stylesheet" href="/src/shell/app.css">',
+            )
+            .replace(
+              /<script type="module" src="\/?src\/main\.ts"><\/script>/,
+              '<script type="module" src="/src/main.ts"></script>',
             );
           response.statusCode = upstream.status;
           for (const [name, value] of upstream.headers) {
@@ -88,6 +110,7 @@ function excalidrawFonts(): Plugin {
 // 9010. `strictPort` so a clash fails loudly instead of silently moving — a moved port is a
 // confusing five minutes when the server's links stop matching.
 export default defineConfig({
+  root: fileURLToPath(new URL(".", import.meta.url)),
   plugins: [authenticatedBackendPages(), svelte(), excalidrawFonts()],
 
   // why: the manifest is what tells the performance harness which chunks a first visit

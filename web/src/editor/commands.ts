@@ -29,6 +29,33 @@ export const memberberryInputRules = Extension.create({
   },
 });
 
+/** Converts a completed hashtag using the shared Rust parser, preserving Enter's paragraph break. */
+export function tagInputRules(parse: (text: string) => string | undefined): Extension {
+  return Extension.create({
+    name: "memberberryTagInputRules",
+    addInputRules() {
+      return [new InputRule({
+        find: /(?:^|\s)(#[^\s]+)\s$/,
+        handler: ({ range, match, state, commands }) => {
+          const candidate = match[1];
+          if (candidate === undefined) return null;
+          const name = parse(candidate);
+          const tag = state.schema.nodes["tag"];
+          if (name === undefined || tag === undefined) return null;
+          const from = range.from + match[0].indexOf(candidate);
+          if (state.doc.resolve(from).marks().some((mark) => mark.type.spec.code)) return null;
+          if (match[0].endsWith("\n")) {
+            state.tr.replaceWith(from, range.to, tag.create({ name }));
+            commands.splitBlock();
+          } else {
+            state.tr.replaceWith(from, range.to, [tag.create({ name }), state.schema.text(" ")]);
+          }
+        },
+      })];
+    },
+  });
+}
+
 /** Creates the offline shortcode-to-glyph input rule required by §11.3. */
 export function emojiInputRules(catalog: readonly EmojiEntry[]): Extension {
   return Extension.create({

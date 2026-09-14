@@ -3,20 +3,17 @@
   import type { NoteCatalog } from "./note-catalog.svelte.js";
 
   interface Props {
-    readonly vault: string;
     readonly catalog: NoteCatalog;
     readonly onopen: (path: string) => void;
     readonly oncreate: () => void;
   }
 
-  const { vault, catalog, onopen, oncreate }: Props = $props();
+  const { catalog, onopen, oncreate }: Props = $props();
 </script>
 
 <section class="workspace-home" aria-labelledby="home-heading">
   <header>
-    <p class="home-vault">{vault}</p>
     <h1 id="home-heading">Home</h1>
-    <p class="home-description">Pick up a note, or start with a blank page.</p>
     <button type="button" class="home-create" onclick={oncreate}><Icon name="plus" />New note</button>
   </header>
   <section class="home-notes" aria-labelledby="home-notes-heading">
@@ -31,9 +28,10 @@
     {:else}
       <ul>
         {#each catalog.notes.slice(0, 8) as note (note.path)}
+          {@const folderEnd = note.path.lastIndexOf("/")}
           <li><button type="button" onclick={() => onopen(note.path)}>
             <Icon name="note" />
-            <span><strong>{note.title ?? note.path.replace(/\.md$/, "")}</strong><small>{note.path}</small></span>
+            <span><strong>{#if folderEnd >= 0}<small>{note.path.slice(0, folderEnd)}{" / "}</small>{/if}{note.title ?? note.path.slice(folderEnd + 1).replace(/\.md$/, "")}</strong></span>
             <Icon name="chevron-right" />
           </button></li>
         {/each}

@@ -1,6 +1,8 @@
 /** Accessible controls around the local Tiptap editor. */
 
 import type { Editor } from "@tiptap/core";
+import type { Transaction } from "@tiptap/pm/state";
+import { ySyncPluginKey } from "y-prosemirror";
 import type { Doc } from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 
@@ -33,6 +35,7 @@ export interface MountEditorShellOptions {
   readonly connection?: ConnectionStatus;
   readonly user?: string;
   readonly title?: string;
+  readonly onTitleChange?: (title: string) => string | undefined;
   readonly mediaUploader?: MediaUploader;
   readonly emojiChoices?: readonly EmojiChoice[];
   readonly emojiImport?: EmojiImportOptions;
@@ -69,6 +72,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   const html = button("Export HTML", "Export note as self-contained HTML");
   let sourceVisible = false;
   let latestMarkdown = "";
+  let committedTitle = options.editor.state.doc.firstChild?.textContent.trim() ?? "";
 
   for (const [label, action] of [
     ["Text", () => insertBlock(options.editor, "paragraph")],
@@ -162,8 +166,36 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     inspector.sync(options.editor.isActive("task_item") ? options.editor.getAttributes("task_item") : null);
     slash.sync();
   };
-  options.editor.on("selectionUpdate", refreshControls);
+  const commitTitle = (): void => {
+    const first = options.editor.state.doc.firstChild;
+    if (first?.type.name !== "heading" || first.attrs["level"] !== 1) return;
+    let title = first.textContent.trim();
+    if (title === "") {
+      const fallback = options.onTitleChange?.("") ?? "untitled";
+      const heading = options.editor.state.doc.firstChild;
+      if (heading === null || fallback.trim() === "") return;
+      if (!options.editor.commands.insertContentAt({ from: 1, to: heading.nodeSize - 1 }, fallback)) return;
+      title = fallback.trim();
+    }
+    if (title === committedTitle) return;
+    committedTitle = title;
+    options.onTitleChange?.(title);
+  };
+  const onSelectionUpdate = (): void => {
+    refreshControls();
+    if (options.editor.state.selection.$from.parent !== options.editor.state.doc.firstChild) commitTitle();
+  };
+  const onBlur = (): void => commitTitle();
+  const onTransaction = ({ transaction }: { transaction: Transaction }): void => {
+    const sync = transaction.getMeta(ySyncPluginKey) as { readonly isChangeOrigin?: boolean } | undefined;
+    if (sync?.isChangeOrigin === true) {
+      committedTitle = options.editor.state.doc.firstChild?.textContent.trim() ?? "";
+    }
+  };
+  options.editor.on("transaction", onTransaction);
+  options.editor.on("selectionUpdate", onSelectionUpdate);
   options.editor.on("update", refreshControls);
+  options.editor.view.dom.addEventListener("blur", onBlur);
   refreshControls();
 
   const refreshLongNoteMode = (): void => setLongNoteMode(options.panel, longNoteMode(options.editor));
@@ -270,8 +302,10 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       options.editor.view.dom.removeEventListener("pointerdown", onPointerDown);
       options.editor.view.dom.removeEventListener("pointerup", clearPress);
       options.editor.view.dom.removeEventListener("pointercancel", clearPress);
-      options.editor.off("selectionUpdate", refreshControls);
+      options.editor.off("selectionUpdate", onSelectionUpdate);
+      options.editor.off("transaction", onTransaction);
       options.editor.off("update", refreshControls);
+      options.editor.view.dom.removeEventListener("blur", onBlur);
       options.editor.off("update", refreshLongNoteMode);
       print.removeEventListener("click", onPrint);
       html.removeEventListener("click", onHtmlClick);
@@ -369,10 +403,8 @@ function mediaControls(
         status.textContent = "Image upload failed.";
       });
   };
-  const mediaFrom = (files: FileList | null): File | undefined =>
-    files === null
-      ? undefined
-      : [...files].find((file) => SAFE_MEDIA_TYPES.has(file.type));
+  const mediaFrom = (files: FileList | readonly File[] | null): File | undefined =>
+    files === null ? undefined : [...files].find(isSafeMedia);
   const onChange = (): void => {
     const file = mediaFrom(picker.files);
     if (file !== undefined) upload(file);
@@ -385,13 +417,13 @@ function mediaControls(
     upload(file);
   };
   const onDrop = (event: DragEvent): void => {
+    if ((event.dataTransfer?.files.length ?? 0) > 0) event.preventDefault();
     const file = mediaFrom(event.dataTransfer?.files ?? null);
     if (file === undefined) return;
-    event.preventDefault();
     upload(file);
   };
   const onDragOver = (event: DragEvent): void => {
-    if (mediaFrom(event.dataTransfer?.files ?? null) !== undefined) event.preventDefault();
+    if ((event.dataTransfer?.files.length ?? 0) > 0) event.preventDefault();
   };
   picker.addEventListener("change", onChange);
   buttonElement.addEventListener("click", () => picker.click());
@@ -421,6 +453,21 @@ const SAFE_MEDIA_TYPES = new Set([
   "image/webp",
   "application/pdf",
 ]);
+
+const SAFE_MEDIA_EXTENSIONS = new Set([
+  "gif",
+  "jpeg",
+  "jpg",
+  "pdf",
+  "png",
+  "webp",
+]);
+
+function isSafeMedia(file: File): boolean {
+  if (SAFE_MEDIA_TYPES.has(file.type)) return true;
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  return extension !== undefined && SAFE_MEDIA_EXTENSIONS.has(extension);
+}
 
 interface PresenceHandle { destroy(): void; }
 

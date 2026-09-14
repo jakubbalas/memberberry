@@ -1,6 +1,8 @@
 /** Creates one locally durable Tiptap editor session for a Memberberry note. */
 
-import { Editor, type Extensions } from "@tiptap/core";
+import { Editor, Extension, type Extensions } from "@tiptap/core";
+import { Plugin } from "@tiptap/pm/state";
+import { ySyncPluginKey } from "y-prosemirror";
 
 import type { NoteBridge } from "../notes.js";
 import {
@@ -68,6 +70,20 @@ export interface NoteEditor {
   destroy(): Promise<void>;
 }
 
+/** Places the caret in the first body paragraph, creating one below the title when needed. */
+export function placeCursorBelowTitle(editor: Editor): boolean {
+  const title = editor.state.doc.firstChild;
+  if (title?.type.name !== "heading" || title.attrs["level"] !== 1) return false;
+  if (editor.state.doc.childCount === 1) {
+    if (!editor.commands.insertContentAt(editor.state.doc.content.size, { type: "paragraph" })) return false;
+  }
+  const body = editor.state.doc.child(1);
+  if (body === undefined) return false;
+  editor.commands.setTextSelection(title.nodeSize + 1);
+  editor.commands.focus();
+  return true;
+}
+
 /**
  * Restores local state, then mounts a Tiptap editor that maps every transaction into Yjs.
  *
@@ -85,6 +101,7 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
       element: options.element,
       extensions: [
         ...extensions,
+        protectedTitleExtension,
         memberberryInputRules,
         emojiInputRules(catalog),
         emojiAutocomplete(catalog),
@@ -114,6 +131,30 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
     throw error;
   }
 }
+
+export const protectedTitleExtension = Extension.create({
+  name: "protectedTitle",
+  addProseMirrorPlugins: () => [
+    new Plugin({
+      filterTransaction: (transaction, state) => {
+        if (!transaction.docChanged) return true;
+        if (transaction.doc.type.schema.nodes["heading"] === undefined) return true;
+        const previousTitle = state.doc.firstChild;
+        if (previousTitle?.type.name !== "heading" || previousTitle.attrs["level"] !== 1) return true;
+        const sync = transaction.getMeta(ySyncPluginKey) as { readonly isChangeOrigin?: boolean } | undefined;
+        if (sync?.isChangeOrigin === true) return true;
+        const first = transaction.doc.firstChild;
+        if (first === null || first.type.name !== "heading" || first.attrs["level"] !== 1) return false;
+        let styled = false;
+        first.descendants((node) => {
+          if (node.marks.length > 0) styled = true;
+          return !styled;
+        });
+        return !styled;
+      },
+    }),
+  ],
+});
 
 function defaultEditorFactory(options: CreateEditorOptions): EditorHandle {
   return new Editor(options);

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * The note tree, bookmarks and breadcrumbs (`SPEC.md` §8.2).
+ * The note tree and bookmarks (`SPEC.md` §8.2).
  *
  * `tree.ts` already covers what a keypress *means*; these cover that the component routes it,
  * and the accessibility structure that makes the tree usable at all — one tab stop, roles,
@@ -30,6 +30,19 @@ const openSurface = async (_options: OpenNoteSurfaceOptions): Promise<NoteSurfac
   destroy: async () => undefined,
 });
 
+function teachJsdomAboutDialogs(): void {
+  const proto = globalThis.HTMLDialogElement?.prototype as
+    | (HTMLDialogElement & { showModal?: () => void; close?: () => void })
+    | undefined;
+  if (proto === undefined || typeof proto.showModal === "function") return;
+  proto.showModal = function showModal(this: HTMLDialogElement): void {
+    this.open = true;
+  };
+  proto.close = function close(this: HTMLDialogElement): void {
+    this.open = false;
+  };
+}
+
 /** A `fetch` for the bookmark endpoint that records what was written. */
 function bookmarkServer(initial: readonly string[] = []) {
   let stored = [...initial];
@@ -49,6 +62,7 @@ function bookmarkServer(initial: readonly string[] = []) {
 let target: HTMLElement;
 
 beforeEach(() => {
+  teachJsdomAboutDialogs();
   document.body.innerHTML = "";
   target = document.createElement("div");
   document.body.append(target);
@@ -67,7 +81,17 @@ const flush = async (): Promise<void> => {
 };
 
 function render(
-  options: { notes?: readonly NoteSummary[]; bookmarked?: readonly string[]; open?: string[] } = {},
+  options: {
+    notes?: readonly NoteSummary[];
+    bookmarked?: readonly string[];
+    open?: string[];
+    home?: boolean;
+    rename?: (
+      vault: string,
+      from: string,
+      to: string,
+    ) => Promise<{ ok: { to: string; notes: number; references: number } }>;
+  } = {},
 ) {
   const ids = sessionIds();
   const store = new WorkspaceStore({ initial: createWorkspace("personal", ids), ids });
@@ -91,22 +115,25 @@ function render(
     },
     clearTimer: () => undefined,
   });
+  const eventTarget = new EventTarget();
 
   const app = mount(Workspace, {
     target,
     props: {
       store,
+      ...(options.home === undefined ? {} : { home: options.home }),
       session: { vault: "personal", user: "alice" },
       chrome: { getItem: () => null, setItem: () => undefined },
       open: openSurface,
-      target: new EventTarget(),
+      target: eventTarget,
       platform: "mac" as const,
       mode: "desktop" as const,
       catalog,
       bookmarks,
+      renameNote: options.rename,
     },
   });
-  return { store, bookmarks, server, teardown: () => unmount(app) };
+  return { store, bookmarks, server, eventTarget, teardown: () => unmount(app) };
 }
 
 const tree = (): HTMLElement | null => target.querySelector('[role="tree"]');
@@ -119,12 +146,34 @@ async function press(key: string): Promise<void> {
   await tick();
 }
 
+function dragData(path: string): DataTransfer {
+  let value = path;
+  return {
+    dropEffect: "none",
+    effectAllowed: "all",
+    files: [] as unknown as FileList,
+    items: [] as unknown as DataTransferItemList,
+    types: ["text/plain"],
+    clearData: () => undefined,
+    getData: () => value,
+    setData: (_type: string, next: string) => { value = next; },
+    setDragImage: () => undefined,
+  } as unknown as DataTransfer;
+}
+
+function dispatchDrag(type: string, element: Element, dataTransfer: DataTransfer): void {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  element.dispatchEvent(event);
+}
+
 describe("the tree", () => {
   it("renders the top level, collapsed, with folders first", async () => {
     const { teardown } = render();
     try {
       await flush();
       expect(names()).toEqual(["Archive", "Projects", "Welcome"]);
+      expect(rows().find((row) => row.dataset["kind"] === "folder")?.querySelector(".tree-folder")).not.toBeNull();
     } finally {
       teardown();
     }
@@ -144,7 +193,7 @@ describe("the tree", () => {
     }
   });
 
-  it("shows a note's frontmatter icon in the tree and title surface", async () => {
+  it("shows a note's frontmatter icon in the tree", async () => {
     const { teardown } = render({
       notes: [{ path: "Ideas.md", title: "Ideas", icon: "🧠", conflicts: 0 }],
       open: ["Ideas.md"],
@@ -152,7 +201,6 @@ describe("the tree", () => {
     try {
       await flush();
       expect(target.querySelector(".tree-icon")?.textContent).toBe("🧠");
-      expect(target.querySelector(".breadcrumb-note-icon")?.textContent).toBe("🧠");
     } finally {
       teardown();
     }
@@ -233,6 +281,65 @@ describe("the tree", () => {
     }
   });
 
+  it("moves a note into a folder when it is dropped there", async () => {
+    const moves: string[][] = [];
+    const { store, teardown } = render({
+      rename: async (_vault, from, to) => {
+        moves.push([from, to]);
+        return { ok: { to, notes: 0, references: 0 } };
+      },
+      open: ["Welcome.md"],
+    });
+    try {
+      await flush();
+      const folder = rows().find((row) => row.getAttribute("title") === "Projects");
+      folder?.click();
+      await tick();
+      const note = rows().find((row) => row.getAttribute("title") === "Welcome.md");
+      if (folder === undefined || note === undefined) throw new Error("expected tree rows");
+      const transfer = dragData("Welcome.md");
+      dispatchDrag("dragstart", note, transfer);
+      dispatchDrag("dragover", folder, transfer);
+      await tick();
+      expect(folder.getAttribute("data-drop-target")).toBe("true");
+      dispatchDrag("drop", folder, transfer);
+      await flush();
+      expect(moves).toEqual([["Welcome.md", "Projects/Welcome.md"]]);
+      expect(store.activeTab?.note).toBe("Projects/Welcome.md");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("moves a note out of a folder when it is dropped on the tree root", async () => {
+    const moves: string[][] = [];
+    const { teardown } = render({
+      rename: async (_vault, from, to) => {
+        moves.push([from, to]);
+        return { ok: { to, notes: 0, references: 0 } };
+      },
+    });
+    try {
+      await flush();
+      const folder = rows().find((row) => row.getAttribute("title") === "Projects");
+      folder?.click();
+      await tick();
+      const note = rows().find((row) => row.getAttribute("title") === "Projects/Roadmap.md");
+      const root = tree();
+      if (note === undefined || root === null) throw new Error("expected tree rows");
+      const transfer = dragData("Projects/Roadmap.md");
+      dispatchDrag("dragstart", note, transfer);
+      dispatchDrag("dragover", root, transfer);
+      await tick();
+      expect(root.getAttribute("data-drop-target")).toBe("true");
+      dispatchDrag("drop", root, transfer);
+      await flush();
+      expect(moves).toEqual([["Projects/Roadmap.md", "Roadmap.md"]]);
+    } finally {
+      teardown();
+    }
+  });
+
   it("marks the note showing in the focused pane", async () => {
     // A different thing from the keyboard cursor, and it has to look like one: the cursor is
     // where you are about to act, the marker is what you are already reading.
@@ -242,6 +349,19 @@ describe("the tree", () => {
       const current = rows().filter((row) => row.getAttribute("data-current") === "true");
       expect(current).toHaveLength(1);
       expect(current[0]?.textContent).toContain("Welcome");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("does not highlight the saved note while Home is showing", async () => {
+    const { teardown } = render({ open: ["Welcome.md"], home: true });
+    try {
+      await flush();
+      expect(target.querySelector("#home-heading")?.textContent).toBe("Home");
+      expect(target.querySelector(".home-vault")).toBeNull();
+      expect(target.textContent).not.toContain("Pick up a note, or start with a blank page.");
+      expect(rows().filter((row) => row.getAttribute("data-current") === "true")).toHaveLength(0);
     } finally {
       teardown();
     }
@@ -308,6 +428,26 @@ describe("the tree's accessibility structure", () => {
 });
 
 describe("bookmarks", () => {
+  it("removes a bookmark from its section without opening or deleting the note", async () => {
+    const { bookmarks, server, store, teardown } = render({ bookmarked: ["Welcome.md"] });
+    try {
+      await flush();
+      const remove = target.querySelector<HTMLButtonElement>('.bookmark-list button[aria-label="Remove bookmark for Welcome"]');
+      expect(remove).not.toBeNull();
+      expect(target.querySelector(".bookmark-list li")?.textContent?.match(/★/g)).toHaveLength(1);
+      expect(target.querySelector(".bookmark-list li button")).toBe(remove);
+      remove?.click();
+      await flush();
+      expect(bookmarks.paths).toEqual([]);
+      expect(server.writes.at(-1)).toEqual([]);
+      expect(store.tabs).toEqual([]);
+      expect(target.querySelector("#bookmarks-heading")).toBeNull();
+      expect(target.querySelector('.tree button[aria-label="Add bookmark for Welcome"]')).not.toBeNull();
+    } finally {
+      teardown();
+    }
+  });
+
   it("are listed above the tree once there are any", async () => {
     const { teardown } = render({ bookmarked: ["Projects/Roadmap.md"] });
     try {
@@ -371,6 +511,37 @@ describe("bookmarks", () => {
     }
   });
 
+  it("navigates the active tab when a note is clicked", async () => {
+    const { store, teardown } = render({ open: ["Welcome.md"] });
+    try {
+      await flush();
+      rows().find((row) => row.getAttribute("title") === "Projects")?.click();
+      await tick();
+      rows().find((row) => row.getAttribute("title") === "Projects/Roadmap.md")?.click();
+      await tick();
+      expect(store.tabs).toHaveLength(1);
+      expect(store.activeTab?.note).toBe("Projects/Roadmap.md");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("opens a fresh tab for Cmd/Ctrl-click", async () => {
+    const { store, teardown } = render({ open: ["Welcome.md"] });
+    try {
+      await flush();
+      rows().find((row) => row.getAttribute("title") === "Projects")?.click();
+      await tick();
+      const note = rows().find((row) => row.getAttribute("title") === "Projects/Roadmap.md");
+      note?.dispatchEvent(new MouseEvent("click", { bubbles: true, metaKey: true }));
+      await tick();
+      expect(store.tabs.map((tab) => tab.note)).toEqual(["Welcome.md", "Projects/Roadmap.md"]);
+      expect(store.activeTab?.note).toBe("Projects/Roadmap.md");
+    } finally {
+      teardown();
+    }
+  });
+
   it("say what the star will do, for a reader who cannot see it", async () => {
     const { teardown } = render();
     try {
@@ -382,52 +553,45 @@ describe("bookmarks", () => {
       teardown();
     }
   });
-});
 
-describe("breadcrumbs", () => {
-  it("show the folders and the note's title", async () => {
-    const { teardown } = render({ open: ["Projects/Roadmap.md"] });
-    try {
-      await flush();
-      const crumbs = target.querySelector('[aria-label="Note location"]');
-      expect(crumbs?.textContent).toContain("Projects");
-      expect(crumbs?.textContent).toContain("Product roadmap");
-    } finally {
-      teardown();
-    }
-  });
-
-  it("do not render at all when no note is open", async () => {
+  it("opens a custom menu for a note instead of the browser menu", async () => {
     const { teardown } = render();
     try {
       await flush();
-      expect(target.querySelector('[aria-label="Note location"]')).toBeNull();
+      const note = rows().find((row) => row.dataset["kind"] === "note");
+      if (note === undefined) throw new Error("expected a note row");
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 60 });
+      note.dispatchEvent(event);
+      await tick();
+      expect(event.defaultPrevented).toBe(true);
+      expect(target.querySelector('[role="menu"]')).not.toBeNull();
+      expect([...target.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual([
+        "Open in new tab",
+        "Rename",
+        "Delete",
+      ]);
+      target.querySelector<HTMLButtonElement>('[role="menuitem"]:nth-of-type(2)')?.click();
+      await tick();
+      expect(target.querySelector(".rename-prompt")?.getAttribute("open")).not.toBeNull();
     } finally {
       teardown();
     }
   });
 
-  it("mark the note as the current page and leave folders unlinked", async () => {
-    // §4.1: folders are ordinary folders, not note containers — there is nothing to open at
-    // `Projects/`, so marking one up as a link would promise something the app cannot do.
-    const { teardown } = render({ open: ["Projects/Roadmap.md"] });
+  it("opens a fresh tab from the note context menu", async () => {
+    const { store, teardown } = render({ open: ["Welcome.md"] });
     try {
       await flush();
-      const crumbs = target.querySelector('[aria-label="Note location"]');
-      expect(crumbs?.querySelector('[aria-current="page"]')?.textContent).toBe("Product roadmap");
-      expect(crumbs?.querySelectorAll("a")).toHaveLength(0);
-    } finally {
-      teardown();
-    }
-  });
-
-  it("fall back to the filename for a note with no title", async () => {
-    const { teardown } = render({ open: ["Projects/Sprint.md"] });
-    try {
-      await flush();
-      expect(
-        target.querySelector('[aria-label="Note location"] [aria-current="page"]')?.textContent,
-      ).toBe("Sprint");
+      const note = rows().find((row) => row.dataset["kind"] === "note");
+      if (note === undefined) throw new Error("expected a note row");
+      note.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      await tick();
+      const openInNewTab = [...target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+        .find((item) => item.textContent === "Open in new tab");
+      openInNewTab?.click();
+      await tick();
+      expect(store.tabs).toHaveLength(2);
+      expect(store.activeTab?.note).toBe(note.getAttribute("title"));
     } finally {
       teardown();
     }

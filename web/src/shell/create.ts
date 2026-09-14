@@ -11,7 +11,7 @@
  * folders exist to somebody the server refused to tell.
  */
 
-import { folderOf } from "./rename.js";
+import { folderOf, normalizeFilenameSegment } from "./rename.js";
 
 /** What the server says it created. */
 export interface Created {
@@ -42,7 +42,14 @@ export interface CreateOptions {
 export function newNotePathFor(from: string | undefined, typed: string): string | undefined {
   const name = typed.trim();
   if (name === "") return undefined;
-  const withExtension = name.endsWith(".md") ? name : `${name}.md`;
+  const raw = name.endsWith(".md") ? name.slice(0, -3) : name;
+  const normalizedSegments: string[] = [];
+  for (const segment of raw.split("/")) {
+    const normalized = normalizeFilenameSegment(segment);
+    if (normalized === undefined) return undefined;
+    normalizedSegments.push(normalized);
+  }
+  const withExtension = `${normalizedSegments.join("/")}.md`;
   const relative = withExtension.includes("/")
     ? withExtension
     : `${folderOf(from ?? "")}${withExtension}`;
@@ -51,6 +58,11 @@ export function newNotePathFor(from: string | undefined, typed: string): string 
     (segment) => segment !== "" && segment !== "." && segment !== ".." && !segment.startsWith("."),
   );
   return usable ? relative : undefined;
+}
+
+/** The title stored in a new note for a typed note path. */
+export function titleForNoteName(typed: string): string {
+  return typed.trim().replace(/\.md$/, "").split("/").pop() ?? typed.trim();
 }
 
 /** What the prompt says the new note's home will be, in words rather than a path fragment. */

@@ -58,6 +58,23 @@ test("downscales an image, retains its original, and renders an authorized thumb
   );
 });
 
+test("inserts an image dragged from the desktop", async ({ page }, testInfo) => {
+  await signIn(page);
+  const note = scratchNote("media-drop", testInfo.project.name);
+  await page.goto(`/v/personal/${note}`);
+  await expect(page.locator(EDITOR)).toBeVisible();
+
+  await page.locator(EDITOR).evaluate((element) => {
+    const bytes = Uint8Array.from(atob(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    ), (character) => character.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "desktop.png", { type: "" }));
+    element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  });
+  await expect(page.locator(`${EDITOR} img`).last()).toBeVisible();
+});
+
 test("queues an offline image and swaps its blob URL after reconnection", async ({ page, failures }, testInfo) => {
   failures.allow(/request failed: POST .*\/api\/v1\/vaults\/personal\/media/);
   failures.allow(/console error: Failed to load resource: net::ERR_INTERNET_DISCONNECTED/);

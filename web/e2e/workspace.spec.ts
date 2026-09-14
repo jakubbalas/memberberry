@@ -17,6 +17,29 @@ import { expect, signIn, test } from "./fixtures.js";
 const PANE = ".pane";
 const EDITOR = ".editor-surface .tiptap";
 
+test("the editable column fits its pane after resizing the browser", async ({ page }) => {
+  await page.setViewportSize({ width: 1800, height: 900 });
+  await openWorkspace(page);
+  let previousWidth = await page.locator(EDITOR).first().evaluate((editor) => editor.getBoundingClientRect().width);
+  for (const width of [1400, 1000, 800, 600]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator(EDITOR).first().focus();
+    await expect.poll(async () => page.locator(EDITOR).first().evaluate((editor) => {
+      const pane = editor.closest(".note-pane");
+      if (pane === null) throw new Error("Editor has no note pane");
+      const bounds = editor.getBoundingClientRect();
+      const container = pane.getBoundingClientRect();
+      const style = getComputedStyle(editor);
+      const outline = Number.parseFloat(style.outlineOffset) + Number.parseFloat(style.outlineWidth);
+      return Math.max(bounds.right + outline - container.right, container.left - bounds.left + outline,
+        bounds.right + outline - window.innerWidth);
+    })).toBeLessThanOrEqual(1);
+    const currentWidth = await page.locator(EDITOR).first().evaluate((editor) => editor.getBoundingClientRect().width);
+    if (width >= 800) expect(currentWidth).toBeLessThan(previousWidth);
+    previousWidth = currentWidth;
+  }
+});
+
 /** Opens the workspace on a note and waits for the editor to be live. */
 async function openWorkspace(page: import("@playwright/test").Page): Promise<void> {
   await signIn(page);
@@ -488,15 +511,12 @@ test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
     await tree.press("ArrowRight");
     await expect(rows.first()).toHaveAttribute("aria-expanded", "true");
     await tree.press("ArrowDown");
-    // From the row's path rather than its label: the tree shows a note's *title* and a tab
-    // shows its filename (`TabStrip.svelte` — a tab is narrow), so the two disagree for any
-    // note whose title is not its filename.
-    // The row's tooltip is its path (`NoteTree.svelte`).
     const path = (await rows.nth(1).getAttribute("title")) ?? "";
-    const child = (path.split("/").pop() ?? path).replace(/\.md$/, "");
+    const child = await rows.nth(1).locator(".tree-label").innerText();
     await tree.press("Enter");
 
     await expect(page.getByRole("tab", { name: child })).toBeVisible();
+    await expect(page.getByRole("tab", { name: child })).toHaveAttribute("title", path);
     expect(info.project.name).toBe("desktop");
   });
 
@@ -508,7 +528,7 @@ test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
 
     await tree.getByRole("treeitem", { name: /Welcome/ }).hover();
     await page.getByRole("button", { name: "Add bookmark for Welcome" }).click();
-    await expect(page.getByRole("button", { name: "Remove bookmark for Welcome" })).toBeVisible();
+    await expect(tree.getByRole("button", { name: "Remove bookmark for Welcome" })).toBeVisible();
 
     // The save is debounced; poll the server rather than sleeping.
     await expect
@@ -527,16 +547,18 @@ test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
     await expect(page.locator(".bookmark-list")).toContainText("Welcome");
   });
 
-  test("shows where the open note lives", async ({ page }) => {
+  test("shows the note path in its tab tooltip without duplicate breadcrumbs", async ({ page }) => {
     await openWorkspace(page);
     const crumbs = page.getByRole("navigation", { name: "Note location" });
-    await expect(crumbs).toContainText("Welcome");
+    await expect(crumbs).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Welcome" })).toHaveAttribute("title", "Welcome.md");
 
     // A note in a folder shows the folder too.
     await page.keyboard.press("ControlOrMeta+O");
     await page.keyboard.type("roadmap");
     await page.keyboard.press("Enter");
-    await expect(crumbs).toContainText("Projects");
-    await expect(crumbs).toContainText("Roadmap");
+    await expect(page.getByRole("tab", { name: "Roadmap" })).toHaveAttribute("title", "Projects/Roadmap.md");
+    await expect(page.locator(EDITOR).first().getByRole("heading", { level: 1 })).toHaveText("Roadmap");
+    await expect(crumbs).toHaveCount(0);
   });
 });

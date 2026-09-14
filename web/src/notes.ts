@@ -161,6 +161,16 @@ export async function extract(markdown: string): Promise<Facts> {
   return wasmExtract(markdown) as Facts;
 }
 
+/** Loads a synchronous tag validator for editor input, using the Rust Markdown parser. */
+export async function tagInputParser(): Promise<(text: string) => string | undefined> {
+  await load();
+  return (text) => {
+    const facts = wasmExtract(text) as Facts;
+    const tag = facts.tags[0];
+    return tag !== undefined && text === `#${tag}` ? tag : undefined;
+  };
+}
+
 /** Expands a template through the shared Rust engine. */
 export async function expandTemplate(
   template: string,

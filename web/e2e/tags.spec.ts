@@ -16,6 +16,45 @@ import { expect, signIn, test } from "./fixtures.js";
 const EDITOR = ".editor-surface .tiptap";
 const PANE = ".tag-pane";
 
+test("inline tags stand out as themed badges", async ({ page }, info) => {
+  await signIn(page);
+  await page.goto("/v/personal/Tags/Alpha.md");
+  const tag = page.locator(`${EDITOR} [data-tag]`).first();
+  await expect(tag).toHaveText("#Project/memberberry/spec");
+  for (const theme of ["memberberry-light", "memberberry-dark"]) {
+    await page.locator("html").evaluate((element, value) => element.setAttribute("data-theme", value), theme);
+    await expect(tag).toHaveCSS("font-weight", "700");
+    await expect(tag).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(tag).not.toHaveCSS("border-radius", "0px");
+    await page.screenshot({ path: info.outputPath(`tag-${theme}.png`) });
+  }
+});
+
+test("a typed hashtag is saved and appears in the tag pane", async ({ page }, info) => {
+  await signIn(page);
+  const name = `typed-tag-${info.project.name}`;
+  const created = await page.request.post("/api/v1/vaults/personal/notes", { data: { path: `${name}.md` } });
+  expect(created.ok()).toBe(true);
+  await page.goto(`/v/personal/${name}.md`);
+  const editor = page.locator(EDITOR).first();
+  await expect(editor).toBeVisible();
+  await editor.click();
+  await editor.press("ControlOrMeta+End");
+  await editor.pressSequentially(`#${name}`);
+  await editor.press("Enter");
+  await editor.pressSequentially("Next paragraph");
+  await expect(editor.locator("p").last()).toHaveText("Next paragraph");
+  await expect(editor.locator("[data-tag]")).toHaveText(`#${name}`);
+  await expect.poll(async () => {
+    const response = await page.request.get("/api/v1/vaults/personal/tags");
+    return response.text();
+  }).toContain(`"key":"${name}"`);
+  const toggle = page.getByRole("button", { name: /^Show Navigation$/ });
+  if (await toggle.isVisible()) await toggle.click();
+  await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Tags", exact: true }).click();
+  await expect(page.locator(`.tag-row[data-tag="${name}"]`)).toBeVisible();
+});
+
 /** Opens the workspace with the Navigation sidebar showing, which is where the pane lives. */
 async function openWithNavigation(page: import("@playwright/test").Page): Promise<void> {
   await signIn(page);

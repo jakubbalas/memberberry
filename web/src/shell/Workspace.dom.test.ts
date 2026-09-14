@@ -249,6 +249,37 @@ describe("tabs", () => {
     }
   });
 
+  it("opens the rename menu from a tab context click", async () => {
+    const teardown = render(store(["Projects/Roadmap.md"]));
+    try {
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 50, clientY: 70 });
+      tabs()[0]?.dispatchEvent(event);
+      await tick();
+      expect(event.defaultPrevented).toBe(true);
+      expect([...target.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toContain("Rename");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("opens a duplicate tab from a tab context menu", async () => {
+    const workspace = store(["Projects/Roadmap.md"]);
+    const teardown = render(workspace);
+    try {
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      tabs()[0]?.dispatchEvent(event);
+      await tick();
+      [...target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+        .find((item) => item.textContent === "Open in new tab")
+        ?.click();
+      await tick();
+      expect(workspace.tabs).toHaveLength(2);
+      expect(workspace.tabs.map((tab) => tab.note)).toEqual(["Projects/Roadmap.md", "Projects/Roadmap.md"]);
+    } finally {
+      teardown();
+    }
+  });
+
   it("activate on click", async () => {
     const workspace = store(["One.md", "Two.md"]);
     const teardown = render(workspace);

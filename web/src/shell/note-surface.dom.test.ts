@@ -99,6 +99,32 @@ function replicaHolding(...resident: string[]) {
 }
 
 describe("opening a note pane", () => {
+  it("keeps the editor covered until its control strip is mounted", async () => {
+    let releaseExtensions: ((extensions: Extensions) => void) | undefined;
+    const extensions = new Promise<Extensions>((resolve) => {
+      releaseExtensions = resolve;
+    });
+    const dom = elements();
+    const opening = openNoteSurface({
+      ...dom,
+      createPersistence: localPersistence,
+      loadExtensions: () => extensions,
+      replica: async () => undefined,
+    });
+
+    expect(dom.panel.dataset["editor"]).toBe("loading");
+    expect(dom.panel.querySelector(".editor-controls")).toBeNull();
+
+    releaseExtensions?.(await loadExtensions());
+    const surface = await opening;
+    try {
+      expect(dom.panel.dataset["editor"]).toBeUndefined();
+      expect(dom.panel.querySelector(".editor-controls")).not.toBeNull();
+    } finally {
+      await surface.destroy();
+    }
+  });
+
   it("mounts an editable Tiptap surface and the control strip", async () => {
     const { surface, dom } = await open();
     try {

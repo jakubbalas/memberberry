@@ -12,7 +12,6 @@
   the drawers instead.
 -->
 <script lang="ts">
-  import Breadcrumbs from "./Breadcrumbs.svelte";
   import NotePane from "./NotePane.svelte";
   import TabSheet from "./TabSheet.svelte";
   import type { NoteBootstrap } from "./bootstrap.js";
@@ -29,9 +28,10 @@
     readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
     readonly taskEdit?: { readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined;
     readonly daily?: DailyView | undefined;
+    readonly ontitlechange?: (path: string, title: string) => string | undefined;
   }
 
-  const { store, session, open, titleOf, iconOf, taskEdit, daily }: Props = $props();
+  const { store, session, open, titleOf, iconOf, taskEdit, daily, ontitlechange }: Props = $props();
 
   let sheetOpen = $state(false);
 
@@ -46,11 +46,6 @@
 </script>
 
 <div class="mobile-main">
-  <Breadcrumbs
-    path={active?.note}
-    title={active === undefined ? undefined : titleOf?.(active.note)}
-    icon={active === undefined ? undefined : iconOf?.(active.note)}
-  />
   <NotePane
     tab={active}
     {session}
@@ -59,6 +54,9 @@
     taskEdit={editFor(active?.note)}
     {daily}
     ondailyopen={(path) => store.open(path)}
+    {...(active === undefined || ontitlechange === undefined
+      ? {}
+      : { ontitlechange: (title: string) => ontitlechange(active.note, title) })}
   />
 
   <nav class="mobile-bar" aria-label="Navigation">
@@ -95,7 +93,7 @@
       }}
     >
       <span class="mobile-bar-count">{store.tabs.length}</span>
-      <span class="mobile-bar-note">{active?.note.split("/").pop() ?? "No note open"}</span>
+      <span class="mobile-bar-note">{active === undefined ? "No note open" : titleOf?.(active.note) ?? active.note.split("/").pop()}</span>
     </button>
   </nav>
 </div>
@@ -104,6 +102,7 @@
   open={sheetOpen}
   tabs={store.tabs}
   {iconOf}
+  {titleOf}
   activeTab={active?.id}
   onactivate={(tab) => {
     store.activate(tab);

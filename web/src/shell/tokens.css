@@ -175,7 +175,7 @@
   /* ---------------------------------------------------------------- editor */
   /* measure is the reading column width; block-gap is the vertical rhythm between blocks
      and is typography-driven rather than a step on the spacing scale. */
-  --editor-measure: 48rem;
+  --editor-measure: 96rem;
   --editor-block-gap: 0.65rem;
   --editor-min-height: 25rem;
   --editor-panel-min-height: 32rem;

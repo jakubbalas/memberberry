@@ -11,7 +11,6 @@
   what the invariants are for.
 -->
 <script lang="ts">
-  import Breadcrumbs from "./Breadcrumbs.svelte";
   import NotePane from "./NotePane.svelte";
   import PaneTree from "./PaneTree.svelte";
   import SplitDivider from "./SplitDivider.svelte";
@@ -28,14 +27,16 @@
     readonly panes: readonly GroupId[];
     readonly session?: Pick<NoteBootstrap, "vault" | "user"> | undefined;
     readonly open?: typeof openNoteSurface | undefined;
-    /** A note's title, for the breadcrumbs each pane draws. */
-    readonly titleOf?: ((path: string) => string | null) | undefined;
+    readonly target?: EventTarget | undefined;
     readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
     readonly taskEdit?: { readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined;
     readonly daily?: DailyView | undefined;
+    /** The same Markdown-derived title displayed by the note tree. */
+    readonly titleOf?: ((path: string) => string | null) | undefined;
+    readonly ontitlechange?: (path: string, title: string) => string | undefined;
   }
 
-  const { node, store, panes, session, open, titleOf, iconOf, taskEdit, daily }: Props = $props();
+  const { node, store, panes, session, open, iconOf, taskEdit, daily, target, titleOf, ontitlechange }: Props = $props();
 
   /** The split's own box, which the divider measures a pointer position against. */
   let container = $state<HTMLElement | undefined>(undefined);
@@ -66,14 +67,12 @@
       {panes}
       focused={node.id === store.focusedGroup}
       onactivate={(tab) => store.activate(tab)}
+      onopennewtab={(path) => store.open(path, { group: node.id, reuse: false })}
       onclose={(tab) => store.close(tab)}
       onmove={(tab, toGroup, index) => store.move(tab, toGroup, index)}
       {iconOf}
-    />
-    <Breadcrumbs
-      path={active?.note}
-      title={active === undefined ? undefined : titleOf?.(active.note)}
-      icon={active === undefined ? undefined : iconOf?.(active.note)}
+      {titleOf}
+      {target}
     />
     <NotePane
       tab={active}
@@ -85,6 +84,9 @@
       taskEdit={editFor(active?.note)}
       {daily}
       ondailyopen={(path) => store.open(path)}
+      {...(active === undefined || ontitlechange === undefined
+        ? {}
+        : { ontitlechange: (title: string) => ontitlechange(active.note, title) })}
     />
   </div>
 {:else}
@@ -95,7 +97,7 @@
     bind:this={container}
   >
     <div class="pane-split-side">
-      <PaneTree node={node.first} {store} {panes} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
+    <PaneTree node={node.first} {store} {panes} {session} {open} {iconOf} {taskEdit} {daily} {target} {titleOf} {...(ontitlechange === undefined ? {} : { ontitlechange })} />
     </div>
     <SplitDivider
       split={node}
@@ -103,7 +105,7 @@
       onresize={(ratio) => store.resize(node.id, ratio)}
     />
     <div class="pane-split-side">
-      <PaneTree node={node.second} {store} {panes} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} />
+      <PaneTree node={node.second} {store} {panes} {session} {open} {iconOf} {taskEdit} {daily} {target} {titleOf} {...(ontitlechange === undefined ? {} : { ontitlechange })} />
     </div>
   </div>
 {/if}

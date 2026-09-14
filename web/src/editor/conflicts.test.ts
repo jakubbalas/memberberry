@@ -20,6 +20,7 @@ import { load, noteBridge, type NoteBridge } from "../notes.js";
 import { PROSEMIRROR_ROOT, createYjsBinding } from "./collaboration.js";
 import { applyResolution, reconcile } from "./conflicts.js";
 import { createMemberberryExtensions } from "./schema.js";
+import { protectedTitleExtension } from "./note-editor.js";
 import { editorMarkdownWith } from "./source.js";
 
 const contractPath = resolvePath(process.cwd(), "../crates/mb-core/schema.json");
@@ -50,6 +51,7 @@ function note(markdown: string): { document: Doc; editor: Editor; destroy: () =>
     element,
     extensions: [
       ...createMemberberryExtensions(contract),
+      protectedTitleExtension,
       createYjsBinding(document.getXmlFragment(PROSEMIRROR_ROOT)),
     ],
   });

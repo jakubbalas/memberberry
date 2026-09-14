@@ -7,7 +7,7 @@ import { yXmlFragmentToProsemirrorJSON } from "y-prosemirror";
 import { describe, expect, it } from "vitest";
 
 import type { LocalPersistence } from "./collaboration.js";
-import { startNoteEditor } from "./note-editor.js";
+import { placeCursorBelowTitle, protectedTitleExtension, startNoteEditor } from "./note-editor.js";
 import { createMemberberryExtensions } from "./schema.js";
 
 const CONTRACT = {
@@ -34,6 +34,52 @@ function localPersistence(): LocalPersistence {
 }
 
 describe("mounted note editor", () => {
+  it("keeps legacy notes without a leading H1 editable", () => {
+    const editor = new Editor({
+      extensions: [...createMemberberryExtensions(fullContract), protectedTitleExtension],
+      content: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Legacy note" }] }] },
+    });
+    try {
+      editor.commands.insertContentAt(1, "Edited ");
+      expect(editor.state.doc.firstChild?.textContent).toBe("Edited Legacy note");
+    } finally {
+      editor.destroy();
+    }
+  });
+
+  it("places the initial caret in the body below the protected title", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const editor = new Editor({
+      element,
+      extensions: [...createMemberberryExtensions(fullContract), protectedTitleExtension],
+      content: { type: "doc", content: [{ type: "heading", attrs: { level: 1 }, content: [{ type: "text", text: "Title" }] }] },
+    });
+
+    expect(placeCursorBelowTitle(editor)).toBe(true);
+    expect(editor.state.doc.childCount).toBe(2);
+    const title = editor.state.doc.firstChild;
+    if (title === null) throw new Error("title missing");
+    expect(editor.state.selection.from).toBe(title.nodeSize + 1);
+    expect(editor.state.selection.$from.parent.type.name).toBe("paragraph");
+    editor.destroy();
+    element.remove();
+  });
+
+  it("keeps the first block as a non-empty, unstyled H1", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const editor = new Editor({
+      element,
+      extensions: [...createMemberberryExtensions(fullContract), protectedTitleExtension],
+      content: { type: "doc", content: [{ type: "heading", attrs: { level: 1 }, content: [{ type: "text", text: "Title" }] }, { type: "paragraph" }] },
+    });
+    editor.commands.clearContent();
+    expect(editor.state.doc.firstChild?.textContent).toBe("Title");
+    editor.destroy();
+    element.remove();
+  });
+
   it("renders generated block DOM and maps an edit into the Y.XmlFragment", async () => {
     const element = document.createElement("div");
     document.body.append(element);

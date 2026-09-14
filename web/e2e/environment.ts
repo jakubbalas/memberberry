@@ -62,6 +62,7 @@ const SCRATCH_PURPOSES: readonly string[] = [
   // Typed into with the network off, then read off disk once it comes back (§7.4).
   "offline-edit",
   "media",
+  "media-drop",
   "media-offline",
   // Edited offline *and* on disk at the same time, which is §3.5's collision. Two, because
   // the second one resolves the conflict and a resolution is not repeatable.
@@ -254,7 +255,7 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
  * One per test and project rather than one shared: `fullyParallel` runs every test against
  * one server, and "this vault has no notes" is not a claim two tests can make about one vault.
  */
-export const E2E_EMPTY_PURPOSES: readonly string[] = ["registration", "first-note", "name-clash"];
+export const E2E_EMPTY_PURPOSES: readonly string[] = ["registration", "first-note", "name-clash", "home-labels", "bookmarks"];
 
 /** The slug of the empty vault belonging to this test and project. */
 export function emptyVaultSlug(project: string, purpose: string): string {

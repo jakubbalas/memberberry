@@ -37,6 +37,19 @@ export type RenameResult = { readonly ok: Renamed } | { readonly refused: string
 export interface RenameOptions {
   /** Defaults to `globalThis.fetch`. */
   readonly fetch?: typeof globalThis.fetch;
+  /** Title to store in the renamed note's first heading. */
+  readonly title?: string | undefined;
+}
+
+export const RENAME_EVENT = "memberberry:rename";
+
+export function requestRename(path: string, target: EventTarget = window): void {
+  target.dispatchEvent(new CustomEvent<string>(RENAME_EVENT, { detail: path }));
+}
+
+export function renameRequest(event: Event): string | undefined {
+  if (!(event instanceof CustomEvent)) return undefined;
+  return typeof event.detail === "string" && event.detail !== "" ? event.detail : undefined;
 }
 
 /**
@@ -55,7 +68,14 @@ export interface RenameOptions {
 export function notePathFor(from: string, typed: string): string | undefined {
   const name = typed.trim();
   if (name === "") return undefined;
-  const withExtension = name.endsWith(".md") ? name : `${name}.md`;
+  const raw = name.endsWith(".md") ? name.slice(0, -3) : name;
+  const normalizedSegments: string[] = [];
+  for (const segment of raw.split("/")) {
+    const normalized = normalizeFilenameSegment(segment);
+    if (normalized === undefined) return undefined;
+    normalizedSegments.push(normalized);
+  }
+  const withExtension = `${normalizedSegments.join("/")}.md`;
   const relative = withExtension.includes("/")
     ? withExtension
     : `${folderOf(from)}${withExtension}`;
@@ -64,6 +84,15 @@ export function notePathFor(from: string, typed: string): string | undefined {
     (segment) => segment !== "" && segment !== "." && segment !== ".." && !segment.startsWith("."),
   );
   return usable ? relative : undefined;
+}
+
+/** Converts a title segment into a safe filesystem segment without changing its display text. */
+export function normalizeFilenameSegment(value: string): string | undefined {
+  const normalized = value
+    .replace(/:([A-Za-z0-9_+-]+):/g, "_$1_")
+    .replace(/[<>:"\\|?*]/g, "_")
+    .trim();
+  return normalized === "" || normalized === "." || normalized === ".." ? undefined : normalized;
 }
 
 /** The folder part of a vault-relative path, with its trailing slash, or `""` at the root. */
@@ -85,7 +114,7 @@ export async function renameNote(
   to: string,
   options: RenameOptions = {},
 ): Promise<RenameResult> {
-  return send(vault, { kind: "note", from, to }, options);
+  return send(vault, { kind: "note", from, to, ...(options.title === undefined ? {} : { title: options.title }) }, options);
 }
 
 /** Renames a tag, and every tag nested under it (§9.3). */

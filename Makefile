@@ -110,18 +110,14 @@ bench: ## Hot-path benchmarks (AGENTS.md 4.5). Laptop numbers; the budget target
 coverage: ## Per-file coverage report (needs cargo-llvm-cov)
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
 		echo "Install first: cargo install cargo-llvm-cov"; exit 1; }
-	@# why: llvm-cov merges profiles across runs, so a second invocation silently doubles
-	@# every line count and reports roughly half the real coverage. Always start clean.
-	$(CARGO) llvm-cov clean --workspace
-	$(CARGO) llvm-cov --workspace --summary-only
+	CARGO="$(CARGO)" python3 scripts/coverage-run.py --summary-only
 
 .PHONY: coverage-gate
 coverage-gate: ## Enforce the per-crate floors in AGENTS.md 2.1
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
 		echo "Install first: cargo install cargo-llvm-cov"; exit 1; }
-	@$(CARGO) llvm-cov clean --workspace
 	@echo "Coverage floors (AGENTS.md 2.1):"
-	@$(CARGO) llvm-cov --workspace --json --quiet | python3 scripts/coverage-gate.py
+	@set -o pipefail; CARGO="$(CARGO)" python3 scripts/coverage-run.py --json --summary-only | python3 scripts/coverage-gate.py
 
 .PHONY: token-check
 token-check: ## Enforce the design-token contract, both directions (SPEC 20.1, 20.2)
@@ -151,8 +147,14 @@ wasm: emoji-catalog ## Build the WebAssembly bindings into web/src/wasm (needs w
 		echo "Install first: cargo install wasm-pack"; exit 1; }
 	@# why: wasm-pack installs wasm-opt into XDG's cache. Keeping it under target makes the
 	@# optimizer usable in restricted build environments without disabling the production pass.
-	XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb
-	XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-emoji-wasm --target web --out-dir ../../web/src/wasm/emoji --out-name emoji
+	@# why: wasm-pack 0.15 reads an existing output package.json as a dependency map before
+	@# rewriting it; its previous array-valued manifest makes a restart fail before the server binds.
+	rm -f web/src/wasm/package.json web/src/wasm/emoji/package.json
+	@# why: the wasm-opt binary downloaded by wasm-pack currently fails while parsing its
+	@# package metadata on this toolchain; unoptimized release WASM remains valid and lets dev
+	@# startup complete. Production bundle optimization is handled by Vite.
+	XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb --no-opt
+	XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-emoji-wasm --target web --out-dir ../../web/src/wasm/emoji --out-name emoji --no-opt
 
 .PHONY: web
 web: wasm ## Vite dev server on 9011, against the freshly built wasm

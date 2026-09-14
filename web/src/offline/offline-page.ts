@@ -12,8 +12,26 @@
  */
 
 /** The offline page's document, as HTML. */
-export function offlinePage(): string {
-  return OFFLINE_PAGE;
+export interface OfflineNoteLink {
+  /** Vault containing the resident note. */
+  readonly vault: string;
+  /** Vault-relative path of the resident note. */
+  readonly note: string;
+  /** Stored title, or `null` when only the path is available. */
+  readonly title: string | null;
+}
+
+/**
+ * Builds the offline page, optionally with links to resident note bodies.
+ *
+ * The links are rendered into static HTML rather than by a script: the fallback deliberately
+ * has no executable content, and the service worker already has the local replica available.
+ */
+export function offlinePage(notes: readonly OfflineNoteLink[] = []): string {
+  const links = notes.length === 0
+    ? '<p>No opened notes are available on this device yet.</p>'
+    : `<h2>Notes available on this device</h2>\n    <ul>${notes.map(noteLink).join("\n")}</ul>`;
+  return OFFLINE_PAGE.replace("    <!-- available-notes -->", `    ${links}`);
 }
 
 /**
@@ -53,8 +71,25 @@ const OFFLINE_PAGE = `<!doctype html>
   <body>
     <h1>You are offline</h1>
     <p>This page is built by the server, so it needs a connection.</p>
-    <p>Notes you have opened before are still available. Reopen one from this device, or try
-      again once you are back online.</p>
+    <p>Notes you have opened before are still available. Choose one below, or try again once
+      you are back online.</p>
+    <!-- available-notes -->
   </body>
 </html>
 `;
+
+function noteLink(note: OfflineNoteLink): string {
+  const label = note.title === null || note.title === "" ? note.note : note.title;
+  const href = `/v/${encodeURIComponent(note.vault)}/${encodeURIComponent(note.note)}`;
+  return `<li><a href="${escapeHtml(href)}">${escapeHtml(label)}</a></li>`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character] ?? character);
+}

@@ -36,8 +36,8 @@ do not run them merely because an assistant turn or feedback iteration is ending
 - [ ] **If it touches a read path: a permission test proving it filters** (§3)
 - [ ] **If it adds an enforcement point: added to `SPEC.md` §6.4 and to the leak suite**
 - [ ] Before committing: `make check` passes clean — fmt, clippy `-D warnings`, tests, types, lint
-- [ ] **Before committing a user-visible change: `make e2e` passes** (§5.2). `make check` does not
-      open a browser, and a green unit suite has already shipped a page nobody could use
+- [ ] **Full `make e2e` is handed off to the user to run manually** (§5.2). Report its status
+      and any known failures; do not claim it passed when it was not run or confirmed
 - [ ] No new `unwrap`/`expect`/`panic!` in library code (§4.2)
 - [ ] No `any` in TypeScript, no `@ts-ignore` (§4.3)
 - [ ] Public items documented; non-obvious decisions carry a `// why:` comment
@@ -293,7 +293,11 @@ make prod-build   # release build without starting the server
 ```
 
 `make check` is the pre-commit gate. If it does not pass, do not commit.
-Run full gates locally only before committing or when the user explicitly requests them.
+Run `make check` before committing or when the user explicitly requests it.
+The user runs full `make e2e` manually. A commit request alone does not authorize the assistant
+to run it; run it only when the user explicitly asks the assistant to execute that suite.
+Report manual E2E validation as pending unless the user supplies a result. Keep known failures
+visible in the handoff; manual ownership does not turn a failing test into a passing one.
 CI continues to run its existing checks.
 
 **`make check` does not open a browser.** It is separate from `make e2e` because the browser
@@ -313,7 +317,8 @@ required. Documentation-only iterations need a diff review, not application test
 |---|---|---|
 | Feedback iteration | Relevant unit/integration/regression tests for the changed behavior | seconds |
 | **The first time new UI renders anything**, and after a batch of CSS, pointer or layout adjustments | Rebuild, then one relevant browser spec: `npm --prefix web run build && npm --prefix web run e2e -- <name>.spec.ts` | ~30s |
-| Before committing, or on explicit request | `make check`; also `make e2e` for user-visible changes | full gate; run sequentially locally |
+| Before committing, or on explicit request | Assistant runs `make check`; full `make e2e` is user-run manual validation | no automatic full browser run |
+| User explicitly asks the assistant to run full E2E | `make e2e` | run separately from `make check`, not in parallel |
 
 Two rules attached to the middle row, both learned expensively:
 

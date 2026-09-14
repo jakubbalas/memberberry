@@ -549,14 +549,29 @@ impl SyncRegistry {
         changed: &Changes,
         authorize: ReadCheck<'_>,
     ) -> Vec<String> {
+        self.maintain_with_flushed(now, changed, authorize).0
+    }
+
+    /// Runs maintenance and returns notes whose Markdown was materialized this tick.
+    pub fn maintain_with_flushed(
+        &self,
+        now: Instant,
+        changed: &Changes,
+        authorize: ReadCheck<'_>,
+    ) -> (Vec<String>, Vec<PathBuf>) {
         let Ok(mut rooms) = self.rooms.lock() else {
-            return vec!["sync registry lock poisoned".to_string()];
+            return (vec!["sync registry lock poisoned".to_string()], Vec::new());
         };
         let mut errors = Vec::new();
+        let mut flushed = Vec::new();
         for room in rooms.values_mut() {
-            if let Err(error) = room.coordinator.flush_if_due(now) {
-                errors.push(error.to_string());
-                continue;
+            match room.coordinator.flush_if_due(now) {
+                Ok(true) => flushed.push(room.coordinator.markdown_path.clone()),
+                Ok(false) => {}
+                Err(error) => {
+                    errors.push(error.to_string());
+                    continue;
+                }
             }
             if !changed.includes(&room.coordinator.markdown_path) {
                 continue;
@@ -582,7 +597,7 @@ impl SyncRegistry {
                 errors.push(error.to_string());
             }
         }
-        errors
+        (errors, flushed)
     }
 }
 
