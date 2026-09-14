@@ -11,6 +11,7 @@ export type MediaFetch = (input: RequestInfo | URL, init?: RequestInit) => Promi
 /** Uploads media to one authenticated vault. The browser supplies the session cookie. */
 export interface MediaUploader {
   upload(file: File): Promise<MediaUploadResult>;
+  uploadDerived?(file: File, sourcePath: string): Promise<MediaUploadResult>;
   flush(): Promise<void>;
   onResolved?(listener: (from: string, to: string) => void): () => void;
   destroy(): void;
@@ -91,6 +92,23 @@ export function createMediaUploader(
       response = await fetcher(endpoint, {
         method: "POST",
         headers,
+        body: file,
+      });
+    } catch (cause: unknown) {
+      throw new OfflineUploadError(cause);
+    }
+    if (!response.ok) throw new Error("media upload failed (" + response.status + ")");
+    const raw: unknown = await response.json();
+    if (!isMediaUploadResult(raw)) throw new Error("media upload returned an invalid path");
+    return raw;
+  };
+
+  const sendDerived = async (file: File, sourcePath: string): Promise<MediaUploadResult> => {
+    let response: Response;
+    try {
+      response = await fetcher(endpoint, {
+        method: "POST",
+        headers: { "X-Memberberry-Filename": file.name, "X-Memberberry-Source": sourcePath },
         body: file,
       });
     } catch (cause: unknown) {
@@ -212,6 +230,7 @@ export function createMediaUploader(
         return { path: objectUrl, pending: settled };
       }
     },
+    uploadDerived: async (file, sourcePath): Promise<MediaUploadResult> => sendDerived(file, sourcePath),
     flush,
     onResolved: (listener) => {
       listeners.add(listener);

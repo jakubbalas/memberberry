@@ -1746,9 +1746,20 @@ fn media_upload_is_content_addressed_but_not_readable_until_referenced() {
     image::DynamicImage::new_rgb8(400, 200)
         .write_to(&mut source_image, image::ImageFormat::Png)
         .expect("source image");
+    let original_image = source_image.into_inner();
+    let mut display_image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(100, 50)
+        .write_to(&mut display_image, image::ImageFormat::Png)
+        .expect("display image");
+    let display_image = display_image.into_inner();
+    let original_path = mb_server::media::LocalStore::new(&vault)
+        .put(&original_image, "png")
+        .expect("original source");
     let thumbnail_path = mb_server::media::LocalStore::new(&vault)
-        .put(&source_image.into_inner(), "png")
+        .put(&display_image, "png")
         .expect("thumbnail source");
+    mb_server::media::retain_original(&vault, &thumbnail_path, &original_path)
+        .expect("retain original");
     dir.write(
         "Public.md",
         &format!("![public]({public_path})\n![large]({thumbnail_path})\n"),
@@ -1775,7 +1786,17 @@ fn media_upload_is_content_addressed_but_not_readable_until_referenced() {
     let decoded = image::load_from_memory_with_format(&thumbnail, image::ImageFormat::WebP)
         .expect("thumbnail webp");
     assert_eq!((decoded.width(), decoded.height()), (100, 50));
+    let (head, original) = server.get_bytes(&format!(
+        "/api/v1/vaults/v/media/{thumbnail_path}?original=true"
+    ));
+    assert!(head.contains("200"), "{head}");
+    assert_eq!(original, original_image);
     let (status, body) = server.get(&format!("/api/v1/vaults/v/media/{private_path}"));
+    assert!(is_not_found(&status), "{status}");
+    assert!(body.contains("Not found"), "{body}");
+    let (status, body) = server.get(&format!(
+        "/api/v1/vaults/v/media/{private_path}?original=true"
+    ));
     assert!(is_not_found(&status), "{status}");
     assert!(body.contains("Not found"), "{body}");
 

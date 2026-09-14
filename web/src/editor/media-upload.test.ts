@@ -75,6 +75,24 @@ describe("media uploader", () => {
     uploader.destroy();
   });
 
+  it("uploads an edited display copy with its source path", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      response({ path }, { status: 201 }),
+    );
+    const { options } = harness();
+    const uploader = createMediaUploader("personal", fetcher, options);
+    await expect(uploader.uploadDerived?.(
+      new File(["edited"], "edited.png", { type: "image/png" }),
+      path,
+    )).resolves.toEqual({ path });
+    expect(fetcher.mock.calls[0]?.[1]).toEqual({
+      method: "POST",
+      headers: { "X-Memberberry-Filename": "edited.png", "X-Memberberry-Source": path },
+      body: expect.any(File),
+    });
+    uploader.destroy();
+  });
+
   it("queues a network failure and resolves its optimistic URL after flush", async () => {
     let offline = true;
     const fetcher = vi.fn(async () => {

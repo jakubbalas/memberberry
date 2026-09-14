@@ -43,6 +43,24 @@ test("downscales an image, retains its original, and renders an authorized thumb
   const image = page.locator(`${EDITOR} img`).last();
   await expect(image).toBeVisible();
   await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBe(1600);
+  const imageWidth = await image.evaluate((element) => element.getBoundingClientRect().width);
+  const editorWidth = await page.locator(EDITOR).evaluate((element) => element.getBoundingClientRect().width);
+  expect(imageWidth).toBeLessThanOrEqual(editorWidth);
+
+  await page.getByRole("button", { name: "Toggle Markdown source view" }).click();
+  await expect(page.locator(".source-view")).toBeVisible();
+  await page.getByRole("button", { name: "Toggle Markdown source view" }).click();
+  await expect(image).toBeVisible();
+
+  await image.click();
+  const edit = page.getByRole("button", { name: "Edit selected image" });
+  await expect(edit).toBeEnabled();
+  await edit.click();
+  await expect(page.getByRole("dialog", { name: "Edit image" })).toBeVisible();
+  await page.getByRole("button", { name: "Rotate right" }).click();
+  await page.getByRole("button", { name: "Save edited display" }).click();
+  await expect(page.getByRole("dialog", { name: "Edit image" })).toBeHidden();
+  await expect(image).toBeVisible();
 
   const notePath = join(E2E_VAULT, note);
   await expect.poll(() => readFileSync(notePath, "utf8")).toMatch(/!\[large\.png\]\(media\/[a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]{64}\.png\)/);

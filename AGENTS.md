@@ -27,15 +27,17 @@ a rule cannot be checked by CI, it is written so a reviewer can check it in seco
 
 A change is ready to commit only when **every** box is true. Not most.
 During the feedback loop, an iteration may be handed back after focused verification (§5.2).
-Full checks and coverage measurement are deferred until a commit or an explicit user request;
-do not run them merely because an assistant turn or feedback iteration is ending.
+Development must automatically run the relevant test suites for the affected behavior;
+no separate user request is needed for those tests.
+Full checks and coverage measurement run only on explicit user request; a commit request
+alone does not trigger them, nor does the end of an assistant turn or feedback iteration.
 
 - [ ] Implements exactly the specified scope — no more, no less
 - [ ] Tests written **with** the code: happy path, edge cases, failure modes
-- [ ] Coverage floor met (§2.1); new code does not lower the crate/package number
+- [ ] Coverage floors remain enforced in CI (§2.1); report local measurement as deferred unless requested
 - [ ] **If it touches a read path: a permission test proving it filters** (§3)
 - [ ] **If it adds an enforcement point: added to `SPEC.md` §6.4 and to the leak suite**
-- [ ] Before committing: `make check` passes clean — fmt, clippy `-D warnings`, tests, types, lint
+- [ ] Focused checks pass; report `make check` as deferred unless explicitly requested
 - [ ] **Full `make e2e` is handed off to the user to run manually** (§5.2). Report its status
       and any known failures; do not claim it passed when it was not run or confirmed
 - [ ] No new `unwrap`/`expect`/`panic!` in library code (§4.2)
@@ -273,7 +275,7 @@ Production ports remain explicit deployment configuration. Tests that do not nee
 address should ask the OS for an ephemeral port instead of consuming this range.
 
 ```
-make check        # full gate — before committing or on explicit request
+make check        # full gate — explicit request only
 make full-test    # WASM setup, then make check, then make e2e; explicit full-run entry point
 make e2e          # Playwright in a real browser, desktop and mobile (SPEC §22.6)
 make test         # all tests
@@ -293,8 +295,9 @@ make prod         # release web/server build, then serve on 9010
 make prod-build   # release build without starting the server
 ```
 
-`make check` is the pre-commit gate. If it does not pass, do not commit.
-Run `make check` before committing or when the user explicitly requests it.
+Run `make check` only when the user explicitly requests it. It is not a prerequisite for
+committing, and a commit request alone does not authorize running it. Continue focused
+verification and report full checks and local coverage measurement as deferred when not run.
 The user runs full `make e2e` manually. A commit request alone does not authorize the assistant
 to run it; run it only when the user explicitly asks the assistant to execute that suite.
 `make full-test` includes full E2E and follows the same explicit-run requirement.
@@ -311,15 +314,18 @@ already shipped an application nobody could log into (§2.3).
 ### 5.2 Test cadence
 
 Keep the feedback loop focused. Batch related adjustments and verify the affected behavior;
-reserve workspace-wide suites and coverage measurement for the pre-commit gate or an explicit
-request. Tests are still written with code, including regression and permission tests where
-required. Documentation-only iterations need a diff review, not application test suites.
+reserve workspace-wide suites and coverage measurement for an explicit user request.
+During development, write and run the relevant unit, integration, regression, property,
+and permission suites as applicable, without waiting for a separate user request. UI changes
+also require the focused browser verification below. Deferring `make check` does not defer
+these tests. Documentation-only iterations need a diff review, not application test suites.
 
 | When | What | Cost |
 |---|---|---|
 | Feedback iteration | Relevant unit/integration/regression tests for the changed behavior | seconds |
 | **The first time new UI renders anything**, and after a batch of CSS, pointer or layout adjustments | Rebuild, then one relevant browser spec: `npm --prefix web run build && npm --prefix web run e2e -- <name>.spec.ts` | ~30s |
-| Before committing, or on explicit request | Assistant runs `make check`; full `make e2e` is user-run manual validation | no automatic full browser run |
+| Before committing | Focused verification; report full checks and coverage as deferred unless requested | no automatic full checks |
+| User explicitly requests `make check` | Assistant runs `make check`; full `make e2e` is user-run manual validation | full non-browser gate |
 | User explicitly asks the assistant to run full E2E | `make e2e` | run separately from `make check`, not in parallel |
 
 Two rules attached to the middle row, both learned expensively:

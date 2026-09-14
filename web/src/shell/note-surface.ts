@@ -388,6 +388,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
         undefined,
         bootstrap.mediaMaxDimension === undefined ? {} : { maxDimension: bootstrap.mediaMaxDimension },
       ),
+      media: { vault: bootstrap.vault },
     }),
     emojiChoices,
     ...(bootstrap === undefined ? {} : { emojiImport: { vault: bootstrap.vault, status } }),

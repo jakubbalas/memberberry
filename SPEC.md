@@ -2237,7 +2237,10 @@ ambiguity; it does not outrank authorization.
 Downscaled display objects and their retained originals are related by the rebuildable
 `.memberberry/media-originals.json` manifest. It contains paths only, never content or
 credentials. `doctor` and materialization follow that relation, so a retained original is
-not misreported as orphaned and is not omitted from a self-contained export.
+not misreported as orphaned and is not omitted from a self-contained export. The original is
+immutable: display resize, crop, rotation and adjustments must write a new display object and
+must never overwrite the retained original. Replacing the display from the original reads the
+original as the source and creates another derived object.
 
 **Content addressing is not authorization.** Serving a blob because its hash was guessed
 or leaked is a permission bug. Access is gated by `media_refs` (E11): a user may fetch a
@@ -2262,7 +2265,14 @@ Paste, including image data for screenshots currently held in the system clipboa
 drag-drop and file picker. Client-side downscale above a configurable dimension with
 the original retained. Server-side thumbnails. Inline PDF viewer. Offline uploads queue in
 IndexedDB with an optimistic blob URL, swapped for the content-addressed path on flush.
-`memberberry doctor` reports orphaned media.
+Rendered images fit the editable column while retaining their intrinsic aspect ratio. The
+server prunes unreferenced media after the five-minute upload grant expires; active grants
+are protected so an upload can complete its note-save/index cycle. `memberberry doctor`
+still reports orphaned media for installations whose server is not running.
+Selecting an image opens controls for derived-display resize, center crop presets, 90-degree
+rotation, and brightness/contrast/saturation adjustments. Saving uploads a new
+display object; “Use original” reloads the immutable original as the editing source. The
+Markdown reference changes only after the derived upload succeeds.
 
 Uploads accept PNG, JPEG, GIF, WebP and PDF after the server verifies that the bytes match
 the filename extension. SVG is excluded: serving user-controlled active XML from the
@@ -2665,9 +2675,9 @@ sidecars without files (and vice versa), index drift versus files, oversized his
 `access.toml` referencing unknown users, share links to deleted notes, **unresolved
 conflict callouts** (§3.5), and shortcodes referencing missing emoji pack files. Reports;
 fixes only with `--fix`. Missing or duplicate IDs, CRDT/index drift, excess history and dead
-share links have deterministic repairs. Broken links, ACL users, conflicts, missing emoji and
-orphaned media remain report-only: an unreferenced object may still be inside its upload grant
-window, so deleting it before the note-save/index cycle completes would be data loss.
+share links have deterministic repairs. Broken links, ACL users, conflicts and missing emoji
+remain report-only. Orphaned media is normally pruned by the running server after its upload
+grant window; `doctor` reports it for offline/manual cleanup.
 
 ---
 
@@ -3485,9 +3495,11 @@ them systematically. It is the suite most likely to catch a real security bug.
 
 ### 22.6 End-to-end in a real browser (M7)
 
-**Local feedback cadence (2026-09-13).** During feedback development, run focused checks
-and a relevant browser spec for visual changes. The assistant runs full `make check` before
-committing or on explicit request, not at the end of every feedback iteration. The user owns
+**Local feedback cadence (2026-09-14).** During development, automatically run the relevant
+test suites for affected behavior and a relevant browser spec for visual changes; these
+checks do not need a separate user request. Full `make check` and local coverage
+measurement run only on explicit user request; neither is a prerequisite for committing,
+and a commit request alone does not trigger them. Report them as deferred when not run. The user owns
 full `make e2e` runs manually; a commit request does not trigger an assistant-run full browser
 suite. The assistant runs it only when explicitly asked to do so and reports pending manual
 validation and known failures honestly. CI coverage and suite requirements remain unchanged.

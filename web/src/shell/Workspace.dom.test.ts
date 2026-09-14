@@ -17,6 +17,7 @@ import { mount, tick, unmount } from "svelte";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import Workspace from "./Workspace.svelte";
+import { NoteCatalog } from "./note-catalog.svelte.js";
 import { OPEN_NOTE_EVENT, type OpenNoteDetail } from "../editor/links.js";
 import type { resolveNote } from "./open-note.js";
 import type { NoteSurface, OpenNoteSurfaceOptions } from "./note-surface.js";
@@ -106,6 +107,7 @@ function render(
   open?: ReturnType<typeof surfaces>["open"],
   resolveLink?: typeof resolveNote,
   home = false,
+  catalog?: NoteCatalog,
 ) {
   const app = mount(Workspace, {
     target,
@@ -115,6 +117,7 @@ function render(
       session: { vault: "personal", user: "alice" },
       chrome: chrome(),
       open: open ?? surfaces().open,
+      ...(catalog === undefined ? {} : { catalog }),
       ...(resolveLink === undefined ? {} : { resolveLink }),
       // The commands listen on a target rather than on the shell element, because a `div`
       // cannot hold focus. Injected here so a test drives them without touching `window`.
@@ -148,6 +151,34 @@ describe("the shell", () => {
       expect(target.querySelector("#home-heading")).toBeNull();
       expect(opened.notes).toEqual(["One.md"]);
       expect(workspace.tabs).toHaveLength(1);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("opens the active Home note when it is restored in a hidden tab", async () => {
+    const workspace = store(["Second.md"]);
+    const catalog = new NoteCatalog({
+      vault: "personal",
+      load: async () => ({
+        kind: "ok",
+        notes: [
+          { path: "First.md", title: "First", conflicts: 0 },
+          { path: "Second.md", title: "Second", conflicts: 0 },
+        ],
+      }),
+      replica: async () => undefined,
+    });
+    await catalog.refresh();
+    const opened = surfaces();
+    const teardown = render(workspace, opened.open, undefined, true, catalog);
+    try {
+      await flush();
+      const buttons = target.querySelectorAll<HTMLButtonElement>(".home-notes li button");
+      buttons[1]?.click();
+      await flush();
+      expect(target.querySelector("#home-heading")).toBeNull();
+      expect(opened.notes).toEqual(["Second.md"]);
     } finally {
       await teardown();
     }

@@ -66,6 +66,7 @@ body {
 .editor-control, .task-chip { min-height: var(--control-height); border: 1px solid transparent; border-radius: var(--radius-sm); padding: var(--space-3) var(--space-4); color: var(--text-muted); background: transparent; font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
 .editor-control:hover { background: var(--surface-hover); color: var(--text-primary); }
 .editor-control:focus-visible, .task-chip:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.image-editor-trigger { position: fixed; z-index: 5; box-shadow: var(--shadow-md); }
 .emoji-picker-wrap { position: relative; }
 .emoji-picker-toggle { min-height: var(--control-height); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: var(--space-3) var(--space-4); color: var(--text-primary); background: var(--surface-note); font: var(--weight-bold) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
 .emoji-picker-toggle:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
@@ -102,6 +103,15 @@ body {
 .editor-surface .tiptap > :first-child { margin-top: 0; }
 .editor-surface .tiptap > :last-child { margin-bottom: 0; }
 .editor-surface .tiptap p { margin: var(--editor-block-gap) 0; }
+.editor-surface .tiptap img { display: block; max-width: 100%; height: auto; }
+.image-editor-dialog { width: min(46rem, calc(100% - var(--space-8))); max-width: 100%; max-height: calc(100vh - var(--space-8)); overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-6); color: var(--text-primary); background: var(--surface-raised); box-shadow: var(--shadow-lg); }
+.image-editor-dialog::backdrop { background: color-mix(in srgb, var(--text-primary) 30%, transparent); }
+.image-editor-dialog h2 { margin: 0 0 var(--space-5); font: var(--weight-bold) var(--text-lg)/var(--leading-snug) var(--font-ui); }
+.image-editor-canvas { display: block; width: auto; height: auto; max-width: 100%; max-height: 45vh; margin: 0 auto var(--space-6); object-fit: contain; background: var(--surface-sunken); }
+.image-editor-options { display: grid; gap: var(--space-3); }
+.image-editor-options label { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(8rem, 2fr) 4rem; gap: var(--space-3); align-items: center; font: var(--text-xs)/var(--leading-flat) var(--font-ui); }
+.image-editor-options select { min-height: var(--control-height); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 0 var(--space-2); color: var(--text-primary); background: var(--surface-note); }
+.image-editor-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-6); }
 .editor-surface .tiptap [data-tag] {
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-sm);

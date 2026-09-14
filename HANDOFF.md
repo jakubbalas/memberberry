@@ -1,6 +1,43 @@
 # Handoff
 
-**Last updated:** development-document history reset, 2026-09-14.
+**Last updated:** explicit-request full-check workflow, 2026-09-14.
+
+Media handling now constrains editor images to the available column and the running server
+prunes unreferenced media after the five-minute upload grant expires, preserving active grants
+through the note-save/index cycle. Focused media/editor tests pass; the new browser regression
+still needs the local server and Playwright E2E environment. Full `make check`, coverage, and
+full E2E remain deferred.
+
+CI frontend jobs now run `make wasm`, which generates both the main and emoji WASM packages;
+the prior direct command generated only `mb` and caused TypeScript to fail on the missing
+`web/src/wasm/emoji/emoji.js` import. Local `make wasm` and `npm --prefix web run typecheck`
+pass.
+
+Image editing now has a selectable-image modal with derived-display resize, center crop
+presets, rotation, brightness/contrast/saturation, and “Use original”. Save
+uploads a new PNG display object and updates the Markdown reference only after success; the
+retained original remains unchanged. Focused browser validation still requires the local
+server and Playwright E2E environment.
+
+Rendered media now loads the bounded display object directly instead of invoking server-side
+thumbnail generation on every image render, removing avoidable decode/re-encode latency.
+Image editor controls reset to their defaults on each open; saving without a new adjustment
+now closes without uploading another display object. Preview zoom was removed because it did
+not provide useful behavior.
+
+Local media cleanup now removes empty fan-out directories after orphaned files are pruned,
+including stale nested directories left by earlier uploads.
+
+Home navigation now opens a selected note even when that note is already the active tab in
+the restored hidden workspace. The regression is covered by the focused Workspace DOM suite;
+typecheck, production build, and diff hygiene pass.
+
+Removed the automatic pre-commit `make check` requirement from `AGENTS.md` and `SPEC.md`.
+Full checks and local coverage measurement now require an explicit request; commit requests
+continue with focused verification. CI and manual full E2E ownership are unchanged.
+Development still automatically runs relevant test suites, including focused browser
+verification for UI changes; those checks require no separate user request.
+This documentation-only change was reviewed by diff; application checks were not run.
 
 `PROJECT.md`, `SPEC.md`, and `README.md` now describe editing, navigation, keybindings,
 graph links, page layouts, database views, and theming directly instead of using product
@@ -137,10 +174,9 @@ Full `make check`, workspace coverage measurement and full E2E are deferred; no 
 Next: run the full gate on Linux and compare two unchanged runs. No end-to-end gate
 speedup has been measured yet. Preserve the outstanding browser issues and local state below.
 
-Commit workflow now keeps `make check` as the assistant-run gate but leaves full `make e2e`
-to the user to run manually. Do not launch it for an ordinary commit request; only run the
-full browser suite when explicitly asked. Focused browser verification during UI development
-and CI remain unchanged.
+Commit workflow uses focused verification. Run `make check` only on explicit request;
+full `make e2e` remains user-run unless explicitly delegated. Focused browser verification
+during UI development and CI remain unchanged.
 
 The user's seven reported failures included stale title/breadcrumb expectations and shared
 fixture interference. Home now seeds isolated per-project vaults and checks exact root/nested
@@ -286,7 +322,7 @@ Focused validation for this change passes:
 - `npm --prefix web run build`
 - `npm --prefix web run e2e -- e2e/offline.spec.ts` — 12 passed, 2 expected mobile skips
 
-The full `make check` gate remains deferred until commit or explicit request. The existing
+The full `make check` gate remains deferred until explicit request. The existing
 open items and baseline notes below remain unchanged.
 
 The user's latest screenshot in `local/debug/` showed the standalone vault library, not a
@@ -344,8 +380,8 @@ It is a development baseline, not a claim that the open items below are resolved
   `/tmp/mb-home-http.log`, `/tmp/mb-folder-http.log`, `/tmp/mb-folder-leaks.log`,
   `/tmp/mb-home-folders-browser.log`, `/tmp/mb-home-create-browser.log`,
   `/tmp/mb-home-onboarding-browser.log`.
-- Future feedback iterations use focused verification; the assistant runs `make check`
-  before committing and leaves full E2E to the user. New folder checks have not had separate
+- Future feedback iterations and commits use focused verification; `make check` requires
+  an explicit request and full E2E remains user-run. New folder checks have not had separate
   source-mutation probes.
 - New folder currently starts at the root; there is no selected-folder creation shortcut.
   Empty-folder lists are not available offline. A path-only grant still needs a readable

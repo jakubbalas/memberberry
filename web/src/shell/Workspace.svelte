@@ -255,6 +255,12 @@
       store.open(path, { reuse: false });
       return;
     }
+    // why: Home can show a note already active in a hidden restored tab; opening focuses it
+    // while navigating it to the same path would be a no-op.
+    if (showingHome) {
+      store.open(path);
+      return;
+    }
     const active = store.activeTab;
     if (active === undefined) store.open(path);
     else store.navigate(active.id, path);

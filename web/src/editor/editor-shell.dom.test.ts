@@ -129,7 +129,10 @@ describe("editor shell", () => {
       panel,
       status,
       mediaUploader: { upload, flush: async () => undefined, destroy: destroyUploader },
+      media: { vault: "personal" },
     });
+    expect(panel.querySelector("[aria-label='Edit selected image']")).not.toBeNull();
+    expect(panel.querySelector(".editor-toolbar .image-editor-trigger")).toBeNull();
     const image = new File(["pixels"], "screen.png", { type: "image/png" });
     Object.defineProperty(document, "elementFromPoint", {
       configurable: true,
@@ -145,8 +148,20 @@ describe("editor shell", () => {
     expect(upload).toHaveBeenCalledWith(image);
     expect(JSON.stringify(editor.getJSON())).toContain('"media/ab/cd/uploaded.png"');
     expect(surface.querySelector("img")?.getAttribute("src")).toBe(
-      "/api/v1/vaults/personal/media/media/ab/cd/uploaded.png?thumbnail=1600",
+      "/api/v1/vaults/personal/media/media/ab/cd/uploaded.png",
     );
+    const editImage = panel.querySelector<HTMLButtonElement>("[aria-label='Edit selected image']");
+    expect(editImage?.disabled).toBe(true);
+    surface.querySelector<HTMLImageElement>("img")?.click();
+    expect(editImage?.disabled).toBe(false);
+    const dialog = document.querySelector<HTMLDialogElement>(".image-editor-dialog");
+    const cancel = dialog?.querySelector<HTMLButtonElement>("button[value='cancel']");
+    expect(cancel).not.toBeNull();
+    if (dialog !== null && cancel !== null && cancel !== undefined) {
+      dialog.open = true;
+      cancel.click();
+      expect(dialog.open).toBe(false);
+    }
 
     const drop = new Event("drop", { bubbles: true, cancelable: true });
     Object.defineProperty(drop, "dataTransfer", { value: { files: [image] } });
@@ -183,6 +198,7 @@ describe("editor shell", () => {
     shell.destroy();
     expect(destroyUploader).toHaveBeenCalledOnce();
     expect(panel.querySelector(".media-controls")).toBeNull();
+    expect(document.querySelector(".image-editor-dialog")).toBeNull();
     editor.destroy();
     ydoc.destroy();
     panel.remove();

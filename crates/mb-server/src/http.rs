@@ -188,6 +188,21 @@ impl AppState {
         })
     }
 
+    fn active_media_grants(&self, vault: &Slug) -> Vec<String> {
+        self.media_uploads.lock().map_or_else(
+            |_| Vec::new(),
+            |mut uploads| {
+                let now = std::time::Instant::now();
+                uploads.retain(|(slug, _, _), expires| slug != vault || *expires > now);
+                uploads
+                    .keys()
+                    .filter(|(slug, _, _)| slug == vault)
+                    .map(|(_, _, path)| path.clone())
+                    .collect()
+            },
+        )
+    }
+
     /// Runs one maintenance tick. Blocking: callers must keep it off the async runtime.
     ///
     /// Policy is refreshed before documents are, so a broadcast in this tick is filtered by
@@ -260,6 +275,18 @@ impl AppState {
                 continue;
             }
             if let Err(error) = crate::media::materialize(vault).await {
+                errors.push(format!("vault `{}`: {error}", vault.slug()));
+            }
+        }
+        errors
+    }
+
+    /// Removes abandoned uploads after their temporary authorization has expired.
+    pub async fn prune_media(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        for vault in self.vault_snapshot() {
+            let protected = self.active_media_grants(vault.slug());
+            if let Err(error) = crate::media::prune_orphaned(&vault, &protected).await {
                 errors.push(format!("vault `{}`: {error}", vault.slug()));
             }
         }
@@ -4243,10 +4270,19 @@ async fn media(
     if !permitted {
         return not_found().await;
     }
+    let object_path = if query.original == Some(true) {
+        match crate::media::original_for(&vault, &media) {
+            Ok(Some(original)) => original,
+            Ok(None) => media.clone(),
+            Err(_) => return not_found().await,
+        }
+    } else {
+        media.clone()
+    };
     let Ok(store) = crate::media::Store::new(&vault) else {
         return not_found().await;
     };
-    let Ok(bytes) = store.get(&media).await else {
+    let Ok(bytes) = store.get(&object_path).await else {
         return not_found().await;
     };
     let (bytes, content_type) = match query.thumbnail {
@@ -4254,7 +4290,7 @@ async fn media(
             Ok(thumbnail) => (thumbnail, "image/webp"),
             Err(_) => return not_found().await,
         },
-        None => (bytes, media_content_type(&media)),
+        None => (bytes, media_content_type(&object_path)),
     };
     (
         StatusCode::OK,
@@ -4400,6 +4436,7 @@ fn drawing_conflict() -> Response {
 #[derive(Debug, Deserialize)]
 struct MediaQuery {
     thumbnail: Option<u32>,
+    original: Option<bool>,
 }
 
 /// Uploads one local media object and returns its content-addressed path.
@@ -4484,6 +4521,47 @@ async fn media_upload(
         }
         Err(error) => return server_error(&error),
     };
+    if let Some(source) = headers
+        .get("x-memberberry-source")
+        .and_then(|value| value.to_str().ok())
+    {
+        let source_referenced = state.indexes.get(&vault).is_some_and(|index| {
+            index.lock().is_ok_and(|mut index| {
+                index
+                    .reader(&access, &user)
+                    .and_then(|reader| reader.references_media(source))
+                    .unwrap_or(false)
+            })
+        });
+        if !source_referenced {
+            return (
+                StatusCode::BAD_REQUEST,
+                [(header::CONTENT_TYPE, "application/json")],
+                r#"{"error":"invalid source media"}"#,
+            )
+                .into_response();
+        }
+        let original = match crate::media::original_for(&vault, source) {
+            Ok(Some(original)) => original,
+            Ok(None) => source.to_string(),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    r#"{"error":"invalid source media"}"#,
+                )
+                    .into_response();
+            }
+        };
+        let Ok(_guard) = state.media_manifest.lock() else {
+            return server_error(&Error::MediaStore(
+                "media manifest lock poisoned".to_string(),
+            ));
+        };
+        if let Err(error) = crate::media::retain_original(&vault, &path, &original) {
+            return server_error(&error);
+        }
+    }
     if let Some(original) = headers
         .get("x-memberberry-original")
         .and_then(|value| value.to_str().ok())
@@ -5716,6 +5794,9 @@ const MEDIA_MATERIALIZE_INTERVAL: std::time::Duration =
 /// Time for the note write and index tick to replace an uploader-only preview grant (E11).
 const MEDIA_UPLOAD_GRANT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
+/// How often abandoned media is reconciled after temporary upload grants expire.
+const MEDIA_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Serves until the process is asked to stop.
 ///
 /// # Errors
@@ -5756,11 +5837,13 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
         let mut since_sweep = std::time::Duration::ZERO;
         let mut since_index_sweep = std::time::Duration::ZERO;
         let mut since_media_materialize = std::time::Duration::ZERO;
+        let mut since_media_prune = std::time::Duration::ZERO;
         loop {
             interval.tick().await;
             since_sweep += MAINTENANCE_INTERVAL;
             since_index_sweep += MAINTENANCE_INTERVAL;
             since_media_materialize += MAINTENANCE_INTERVAL;
+            since_media_prune += MAINTENANCE_INTERVAL;
             let mut changed = signal.take();
             if since_sweep >= RECOVERY_SWEEP_INTERVAL {
                 since_sweep = std::time::Duration::ZERO;
@@ -5797,6 +5880,12 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
                 since_media_materialize = std::time::Duration::ZERO;
                 for error in maintenance_state.materialize_media().await {
                     eprintln!("memberberry media maintenance: {error}");
+                }
+            }
+            if since_media_prune >= MEDIA_PRUNE_INTERVAL {
+                since_media_prune = std::time::Duration::ZERO;
+                for error in maintenance_state.prune_media().await {
+                    eprintln!("memberberry media cleanup: {error}");
                 }
             }
         }

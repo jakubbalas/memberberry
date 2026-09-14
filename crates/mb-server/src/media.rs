@@ -170,6 +170,12 @@ fn original_manifest(vault: &Vault) -> Result<BTreeMap<String, String>, Error> {
     Ok(manifest)
 }
 
+/// Resolves a display object to its retained original, if it has one.
+pub fn original_for(vault: &Vault, display: &str) -> Result<Option<String>, Error> {
+    validate_object_path(display)?;
+    Ok(original_manifest(vault)?.get(display).cloned())
+}
+
 /// Downloads every referenced remote object into `<vault>/media` (`SPEC.md` §12.3).
 pub async fn materialize(vault: &Vault) -> Result<usize, Error> {
     if matches!(vault.media_backend(), MediaBackendConfig::Local) {
@@ -198,6 +204,36 @@ pub async fn orphaned(vault: &Vault) -> Result<Vec<String>, Error> {
         .collect();
     orphaned.sort();
     Ok(orphaned)
+}
+
+/// Deletes unreferenced media after the uploader-only access window has closed.
+pub async fn prune_orphaned(vault: &Vault, protected: &[String]) -> Result<Vec<String>, Error> {
+    let referenced = references(vault)?;
+    let protected: std::collections::HashSet<&str> = protected.iter().map(String::as_str).collect();
+    let candidates: Vec<String> = Store::new(vault)?
+        .list()
+        .await?
+        .into_iter()
+        .filter(|path| !referenced.contains(path) && !protected.contains(path.as_str()))
+        .collect();
+    let store = Store::new(vault)?;
+    for path in &candidates {
+        match &store {
+            Store::Local(local) => local.remove(path)?,
+            Store::S3(remote) => {
+                let path = ObjectPath::parse(path)
+                    .map_err(|error| Error::MediaStore(error.to_string()))?;
+                remote
+                    .delete(&path)
+                    .await
+                    .map_err(|error| Error::MediaStore(error.to_string()))?;
+            }
+        }
+    }
+    if let Store::Local(local) = &store {
+        local.prune_empty_directories()?;
+    }
+    Ok(candidates)
 }
 
 /// Produces a bounded WebP thumbnail without trusting dimensions from the encoded image.
@@ -368,6 +404,61 @@ impl<'a> LocalStore<'a> {
         let path = self.contained_path(relative, true)?;
         let bytes = std::fs::read(&path).map_err(|_| Error::NotFound)?;
         Ok((path, bytes))
+    }
+
+    fn remove(&self, relative: &str) -> Result<(), Error> {
+        let path = self.contained_path(relative, true)?;
+        std::fs::remove_file(&path).map_err(|source| Error::MediaIo { path, source })
+    }
+
+    fn prune_empty_directories(&self) -> Result<(), Error> {
+        let root = self.vault.root().join("media");
+        if !root.is_dir() {
+            return Ok(());
+        }
+        let mut pending = vec![root.clone()];
+        let mut directories = Vec::new();
+        while let Some(directory) = pending.pop() {
+            let entries = std::fs::read_dir(&directory).map_err(|source| Error::MediaIo {
+                path: directory.clone(),
+                source,
+            })?;
+            for entry in entries {
+                let entry = entry.map_err(|source| Error::MediaIo {
+                    path: directory.clone(),
+                    source,
+                })?;
+                if entry
+                    .file_type()
+                    .map_err(|source| Error::MediaIo {
+                        path: entry.path(),
+                        source,
+                    })?
+                    .is_dir()
+                {
+                    directories.push(entry.path());
+                    pending.push(entry.path());
+                }
+            }
+        }
+        directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        for directory in directories {
+            match std::fs::remove_dir(&directory) {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
+                    ) => {}
+                Err(source) => {
+                    return Err(Error::MediaIo {
+                        path: directory,
+                        source,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     fn write_exact(&self, relative: &str, bytes: &[u8]) -> Result<bool, Error> {
@@ -571,6 +662,15 @@ mod tests {
         let used = store.put(b"used", "png").expect("used object");
         let orphan = store.put(b"orphan", "png").expect("orphan object");
         let original = store.put(b"original", "png").expect("original object");
+        let empty_directory = root.join("media/aa/bb");
+        fs::create_dir_all(&empty_directory).expect("empty media directory");
+        assert_eq!(
+            store
+                .put(b"original", "png")
+                .expect("deduplicated original"),
+            original
+        );
+        assert_eq!(store.get(&original).expect("original bytes").1, b"original");
         fs::write(root.join("Note.md"), format!("![used](./{used})\n")).expect("writing note");
         super::retain_original(&vault, &used, &original).expect("retain original");
 
@@ -580,8 +680,20 @@ mod tests {
         );
         assert_eq!(
             super::orphaned(&vault).await.expect("orphans"),
-            vec![orphan]
+            vec![orphan.clone()]
         );
+        assert_eq!(
+            super::prune_orphaned(&vault, std::slice::from_ref(&orphan))
+                .await
+                .expect("protected orphan"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            super::prune_orphaned(&vault, &[]).await.expect("pruned"),
+            vec![orphan.clone()]
+        );
+        assert!(store.get(&orphan).is_err());
+        assert!(!empty_directory.exists());
         assert_eq!(super::materialize(&vault).await.expect("materialize"), 0);
         drop(fs::remove_dir_all(root));
     }

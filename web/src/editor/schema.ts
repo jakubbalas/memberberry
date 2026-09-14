@@ -184,7 +184,7 @@ function renderNode(
 
 function mediaSource(destination: string, media: MediaRenderContext | undefined): string {
   if (media === undefined || !destination.startsWith("media/")) return destination;
-  return `/api/v1/vaults/${encodeURIComponent(media.vault)}/media/${destination}?thumbnail=1600`;
+  return `/api/v1/vaults/${encodeURIComponent(media.vault)}/media/${destination}`;
 }
 
 function renderMark(name: string, htmlAttributes: Readonly<Record<string, unknown>>): DOMOutputSpec {

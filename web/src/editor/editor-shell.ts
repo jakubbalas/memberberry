@@ -21,6 +21,8 @@ import { openTemplatePalette, TEMPLATE_EVENT, templateContext, type TemplateEven
 import type { MediaUploader } from "./media-upload.js";
 import { mountEmojiPicker, type EmojiChoice, type EmojiImportOptions } from "./emoji-picker.js";
 import { downloadHtml, printPanel, standaloneHtml } from "./export.js";
+import { mountImageEditor } from "./image-editor.js";
+import type { MediaRenderContext } from "./schema.js";
 
 export interface EditorShell {
   destroy(): void;
@@ -37,6 +39,7 @@ export interface MountEditorShellOptions {
   readonly title?: string;
   readonly onTitleChange?: (title: string) => string | undefined;
   readonly mediaUploader?: MediaUploader;
+  readonly media?: MediaRenderContext;
   readonly emojiChoices?: readonly EmojiChoice[];
   readonly emojiImport?: EmojiImportOptions;
 }
@@ -96,6 +99,15 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   secondary.append(copy, print, html);
   const media = mediaControls(options.editor, options.mediaUploader, options.status);
   if (media !== undefined) toolbar.append(media.element);
+  const imageEditor = options.media === undefined || options.mediaUploader === undefined
+    ? undefined
+    : mountImageEditor({
+        editor: options.editor,
+        panel: options.panel,
+        uploader: options.mediaUploader,
+        status: options.status,
+        vault: options.media.vault,
+      });
   const emoji = mountEmojiPicker(options.editor, toolbar, options.emojiChoices ?? [], options.emojiImport);
   toolbar.append(more);
 
@@ -320,6 +332,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       clearPress();
       controls.remove();
       media?.destroy();
+      imageEditor?.destroy();
       emoji.destroy();
       slash.destroy();
       window.removeEventListener(TEMPLATE_EVENT, onTemplate);
