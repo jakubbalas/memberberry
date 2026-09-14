@@ -129,9 +129,10 @@ fn parse_digest(value: &str) -> Result<[u8; 32], Error> {
         return Err(Error::InvalidDigest);
     }
     let mut out = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
-        let high = hex(*pair.first().ok_or(Error::InvalidDigest)?).ok_or(Error::InvalidDigest)?;
-        let low = hex(*pair.get(1).ok_or(Error::InvalidDigest)?).ok_or(Error::InvalidDigest)?;
+    let (pairs, _) = value.as_bytes().as_chunks::<2>();
+    for (index, &[high, low]) in pairs.iter().enumerate() {
+        let high = hex(high).ok_or(Error::InvalidDigest)?;
+        let low = hex(low).ok_or(Error::InvalidDigest)?;
         if let Some(slot) = out.get_mut(index) {
             *slot = high << 4 | low;
         }
