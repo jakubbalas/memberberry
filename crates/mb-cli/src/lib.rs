@@ -41,7 +41,7 @@ With no PATH, `normalize` and `inspect` read stdin and write stdout.
 
     --check     Report which files would change; write nothing. Exits 1 if any would.
     --config    Path to server.toml. Defaults to $MEMBERBERRY_DATA_DIR/server.toml,
-                or ./server.toml.
+                or the platform application-data directory.
     --name      Display name for a vault. Defaults to the slug.
     --password-stdin
                 Read the password from stdin instead of prompting on the terminal, for
@@ -120,10 +120,57 @@ fn io(what: &str) -> impl Fn(std::io::Error) -> String + '_ {
 
 /// Locates `server.toml`.
 ///
-/// `--config` wins, then `$MEMBERBERRY_DATA_DIR/server.toml`, then `./server.toml`. The
-/// data directory is server-owned and never inside a vault (`SPEC.md` §4.1).
+/// `--config` wins, then `$MEMBERBERRY_DATA_DIR/server.toml`, then the platform application
+/// data directory. The data directory is server-owned and never inside a vault (`SPEC.md` §4.1).
 fn config_path(args: &[String]) -> PathBuf {
-    config_path_in(args, std::env::var_os("MEMBERBERRY_DATA_DIR").as_deref())
+    if let Some(explicit) = flag(args, "--config") {
+        return PathBuf::from(explicit);
+    }
+    if let Some(data_dir) = std::env::var_os("MEMBERBERRY_DATA_DIR") {
+        return Path::new(&data_dir).join("server.toml");
+    }
+    default_data_dir().join("server.toml")
+}
+
+fn default_data_dir() -> PathBuf {
+    default_data_dir_in(
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("XDG_DATA_HOME").as_deref(),
+        std::env::var_os("APPDATA").as_deref(),
+    )
+}
+
+/// The pure half, so tests do not touch process-wide environment variables.
+pub(crate) fn default_data_dir_in(
+    home: Option<&OsStr>,
+    xdg_data_home: Option<&OsStr>,
+    appdata: Option<&OsStr>,
+) -> PathBuf {
+    let _ = (&home, &xdg_data_home, &appdata);
+    #[cfg(target_os = "macos")]
+    {
+        return home.map_or_else(
+            || PathBuf::from(".memberberry"),
+            |home| Path::new(home).join("Library/Application Support/memberberry"),
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return appdata.map_or_else(
+            || PathBuf::from(".memberberry"),
+            |appdata| Path::new(appdata).join("memberberry"),
+        );
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        if let Some(xdg_data_home) = xdg_data_home {
+            return Path::new(xdg_data_home).join("memberberry");
+        }
+        home.map_or_else(
+            || PathBuf::from(".memberberry"),
+            |home| Path::new(home).join(".local/share/memberberry"),
+        )
+    }
 }
 
 /// The pure half, so the precedence can be tested without touching the environment —
@@ -135,7 +182,7 @@ pub(crate) fn config_path_in(args: &[String], data_dir: Option<&OsStr>) -> PathB
     }
     match data_dir {
         Some(dir) => Path::new(dir).join("server.toml"),
-        None => PathBuf::from("server.toml"),
+        None => default_data_dir_in(None, None, None).join("server.toml"),
     }
 }
 
@@ -1015,7 +1062,7 @@ mod tests {
     }
 
     #[test]
-    fn config_path_prefers_the_flag_then_the_data_dir_then_the_working_directory() {
+    fn config_path_prefers_the_flag_then_the_data_dir_then_the_platform_default() {
         let flagged: Vec<String> = ["--config", "/explicit/here.toml"]
             .iter()
             .map(|s| (*s).to_string())
@@ -1031,7 +1078,38 @@ mod tests {
         );
         assert_eq!(
             super::config_path_in(&[], None),
-            PathBuf::from("server.toml")
+            PathBuf::from(".memberberry/server.toml")
+        );
+    }
+
+    #[test]
+    fn platform_data_directory_uses_the_expected_convention() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            super::default_data_dir_in(
+                Some(OsStr::new("/Users/alice")),
+                Some(OsStr::new("/xdg")),
+                Some(OsStr::new("C:/appdata")),
+            ),
+            PathBuf::from("/Users/alice/Library/Application Support/memberberry")
+        );
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            super::default_data_dir_in(
+                Some(OsStr::new("C:/Users/alice")),
+                Some(OsStr::new("C:/xdg")),
+                Some(OsStr::new("C:/appdata")),
+            ),
+            PathBuf::from("C:/appdata/memberberry")
+        );
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        assert_eq!(
+            super::default_data_dir_in(
+                Some(OsStr::new("/home/alice")),
+                Some(OsStr::new("/xdg")),
+                Some(OsStr::new("/appdata")),
+            ),
+            PathBuf::from("/xdg/memberberry")
         );
     }
 

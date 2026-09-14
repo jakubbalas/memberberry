@@ -4533,7 +4533,8 @@ async fn media_upload(
                     .unwrap_or(false)
             })
         });
-        if !source_referenced {
+        let source_staged = state.staged_media(vault.slug(), &user, source);
+        if !source_referenced && !source_staged {
             return (
                 StatusCode::BAD_REQUEST,
                 [(header::CONTENT_TYPE, "application/json")],

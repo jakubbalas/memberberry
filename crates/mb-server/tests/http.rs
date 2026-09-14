@@ -1886,6 +1886,23 @@ fn an_unreferenced_upload_is_visible_only_to_its_uploader() {
     assert!(head.contains("200"), "{head}");
     assert_eq!(body, staged_image);
 
+    let mut derived_image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(2, 2)
+        .write_to(&mut derived_image, image::ImageFormat::Png)
+        .expect("derived image");
+    let derived_image = derived_image.into_inner();
+    let (head, body) = server.post_bytes(
+        "/api/v1/vaults/v/media",
+        &format!(
+            "{alice_header}Content-Type: image/png\r\nX-Memberberry-Filename: display.png\r\nX-Memberberry-Source: {path}\r\n"
+        ),
+        &derived_image,
+    );
+    assert!(head.contains("201"), "{head}");
+    let derived_path =
+        mb_server::media::LocalStore::object_path(&derived_image, "png").expect("derived path");
+    assert!(String::from_utf8_lossy(&body).contains(&derived_path));
+
     let (head, _) = server.post_bytes(
         "/api/v1/vaults/v/media",
         &format!(

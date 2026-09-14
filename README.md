@@ -42,14 +42,16 @@ and container storage, see [Deployment](docs/DEPLOYMENT.md).
 
 Development and production use the same storage when started with the same configuration:
 
-- By default, `server.toml` and `auth.db` live in the repository root.
+- By default, server state lives in the platform application-data directory: macOS uses
+  `~/Library/Application Support/memberberry`, Linux uses `$XDG_DATA_HOME/memberberry` or
+  `~/.local/share/memberberry`, and Windows uses `%APPDATA%/memberberry`.
 - Vaults created in the browser live beside `server.toml`, under `vaults/<address>/`;
   their plain Markdown notes are in `vaults/<address>/notes/**/*.md`.
 - Registered existing vaults stay at the paths listed in `server.toml`; switching to
   `make prod` does not copy or move them. Legacy vaults without a `notes/` folder keep
   notes directly in the vault root.
 
-To keep a new installation's server state and browser-created vaults outside the checkout:
+To override the default server-data directory:
 
 ```sh
 mkdir -p "$HOME/.local/share/memberberry"

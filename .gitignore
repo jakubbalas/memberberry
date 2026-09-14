@@ -16,6 +16,7 @@
 /audit.log
 /audit.log.1
 /server.toml
+/bookmarks/
 **/vaults/
 /.env
 /backups/

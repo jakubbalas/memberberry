@@ -2,6 +2,18 @@
 
 **Last updated:** explicit-request full-check workflow, 2026-09-14.
 
+The default server data directory now follows the host platform instead of living beside
+the checkout: macOS uses `~/Library/Application Support/memberberry`, Linux uses
+`$XDG_DATA_HOME/memberberry` or `~/.local/share/memberberry`, and Windows uses
+`%APPDATA%/memberberry`. The existing macOS `server.toml`, `auth.db`, `audit.log`, and
+`bookmarks/` state were moved there; the repository root no longer owns those files.
+
+The media E2E assertion now matches the specified 2560px default. Concurrent identical media
+uploads use unique staging filenames, and an uploader may edit a freshly uploaded source
+before the index catches up because its temporary upload grant authorizes that operation.
+Focused server, media, and mentions checks pass; the reported full-suite Mac result was not
+rerun after these fixes.
+
 Media handling now constrains editor images to the available column and the running server
 prunes unreferenced media after the five-minute upload grant expires, preserving active grants
 through the note-save/index cycle. Focused media/editor tests pass; the new browser regression

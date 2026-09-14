@@ -228,6 +228,11 @@ case in the parser.
     workspace/<device-id>.json
 ```
 
+Unless overridden with `MEMBERBERRY_DATA_DIR` or `--config`, `<data-dir>` is the platform
+application-data directory: `~/Library/Application Support/memberberry` on macOS,
+`$XDG_DATA_HOME/memberberry` or `~/.local/share/memberberry` on Linux, and
+`%APPDATA%/memberberry` on Windows.
+
 **One note = one file** (A2). Folders are ordinary folders, not note containers. A note
 with children is simply a note whose links point into a folder of the same name — no
 special semantics, no folder-as-note magic.

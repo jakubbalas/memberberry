@@ -43,7 +43,6 @@ def rust_sources() -> list[Path]:
         ROOT / "Cargo.lock",
         ROOT / "rust-toolchain.toml",
         ROOT / "crates",
-        ROOT / "server.toml",
     )
 
 

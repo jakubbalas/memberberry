@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use futures_util::TryStreamExt;
@@ -14,6 +15,13 @@ use object_store::path::Path as ObjectPath;
 use sha2::{Digest, Sha256};
 
 use crate::{Error, MediaBackendConfig, Vault};
+
+static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(1);
+
+fn temporary_path(path: &Path, suffix: &str) -> PathBuf {
+    let sequence = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("{suffix}-{}-{sequence}", std::process::id()))
+}
 
 /// One configured media object store.
 #[derive(Debug)]
@@ -386,7 +394,7 @@ impl<'a> LocalStore<'a> {
             })?;
         }
         if !path.exists() {
-            let temporary = path.with_extension("uploading");
+            let temporary = temporary_path(&path, "uploading");
             std::fs::write(&temporary, bytes).map_err(|source| Error::MediaIo {
                 path: temporary.clone(),
                 source,
@@ -478,7 +486,7 @@ impl<'a> LocalStore<'a> {
                 source,
             })?;
         }
-        let temporary = path.with_extension("materializing");
+        let temporary = temporary_path(&path, "materializing");
         std::fs::write(&temporary, bytes).map_err(|source| Error::MediaIo {
             path: temporary.clone(),
             source,
@@ -642,6 +650,26 @@ mod tests {
         assert_eq!(store.get(&path).expect("get").1, b"hello");
         assert!(store.get("media/../access.toml").is_err());
         drop(fs::remove_dir_all(root));
+    }
+
+    #[test]
+    fn concurrent_puts_of_the_same_object_all_succeed() {
+        let root = tempfile::tempdir().expect("creating vault");
+        let vault = Vault::open(
+            Slug::parse("media-concurrent-test").expect("slug"),
+            "Media concurrent test",
+            root.path(),
+        )
+        .expect("vault");
+        let store = LocalStore::new(&vault);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| store.put(b"same bytes", "png")))
+                .collect();
+            for handle in handles {
+                assert!(handle.join().expect("put thread").is_ok());
+            }
+        });
     }
 
     #[tokio::test]

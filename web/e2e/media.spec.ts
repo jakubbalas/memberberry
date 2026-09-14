@@ -42,7 +42,7 @@ test("downscales an image, retains its original, and renders an authorized thumb
   await expect.poll(() => uploads).toBe(2);
   const image = page.locator(`${EDITOR} img`).last();
   await expect(image).toBeVisible();
-  await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBe(1600);
+  await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBe(2560);
   const imageWidth = await image.evaluate((element) => element.getBoundingClientRect().width);
   const editorWidth = await page.locator(EDITOR).evaluate((element) => element.getBoundingClientRect().width);
   expect(imageWidth).toBeLessThanOrEqual(editorWidth);
