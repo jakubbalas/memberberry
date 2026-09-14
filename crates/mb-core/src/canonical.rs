@@ -114,10 +114,7 @@ fn block(mut b: Block) -> Option<Block> {
         }
         // The `$$` fences own their newlines, exactly as a code fence does.
         BlockKind::MathBlock(m) => BlockKind::MathBlock(math_body(&m)),
-        BlockKind::Table(t) => match table(t) {
-            Some(t) => BlockKind::Table(t),
-            None => return None,
-        },
+        BlockKind::Table(table_value) => BlockKind::Table(table(table_value)?),
         other => other,
     };
     Some(b)
