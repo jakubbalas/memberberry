@@ -108,13 +108,13 @@ bench: ## Hot-path benchmarks (AGENTS.md 4.5). Laptop numbers; the budget target
 
 .PHONY: coverage
 coverage: ## Per-file coverage report (needs cargo-llvm-cov)
-	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
+	@$(CARGO) llvm-cov --version >/dev/null 2>&1 || { \
 		echo "Install first: cargo install cargo-llvm-cov"; exit 1; }
 	CARGO="$(CARGO)" python3 scripts/coverage-run.py --summary-only
 
 .PHONY: coverage-gate
 coverage-gate: ## Enforce the per-crate floors in AGENTS.md 2.1
-	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
+	@$(CARGO) llvm-cov --version >/dev/null 2>&1 || { \
 		echo "Install first: cargo install cargo-llvm-cov"; exit 1; }
 	@echo "Coverage floors (AGENTS.md 2.1):"
 	@set -o pipefail; CARGO="$(CARGO)" python3 scripts/coverage-run.py --json --summary-only | python3 scripts/coverage-gate.py

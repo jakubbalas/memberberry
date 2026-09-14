@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +14,31 @@ SCRIPT = Path(__file__).with_name("coverage-run.py")
 
 class CoverageReuseTests(unittest.TestCase):
     """Verify fresh profiles, source invalidation, stale targets and failure propagation."""
+
+    def test_prerequisite_accepts_a_subcommand_outside_path(self) -> None:
+        cargo = shutil.which("cargo")
+        make = shutil.which("make")
+        self.assertIsNotNone(cargo)
+        self.assertIsNotNone(make)
+        environment = dict(os.environ, PATH="")
+        subprocess.run([cargo, "llvm-cov", "--version"], env=environment, check=True,
+                       capture_output=True)
+        for target in ("coverage", "coverage-gate"):
+            with self.subTest(target=target):
+                commands = subprocess.check_output(
+                    [make, "-n", target, f"CARGO={cargo}"],
+                    cwd=SCRIPT.parent.parent, env=environment, text=True,
+                )
+                prerequisite = []
+                for line in commands.splitlines():
+                    prerequisite.append(line)
+                    if not line.endswith("\\"):
+                        break
+                result = subprocess.run(
+                    ["/bin/bash", "-c", "\n".join(prerequisite)],
+                    env=environment, text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_reuse_keeps_fresh_results_and_invalidates_changed_inputs(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mb-coverage-test-") as directory:
