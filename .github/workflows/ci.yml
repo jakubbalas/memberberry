@@ -23,6 +23,9 @@ jobs:
       - name: Formatting
         run: cargo fmt --all -- --check
 
+      - name: Full-test orchestration regression
+        run: python3 scripts/full-test-test.py
+
       - name: Lints
         run: cargo clippy --workspace --all-targets -- -D warnings
 

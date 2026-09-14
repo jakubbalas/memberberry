@@ -274,6 +274,7 @@ address should ask the OS for an ephemeral port instead of consuming this range.
 
 ```
 make check        # full gate — before committing or on explicit request
+make full-test    # WASM setup, then make check, then make e2e; explicit full-run entry point
 make e2e          # Playwright in a real browser, desktop and mobile (SPEC §22.6)
 make test         # all tests
 make test-fast    # behavioural only, the inner loop
@@ -296,6 +297,7 @@ make prod-build   # release build without starting the server
 Run `make check` before committing or when the user explicitly requests it.
 The user runs full `make e2e` manually. A commit request alone does not authorize the assistant
 to run it; run it only when the user explicitly asks the assistant to execute that suite.
+`make full-test` includes full E2E and follows the same explicit-run requirement.
 Report manual E2E validation as pending unless the user supplies a result. Keep known failures
 visible in the handoff; manual ownership does not turn a failing test into a passing one.
 CI continues to run its existing checks.

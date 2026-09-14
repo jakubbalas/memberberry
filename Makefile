@@ -55,6 +55,12 @@ prod-build: web-build ## Build the production web bundle and optimised server bi
 .PHONY: check
 check: fmt-check lint test coverage-gate token-check deployment-check dev-check web-check ## THE GATE: fmt + clippy + tests + coverage + tokens
 
+.PHONY: full-test
+full-test: ## Build WASM, run the full check gate, then desktop/mobile E2E
+	$(MAKE) wasm
+	$(MAKE) check
+	$(MAKE) e2e
+
 # ---------------------------------------------------------------- quality
 
 .PHONY: fmt
