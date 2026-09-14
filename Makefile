@@ -197,7 +197,7 @@ web-check:
 .PHONY: e2e
 e2e: web-build ## Playwright E2E in a real browser, desktop and mobile (SPEC 22, 23 M7)
 	$(CARGO) build -p mb-cli
-	npm --prefix web exec -- playwright install --with-deps chromium
+	npm --prefix web exec -- playwright install chromium
 	npm --prefix web run e2e
 
 .PHONY: e2e-report

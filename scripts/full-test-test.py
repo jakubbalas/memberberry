@@ -44,6 +44,17 @@ class FullTestTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout.splitlines(), phases[:index + 1])
 
+    def test_e2e_downloads_chromium_without_installing_os_packages(self) -> None:
+        commands = subprocess.check_output(
+            ["make", "--no-print-directory", "-n", "-f", str(MAKEFILE), "e2e"],
+            cwd=MAKEFILE.parent, text=True,
+        )
+        installers = [shlex.split(line) for line in commands.splitlines()
+                      if "playwright install" in line]
+        self.assertEqual(installers, [
+            ["npm", "--prefix", "web", "exec", "--", "playwright", "install", "chromium"]
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
