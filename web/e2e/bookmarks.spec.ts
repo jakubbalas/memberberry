@@ -11,7 +11,9 @@ test("removes a bookmark from its section and keeps the note after reload", asyn
   expect(saved.ok()).toBe(true);
   await page.goto(`/v/${vault}`);
   const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  // why: mobile drawers start closed; click waits for mounting, while isVisible can
+  // return false before the shell renders and silently skip opening the drawer.
+  if (info.project.name === "mobile") await show.click();
   const bookmarks = page.getByRole("region", { name: "Bookmarks", exact: true });
   const remove = bookmarks.getByRole("button", { name: "Remove bookmark for Welcome" });
   await expect(remove).toBeVisible();
@@ -32,7 +34,7 @@ test("removes a bookmark from its section and keeps the note after reload", asyn
   await expect.poll(async () => (await page.request.get(endpoint)).json()).toEqual([]);
   await expect(page.locator(".workspace-home")).toBeVisible();
   await page.reload();
-  if (await show.isVisible()) await show.click();
-  await expect(page.getByRole("tree", { name: "Notes", exact: true }).getByRole("button", { name: "Add bookmark for Welcome" })).toBeAttached();
+  if (info.project.name === "mobile") await show.click();
+  await expect(page.getByRole("tree", { name: "Notes", exact: true }).getByRole("button", { name: "Add bookmark for Welcome" })).toBeVisible();
   await expect(bookmarks).toHaveCount(0);
 });
