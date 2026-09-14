@@ -84,7 +84,7 @@ test("splitting gives two panes that share the width", async ({ page }, info) =>
   test.skip(info.project.name === "mobile", "the mobile layout renders one leaf (§8.3)");
   await openWorkspace(page);
 
-  await page.locator(".workspace-shell").press("Meta+\\");
+  await page.locator(".workspace-shell").press("ControlOrMeta+\\");
   await expect(page.locator(PANE)).toHaveCount(2);
 
   const [left, right] = await Promise.all([
@@ -101,7 +101,7 @@ test("splitting gives two panes that share the width", async ({ page }, info) =>
 test("the divider resizes the panes and reports its position", async ({ page }, info) => {
   test.skip(info.project.name === "mobile", "no splits in the mobile layout (§8.3)");
   await openWorkspace(page);
-  await page.locator(".workspace-shell").press("Meta+\\");
+  await page.locator(".workspace-shell").press("ControlOrMeta+\\");
 
   const divider = page.getByRole("separator", { name: "Resize panes" });
   await expect(divider).toHaveAttribute("aria-valuenow", "50");
@@ -167,7 +167,7 @@ test("the layout survives a reload", async ({ page }, info) => {
   // The end-to-end claim: the pane tree reached the server, was stored under this user and
   // device (E15), and came back. Nothing short of a reload tests the whole path.
   await openWorkspace(page);
-  await page.locator(".workspace-shell").press("Meta+\\");
+  await page.locator(".workspace-shell").press("ControlOrMeta+\\");
   await expect(page.locator(PANE)).toHaveCount(2);
 
   // The save is debounced; poll for the server to hold two panes rather than sleeping.

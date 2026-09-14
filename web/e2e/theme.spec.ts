@@ -1,3 +1,4 @@
+import { scratchNote } from "./environment.js";
 import { expect, signIn, test, tokenValue } from "./fixtures.js";
 
 test("a device theme overrides its vault and can return to the system default", async ({ page }) => {
@@ -40,7 +41,9 @@ for (const [theme, canvas, paper] of [
 ] as const) {
   test(`the ${theme} notebook stays readable and remembers its appearance`, async ({ page }, info) => {
     await signIn(page);
-    await page.goto("/v/personal/Themes/Notebook.md");
+    // why: concurrent readers add presence labels to the editor DOM; each text-preservation
+    // check needs its own note so those transient names cannot enter the expected content.
+    await page.goto(`/v/personal/${scratchNote(`theme-${theme}`, info.project.name)}`);
     const editor = page.locator(".editor-surface .tiptap");
     await expect(editor).toContainText("Make room for a good idea.");
     const content = await editor.textContent();
