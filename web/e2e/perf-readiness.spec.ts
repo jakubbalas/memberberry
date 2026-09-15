@@ -1,6 +1,32 @@
-import { expect, test } from "./fixtures.js";
+import { expect, signIn, test } from "./fixtures.js";
 
 import { timeSwitch, timeToEditor } from "../perf/measure.ts";
+
+test("a stalled custom emoji request does not block the note editor", async ({ page }) => {
+  let requests = 0;
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/vaults/personal/emoji", async (route) => {
+    requests += 1;
+    await gate;
+    await route.fulfill({ json: [] });
+  });
+  try {
+    await signIn(page);
+    await page.goto("/v/personal/Welcome.md");
+    await expect(page.locator(".editor-surface .tiptap")).toBeVisible();
+    expect(requests).toBe(0);
+    await page.getByRole("button", { name: "Insert emoji", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Emoji picker" })).toBeVisible();
+    await expect.poll(() => requests).toBe(1);
+    await expect(page.locator(".editor-surface .tiptap")).toBeEditable();
+    await expect(page.getByText("Loading emoji…", { exact: true })).toBeVisible();
+    release();
+    await expect(page.locator(".emoji-picker-item").first()).toBeVisible();
+  } finally {
+    release();
+  }
+});
 
 test("note timing waits for the editor to become visible after its text arrives", async ({ page }) => {
   await page.setContent(`

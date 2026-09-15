@@ -27,6 +27,64 @@ const choices: readonly EmojiChoice[] = [
 ];
 
 describe("emoji picker", () => {
+  it("loads once on demand and preserves a query typed while loading", async () => {
+    let release: (entries: readonly EmojiChoice[]) => void = () => undefined;
+    const pending = new Promise<readonly EmojiChoice[]>((resolve) => { release = resolve; });
+    const loader = vi.fn(() => pending);
+    const toolbar = document.createElement("div");
+    const picker = mountEmojiPicker(fakeEditor().editor, toolbar, loader);
+    const toggle = toolbar.querySelector<HTMLButtonElement>(".emoji-picker-toggle");
+    expect(loader).not.toHaveBeenCalled();
+    toggle?.click();
+    const search = toolbar.querySelector<HTMLInputElement>("input");
+    if (search === null) throw new Error("search missing");
+    search.value = "tada";
+    search.dispatchEvent(new Event("input"));
+    toggle?.click();
+    toggle?.click();
+    expect(loader).toHaveBeenCalledTimes(1);
+    release(choices);
+    await vi.waitFor(() => expect(toolbar.querySelector(".emoji-picker")?.hasAttribute("aria-busy")).toBe(false));
+    expect(toolbar.querySelectorAll(".emoji-picker-item")).toHaveLength(1);
+    expect(toolbar.querySelector(".emoji-picker-item")?.textContent).toBe("🎉");
+    expect(toolbar.querySelector('[aria-label="Show activities emoji"]')).not.toBeNull();
+    toggle?.click();
+    toggle?.click();
+    expect(loader).toHaveBeenCalledTimes(1);
+    picker.destroy();
+  });
+
+  it("reports loading failures and permits an explicit reopen to load again", async () => {
+    const loader = vi.fn<() => Promise<readonly EmojiChoice[]>>()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(choices);
+    const toolbar = document.createElement("div");
+    const picker = mountEmojiPicker(fakeEditor().editor, toolbar, loader);
+    const toggle = toolbar.querySelector<HTMLButtonElement>(".emoji-picker-toggle");
+    toggle?.click();
+    await vi.waitFor(() => expect(toolbar.querySelector('[role="status"]')?.textContent).toContain("Could not load emoji"));
+    toggle?.click();
+    toggle?.click();
+    await vi.waitFor(() => expect(toolbar.querySelectorAll(".emoji-picker-item")).toHaveLength(2));
+    picker.destroy();
+  });
+
+  it("aborts pending loading on teardown and ignores a late result", async () => {
+    let release: (entries: readonly EmojiChoice[]) => void = () => undefined;
+    const pending = new Promise<readonly EmojiChoice[]>((resolve) => { release = resolve; });
+    const loader = vi.fn((_signal: AbortSignal) => pending);
+    const toolbar = document.createElement("div");
+    const picker = mountEmojiPicker(fakeEditor().editor, toolbar, loader);
+    toolbar.querySelector<HTMLButtonElement>(".emoji-picker-toggle")?.click();
+    const panel = toolbar.querySelector(".emoji-picker");
+    picker.destroy();
+    expect(loader.mock.calls[0]?.[0].aborted).toBe(true);
+    release(choices);
+    await pending;
+    expect(panel?.querySelectorAll(".emoji-picker-item")).toHaveLength(0);
+    expect(toolbar.children).toHaveLength(0);
+  });
+
   it("merges only validated custom entries before the base catalog", () => {
     expect(mergeEmojiChoices(choices.slice(1), [{ shortcode: "parrot", pack: "custom", file: "parrot.gif", aliases: ["party"] }, { shortcode: 4 }], "vault")).toEqual([
       { shortcode: "parrot", glyph: "", category: "custom", custom: true, aliases: ["party"], imageUrl: "/api/v1/vaults/vault/emoji/custom/parrot.gif" },

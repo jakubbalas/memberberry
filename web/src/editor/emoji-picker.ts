@@ -18,6 +18,9 @@ export interface EmojiImportOptions {
   readonly status?: HTMLElement;
 }
 
+/** Picker entries supplied immediately or loaded on first open with cancellation. */
+export type EmojiChoices = readonly EmojiChoice[] | ((signal: AbortSignal) => Promise<readonly EmojiChoice[]>);
+
 const SKIN_TONES = [
   { shortcode: "skin-tone-2", glyph: "🏻" },
   { shortcode: "skin-tone-3", glyph: "🏼" },
@@ -30,13 +33,16 @@ const RECENTS_KEY = "memberberry.emoji.recents";
 const MAX_RECENTS = 24;
 
 /** Loads base emoji offline and best-effort custom entries from the authorized vault route. */
-export async function loadEmojiChoices(vault?: string): Promise<readonly EmojiChoice[]> {
+export async function loadEmojiChoices(vault?: string, signal?: AbortSignal): Promise<readonly EmojiChoice[]> {
   const base = await emojiCatalog()
     .then((entries) => entries.map((entry) => ({ ...entry, custom: false })))
     .catch(() => []);
-  if (vault === undefined || typeof fetch !== "function") return base;
+  if (vault === undefined || typeof fetch !== "function" || signal?.aborted) return base;
   try {
-    const response = await fetch(`/api/v1/vaults/${encodeURIComponent(vault)}/emoji`, { credentials: "same-origin" });
+    const response = await fetch(`/api/v1/vaults/${encodeURIComponent(vault)}/emoji`, {
+      credentials: "same-origin",
+      ...(signal === undefined ? {} : { signal }),
+    });
     if (!response.ok) return base;
     const body: unknown = await response.json();
     return mergeEmojiChoices(base, body, vault);
@@ -80,10 +86,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function mountEmojiPicker(
   editor: Editor,
   toolbar: HTMLElement,
-  choices: readonly EmojiChoice[],
+  choices: EmojiChoices,
   importOptions?: EmojiImportOptions,
 ): { destroy(): void } {
-  let availableChoices = [...choices];
+  let availableChoices = typeof choices === "function" ? [] : [...choices];
+  let loaded = typeof choices !== "function";
+  let destroyed = false;
+  let loading: AbortController | undefined;
   const wrapper = document.createElement("div");
   wrapper.className = "emoji-picker-wrap";
   const toggle = document.createElement("button");
@@ -106,28 +115,31 @@ export function mountEmojiPicker(
   categories.className = "emoji-picker-categories";
   categories.setAttribute("role", "group");
   categories.setAttribute("aria-label", "Emoji categories");
-  const categoryNames = ["custom", "recent", ...new Set(availableChoices.filter((choice) => !choice.custom).map((choice) => choice.category))];
   let selectedCategory = "all";
   let selectedTone = "";
   let visibleLimit = PAGE_SIZE;
   let recentShortcodes = readRecents();
-  for (const category of ["all", ...categoryNames]) {
-    const tab = document.createElement("button");
-    tab.type = "button";
-    tab.className = "emoji-picker-category";
-    tab.textContent = category === "all" ? "All" : category === "custom" ? "Custom" : category === "recent" ? "Recent" : category;
-    tab.setAttribute("aria-label", `Show ${category} emoji`);
-    tab.addEventListener("click", () => {
-      selectedCategory = category;
-      visibleLimit = PAGE_SIZE;
-      for (const sibling of categories.querySelectorAll<HTMLButtonElement>("button")) {
-        sibling.setAttribute("aria-pressed", String(sibling === tab));
-      }
-      render();
-    });
-    tab.setAttribute("aria-pressed", String(category === selectedCategory));
-    categories.append(tab);
-  }
+  const renderCategories = (): void => {
+    categories.replaceChildren();
+    const categoryNames = ["custom", "recent", ...new Set(availableChoices.filter((choice) => !choice.custom).map((choice) => choice.category))];
+    for (const category of ["all", ...categoryNames]) {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "emoji-picker-category";
+      tab.textContent = category === "all" ? "All" : category === "custom" ? "Custom" : category === "recent" ? "Recent" : category;
+      tab.setAttribute("aria-label", `Show ${category} emoji`);
+      tab.addEventListener("click", () => {
+        selectedCategory = category;
+        visibleLimit = PAGE_SIZE;
+        for (const sibling of categories.querySelectorAll<HTMLButtonElement>("button")) {
+          sibling.setAttribute("aria-pressed", String(sibling === tab));
+        }
+        render();
+      });
+      tab.setAttribute("aria-pressed", String(category === selectedCategory));
+      categories.append(tab);
+    }
+  };
   const tone = document.createElement("div");
   tone.className = "emoji-picker-tones";
   tone.setAttribute("role", "group");
@@ -223,6 +235,33 @@ export function mountEmojiPicker(
     render();
   });
   if (importer !== undefined) panel.append(importer.element);
+  const loadStatus = document.createElement("p");
+  loadStatus.setAttribute("role", "status");
+  loadStatus.hidden = true;
+  panel.append(loadStatus);
+  const ensureChoices = (): void => {
+    if (typeof choices !== "function" || loaded || loading !== undefined || destroyed) return;
+    loading = new AbortController();
+    panel.setAttribute("aria-busy", "true");
+    loadStatus.textContent = "Loading emoji…";
+    loadStatus.hidden = false;
+    if (importer !== undefined) importer.element.inert = true;
+    void choices(loading.signal).then((entries) => {
+      if (destroyed) return;
+      availableChoices = [...entries];
+      loaded = true;
+      loadStatus.hidden = true;
+      renderCategories();
+      render();
+    }).catch(() => {
+      if (!destroyed) loadStatus.textContent = "Could not load emoji. Close and reopen the picker to try again.";
+    }).finally(() => {
+      loading = undefined;
+      if (destroyed) return;
+      panel.removeAttribute("aria-busy");
+      if (importer !== undefined) importer.element.inert = false;
+    });
+  };
   const close = (): void => {
     panel.hidden = true;
     toggle.setAttribute("aria-expanded", "false");
@@ -231,6 +270,7 @@ export function mountEmojiPicker(
     panel.hidden = !panel.hidden;
     toggle.setAttribute("aria-expanded", String(!panel.hidden));
     if (!panel.hidden) {
+      ensureChoices();
       render();
       search.focus();
     }
@@ -248,9 +288,12 @@ export function mountEmojiPicker(
   toggle.addEventListener("click", onToggle);
   search.addEventListener("input", onSearch);
   panel.addEventListener("keydown", onKeyDown);
+  renderCategories();
   render();
   return {
     destroy: () => {
+      destroyed = true;
+      loading?.abort();
       toggle.removeEventListener("click", onToggle);
       search.removeEventListener("input", onSearch);
       panel.removeEventListener("keydown", onKeyDown);

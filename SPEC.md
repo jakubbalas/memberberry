@@ -2153,6 +2153,12 @@ Rust source is produced by `scripts/generate-emoji-catalog.mjs`; aliases resolve
 glyph without duplicating picker tiles. Skin-tone modifiers are supported
 (`:wave::skin-tone-3:`).
 
+Picker entries, including the authorized custom-pack lookup, load on first opening the
+picker rather than gating note-editor readiness. A slow custom-pack request must not hide
+the note or prevent editing. The picker reports loading/failure, preserves a query entered
+while loading, and cancels pending requests when its editor is destroyed. Loading failures
+may be retried by explicitly closing and reopening the picker.
+
 ### 11.2 Custom emoji
 
 **Packs are server-level and shared by every vault** (A21). Uploading a Slack collection

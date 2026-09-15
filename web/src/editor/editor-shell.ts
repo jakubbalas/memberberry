@@ -19,7 +19,7 @@ import type { TaskChipField, TaskPriority } from "./task-metadata.js";
 import { expandTemplate } from "../notes.js";
 import { openTemplatePalette, TEMPLATE_EVENT, templateContext, type TemplateEventDetail } from "../shell/templates.js";
 import type { MediaUploader } from "./media-upload.js";
-import { mountEmojiPicker, type EmojiChoice, type EmojiImportOptions } from "./emoji-picker.js";
+import { mountEmojiPicker, type EmojiChoices, type EmojiImportOptions } from "./emoji-picker.js";
 import { downloadHtml, printPanel, standaloneHtml } from "./export.js";
 import type { MediaRenderContext } from "./schema.js";
 
@@ -39,7 +39,7 @@ export interface MountEditorShellOptions {
   readonly onTitleChange?: (title: string) => string | undefined;
   readonly mediaUploader?: MediaUploader;
   readonly media?: MediaRenderContext;
-  readonly emojiChoices?: readonly EmojiChoice[];
+  readonly emojiChoices?: EmojiChoices;
   readonly emojiImport?: EmojiImportOptions;
 }
 

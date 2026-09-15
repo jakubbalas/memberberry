@@ -4,6 +4,39 @@
 
 ## Current CI status
 
+Current perf follow-up: `openNoteSurface` awaited `loadEmojiChoices` before clearing its
+editor-loading gate. A real-browser regression holding the authorized custom-emoji response
+indefinitely reproduces the hidden editor on mobile. Picker data now loads on first open,
+not on note startup. Loading remains cancelable on editor teardown; a late completion cannot
+render into a destroyed picker. A loading status, explicit-reopen failure handling and query
+preservation cover the async UI. Permission filtering and Markdown formats are unchanged.
+
+Validation: 73 focused editor/picker/surface unit tests pass; six readiness browser tests
+and both existing emoji insertion browser tests pass on desktop/mobile against a rebuilt
+frontend. Build and typechecking pass with zero warnings. Logs: `/tmp/mb-perf-stall-red.log`,
+`/tmp/mb-stall-unit.log`, `/tmp/mb-stall-browser.log`, `/tmp/mb-stall-emoji-e2e.log`,
+`/tmp/mb-stall-types.log`. Runtime perf completes desktop and mobile in report-only mode
+(exit 0), logged to `/tmp/mb-stall-perf.log`. Seven budget deviations remain and the mobile
+quick-switcher still yields insufficient samples; completion is not budget compliance.
+The 30-second deadline and visibility requirement are unchanged.
+This fixes a reproduced startup dependency, not proof that every cause of the Linux timeout
+is gone. Full checks, coverage and full E2E remain deferred; Linux CI confirmation is pending.
+
+Latest evidence: `local/logs_94794755766.zip` contains the run after `b3d833a`.
+E2E reports 31 failed, 40 skipped, 241 passed. All 31 failures are browser-context errors
+(30 closed-browser errors and one test-ended error), and the lifecycle log records 31
+browser process exits with SIGSEGV. The actual executable is headless-shell revision 1234,
+Chrome 151.0.7922.34, so switching from full Chromium did NOT resolve the Linux crashes.
+Both desktop and mobile history tests pass in this run. Do not weaken feature assertions or
+count another Mac pass as proof of a Linux crash fix; the next crash investigation needs
+a Linux reproduction and controlled browser-version comparison.
+
+Perf completes all desktop scenarios, then times out during mobile cold-start waiting for
+a visible, editable editor (30 seconds). The archive does not establish that this is a browser
+crash. The previous readiness fix therefore did not resolve all runtime CI failures. Web,
+check and fuzz-build logs contain no error markers. Those results precede the current
+on-demand emoji-loading fix and do not validate it.
+
 The latest supplied CI perf error selected an existing but hidden editor after note switching.
 The harness previously completed note-switch timing on text alone, before `data-editor`
 loading or `data-body` waiting gates lifted. Cold-start timing similarly accepted a hidden
@@ -18,7 +51,7 @@ These are browser crashes, not five failing feature assertions. E2E now uses Pla
 default headless shell rather than opting into the full Chromium channel, matching perf's
 browser choice. The configuration regression fails with the old override and passes without
 it; this guards the selection, not proof that an upstream Linux crash has been eliminated.
-The exact crash trigger remains unknown and a new Linux CI run is required.
+The exact crash trigger remains unknown; the latest Linux run above disproves the mitigation.
 
 The sixth failure is distinct: mobile history could not find the original paragraph after
 reload. Its edits used `ControlOrMeta+End`, already documented as unreliable on mobile in

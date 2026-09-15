@@ -370,7 +370,6 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
     tiptap.on("update", placeBody);
     removeBodyPlacementListener = () => tiptap.off("update", placeBody);
   }
-  const emojiChoices = await loadEmojiChoices(bootstrap?.vault);
 
   const { collaboration } = editor;
   const shell = mountEditorShell({
@@ -390,7 +389,7 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
       ),
       media: { vault: bootstrap.vault },
     }),
-    emojiChoices,
+    emojiChoices: (signal) => loadEmojiChoices(bootstrap?.vault, signal),
     ...(bootstrap === undefined ? {} : { emojiImport: { vault: bootstrap.vault, status } }),
   });
   delete panel.dataset["editor"];
