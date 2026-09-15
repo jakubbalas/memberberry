@@ -163,14 +163,15 @@ wasm: emoji-catalog ## Build the WebAssembly bindings into web/src/wasm (needs w
 	XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-emoji-wasm --target web --out-dir ../../web/src/wasm/emoji --out-name emoji --no-opt
 
 .PHONY: wasm-ci
+WASM_CI_CACHE = $(if $(RUNNER_TEMP),$(RUNNER_TEMP)/memberberry-wasm-cache,$(CURDIR)/target/wasm-cache)
 wasm-ci: emoji-catalog ## Build optimized WebAssembly bindings for CI bundle checks
 	@command -v wasm-pack >/dev/null 2>&1 || { \
 		echo "Install first: cargo install wasm-pack"; exit 1; }
 	rm -f web/src/wasm/package.json web/src/wasm/emoji/package.json
 	@# why: the browser downloads this module on the critical path; size optimization keeps CI
 	@# below the ratcheted bundle ceiling without changing the development no-opt path above.
-	CARGO_PROFILE_RELEASE_OPT_LEVEL=z XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb
-	CARGO_PROFILE_RELEASE_OPT_LEVEL=z XDG_CACHE_HOME=$(CURDIR)/target/wasm-cache wasm-pack build crates/mb-emoji-wasm --target web --out-dir ../../web/src/wasm/emoji --out-name emoji
+	CARGO_PROFILE_RELEASE_OPT_LEVEL=z XDG_CACHE_HOME="$(WASM_CI_CACHE)" wasm-pack build crates/mb-wasm --target web --out-dir ../../web/src/wasm --out-name mb
+	CARGO_PROFILE_RELEASE_OPT_LEVEL=z XDG_CACHE_HOME="$(WASM_CI_CACHE)" wasm-pack build crates/mb-emoji-wasm --target web --out-dir ../../web/src/wasm/emoji --out-name emoji
 
 .PHONY: web
 web: wasm ## Vite dev server on 9011, against the freshly built wasm

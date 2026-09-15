@@ -2,6 +2,28 @@
 
 **Last updated:** CI failure follow-up, 2026-09-15.
 
+## Current CI status
+
+Run 34986211328 passes `check` and `fuzz-build`, but fails web, E2E and runtime perf.
+The web log shows a restored `target/wasm-cache` tool directory missing `wasm-bindgen`.
+`wasm-ci` now puts tools under `RUNNER_TEMP` on CI, outside the Cargo cache. A Make regression
+test reproduces the old cache placement and passes with the new configuration.
+Perf navigation now has its own 30-second timeout and the open-note setup waits for DOM
+content instead of all page resources. Budget thresholds remain unchanged.
+Fresh-cache `wasm-ci`, typechecking, the cache regression and 48 perf unit tests pass.
+Report-only perf completes on desktop/mobile with exit 0, but reports eight budget breaches
+(cold/warm loads, long tasks, mobile note opening, typing, graph frames and server memory).
+This establishes harness completion, not performance-budget compliance. Validation logs:
+`/tmp/mb-wasm-validation.log`, `/tmp/mb-perf-validation.log`, `/tmp/mb-focused-e2e.log`.
+
+The four reported E2E specs pass locally against a rebuilt frontend and fresh server:
+46 passed, 6 skipped. The five CI failures are still unresolved pending their actual errors;
+the supplied summary includes a mobile test that skips in its body, so setup/teardown may
+be involved. CI now emits GitHub annotations as well as the list and HTML reports.
+Do not read the historical passing-check statements below as confirmation of this run.
+
+## Prior context
+
 The default server data directory now follows the host platform instead of living beside
 the checkout: macOS uses `~/Library/Application Support/memberberry`, Linux uses
 `$XDG_DATA_HOME/memberberry` or `~/.local/share/memberberry`, and Windows uses

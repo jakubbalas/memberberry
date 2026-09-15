@@ -26,6 +26,9 @@ jobs:
       - name: Full-test orchestration regression
         run: python3 scripts/full-test-test.py
 
+      - name: WASM cache isolation regression
+        run: python3 scripts/wasm-ci-test.py
+
       - name: Lints
         run: cargo clippy --workspace --all-targets -- -D warnings
 

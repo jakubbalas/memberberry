@@ -204,6 +204,7 @@ async function newContext(
   // either happens promptly or is not going to; three of them at 30 s each turned a lost
   // sample into a two-minute stall, and twelve of those into a harness nobody would wait for.
   context.setDefaultTimeout(10_000);
+  context.setDefaultNavigationTimeout(IN_PAGE_TIMEOUT_MS);
   await context.addInitScript(INSTRUMENT);
   return context;
 }
@@ -505,7 +506,7 @@ async function timeSwitch(
  * note the session already holds.
  */
 async function openNote(page: Page, tabs: TabSwitch): Promise<number[]> {
-  await page.goto(`/v/${PERF_SLUG}/${NOTES[0].path}`);
+  await page.goto(`/v/${PERF_SLUG}/${NOTES[0].path}`, { waitUntil: "domcontentloaded" });
   await page.locator(EDITOR).first().waitFor({ timeout: IN_PAGE_TIMEOUT_MS });
   await openViaSwitcher(page, NOTES[1].title);
   await page.locator(EDITOR).first().filter({ hasText: NOTES[1].marker }).waitFor();

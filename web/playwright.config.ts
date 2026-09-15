@@ -23,7 +23,7 @@ export default defineConfig({
   retries: 0,
   fullyParallel: true,
   forbidOnly: Boolean(process.env["CI"]),
-  reporter: process.env["CI"] === undefined ? "list" : [["list"], ["html", { open: "never" }]],
+  reporter: process.env["CI"] === undefined ? "list" : [["list"], ["github"], ["html", { open: "never" }]],
 
   use: {
     channel: "chromium",
