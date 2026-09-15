@@ -1,7 +1,7 @@
 /** Accessible controls around the local Tiptap editor. */
 
 import type { Editor } from "@tiptap/core";
-import type { Transaction } from "@tiptap/pm/state";
+import { NodeSelection, type Transaction } from "@tiptap/pm/state";
 import { ySyncPluginKey } from "y-prosemirror";
 import type { Doc } from "yjs";
 import type { Awareness } from "y-protocols/awareness";
@@ -100,10 +100,32 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   if (media !== undefined) toolbar.append(media.element);
   let shellDestroyed = false;
   let imageEditor: { destroy(): void } | undefined;
+  let imageEditorControl: HTMLButtonElement | undefined;
+  let imageClickCleanup: (() => void) | undefined;
   const mediaContext = options.media;
   const mediaUploader = options.mediaUploader;
   if (mediaContext !== undefined && mediaUploader !== undefined) {
-    void import("./image-editor.js").then(({ mountImageEditor }) => {
+    const control = document.createElement("button");
+    imageEditorControl = control;
+    control.type = "button";
+    control.className = "editor-control image-editor-trigger";
+    control.textContent = "Edit image";
+    control.setAttribute("aria-label", "Edit selected image");
+    control.disabled = true;
+    control.hidden = true;
+    options.panel.append(control);
+    const onImageClick = (event: MouseEvent): void => {
+      if (!(event.target instanceof HTMLImageElement)) return;
+      const position = options.editor.view.posAtDOM(event.target, 0);
+      options.editor.view.dispatch(
+        options.editor.state.tr.setSelection(NodeSelection.create(options.editor.state.doc, position)),
+      );
+      control.removeAttribute("disabled");
+      control.hidden = false;
+    };
+    options.editor.view.dom.addEventListener("click", onImageClick);
+    const imageEditorImport = import("./image-editor.js");
+    void imageEditorImport.then(({ mountImageEditor }) => {
       if (shellDestroyed) return;
       imageEditor = mountImageEditor({
         editor: options.editor,
@@ -111,8 +133,16 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
         uploader: mediaUploader,
         status: options.status,
         vault: mediaContext.vault,
+        control,
       });
     });
+    control.addEventListener("click", () => {
+      if (imageEditor !== undefined || shellDestroyed) return;
+      void imageEditorImport.then(() => control.click());
+    });
+    imageClickCleanup = (): void => {
+      options.editor.view.dom.removeEventListener("click", onImageClick);
+    };
   }
   const emoji = mountEmojiPicker(options.editor, toolbar, options.emojiChoices ?? [], options.emojiImport);
   toolbar.append(more);
@@ -338,6 +368,8 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       conflicts.remove();
       clearPress();
       controls.remove();
+      imageClickCleanup?.();
+      imageEditorControl?.remove();
       media?.destroy();
       imageEditor?.destroy();
       emoji.destroy();

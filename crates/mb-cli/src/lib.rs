@@ -149,26 +149,28 @@ pub(crate) fn default_data_dir_in(
     let _ = (&home, &xdg_data_home, &appdata);
     #[cfg(target_os = "macos")]
     {
-        return home.map_or_else(
+        home.map_or_else(
             || PathBuf::from(".memberberry"),
             |home| Path::new(home).join("Library/Application Support/memberberry"),
-        );
+        )
     }
     #[cfg(target_os = "windows")]
     {
-        return appdata.map_or_else(
+        appdata.map_or_else(
             || PathBuf::from(".memberberry"),
             |appdata| Path::new(appdata).join("memberberry"),
-        );
+        )
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        if let Some(xdg_data_home) = xdg_data_home {
-            return Path::new(xdg_data_home).join("memberberry");
-        }
-        home.map_or_else(
-            || PathBuf::from(".memberberry"),
-            |home| Path::new(home).join(".local/share/memberberry"),
+        xdg_data_home.map_or_else(
+            || {
+                home.map_or_else(
+                    || PathBuf::from(".memberberry"),
+                    |home| Path::new(home).join(".local/share/memberberry"),
+                )
+            },
+            |xdg_data_home| Path::new(xdg_data_home).join("memberberry"),
         )
     }
 }
@@ -176,6 +178,7 @@ pub(crate) fn default_data_dir_in(
 /// The pure half, so the precedence can be tested without touching the environment —
 /// which the workspace forbids anyway (`unsafe_code = "forbid"`), and which would make
 /// parallel tests race.
+#[cfg(test)]
 pub(crate) fn config_path_in(args: &[String], data_dir: Option<&OsStr>) -> PathBuf {
     if let Some(explicit) = flag(args, "--config") {
         return PathBuf::from(explicit);

@@ -1,6 +1,6 @@
 # Handoff
 
-**Last updated:** explicit-request full-check workflow, 2026-09-14.
+**Last updated:** CI failure follow-up, 2026-09-15.
 
 The default server data directory now follows the host platform instead of living beside
 the checkout: macOS uses `~/Library/Application Support/memberberry`, Linux uses
@@ -29,10 +29,11 @@ through the note-save/index cycle. Focused media/editor tests pass; the new brow
 still needs the local server and Playwright E2E environment. Full `make check`, coverage, and
 full E2E remain deferred.
 
-CI frontend jobs now run `make wasm`, which generates both the main and emoji WASM packages;
-the prior direct command generated only `mb` and caused TypeScript to fail on the missing
-`web/src/wasm/emoji/emoji.js` import. Local `make wasm` and `npm --prefix web run typecheck`
-pass.
+CI frontend jobs now run `make wasm-ci`, which generates both the main and emoji WASM packages
+with a size-optimized release profile; local development keeps the no-opt `make wasm` path.
+The previous CI failure came from the missing emoji package, then from unoptimized WASM
+exceeding the bundle ceiling. The latest focused web tests, optimized bundle check, Clippy,
+server build with `-D warnings`, and media/home Playwright specs pass locally.
 
 Image editing now has a selectable-image modal with derived-display resize, center crop
 presets, rotation, brightness/contrast/saturation, and “Use original”. Save

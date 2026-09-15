@@ -9,6 +9,7 @@ interface ImageEditorOptions {
   readonly uploader: MediaUploader;
   readonly status: HTMLElement;
   readonly vault: string;
+  readonly control?: HTMLButtonElement;
 }
 
 interface ImageSelection {
@@ -24,7 +25,7 @@ interface ImageEditorHandle {
 
 /** Mounts keyboard-reachable controls for editing a selected image's derived display copy. */
 export function mountImageEditor(options: ImageEditorOptions): ImageEditorHandle {
-  const control = document.createElement("button");
+  const control = options.control ?? document.createElement("button");
   control.type = "button";
   control.className = "editor-control";
   control.classList.add("image-editor-trigger");
