@@ -1,0 +1,54 @@
+name: E2E (manual)
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@wasm-pack
+
+      - name: Build the WebAssembly bindings
+        run: make wasm-ci
+      - run: npm ci
+        working-directory: web
+      - name: Build the frontend
+        run: npm run build
+        working-directory: web
+      # The suite provisions a real server with the real binary, so it needs the real binary.
+      - name: Build the server
+        run: cargo build -p mb-cli
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: End-to-end, desktop and mobile
+        shell: bash
+        env:
+          DEBUG: pw:browser
+        run: npm run e2e 2>&1 | tee e2e-output.log
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+            web/e2e-output.log
+          retention-days: 7

@@ -4,6 +4,18 @@
 
 ## Current CI status
 
+The user confirms runtime perf now succeeds in CI after `9616e43`. By their subsequent
+request, full E2E has moved out of automatic push/PR CI to `.github/workflows/e2e.yml`, named
+`E2E (manual)`, with only `workflow_dispatch`. Check, web, perf and fuzz-build remain automatic.
+Use GitHub Actions → E2E (manual) → Run workflow after this workflow reaches the default
+branch; branch selection is provided by GitHub. The complete build, desktop/mobile suite,
+zero retries and failure artifacts are preserved. Local full E2E commands are unchanged.
+This changes scheduling, not the unresolved Linux Chromium crashes described below.
+
+Workflow-only validation: three regression tests fail against the previous layout and pass
+after the move. Full application checks, coverage and browser E2E were not run for this
+scheduling change. The regression now runs in the automatic check job.
+
 Current perf follow-up: `openNoteSurface` awaited `loadEmojiChoices` before clearing its
 editor-loading gate. A real-browser regression holding the authorized custom-emoji response
 indefinitely reproduces the hidden editor on mobile. Picker data now loads on first open,
@@ -20,7 +32,8 @@ frontend. Build and typechecking pass with zero warnings. Logs: `/tmp/mb-perf-st
 quick-switcher still yields insufficient samples; completion is not budget compliance.
 The 30-second deadline and visibility requirement are unchanged.
 This fixes a reproduced startup dependency, not proof that every cause of the Linux timeout
-is gone. Full checks, coverage and full E2E remain deferred; Linux CI confirmation is pending.
+is gone. Full checks, coverage and full E2E remain deferred; the user subsequently confirmed
+runtime perf succeeds in CI, as recorded above.
 
 Latest evidence: `local/logs_94794755766.zip` contains the run after `b3d833a`.
 E2E reports 31 failed, 40 skipped, 241 passed. All 31 failures are browser-context errors

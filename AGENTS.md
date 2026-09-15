@@ -303,11 +303,13 @@ to run it; run it only when the user explicitly asks the assistant to execute th
 `make full-test` includes full E2E and follows the same explicit-run requirement.
 Report manual E2E validation as pending unless the user supplies a result. Keep known failures
 visible in the handoff; manual ownership does not turn a failing test into a passing one.
-CI continues to run its existing checks.
+Automatic CI runs check, web, perf and fuzz-build. Full E2E runs only through the
+manually dispatched `E2E (manual)` workflow or an explicit local invocation.
 
 **`make check` does not open a browser.** It is separate from `make e2e` because the browser
 download makes it too slow for the inner loop, and because they answer different questions:
-`check` says the code is correct, `e2e` says the page works. CI runs both. **If your change
+`check` says the code is correct, `e2e` says the page works. E2E is a manually dispatched
+workflow, not a push/PR gate. **If your change
 touches anything a user sees, `make check` alone is not evidence** — that combination has
 already shipped an application nobody could log into (§2.3).
 

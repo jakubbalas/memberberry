@@ -3518,8 +3518,15 @@ measurement run only on explicit user request; neither is a prerequisite for com
 and a commit request alone does not trigger them. Report them as deferred when not run. The user owns
 full `make e2e` runs manually; a commit request does not trigger an assistant-run full browser
 suite. The assistant runs it only when explicitly asked to do so and reports pending manual
-validation and known failures honestly. CI coverage and suite requirements remain unchanged.
+validation and known failures honestly. Coverage requirements remain unchanged.
 `AGENTS.md` §5.2 defines the workflow.
+
+**CI cadence (2026-09-15).** E2E is excluded from automatic push and pull-request runs by
+user decision. The separate `.github/workflows/e2e.yml` workflow, **E2E (manual)**, is started
+with `workflow_dispatch` and runs the full desktop/mobile suite with the same build setup,
+zero retries and retained failure diagnostics. Check, web, perf and fuzz-build remain
+automatic. A green automatic CI run is not evidence that full E2E passed; known browser
+crashes remain open even when the manual workflow has not been run.
 
 `make full-test` is the explicit combined validation command: build WASM, run `make check`,
 then run `make e2e`, sequentially and stopping at the first failure. WASM setup precedes

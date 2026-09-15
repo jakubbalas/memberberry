@@ -164,7 +164,7 @@ in its home directory even when that directory is absent from the shell's `PATH`
 ```
 make            # list every target
 make full-test  # build WASM, then make check, then desktop/mobile E2E
-make check      # fmt + clippy + tests + coverage floors — before commit or on request
+make check      # fmt + clippy + tests + coverage floors — explicit request only
 make test-fast  # behavioural tests only, the inner loop
 make soak       # property suite at 20k cases
 make coverage   # per-crate coverage report
@@ -181,6 +181,13 @@ It requires the Quickstart and checking tools above, and downloads Playwright's 
 through `make e2e`. OS libraries must be provisioned separately; test commands do not run
 the system package manager or request sudo.
 Long-running soak, fuzzing and performance targets remain separate.
+
+GitHub runs check, web, perf and fuzz-build automatically on pushes to `main` and pull
+requests. Full browser E2E is manual: open **Actions → E2E (manual) → Run workflow**, select
+the branch, and run it. The workflow must first be present on the default branch to appear
+in the manual-run menu. It builds everything and runs desktop/mobile tests; failures retain
+the HTML report, traces, screenshots and complete browser logs in the `playwright-report`
+artifact. Local `make e2e` and `make full-test` remain available.
 
 On supported Debian/Ubuntu installations, provision Chromium's native dependencies once
 after installing frontend dependencies:
