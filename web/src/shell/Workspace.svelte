@@ -156,6 +156,13 @@
   const vaultSlug = $derived(session?.vault ?? "local-demo");
   const initialWorkspace = untrack(() => store.current);
   const showingHome = $derived(home && store.current === initialWorkspace);
+  $effect(() => {
+    if (session === undefined) return;
+    const note = showingHome ? undefined : store.activeTab?.note;
+    const base = `/v/${encodeURIComponent(session.vault)}`;
+    const path = note === undefined ? base : `${base}/${note.split("/").map(encodeURIComponent).join("/")}`;
+    if (window.location.pathname !== path) window.history.replaceState(window.history.state, "", path);
+  });
   let emptyFolders = $state<readonly string[]>([]);
   let folderPrompt = $state(false);
   let folderBusy = $state(false);

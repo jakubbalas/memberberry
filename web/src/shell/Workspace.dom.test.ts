@@ -138,6 +138,43 @@ const tabs = (): HTMLElement[] => [...target.querySelectorAll<HTMLElement>('[rol
 const panes = (): HTMLElement[] => [...target.querySelectorAll<HTMLElement>(".pane")];
 
 describe("the shell", () => {
+  it("updates the reload URL when opening and navigating notes from Home", async () => {
+    window.history.replaceState(null, "", "/v/personal");
+    const workspace = store(["One.md"]);
+    const teardown = render(workspace, undefined, undefined, true);
+    try {
+      await flush();
+      expect(window.location.pathname).toBe("/v/personal");
+      workspace.open("One.md");
+      await flush();
+      expect(window.location.pathname).toBe("/v/personal/One.md");
+      workspace.navigate(workspace.tabs[0]?.id ?? "", "Folder/Žlutý #1?.md");
+      await flush();
+      expect(window.location.pathname).toBe("/v/personal/Folder/%C5%BDlut%C3%BD%20%231%3F.md");
+    } finally {
+      await teardown();
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
+  it("keeps the reload URL on the focused tab and clears it after the last tab closes", async () => {
+    const workspace = store(["One.md", "Two.md"]);
+    const teardown = render(workspace);
+    try {
+      await flush();
+      expect(window.location.pathname).toBe("/v/personal/Two.md");
+      workspace.close(workspace.activeTab?.id ?? "");
+      await flush();
+      expect(window.location.pathname).toBe("/v/personal/One.md");
+      workspace.close(workspace.activeTab?.id ?? "");
+      await flush();
+      expect(window.location.pathname).toBe("/v/personal");
+    } finally {
+      await teardown();
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
   it("keeps saved tabs on Home without mounting an editor until a note opens", async () => {
     const workspace = store(["One.md"]);
     const opened = surfaces();

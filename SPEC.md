@@ -1482,8 +1482,11 @@ things are worth recording:
 - **A split the layout has no room for opens a tab instead** (§8.3 caps panes on a phone). A
   modified click that silently did nothing would read as broken rather than adapted.
 
-Still to come: a URL that follows the active tab, so a reload lands on the same note without
-relying on the restored layout.
+The URL follows the focused note tab, including navigation, tab switching and renames.
+The shell replaces the current browser history entry; each tab's own back/forward stack
+remains separate. Reload therefore reopens the focused note through its authorized route,
+even if the layout save has not finished. Explicit Home navigation retains the vault Home
+URL, as does closing the last note tab. Note path segments are URL-encoded.
 
 ### 8.3 Mobile layout (< 768px)
 

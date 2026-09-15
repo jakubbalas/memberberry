@@ -1,25 +1,25 @@
 # Handoff
 
-**Last updated:** Editor undo repair, 2026-09-15.
+**Last updated:** Reload location repair, 2026-09-15.
 
-## Current editor change
+## Current workspace change
 
-The collaborative editor installed the Yjs undo plugin but never bound keyboard shortcuts
-to it. `createYjsBinding` now connects Cmd/Ctrl-Z, Cmd/Ctrl-Shift-Z and Cmd/Ctrl-Y to
-the existing per-editor CRDT undo/redo stack, gated by editability. SPEC §8.4 documents
-the shortcuts and session lifetime. Server version history is separate.
+Opening a note from Home left the URL on the vault root, so reload showed Home again.
+The workspace now replaces the current URL with the focused note's encoded route. Explicit
+Home navigation retains its vault-root URL; closing the last tab also clears the note URL.
+SPEC §8.2 now records the implemented behavior instead of listing it as still to come.
 
-Regression-first validation reproduced all three missing shortcuts. The 44 focused
-collaboration, undo and conflict-view tests pass; the frontend build passes (existing
-dependency directive and chunk-size warnings remain). The focused browser test checks
-typing, undo, redo and Markdown persistence in desktop/mobile layouts. Its first run
-exposed a test mismatch between innerText and textContent, corrected to compare innerText.
-Both corrected browser tests pass (desktop and mobile). Full `make check` and coverage are
+Regression-first validation reproduced stale URLs in two DOM tests and the lost note on
+reload in both desktop/mobile browser tests. After the fix, 60 focused desktop/mobile
+workspace DOM tests and both rebuilt browser tests pass. The browser tests also verify
+explicit Home navigation and reload. Frontend build passes; existing dependency directive
+and chunk-size warnings remain. Build log: `/tmp/mb-reload-build.log`. Full `make check` and coverage are
 deferred; full `make e2e` remains pending manual user validation. The known Linux browser
 crashes below remain unresolved. Start locally with `make dev` (9011) or `make prod` (9010).
 
-Next: confirm the rebuilt app's undo behavior in the user's editing session. Undo is
-in-memory for the open editor; reloading does not recover an earlier session's undo stack.
+Next: user feedback on the rebuilt app. The preceding undo shortcut fix is committed as
+`ae40dea`; the reload repair is ready with focused validation complete. Existing Linux browser crashes below
+remain open because local Mac validation cannot establish their resolution.
 
 ## Current CI status
 
