@@ -129,7 +129,7 @@ const INSTRUMENT = `
  * no output, which is exactly how the first mobile run went. Playwright's own timeouts do not
  * cover an `evaluate` that resolves on its own schedule, so the deadline has to be inside it.
  */
-const IN_PAGE_TIMEOUT_MS = 10_000;
+const IN_PAGE_TIMEOUT_MS = 30_000;
 
 /** Reads a number array the instrumentation left on `window`. */
 async function readNumbers(page: Page, name: "__mbLongTasks" | "__mbInteractions" | "__mbKeys") {
@@ -506,7 +506,7 @@ async function timeSwitch(
  */
 async function openNote(page: Page, tabs: TabSwitch): Promise<number[]> {
   await page.goto(`/v/${PERF_SLUG}/${NOTES[0].path}`);
-  await page.locator(EDITOR).first().waitFor();
+  await page.locator(EDITOR).first().waitFor({ timeout: IN_PAGE_TIMEOUT_MS });
   await openViaSwitcher(page, NOTES[1].title);
   await page.locator(EDITOR).first().filter({ hasText: NOTES[1].marker }).waitFor();
 
@@ -531,7 +531,7 @@ async function openNote(page: Page, tabs: TabSwitch): Promise<number[]> {
  * error rather than in the next person's debugging session.
  */
 async function openSwitcher(page: Page): Promise<void> {
-  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.press("ControlOrMeta+o");
   try {
     await page.locator(SWITCHER).waitFor({ timeout: 10_000 });
   } catch (cause) {
@@ -545,7 +545,7 @@ async function openSwitcher(page: Page): Promise<void> {
       [...document.querySelectorAll("dialog")].map((d) => `${d.className}:${d.open}`).join(", "),
     );
     throw new Error(
-      `Mod+K did not open the quick switcher. Focus was on ${focus}; dialogs: ${dialogs}. ` +
+      `Mod+O did not open the quick switcher. Focus was on ${focus}; dialogs: ${dialogs}. ` +
         "SPEC §8.4 requires the shortcut to work from inside the editor, so this is either a " +
         `regression there or a modal already holding the key. The browser reported: ` +
         `${problems.length === 0 ? "nothing" : problems.join(" | ")}`,

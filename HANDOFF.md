@@ -35,6 +35,10 @@ The previous CI failure came from the missing emoji package, then from unoptimiz
 exceeding the bundle ceiling. The latest focused web tests, optimized bundle check, Clippy,
 server build with `-D warnings`, and media/home Playwright specs pass locally.
 
+The perf harness uses the actual quick-switcher binding (`Mod+O`) and allows up to 30 seconds
+for the 10k-note editor to appear before timing it. Report-only perf completes locally; the
+complete E2E suite remains a manual CI/user check.
+
 Image editing now has a selectable-image modal with derived-display resize, center crop
 presets, rotation, brightness/contrast/saturation, and “Use original”. Save
 uploads a new PNG display object and updates the Markdown reference only after success; the
