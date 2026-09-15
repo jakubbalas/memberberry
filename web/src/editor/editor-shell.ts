@@ -21,7 +21,6 @@ import { openTemplatePalette, TEMPLATE_EVENT, templateContext, type TemplateEven
 import type { MediaUploader } from "./media-upload.js";
 import { mountEmojiPicker, type EmojiChoice, type EmojiImportOptions } from "./emoji-picker.js";
 import { downloadHtml, printPanel, standaloneHtml } from "./export.js";
-import { mountImageEditor } from "./image-editor.js";
 import type { MediaRenderContext } from "./schema.js";
 
 export interface EditorShell {
@@ -99,15 +98,22 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   secondary.append(copy, print, html);
   const media = mediaControls(options.editor, options.mediaUploader, options.status);
   if (media !== undefined) toolbar.append(media.element);
-  const imageEditor = options.media === undefined || options.mediaUploader === undefined
-    ? undefined
-    : mountImageEditor({
+  let shellDestroyed = false;
+  let imageEditor: { destroy(): void } | undefined;
+  const mediaContext = options.media;
+  const mediaUploader = options.mediaUploader;
+  if (mediaContext !== undefined && mediaUploader !== undefined) {
+    void import("./image-editor.js").then(({ mountImageEditor }) => {
+      if (shellDestroyed) return;
+      imageEditor = mountImageEditor({
         editor: options.editor,
         panel: options.panel,
-        uploader: options.mediaUploader,
+        uploader: mediaUploader,
         status: options.status,
-        vault: options.media.vault,
+        vault: mediaContext.vault,
       });
+    });
+  }
   const emoji = mountEmojiPicker(options.editor, toolbar, options.emojiChoices ?? [], options.emojiImport);
   toolbar.append(more);
 
@@ -308,6 +314,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
 
   return {
     destroy: () => {
+      shellDestroyed = true;
       options.editor.view.dom.removeEventListener("keydown", onKeyDown);
       options.editor.view.dom.removeEventListener("keyup", onKeyUp);
       options.editor.view.dom.removeEventListener(TASK_CHIP_EVENT, onChip);

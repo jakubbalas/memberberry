@@ -24,7 +24,7 @@ describe("share target screen", () => {
       props: { draft: { title: "Thought", text: "Remember this" } },
     });
     try {
-      for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+      await vi.waitFor(() => expect(target.textContent).toContain("Ready to clip."));
       await tick();
       const folder = target.querySelector<HTMLInputElement>("input");
       if (folder === null) throw new Error("folder input missing");

@@ -14,6 +14,15 @@ before the index catches up because its temporary upload grant authorizes that o
 Focused server, media, and mentions checks pass; the reported full-suite Mac result was not
 rerun after these fixes.
 
+The media editor E2E save assertion allows up to 15 seconds for edited PNG encoding/upload,
+which covers slower parallel runs without masking a failed save. Mobile Home and both media
+projects pass locally; the full Arch suite still needs confirmation.
+
+The web CI races now wait on observable state instead of fixed microtask counts. The image
+editor is lazy-loaded, and CI uses `make wasm-ci` with a size-optimized release profile so
+the critical bundle stays below the recorded ceiling. Focused web tests and bundle checks
+pass locally; full `make check` and the complete E2E suite remain deferred.
+
 Media handling now constrains editor images to the available column and the running server
 prunes unreferenced media after the five-minute upload grant expires, preserving active grants
 through the note-save/index cycle. Focused media/editor tests pass; the new browser regression

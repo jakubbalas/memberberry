@@ -75,7 +75,7 @@ jobs:
         uses: taiki-e/install-action@wasm-pack
 
       - name: Build the WebAssembly bindings
-        run: make wasm
+        run: make wasm-ci
 
       - run: npm ci
         working-directory: web
@@ -116,7 +116,7 @@ jobs:
         uses: taiki-e/install-action@wasm-pack
 
       - name: Build the WebAssembly bindings
-        run: make wasm
+        run: make wasm-ci
       - run: npm ci
         working-directory: web
       - name: Build the frontend
@@ -164,7 +164,7 @@ jobs:
         uses: taiki-e/install-action@wasm-pack
 
       - name: Build the WebAssembly bindings
-        run: make wasm
+        run: make wasm-ci
       - run: npm ci
         working-directory: web
       - name: Build the frontend

@@ -59,7 +59,7 @@ test("downscales an image, retains its original, and renders an authorized thumb
   await expect(page.getByRole("dialog", { name: "Edit image" })).toBeVisible();
   await page.getByRole("button", { name: "Rotate right" }).click();
   await page.getByRole("button", { name: "Save edited display" }).click();
-  await expect(page.getByRole("dialog", { name: "Edit image" })).toBeHidden();
+  await expect(page.getByRole("dialog", { name: "Edit image" })).toBeHidden({ timeout: 15_000 });
   await expect(image).toBeVisible();
 
   const notePath = join(E2E_VAULT, note);

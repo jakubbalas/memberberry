@@ -24,11 +24,8 @@ describe("HistoryPane", () => {
     const target = document.createElement("div");
     document.body.append(target);
     const app = mount(HistoryPane, { target, props: { view, note: "Plan.md" } });
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(view.versions).toHaveLength(2));
     await tick();
-    await tick();
-    expect(view.versions).toHaveLength(2);
     await vi.waitFor(() => expect(target.querySelectorAll(".history-row")).toHaveLength(2));
     const buttons = [...target.querySelectorAll<HTMLButtonElement>(".history-actions button")];
     buttons[0]?.click();
