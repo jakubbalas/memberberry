@@ -4,22 +4,56 @@
 
 ## Current CI status
 
-Run 34986211328 passes `check` and `fuzz-build`, but fails web, E2E and runtime perf.
-The web log shows a restored `target/wasm-cache` tool directory missing `wasm-bindgen`.
-`wasm-ci` now puts tools under `RUNNER_TEMP` on CI, outside the Cargo cache. A Make regression
-test reproduces the old cache placement and passes with the new configuration.
-Perf navigation now has its own 30-second timeout and the open-note setup waits for DOM
-content instead of all page resources. Budget thresholds remain unchanged.
-Fresh-cache `wasm-ci`, typechecking, the cache regression and 48 perf unit tests pass.
-Report-only perf completes on desktop/mobile with exit 0, but reports eight budget breaches
-(cold/warm loads, long tasks, mobile note opening, typing, graph frames and server memory).
-This establishes harness completion, not performance-budget compliance. Validation logs:
-`/tmp/mb-wasm-validation.log`, `/tmp/mb-perf-validation.log`, `/tmp/mb-focused-e2e.log`.
+The latest supplied CI perf error selected an existing but hidden editor after note switching.
+The harness previously completed note-switch timing on text alone, before `data-editor`
+loading or `data-body` waiting gates lifted. Cold-start timing similarly accepted a hidden
+DOM node. Both now require a visible, editable surface and observe attribute changes.
+The real-browser regression reproduced premature completion before the fix and passes
+afterwards on desktop/mobile. No timeout or budget was relaxed.
 
-The four reported E2E specs pass locally against a rebuilt frontend and fresh server:
-46 passed, 6 skipped. The five CI failures are still unresolved pending their actual errors;
-the supplied summary includes a mobile test that skips in its body, so setup/teardown may
-be involved. CI now emits GitHub annotations as well as the list and HTML reports.
+`local/debug/e2eCIresult.txt` lists six failures across clipper, creation, history, tags and
+graph. The corrected, complete log confirms five Chromium process crashes during context
+creation: each reports `Received signal 11 SEGV_MAPERR 0000000001b0` in chromium-1234.
+These are browser crashes, not five failing feature assertions. E2E now uses Playwright's
+default headless shell rather than opting into the full Chromium channel, matching perf's
+browser choice. The configuration regression fails with the old override and passes without
+it; this guards the selection, not proof that an upstream Linux crash has been eliminated.
+The exact crash trigger remains unknown and a new Linux CI run is required.
+
+The sixth failure is distinct: mobile history could not find the original paragraph after
+reload. Its edits used `ControlOrMeta+End`, already documented as unreliable on mobile in
+the slash-menu test. With End navigation disabled and the initial caret inside the paragraph,
+the old history test demonstrably splits that paragraph (`First saved version.this test may
+edit.`). It now clicks the end of the intended paragraph before typing. The regression retains
+the unsupported-End simulation on mobile and checks the original paragraph is intact.
+History and trash restoration now compare the entire Markdown file against the saved version,
+not just the presence/absence of an edit fragment.
+CI now preserves the complete output, browser lifecycle diagnostics, raw
+test results and HTML report in the failure artifact. Bash pipefail preserves the failing exit.
+
+Latest browser-shell/history validation: rebuilt frontend; two configuration tests pass;
+typechecking reports zero errors/warnings. Focused CI-mode browser run with two workers:
+56 passed, 4 existing skips (37 seconds), including history on both layouts, the reported
+failure specs, global graph and perf readiness. Browser launch diagnostics confirm
+`chromium_headless_shell-1234`; browser processes exit normally. Logs:
+`/tmp/mb-history-red.log` (reproduction), `/tmp/mb-crash-followup-e2e.log` (green run),
+`/tmp/mb-crash-types.log`, `/tmp/mb-crash-build.log`. This is Mac validation, not a Linux
+reproduction of the upstream process crashes. Full checks/coverage/full E2E remain deferred.
+
+Previous focused rebuilt-browser validation (two workers, CI mode): 56 passed, 4 existing skips,
+including the reported specs, global graph (matched by the graph filename filter), and both
+new perf readiness regressions. Build, typechecking (zero warnings), 48 perf unit tests,
+workflow YAML parsing and log-capture exit-status verification pass. Runtime perf completes
+all scenarios on desktop/mobile in report-only mode (exit 0), including both keystroke runs.
+It still reports six budget violations: desktop cold/warm startup, mobile note switching
+and typing, and server memory on both profiles. Mobile quick-switcher has insufficient
+samples, not a passing measurement. Its log is `/tmp/mb-perf-readiness.log`. Browser log:
+`/tmp/mb-ci-followup-e2e.log`. Full `make check`, coverage and full manual E2E are deferred.
+
+The preceding WASM fix keeps CI tool downloads in `RUNNER_TEMP`, outside the Cargo cache.
+The prior runtime run completed but breached eight budgets; that was harness completion,
+not budget compliance. Readiness fixes may increase measured durations by counting work
+that was previously omitted. Existing performance debt remains open.
 Do not read the historical passing-check statements below as confirmation of this run.
 
 ## Prior context

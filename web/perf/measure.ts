@@ -241,32 +241,37 @@ async function throttle(context: BrowserContext, page: Page, rate: number): Prom
 
 /**
  * Navigates to a note and returns the in-page milliseconds from navigation start until the
- * editor surface exists.
+ * editor surface is visible and editable.
  *
  * `waitUntil: "commit"` so the observer is installed while the document is still loading;
  * the initial `querySelector` covers the case where it beat us to it anyway.
  */
-async function timeToEditor(page: Page, url: string): Promise<number> {
+export async function timeToEditor(page: Page, url: string): Promise<number> {
   await page.goto(url, { waitUntil: "commit" });
   return page.evaluate(
     ([selector, deadline]) =>
       new Promise<number>((resolve, reject) => {
-        if (document.querySelector(selector) !== null) {
+        const ready = (): boolean => {
+          const editor = document.querySelector(selector);
+          return editor instanceof HTMLElement && editor.isContentEditable
+            && editor.checkVisibility({ checkVisibilityCSS: true });
+        };
+        if (ready()) {
           resolve(performance.now());
           return;
         }
         const timer = setTimeout(() => {
           observer.disconnect();
-          reject(new Error(`${selector} never appeared within ${deadline} ms of navigating`));
+          reject(new Error(`${selector} never became visible and editable within ${deadline} ms of navigating`));
         }, deadline);
         const observer = new MutationObserver(() => {
-          if (document.querySelector(selector) === null) return;
+          if (!ready()) return;
           observer.disconnect();
           clearTimeout(timer);
           // One frame later: the element existing is not the same as it having been painted.
           requestAnimationFrame(() => resolve(performance.now()));
         });
-        observer.observe(document.documentElement, { childList: true, subtree: true });
+        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
       }),
     [EDITOR, IN_PAGE_TIMEOUT_MS] as const,
   );
@@ -444,14 +449,14 @@ const MOBILE_SHEET: TabSwitch = {
 
 /**
  * Clicks the `index`-th switch target and returns the in-page milliseconds until the editor
- * is showing `marker`.
+ * is visible, editable and showing `marker`.
  *
  * The click is issued inside the page so the number carries no CDP round trip, and the
  * observer resolves on **the editor's own text** rather than on the first mutation anywhere:
  * on mobile the first mutation is the sheet closing, which would time the sheet instead of
  * the note.
  */
-async function timeSwitch(
+export async function timeSwitch(
   page: Page,
   selector: string,
   index: number,
@@ -468,7 +473,12 @@ async function timeSwitch(
           );
           return;
         }
-        const showing = (): string => document.querySelector(editor)?.textContent ?? "";
+        const showing = (): string => {
+          const surface = document.querySelector(editor);
+          return surface instanceof HTMLElement && surface.isContentEditable
+            && surface.checkVisibility({ checkVisibilityCSS: true })
+            ? surface.textContent ?? "" : "";
+        };
         if (showing().includes(want)) {
           reject(new Error(`the editor already shows "${want}", so there is nothing to time`));
           return;
@@ -490,6 +500,7 @@ async function timeSwitch(
           childList: true,
           subtree: true,
           characterData: true,
+          attributes: true,
         });
         element.click();
       }),

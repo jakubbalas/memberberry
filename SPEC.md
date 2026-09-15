@@ -3003,6 +3003,11 @@ loads the production Vite bundle, signs in through the real form, and every timi
 **inside the page** from `performance.now()` — a number that included the CDP round trip would
 be measuring the harness.
 
+Cold-start and note-switch timings require a visible, editable surface, not merely an
+editor node or matching text in the DOM. Body-download and editor-loading visibility gates
+remain part of the measured wait; completing either gate through an attribute change must
+wake the measurement observer.
+
 **Both device classes.** `desktop` at 1280×800 unthrottled, and `mobile` at 412×915 with a
 touch pointer, a 2.625 device pixel ratio and the CPU throttled 4× through CDP.
 

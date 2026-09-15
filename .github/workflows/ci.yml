@@ -132,13 +132,19 @@ jobs:
         run: npx playwright install --with-deps chromium
         working-directory: web
       - name: End-to-end, desktop and mobile
-        run: npm run e2e
+        shell: bash
+        env:
+          DEBUG: pw:browser
+        run: npm run e2e 2>&1 | tee e2e-output.log
         working-directory: web
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: playwright-report
-          path: web/playwright-report/
+          path: |
+            web/playwright-report/
+            web/test-results/
+            web/e2e-output.log
           retention-days: 7
 
   # The SPEC 21 budgets (SPEC 21, 23 M7).
