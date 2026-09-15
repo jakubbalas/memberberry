@@ -52,6 +52,7 @@ export function scratchNote(purpose: string, project: string): string {
 
 /** One note per (editing test, viewport). The name is the test's, so a clash is visible. */
 const SCRATCH_PURPOSES: readonly string[] = [
+  "undo",
   "slash-menu",
   "task-toggle",
   "emoji-picker",

@@ -1,6 +1,25 @@
 # Handoff
 
-**Last updated:** CI failure follow-up, 2026-09-15.
+**Last updated:** Editor undo repair, 2026-09-15.
+
+## Current editor change
+
+The collaborative editor installed the Yjs undo plugin but never bound keyboard shortcuts
+to it. `createYjsBinding` now connects Cmd/Ctrl-Z, Cmd/Ctrl-Shift-Z and Cmd/Ctrl-Y to
+the existing per-editor CRDT undo/redo stack, gated by editability. SPEC §8.4 documents
+the shortcuts and session lifetime. Server version history is separate.
+
+Regression-first validation reproduced all three missing shortcuts. The 44 focused
+collaboration, undo and conflict-view tests pass; the frontend build passes (existing
+dependency directive and chunk-size warnings remain). The focused browser test checks
+typing, undo, redo and Markdown persistence in desktop/mobile layouts. Its first run
+exposed a test mismatch between innerText and textContent, corrected to compare innerText.
+Both corrected browser tests pass (desktop and mobile). Full `make check` and coverage are
+deferred; full `make e2e` remains pending manual user validation. The known Linux browser
+crashes below remain unresolved. Start locally with `make dev` (9011) or `make prod` (9010).
+
+Next: confirm the rebuilt app's undo behavior in the user's editing session. Undo is
+in-memory for the open editor; reloading does not recover an earlier session's undo stack.
 
 ## Current CI status
 

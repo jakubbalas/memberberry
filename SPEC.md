@@ -1551,6 +1551,9 @@ exactly the devices nobody tried.
 - Command palette (Cmd/Ctrl-P) over every registered command.
 - Quick switcher (Cmd/Ctrl-O) — fuzzy over titles, aliases, headings, recent notes.
 - Vault switcher (Cmd/Ctrl-Shift-V).
+- In the editable note body, Cmd/Ctrl-Z undoes local edits; Cmd/Ctrl-Shift-Z or
+  Cmd/Ctrl-Y redoes them through the CRDT undo stack. This stack lasts for the open
+  editor session and is separate from server version history (§18).
 - Fully remappable hotkeys, with the defaults documented in §8.4.
 - Every action reachable by keyboard. No mouse-only feature ships.
 

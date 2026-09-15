@@ -10,7 +10,7 @@ import type { Plugin } from "@tiptap/pm/state";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { Doc, type XmlFragment } from "yjs";
 import { Awareness } from "y-protocols/awareness";
-import { yCursorPlugin, ySyncPlugin, yUndoPlugin } from "y-prosemirror";
+import { redo, undo, yCursorPlugin, ySyncPlugin, yUndoPlugin } from "y-prosemirror";
 
 import { presenceCursorBuilder } from "./presence.js";
 import {
@@ -203,6 +203,13 @@ export function createYjsBinding(fragment: XmlFragment, awareness?: Awareness): 
   return Extension.create({
     name: "memberberryYjs",
     addProseMirrorPlugins: () => yjsPlugins(fragment, awareness),
+    addKeyboardShortcuts() {
+      return {
+        "Mod-z": () => this.editor.isEditable && undo(this.editor.state),
+        "Mod-Shift-z": () => this.editor.isEditable && redo(this.editor.state),
+        "Mod-y": () => this.editor.isEditable && redo(this.editor.state),
+      };
+    },
   });
 }
 
