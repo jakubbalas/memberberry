@@ -1,29 +1,41 @@
 # Handoff
 
-**Last updated:** Reload location repair, 2026-09-15.
+**Last updated:** Recurring CI performance timeout investigation, 2026-09-16.
 
-## Current workspace change
+## Current performance investigation
 
-Opening a note from Home left the URL on the vault root, so reload showed Home again.
-The workspace now replaces the current URL with the focused note's encoded route. Explicit
-Home navigation retains its vault-root URL; closing the last tab also clears the note URL.
-SPEC §8.2 now records the implemented behavior instead of listing it as still to come.
+The latest supplied CI log completes all desktop measurements, then times out during mobile
+cold start waiting 30 seconds for a visible, editable editor. It contains no editor gate,
+connection status, sample number or browser errors, so it does not establish the cause.
+This remains unresolved; do not report the preceding emoji change or local success as proof
+that Linux CI is fixed. Undo and reload repairs are committed as `ae40dea` and `1927eb7`.
 
-Regression-first validation reproduced stale URLs in two DOM tests and the lost note on
-reload in both desktop/mobile browser tests. After the fix, 60 focused desktop/mobile
-workspace DOM tests and both rebuilt browser tests pass. The browser tests also verify
-explicit Home navigation and reload. Frontend build passes; existing dependency directive
-and chunk-size warnings remain. Build log: `/tmp/mb-reload-build.log`. Full `make check` and coverage are
-deferred; full `make e2e` remains pending manual user validation. The known Linux browser
-crashes below remain unresolved. Start locally with `make dev` (9011) or `make prod` (9010).
+The current patch adds timeout diagnostics: path, document readiness, editor visibility and
+editability, loading/body gates, and displayed status/error text. Cold-start failures name
+the device and sample; the runner retains collected browser errors with the original cause.
+The deadline and readiness requirements are unchanged; report-only still fails on a broken
+measurement. SPEC §21.4 documents this. A browser regression reproduces the missing
+diagnostics against the old code. Its HTML fixture needed an explicit UTF-8 content type;
+otherwise its Unicode status message was decoded incorrectly. Both final diagnostic browser
+tests pass, with the production 30-second deadline exercised in each layout.
 
-Next: user feedback on the rebuilt app. The preceding undo shortcut fix is committed as
-`ae40dea`; the reload repair is ready with focused validation complete. Existing Linux browser crashes below
-remain open because local Mac validation cannot establish their resolution.
+48 perf unit tests, frontend build and typechecking (zero errors/warnings) pass. The six
+existing readiness browser tests pass. Local report-only perf completes both device profiles
+and exits 0, but reports budget violations and insufficient quick-switcher samples. It ran
+alongside focused validation, so its timings are not a clean performance comparison; completion
+does not prove budget compliance or resolve the Linux timeout. Logs: `/tmp/mb-perf-reload-investigation.log`,
+`/tmp/mb-perf-diagnostics-browser.log`, `/tmp/mb-perf-diagnostics-final.log`,
+`/tmp/mb-perf-diagnostics-build.log`, `/tmp/mb-perf-diagnostics-types.log`.
+
+Next: obtain the diagnostic output from a failing CI run to identify which gate is stuck
+before changing application behavior. Local Mac validation cannot establish a Linux fix.
+Full `make check` and coverage are deferred; full `make e2e` remains pending user-run manual
+validation. Start locally with `make dev` (9011) or `make prod` (9010).
 
 ## Current CI status
 
-The user confirms runtime perf now succeeds in CI after `9616e43`. By their subsequent
+The user previously confirmed runtime perf succeeded in CI after `9616e43`; the newer
+failure described above supersedes that result. By their subsequent
 request, full E2E has moved out of automatic push/PR CI to `.github/workflows/e2e.yml`, named
 `E2E (manual)`, with only `workflow_dispatch`. Check, web, perf and fuzz-build remain automatic.
 Use GitHub Actions → E2E (manual) → Run workflow after this workflow reaches the default

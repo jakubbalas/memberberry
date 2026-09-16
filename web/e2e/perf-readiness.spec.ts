@@ -2,6 +2,18 @@ import { expect, signIn, test } from "./fixtures.js";
 
 import { timeSwitch, timeToEditor } from "../perf/measure.ts";
 
+test("cold-start failure identifies the hidden editor gate and connection status", async ({ page }) => {
+  test.setTimeout(45_000);
+  await page.route("**/perf-blocked", (route) => route.fulfill({
+    contentType: "text/html; charset=utf-8",
+    body: `<style>[data-body="waiting"] { visibility: hidden; }</style>
+      <section class="editor-panel" data-body="waiting">
+        <div class="editor-surface"><div class="tiptap" contenteditable="true">Note</div></div>
+      </section><p class="offline-status" role="status">Offline — reconnecting</p>`,
+  }));
+  await expect(timeToEditor(page, "/perf-blocked")).rejects.toThrow(/body.*waiting.*Offline — reconnecting/s);
+});
+
 test("a stalled custom emoji request does not block the note editor", async ({ page }) => {
   let requests = 0;
   let release: () => void = () => undefined;

@@ -3047,6 +3047,11 @@ runner spec, fixed and recorded" and nobody has recorded it; enforcing an absolu
 budget on a shared runner before that would produce a flaky gate, which AGENTS.md §2.3 counts
 as a failing one. Running it unenforced is still what keeps the harness itself from rotting.
 
+Report-only mode still fails on a broken measurement. Editor readiness retains its 30-second
+deadline; a timeout reports the URL, document readiness, editor visibility/editability,
+loading/body gates and displayed connection/error status. Cold-start failures identify the
+device and sample, and the runner preserves collected browser errors alongside the cause.
+
 #### What the numbers do not say
 
 Written down because each one is a way to over-read a figure this harness prints.

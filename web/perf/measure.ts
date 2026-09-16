@@ -262,7 +262,25 @@ export async function timeToEditor(page: Page, url: string): Promise<number> {
         }
         const timer = setTimeout(() => {
           observer.disconnect();
-          reject(new Error(`${selector} never became visible and editable within ${deadline} ms of navigating`));
+          const state = {
+            path: location.pathname,
+            readyState: document.readyState,
+            editors: [...document.querySelectorAll(selector)].map((element) => ({
+              editable: element instanceof HTMLElement && element.isContentEditable,
+              visible: element.checkVisibility({ checkVisibilityCSS: true }),
+              visibility: getComputedStyle(element).visibility,
+              display: getComputedStyle(element).display,
+              loading: element.closest("[data-editor]")?.getAttribute("data-editor") ?? null,
+              body: element.closest("[data-body]")?.getAttribute("data-body") ?? null,
+            })),
+            panels: [...document.querySelectorAll(".editor-panel")].map((panel) => ({
+              loading: panel.getAttribute("data-editor"),
+              body: panel.getAttribute("data-body"),
+            })),
+            status: [...document.querySelectorAll(".offline-status, [role=alert]")]
+              .map((element) => element.textContent?.slice(0, 1000)),
+          };
+          reject(new Error(`${selector} never became visible and editable within ${deadline} ms of navigating; state=${JSON.stringify(state)}`));
         }, deadline);
         const observer = new MutationObserver(() => {
           if (!ready()) return;
@@ -389,7 +407,11 @@ async function coldStart(
       });
     }
 
-    samples.push(await timeToEditor(page, `/v/${PERF_SLUG}/${PERF_NOTE}`));
+    try {
+      samples.push(await timeToEditor(page, `/v/${PERF_SLUG}/${PERF_NOTE}`));
+    } catch (cause) {
+      throw new Error(`${profile.name} cold-start sample ${attempt + 1}/${REPEATS.coldStart} failed`, { cause });
+    }
     // why: one figure per load — the worst task in it — rather than every task from every
     // load pooled together. The Long Tasks API only reports a task once it exceeds 50 ms,
     // which is also this budget, so a load with no entries means nothing crossed the line.
@@ -1036,6 +1058,8 @@ export async function measureBrowser(
       runs.push(await measureDevice(browser, profile, origin, storageState));
     }
     return runs;
+  } catch (cause) {
+    throw new Error(`Performance run failed; browser problems: ${JSON.stringify(problems)}`, { cause });
   } finally {
     await browser.close();
   }
