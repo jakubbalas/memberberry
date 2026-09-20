@@ -1,6 +1,32 @@
 # Handoff
 
-**Last updated:** Recurring CI performance timeout investigation, 2026-09-16.
+**Last updated:** Filesystem watcher feedback-loop fix, 2026-09-20.
+
+## Current watcher CPU fix
+
+The recursive vault watcher also observed Memberberry's derived `.memberberry/` index. When
+index publishing removed or replaced an internal file, canonicalization failed and marked the
+watch signal as overflowed. The resulting full reconcile published the index again and fed the
+watcher continuously. The watcher now drops derived-state paths before canonicalization while
+preserving non-derived paths from mixed events and the existing fallback for genuine unknown
+or external deletions.
+
+A regression deletes an internal index file and proves the watcher reports no maintenance
+work; it fails against `origin/main` with `Changes::All`. All seven watcher integration tests,
+formatting and `cargo clippy -p mb-server --tests -- -D warnings` pass. The wider server run
+passes 175 tests and has two unrelated failures,
+`onboarding_failed_config_write_removes_the_unpublished_vault_and_allows_retry` and
+`unreadable_vault_shows_recovery_guidance_only_to_its_member`; both fail identically when run
+alone from a clean `origin/main` worktree.
+
+A release binary exercised the real two-vault deployment under a one-CPU/1 GiB limit. Across
+18 idle samples over roughly 108 seconds, container CPU was 0.20% median, 1.25% mean and 7.45%
+maximum rather than the reproduced sustained 47-49%. Index metadata changed at the designed
+60-second full-sweep cadence rather than continuously; a temporary Markdown probe still
+triggered an index update and was removed. The service remained healthy and returned HTTP 200.
+Full `make check`, coverage, performance budgets and full E2E are deferred. This is an internal
+watcher correction and does not change the specification or user-visible behavior. Next:
+submit the focused patch for review and let CI exercise the repository-wide gates.
 
 ## Current performance investigation
 
