@@ -102,6 +102,28 @@ fn an_idle_vault_reports_nothing_to_re_read() {
 }
 
 #[test]
+fn derived_index_writes_do_not_feed_back_into_maintenance() {
+    let dir = TempDir::new("watch-derived-index");
+    let index = dir.path().join(".memberberry/index");
+    std::fs::create_dir_all(&index).unwrap();
+    let transient = index.join("meta.json.tmp");
+    std::fs::write(&transient, "derived\n").unwrap();
+    let signal = Arc::new(WatchSignal::default());
+    let (watcher, problems) = watch(&[dir.path().to_path_buf()], Arc::clone(&signal));
+    assert!(problems.is_empty(), "{problems:?}");
+    drop(changes_within(&signal, Duration::from_millis(300)));
+
+    std::fs::remove_file(&transient).unwrap();
+    let changes = changes_within(&signal, Duration::from_millis(500));
+
+    assert!(
+        changes.is_empty(),
+        "derived state must not trigger another maintenance pass: {changes:?}"
+    );
+    drop(watcher);
+}
+
+#[test]
 fn a_watched_edit_reaches_subscribers_through_one_maintenance_tick() {
     // End to end: watcher names the file, `maintain` inspects only that file, and the room
     // broadcasts the imported change.

@@ -121,7 +121,14 @@ pub fn watch(
                     signal.overflowed();
                     return;
                 }
-                for path in event.paths {
+                // The watcher observes the vault recursively, including Memberberry's own
+                // derived index. Publishing that index must not schedule another maintenance
+                // pass or the server continuously indexes its own writes.
+                for path in event
+                    .paths
+                    .into_iter()
+                    .filter(|path| !is_derived_state(path))
+                {
                     // Canonicalize so a watcher's spelling of a path matches the one the
                     // coordinator resolved. A deleted path cannot canonicalize, and a
                     // deletion still matters, so fall back to a sweep rather than drop it.
@@ -151,6 +158,12 @@ pub fn watch(
         },
         errors,
     )
+}
+
+/// Whether a path belongs to Memberberry's derived state rather than user-authored content.
+fn is_derived_state(path: &std::path::Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".memberberry")
 }
 
 /// Whether an event can change a file's bytes. Access-time events cannot, and on some
