@@ -1,8 +1,53 @@
 # Handoff
 
-**Last updated:** Visual table editing, 2026-09-22.
+**Last updated:** Persistent folder expansion, 2026-09-22.
 
-## Current change
+## Current work
+
+Expanded/collapsed tree folders now survive reload, scoped to the local user and vault.
+The tree persists pointer/keyboard changes and successful folder-move path updates.
+Malformed or unavailable storage cannot prevent navigation; saved paths never populate
+the readable tree. SPEC §8.2 documents the local-only preference.
+
+The remount regression failed before implementation. Focused verification passes: 70
+tests across tree expansion storage, tree navigation and NoteTree DOM, including seeded
+round trips, account/vault isolation, storage failures and a stale-hidden-folder test.
+A fresh build plus `tree-expansion.spec.ts` passes on desktop and mobile, checking nested
+expansion and subsequent collapse through real reloads. TypeScript/Svelte checks pass.
+Full checks and coverage are deferred; full E2E remains pending manual validation.
+Pre-commit verification reran all six affected unit/DOM suites together: 141 tests pass.
+
+The file-list New note button now carries the pointer/keyboard-selected folder to the
+creation prompt instead of always using the root. Selected notes supply their parent folder;
+with no explicit tree selection the existing root default remains. SPEC §6.10 records the
+destination and explicit-path override behavior. Server authorization is unchanged.
+
+Both pointer and keyboard regressions failed before the fix. Focused verification passes:
+107 tests across NoteTree, CommandCenter, create and palette; TypeScript/Svelte checks have
+zero errors/warnings. A fresh build plus the selected-folder browser test passes on desktop
+and mobile and checks the Markdown file in Projects/. Full checks and coverage are deferred;
+full E2E remains pending manual validation. Folder improvements and creation regressions
+are included together in this change.
+
+## Unresolved sync panic
+
+The user reports creation/editing works again after restart guidance. Their earlier
+undownloaded-note placeholder accompanied `memberberry maintenance: sync registry lock
+poisoned`: an earlier Rust panic blocked subscriptions and maintenance. The original panic
+log is gone, so its cause is not fixed. If it recurs, capture the first panic using
+`RUST_BACKTRACE=1 make dev` (stop the old dev process first). Do not clear poison or browser
+replicas to work around it. The in-app browser bridge was unavailable; disposable browser
+tests do not establish a fix for that server panic. Immediate-typing creation regressions
+for sidebar, palette and empty vault passed on both viewports before this folder change.
+
+Earlier focused `create.spec.ts` result: 10 passed, 2 failed. Both failures are the existing vault-home
+navigation test waiting for the exact treeitem name `Projects`; folder move controls now
+contribute to that accessible name. This selector failure is outside the editing diagnosis
+and remains unfixed. The rebuilt frontend passed TypeScript compilation. Full checks and
+coverage are deferred; full E2E remains pending manual validation. The table implementation
+is committed as `6d52240`; the reported server panic remains a separate unresolved issue.
+
+## Table baseline
 
 The editor has a Table button, an editable header above every column, contextual row/column insertion,
 mouse/touch row dragging and keyboard-accessible Row up/down actions. Cell line breaks now

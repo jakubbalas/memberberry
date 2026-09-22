@@ -34,6 +34,7 @@ export interface CreateOptions {
  * writing about the thing they are reading belongs; with nothing open it lands at the vault
  * root. A name containing a `/` is taken as a path from the root, which is how the same
  * prompt doubles as "put it in this folder".
+ * A selected tree folder is passed as `from` with a trailing slash.
  *
  * Returns `undefined` for a name that is not a name — empty, all whitespace, or one whose
  * segments could climb out of the vault. The server refuses these too; this is the message

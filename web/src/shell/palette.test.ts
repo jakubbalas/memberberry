@@ -36,6 +36,12 @@ describe("requesting a palette", () => {
 });
 
 describe("reading a request", () => {
+  it("carries the selected creation destination", () => {
+    expect(paletteRequest(new CustomEvent(PALETTE_EVENT, {
+      detail: { kind: "create", from: "Projects/" },
+    }))).toEqual({ kind: "create", from: "Projects/" });
+  });
+
   it("accepts every mode the palette has", () => {
     for (const mode of ["commands", "notes", "vaults", "templates", "create"] as const) {
       expect(paletteRequest(new CustomEvent(PALETTE_EVENT, { detail: mode }))).toBe(mode);
@@ -46,6 +52,8 @@ describe("reading a request", () => {
     ["a mode that does not exist", new CustomEvent(PALETTE_EVENT, { detail: "settings" })],
     ["no detail at all", new CustomEvent(PALETTE_EVENT)],
     ["an object", new CustomEvent(PALETTE_EVENT, { detail: { mode: "notes" } })],
+    ["a non-string destination", new CustomEvent(PALETTE_EVENT, { detail: { kind: "create", from: 7 } })],
+    ["a missing destination", new CustomEvent(PALETTE_EVENT, { detail: { kind: "create" } })],
     ["a plain event", new Event(PALETTE_EVENT)],
   ])("refuses %s", (_case, event) => {
     expect(paletteRequest(event)).toBeUndefined();

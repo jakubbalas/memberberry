@@ -937,6 +937,10 @@ database (C2).
 
 **Two entry points, one enforcement point.** `POST /api/v1/vaults/{slug}/notes` is what the
 workspace calls, including the pinned New note action and empty-vault home.
+The file-list New note action creates inside the folder selected by pointer or keyboard,
+or beside a selected note. Without a tree selection it defaults to the vault root;
+the command palette defaults beside the open note. The prompt displays the destination.
+A name containing `/` remains an explicit vault-relative path and overrides that default.
 `POST /v/{slug}/new` remains the no-bundle server-rendered fallback form.
 It answers `303` to the new note, so the browser lands on it with a `GET` and a
 reload does not re-post. Both call the same `CreateNote`; neither has a permission rule of
@@ -1483,7 +1487,11 @@ disclosure. The strip remains visible while the body scrolls; every selector has
 minimum hit area, an accessible name, a tooltip and a pressed state. Native buttons support
 Tab and Enter/Space on desktop and the same controls sit inside the mobile drawer.
 Inactive views remain mounted but hidden, preserving search text, filters, calendar month
-and tree expansion when switching. Selection is session-local and is not persisted.
+and tree expansion when switching. Navigation-view selection is session-local and is not persisted.
+Folder expansion is stored locally per user and vault and restored on reload, including
+nested expansion beneath a collapsed parent. Storage failures fall back to session-only
+navigation. Saved paths only control expansion of the server-filtered tree; they never
+introduce folders or notes into it. This preference does not sync across devices.
 Existing permission-filtered loaders and their lifecycles are unchanged; hiding a view is
 presentation, never authorization. `e2e/navigation.spec.ts` checks actual visibility,
 keyboard activation, target sizes and retained search state in both viewports.

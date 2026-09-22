@@ -93,6 +93,10 @@ test.describe("first run, on a vault with no notes", () => {
     // C2: it is a Markdown file a text editor would open, with no server involved.
     const onDisk = readFileSync(join(emptyVaultRoot(info.project.name, purpose), `${name}.md`), "utf8");
     expect(onDisk).toBe(`# ${name}\n`);
+    await page.keyboard.type("My first note body.");
+    await expect(page.locator(EDITOR).locator("p")).toContainText("My first note body.");
+    await expect.poll(() => readFileSync(join(emptyVaultRoot(info.project.name, purpose), `${name}.md`), "utf8"), { timeout: 15_000 })
+      .toContain("My first note body.");
   });
 
   test("a name that is already taken comes back on the form rather than a dead end", async ({
@@ -123,6 +127,40 @@ test.describe("first run, on a vault with no notes", () => {
 });
 
 test.describe("creating a note from the workspace", () => {
+  test("New note creates inside the selected folder instead of beside the open note", async ({ page }, info) => {
+    await signIn(page);
+    await page.goto("/v/personal");
+    const show = page.getByRole("button", { name: "Show Navigation", exact: true });
+    if (await show.isVisible()) await show.click();
+    await page.locator('[role="treeitem"][title="Projects"]').click();
+    await page.getByRole("complementary", { name: "Navigation", exact: true }).getByRole("button", { name: "New note", exact: true }).click();
+    const prompt = page.getByRole("dialog", { name: "New note", exact: true });
+    await expect(prompt.locator(".rename-subject")).toHaveText("In Projects/");
+    const name = `Selected folder ${info.project.name}`;
+    await prompt.getByLabel("Name", { exact: true }).fill(name);
+    await prompt.getByRole("button", { name: "Create", exact: true }).click();
+    await expect(page.locator(EDITOR).getByRole("heading", { name, exact: true })).toBeVisible();
+    expect(readFileSync(join(E2E_VAULT, "Projects", `${name}.md`), "utf8")).toBe(`# ${name}\n`);
+  });
+
+  test("the sidebar New note button opens a body that accepts typing immediately", async ({ page }, info) => {
+    await signIn(page);
+    await page.goto("/v/personal/Projects/Roadmap.md");
+    await expect(page.locator(EDITOR)).toBeVisible();
+    const show = page.getByRole("button", { name: "Show Navigation", exact: true });
+    if (await show.isVisible()) await show.click();
+    await page.getByRole("complementary", { name: "Navigation", exact: true }).getByRole("button", { name: "New note", exact: true }).click();
+    const name = `New editable note ${info.project.name}`;
+    const prompt = page.getByRole("dialog", { name: "New note", exact: true });
+    await prompt.getByLabel("Name", { exact: true }).fill(name);
+    await prompt.getByRole("button", { name: "Create", exact: true }).click();
+    const region = page.getByRole("region", { name: `Note editor: ${name}.md`, exact: true });
+    await expect(region.getByRole("heading", { name, exact: true })).toBeVisible();
+    await page.keyboard.type("Immediately editable.");
+    await expect(region.locator(".tiptap p")).toContainText("Immediately editable.");
+    await expect.poll(() => readFileSync(join(E2E_VAULT, `${name}.md`), "utf8"), { timeout: 15_000 }).toContain("Immediately editable.");
+  });
+
   test("the palette creates a note beside the open one and opens it to type in", async ({
     page,
   }, info) => {
@@ -153,10 +191,8 @@ test.describe("creating a note from the workspace", () => {
     expect(readFileSync(join(E2E_VAULT, "Projects", `${unique}.md`), "utf8")).toBe(`# ${unique}\n`);
 
     // And what was typed into it reaches the file, which is what "a note you can use" means.
-    await page.locator(EDITOR).click();
-    await page.keyboard.press("End");
-    await page.keyboard.press("Enter");
     await page.keyboard.type("Written after creating it.");
+    await expect(page.locator(EDITOR).locator("p")).toContainText("Written after creating it.");
     await expect
       .poll(() => readFileSync(join(E2E_VAULT, "Projects", `${unique}.md`), "utf8"), {
         timeout: 10_000,

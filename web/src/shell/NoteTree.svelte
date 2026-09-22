@@ -18,6 +18,7 @@
   import { requestRename } from "./rename.js";
   import NamePrompt from "./NamePrompt.svelte";
   import { validFolder } from "./folders.js";
+  import { readTreeExpansion, writeTreeExpansion, type TreeExpansion } from "./tree-expansion.js";
 
   interface Props {
     readonly catalog: NoteCatalog;
@@ -28,7 +29,7 @@
     /** Empty folders already filtered by the server. */
     readonly emptyFolders?: readonly string[];
     /** Opens note creation from the file-list heading. */
-    readonly oncreate?: () => void;
+    readonly oncreate?: (from: string) => void;
     /** Opens folder creation from the file-list heading. */
     readonly onfolder?: () => void;
     /** Moves a note to the server-owned trash after confirmation. */
@@ -36,18 +37,24 @@
     /** Moves a note to a vault-relative folder, or to the vault root when empty. */
     readonly onmove?: (from: string, to: string, kind: "note" | "folder") => Promise<string | undefined>;
     readonly target?: EventTarget | undefined;
+    readonly expansion?: TreeExpansion;
   }
 
-  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder, ondelete, onmove, target }: Props = $props();
+  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder, ondelete, onmove, target, expansion }: Props = $props();
 
   let expanded = $state<ReadonlySet<string>>(new Set());
   let cursor = $state(0);
+  let selectionMade = $state(false);
   let context = $state<{ path: string; x: number; y: number } | undefined>(undefined);
   let draggingPath = $state<string | undefined>(undefined);
   let dropFolder = $state<string | undefined>(undefined);
   let moveSubject = $state<string | undefined>(undefined);
   let moveError = $state<string | undefined>(undefined);
   let moveBusy = $state(false);
+
+  $effect(() => {
+    expanded = readTreeExpansion(expansion);
+  });
 
   $effect(() => {
     catalog.ensure();
@@ -74,6 +81,7 @@
     if (open) next.add(path);
     else next.delete(path);
     expanded = next;
+    writeTreeExpansion(expansion, expanded);
   }
 
   function onkeydown(event: KeyboardEvent): void {
@@ -87,6 +95,7 @@
     const action = treeKeyAction(event.key, rows, cursor);
     if (action.kind === "none") return;
     event.preventDefault();
+    selectionMade = true;
     switch (action.kind) {
       case "move":
         cursor = action.to;
@@ -169,6 +178,7 @@
     if (moveError === undefined) {
       moveSubject = undefined;
       expanded = new Set([...expanded].map((path) => path === from || path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : path));
+      writeTreeExpansion(expansion, expanded);
       const parent = to.slice(0, Math.max(0, to.lastIndexOf("/")));
       if (parent !== "") setExpanded(parent, true);
     }
@@ -222,7 +232,10 @@
       {#if oncreate !== undefined || onfolder !== undefined}
         <div class="tree-actions" role="group" aria-label="File actions">
           {#if oncreate !== undefined}
-            <button type="button" class="icon-button" aria-label="New note" title="New note" onclick={oncreate}><Icon name="note-plus" /></button>
+            <button type="button" class="icon-button" aria-label="New note" title="New note" onclick={() => {
+              const node = selectionMade ? rows[cursor]?.node : undefined;
+              oncreate?.(node === undefined ? "" : node.kind === "folder" ? `${node.path}/` : node.path);
+            }}><Icon name="note-plus" /></button>
           {/if}
           {#if onfolder !== undefined}
             <button type="button" class="icon-button" aria-label="New folder" title="New folder" onclick={onfolder}><Icon name="folder-plus" /></button>
@@ -274,6 +287,7 @@
             title={row.node.path}
             onclick={(event) => {
               cursor = index;
+              selectionMade = true;
               if (row.node.kind === "note") onopen(row.node.path, event.metaKey || event.ctrlKey);
               else setExpanded(row.node.path, row.expanded !== true);
             }}

@@ -18,6 +18,7 @@ import { NoteCatalog } from "./note-catalog.svelte.js";
 import type { NoteSurface, OpenNoteSurfaceOptions } from "./note-surface.js";
 import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
+import { writeTreeExpansion } from "./tree-expansion.js";
 
 const NOTES: readonly NoteSummary[] = [
   { path: "Welcome.md", title: "Welcome", conflicts: 0 },
@@ -86,6 +87,7 @@ function render(
     bookmarked?: readonly string[];
     open?: string[];
     home?: boolean;
+    chrome?: Pick<Storage, "getItem" | "setItem">;
     rename?: (
       vault: string,
       from: string,
@@ -123,7 +125,7 @@ function render(
       store,
       ...(options.home === undefined ? {} : { home: options.home }),
       session: { vault: "personal", user: "alice" },
-      chrome: { getItem: () => null, setItem: () => undefined },
+      chrome: options.chrome ?? { getItem: () => null, setItem: () => undefined },
       open: openSurface,
       target: eventTarget,
       platform: "mac" as const,
@@ -141,6 +143,82 @@ const tree = (): HTMLElement | null => target.querySelector('[role="tree"]');
 const rows = (): HTMLElement[] => [...target.querySelectorAll<HTMLElement>('[role="treeitem"]')];
 const names = (): string[] =>
   rows().map((row) => row.querySelector(".tree-label")?.textContent?.trim() ?? "");
+
+it("restores expanded nested folders and preserves collapsed folders after remount", async () => {
+  const values = new Map<string, string>();
+  const chrome = {
+    getItem: (key: string): string | null => values.get(key) ?? null,
+    setItem: (key: string, value: string): void => { values.set(key, value); },
+  };
+  let view = render({ chrome });
+  try {
+    await flush();
+    for (const path of ["Archive", "Archive/2019", "Projects", "Projects"]) {
+      rows().find((row) => row.title === path)?.click();
+      await flush();
+    }
+    await view.teardown();
+    view = render({ chrome });
+    await flush();
+    expect(names()).toEqual(["Archive", "2019", "Old", "Projects", "Welcome"]);
+  } finally {
+    await view.teardown();
+  }
+});
+
+it("does not reveal saved folders missing from the readable catalog", async () => {
+  const values = new Map<string, string>();
+  const chrome = {
+    getItem: (key: string): string | null => values.get(key) ?? null,
+    setItem: (key: string, value: string): void => { values.set(key, value); },
+  };
+  writeTreeExpansion({ user: "alice", vault: "personal", storage: chrome }, new Set(["Private", "Private/Secret"]));
+  const view = render({ chrome, notes: [{ path: "Welcome.md", title: "Welcome", conflicts: 0 }] });
+  try {
+    await flush();
+    expect(names()).toEqual(["Welcome"]);
+  } finally {
+    await view.teardown();
+  }
+});
+
+it.each(["pointer", "keyboard"])("creates inside the folder selected by %s", async (input) => {
+  const view = render({ open: ["Welcome.md"] });
+  try {
+    await flush();
+    if (input === "pointer") rows().find((row) => row.title === "Projects")?.click();
+    else await press("ArrowDown");
+    await flush();
+    target.querySelector<HTMLButtonElement>('button[aria-label="New note"]')?.click();
+    await flush();
+    expect(target.querySelector(".rename-subject")?.textContent).toBe("In Projects/");
+  } finally {
+    await view.teardown();
+  }
+});
+
+it.each([
+  { selected: undefined, destination: "At the vault root" },
+  { selected: "Archive/2019", destination: "In Archive/2019/" },
+  { selected: "Projects/Roadmap.md", destination: "In Projects/" },
+])("shows $destination for tree selection $selected", async ({ selected, destination }) => {
+  const view = render({ open: ["Welcome.md"] });
+  try {
+    await flush();
+    if (selected !== undefined) {
+      const parent = selected.split("/")[0];
+      rows().find((row) => row.title === parent)?.click();
+      await flush();
+      rows().find((row) => row.title === selected)?.click();
+      await flush();
+    }
+    target.querySelector<HTMLButtonElement>('button[aria-label="New note"]')?.click();
+    await flush();
+    expect(target.querySelector(".rename-subject")?.textContent).toBe(destination);
+  } finally {
+    await view.teardown();
+  }
+});
 
 async function press(key: string): Promise<void> {
   tree()?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));

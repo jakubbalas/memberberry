@@ -10,6 +10,11 @@ import {
 } from "./create.js";
 
 describe("newNotePathFor", () => {
+  it("creates in a selected nested folder while preserving explicit path overrides", () => {
+    expect(newNotePathFor("Projects/Planning/", "Plan")).toBe("Projects/Planning/Plan.md");
+    expect(newNotePathFor("Projects/Planning/", "Archive/Plan")).toBe("Archive/Plan.md");
+  });
+
   it("puts a bare name beside the note that is open", () => {
     expect(newNotePathFor("Projects/Roadmap.md", "Plan")).toBe("Projects/Plan.md");
   });

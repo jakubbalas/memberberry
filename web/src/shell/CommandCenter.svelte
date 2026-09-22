@@ -528,8 +528,8 @@
     const onRequest = (event: Event): void => {
       const request = paletteRequest(event);
       if (request === undefined || mode !== undefined) return;
-      if (request === "create") {
-        ask({ kind: "create", from: "", initial: "" });
+      if (request === "create" || typeof request === "object") {
+        ask({ kind: "create", from: typeof request === "object" ? request.from : "", initial: "" });
         return;
       }
       openPalette(request);

@@ -12,7 +12,8 @@
 export const PALETTE_EVENT = "memberberry:palette";
 
 /** Which list the palette should open with. Mirrors `CommandCenter`'s own modes. */
-export type PaletteRequest = "commands" | "notes" | "vaults" | "templates" | "create";
+export type PaletteRequest = "commands" | "notes" | "vaults" | "templates" | "create"
+  | { readonly kind: "create"; readonly from: string };
 
 /**
  * Asks whichever `CommandCenter` is listening to open `request`.
@@ -33,6 +34,10 @@ export function requestPalette(request: PaletteRequest, target: EventTarget = wi
 export function paletteRequest(event: Event): PaletteRequest | undefined {
   if (!(event instanceof CustomEvent)) return undefined;
   const detail: unknown = event.detail;
+  if (typeof detail === "object" && detail !== null && "kind" in detail
+    && detail.kind === "create" && "from" in detail && typeof detail.from === "string") {
+    return { kind: "create", from: detail.from };
+  }
   return detail === "commands" || detail === "notes" || detail === "vaults" || detail === "templates" || detail === "create"
     ? detail
     : undefined;

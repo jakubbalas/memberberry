@@ -574,6 +574,7 @@
     </section>
     <section class="navigation-view" id="navigation-notes" aria-label="Notes" hidden={navigationView !== "Notes"}>
       <NoteTree
+        expansion={{ vault: vaultSlug, user: session?.user ?? "local-demo", storage: chrome }}
         {catalog}
         {bookmarks}
         {emptyFolders}
@@ -581,7 +582,7 @@
         onopen={openNavigationNote}
         ondelete={(path) => void deleteFromTree(path)}
         onmove={moveFromTree}
-        oncreate={() => requestPalette("create", target ?? window)}
+        oncreate={(from) => requestPalette({ kind: "create", from }, target ?? window)}
         onfolder={() => { folderError = undefined; folderPrompt = true; }}
         {target}
       />
