@@ -16,6 +16,8 @@
   import type { NoteCatalog } from "./note-catalog.svelte.js";
   import { buildTree, treeKeyAction, visibleRows } from "./tree.js";
   import { requestRename } from "./rename.js";
+  import NamePrompt from "./NamePrompt.svelte";
+  import { validFolder } from "./folders.js";
 
   interface Props {
     readonly catalog: NoteCatalog;
@@ -32,7 +34,7 @@
     /** Moves a note to the server-owned trash after confirmation. */
     readonly ondelete?: (path: string) => void;
     /** Moves a note to a vault-relative folder, or to the vault root when empty. */
-    readonly onmove?: (from: string, to: string) => void | Promise<void>;
+    readonly onmove?: (from: string, to: string, kind: "note" | "folder") => Promise<string | undefined>;
     readonly target?: EventTarget | undefined;
   }
 
@@ -43,6 +45,9 @@
   let context = $state<{ path: string; x: number; y: number } | undefined>(undefined);
   let draggingPath = $state<string | undefined>(undefined);
   let dropFolder = $state<string | undefined>(undefined);
+  let moveSubject = $state<string | undefined>(undefined);
+  let moveError = $state<string | undefined>(undefined);
+  let moveBusy = $state(false);
 
   $effect(() => {
     catalog.ensure();
@@ -72,6 +77,13 @@
   }
 
   function onkeydown(event: KeyboardEvent): void {
+    const row = rows[cursor];
+    if (event.key === "F2" && row?.node.kind === "folder") {
+      event.preventDefault();
+      moveError = undefined;
+      moveSubject = row.node.path;
+      return;
+    }
     const action = treeKeyAction(event.key, rows, cursor);
     if (action.kind === "none") return;
     event.preventDefault();
@@ -115,12 +127,15 @@
   }
 
   function dragOver(event: DragEvent, folder: string): void {
+    event.stopPropagation();
     if (onmove === undefined) return;
     const transfer = event.dataTransfer;
     if (transfer === null) return;
-    const source = transfer.getData("text/plain");
-    if (draggingPath === undefined && source !== "") draggingPath = source;
-    if (draggingPath === undefined) return;
+    if (draggingPath === undefined || !canDrop(draggingPath, folder)) {
+      dropFolder = undefined;
+      transfer.dropEffect = "none";
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     transfer.dropEffect = "move";
@@ -131,13 +146,32 @@
     if (onmove === undefined) return;
     event.preventDefault();
     event.stopPropagation();
-    const from = event.dataTransfer?.getData("text/plain") || draggingPath;
+    const from = draggingPath;
     draggingPath = undefined;
     dropFolder = undefined;
-    if (from === undefined) return;
+    if (from === undefined || !canDrop(from, folder)) return;
     const filename = from.slice(from.lastIndexOf("/") + 1);
     const to = folder === "" ? filename : `${folder}/${filename}`;
-    if (from !== to) void onmove(from, to);
+    if (from !== to) void move(from, to);
+  }
+
+  function canDrop(from: string, folder: string): boolean {
+    return folder !== from && !folder.startsWith(`${from}/`) && folder !== from.slice(0, Math.max(0, from.lastIndexOf("/")));
+  }
+
+  async function move(from: string, to: string): Promise<void> {
+    if (moveBusy || onmove === undefined) return;
+    const node = rows.find((row) => row.node.path === from)?.node;
+    if (node === undefined) return;
+    moveBusy = true;
+    moveError = await onmove(from, to, node.kind);
+    moveBusy = false;
+    if (moveError === undefined) {
+      moveSubject = undefined;
+      expanded = new Set([...expanded].map((path) => path === from || path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : path));
+      const parent = to.slice(0, Math.max(0, to.lastIndexOf("/")));
+      if (parent !== "") setExpanded(parent, true);
+    }
   }
 
   function endDrag(): void {
@@ -183,7 +217,7 @@
   {/if}
 
   <section class="tree-section" aria-labelledby="notes-heading">
-    <div class="tree-section-header">
+    <div class="tree-section-header" role="group" aria-label="Vault root" data-drop-target={dropFolder === ""} ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")}>
       <h3 class="tree-heading" id="notes-heading">Notes</h3>
       {#if oncreate !== undefined || onfolder !== undefined}
         <div class="tree-actions" role="group" aria-label="File actions">
@@ -234,7 +268,7 @@
             aria-selected={index === cursor}
             data-kind={row.node.kind}
             data-current={row.node.kind === "note" && row.node.path === activeNote}
-            data-dragging={row.node.kind === "note" && row.node.path === draggingPath}
+            data-dragging={row.node.path === draggingPath}
             data-drop-target={row.node.kind === "folder" && row.node.path === dropFolder}
             style={`--tree-depth: ${row.depth}`}
             title={row.node.path}
@@ -244,8 +278,8 @@
               else setExpanded(row.node.path, row.expanded !== true);
             }}
             oncontextmenu={row.node.kind === "note" ? (event) => openContextMenu(event, row.node.path) : undefined}
-            draggable={row.node.kind === "note" && onmove !== undefined}
-            ondragstart={row.node.kind === "note" ? (event) => startDrag(event, row.node.path) : undefined}
+            draggable={onmove !== undefined && !moveBusy}
+            ondragstart={(event) => startDrag(event, row.node.path)}
             ondragover={row.node.kind === "folder" ? (event) => dragOver(event, row.node.path) : undefined}
             ondrop={row.node.kind === "folder" ? (event) => drop(event, row.node.path) : undefined}
           >
@@ -267,6 +301,13 @@
               {/if}
             </span>
             <span class="tree-label">{label(row)}</span>
+            {#if row.node.kind === "folder" && onmove !== undefined}
+              <button type="button" class="icon-button" aria-label={`Move folder ${row.node.name}`} title="Move folder (F2)" onclick={(event) => {
+                event.stopPropagation();
+                moveError = undefined;
+                moveSubject = row.node.path;
+              }}><Icon name="folder" /></button>
+            {/if}
 
             {#if row.node.kind === "note"}
               {@const path = row.node.path}
@@ -296,6 +337,21 @@
     {/if}
   </section>
 </div>
+
+{#if moveError !== undefined && moveSubject === undefined}<p role="alert">{moveError}</p>{/if}
+{#if moveSubject !== undefined}
+<NamePrompt open={true} title="Move folder" subject={`${moveSubject} — leave the destination blank for the vault root.`} label="Destination folder" initial="" busy={moveBusy} error={moveError} confirm="Move" confirming="Moving…" onsubmit={(folder) => {
+  const from = moveSubject;
+  if (from === undefined) return;
+  const parent = folder.trim();
+  if ((parent !== "" && !validFolder(parent)) || !canDrop(from, parent)) {
+    moveError = "Choose a different folder outside this folder. Leave blank for the vault root.";
+    return;
+  }
+  const name = from.slice(from.lastIndexOf("/") + 1);
+  void move(from, parent === "" ? name : `${parent}/${name}`);
+}} ondismiss={() => { if (!moveBusy) moveSubject = undefined; }} />
+{/if}
 
 <ContextMenu
   open={context !== undefined}

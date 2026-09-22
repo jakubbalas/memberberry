@@ -31,6 +31,36 @@ fn from(names: &[&str]) -> Vec<String> {
 }
 
 #[test]
+fn simultaneous_targets_do_not_cascade_and_preserve_aliases() {
+    let replacements = std::collections::BTreeMap::from([
+        ("One".to_string(), "Two".to_string()),
+        ("Two".to_string(), "Three".to_string()),
+    ]);
+    let rewritten = mb_core::rewrite::rename_link_targets(
+        "[[One#part|first]] [[Two]] `[[One]]`",
+        &replacements,
+    )
+    .expect("rewrite");
+    assert_eq!(rewritten.text(), "[[Two#part|first]] [[Three]] `[[One]]`");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(20260922), ..ProptestConfig::default() })]
+    #[test]
+    fn simultaneous_folder_link_moves_round_trip(suffix in "[a-z]{1,24}") {
+        let old = format!("Source/{suffix}");
+        let new = format!("Archive/Source/{suffix}");
+        let source = format!("# Title\n\n[[{old}#part|📓]] ![[{old}]] `[[{old}]]`\n");
+        let replacements = std::collections::BTreeMap::from([(old.clone(), new.clone())]);
+        let moved = mb_core::rewrite::rename_link_targets(&source, &replacements).expect("move");
+        prop_assert_eq!(moved.count(), 2);
+        let inverse = std::collections::BTreeMap::from([(new, old)]);
+        let restored = mb_core::rewrite::rename_link_targets(moved.text(), &inverse).expect("restore");
+        prop_assert_eq!(restored.text(), source);
+    }
+}
+
+#[test]
 fn rename_title_replaces_the_first_h1_and_preserves_the_body() {
     let result =
         rename_title("# Old title\n\nBody **stays**.\n", "New title").expect("valid title");

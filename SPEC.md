@@ -679,7 +679,7 @@ ships.
 | E11 | **Media** | Content addressing is *not* authorization. `media_refs(note_id, path, original_name)` backs the check: a user may fetch a blob only if it is referenced by a note they can read. The sole pre-reference exception is a five-minute grant scoped to the authenticated editor who uploaded those same bytes, bridging the upload and the note's indexed save; it never grants another user access. Easy to miss; it is a real leak if missed. |
 | E12 | Tasks & task views | Filtered by readable set. |
 | E13 | Share links | A separate anonymous path with its own rules (§17). The authenticated management routes authorize the exact note before creation and scope listing/revocation to the creator; bearer tokens are never returned by list. The `/s/<token>` renderer re-authenticates the opaque token, then re-checks the link creator's current enabled account and readable set before reading the note. Its media route requires the signed share-session cookie, re-checks the same creator-readable set, and permits only media referenced by the shared note. Expiry, revocation and password failures are neutral unavailable responses. Anonymous share and media requests are bounded independently by token and by the trusted peer IP supplied by the server connection layer; forwarded headers are not trusted. |
-| E14 | **Rename / link rewrite** | §6.6. **M8:** the one operation that reads outside the caller's readable set, on purpose — a link left broken in a note they cannot see is worse. What contains it: the note being renamed is resolved through the *caller's* `AuthorizedVault`, so an unreadable one answers exactly as a missing one; both ends need `editor` or better, and a tag rename needs vault-wide `owner`; the privileged read is an ordinary index `Reader` holding a synthetic `owner` ACL, so E5 is untouched; and the reply counts only notes the caller can read, with the full list going to the audit log (§6.9). Shape checks on the new name run *before* authorization, existence checks after, so a rename cannot be used to probe for notes. |
+| E14 | **Rename / link rewrite** | §6.6. **M8:** the one operation that reads outside the caller's readable set, on purpose — a link left broken in a note they cannot see is worse. What contains it: the note being renamed is resolved through the *caller's* `AuthorizedVault`, so an unreadable one answers exactly as a missing one; both ends need `editor` or better, and a tag rename needs vault-wide `owner`; the privileged read is an ordinary index `Reader` holding a synthetic `owner` ACL, so E5 is untouched; and the reply counts only notes the caller can read, with the full list going to the audit log (§6.9). Shape checks on the new name run *before* authorization, existence checks after, so a rename cannot be used to probe for notes. Folder moves also require write access at both paths for every descendant before mutation, with neutral denial for hidden descendants and symlinked paths; empty folders use the same checks. |
 | E15 | **Workspace layouts and bookmarks** (§8.1, §8.2) | A layout is one user's list of open notes, which is the same class of data as presence — E4 filters awareness precisely because it reveals which note a person is reading. The file is keyed by the **authenticated** user, and there is no route parameter naming whose layout it is, so there is nothing to substitute. Requires vault membership, not note-level access: a layout is not a note. The device id is parsed into a validated type before it can become a filename. **Bookmarks are additionally filtered on read**: they outlive the permission that created them, so a revoked note must leave the list rather than keep showing its name. |
 
 | E16 | **Tag pane** (§9.3) | Both the tree and the per-node counts come from the readable set. A tag is a claim about notes: one carried only by notes the caller cannot read has no node, and a shared tag's count names only the notes they may see (§6.5). Membership is checked for the vault rather than per note — there is no path in the request — so a non-member gets the same empty-handed reply as an unknown vault rather than an empty tag list. |
@@ -800,6 +800,13 @@ note without a leading H1 is never treated as its title for automatic renaming.
 **Not covered.** A client with the note open is not told it moved; there is no "renamed"
 sync frame and inventing one is §7.1's business. It receives the same neutral `not_found`
 a deleted note gives, and the client that asked for the rename reopens it itself.
+
+Folder moves use the same E14 endpoint with `kind: "folder"`. Both folder paths and every
+descendant's old and new path require editor-or-owner before mutation. Hidden or symlinked
+subtrees are refused; a denied existing and absent folder share the neutral refusal.
+The server plans simultaneous link rewrites under the named system principal, then moves
+the directory and sidecars; only readable rewrite counts reach the caller. See §8.2 for the
+gesture, destination ACL inheritance and refusal behavior.
 
 ### 6.7 The honest limits of this model
 
@@ -1458,9 +1465,21 @@ keyboard activation, target sizes and retained search state in both viewports.
   closes or steps out to the parent.
 - **Notes and tabs have a custom context menu** with a Rename action. It opens the shared rename
   prompt, which validates the destination and rewrites inbound links through §6.6.
-- **Notes can be dragged into an inferred or empty folder, or back to the vault root.** The
-  gesture calls the same audited note-rename endpoint as the context menu; the server checks
-  write access to both paths, and the client never moves a note without that response.
+- **Notes and folders can be dragged into an inferred or empty folder, or back to the vault
+  root** by dropping on the Notes heading or tree background. Folder rows also offer a Move
+  folder button and F2 opens the same destination dialog; an empty destination means root.
+  Self-drops, descendant drops and unchanged locations are ignored. External text drops do
+  not initiate moves. The gesture calls the audited rename endpoint; refusals are visible,
+  and the client updates open descendant tabs only after server success.
+  Folder moves preserve nested empty folders and Markdown titles, relocate CRDT sidecars,
+  and rewrite inbound links to the new full paths, including links between moved notes.
+  All rewrites are verified together before filesystem changes. Write access is required
+  on both folder paths and every source/destination descendant; any denial refuses the
+  entire move without identifying the denied descendant (E14). Existing destinations are
+  refused rather than merged. Symlinks, hidden entries and non-Markdown files in the source
+  subtree are refused. ACL rules stay at their configured paths; destination inheritance
+  applies after a move. As with note rename (§6.6), an I/O failure after relocation can leave
+  partial sidecar/link updates; folder moves are not a filesystem transaction.
 - **Bookmarks live in the server's data directory**, at
   `<data-dir>/bookmarks/<user>/<vault>.json` — see `bookmarks.rs` for why not `.memberberry/`
   (Invariant I1 says that holds nothing irreplaceable) and why not the vault (§4.1 says a vault

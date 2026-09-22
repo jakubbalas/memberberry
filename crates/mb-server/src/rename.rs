@@ -232,6 +232,130 @@ impl<'a> Rename<'a> {
         Ok(outcome)
     }
 
+    /// Moves a complete folder, preserving note titles and rewriting inbound links.
+    /// Both paths and every descendant require write access. Symlinks and hidden entries
+    /// are refused. ACL rules remain attached to their configured paths.
+    ///
+    /// # Errors
+    /// Returns a neutral denial for inaccessible subtrees; other errors follow `note`.
+    pub fn folder(&self, from: &str, to: &str) -> Result<Renamed, RenameError> {
+        for path in [from, to] {
+            if path.is_empty() || !crate::vault::valid_note_path(&format!("{path}/folder.md")) {
+                return Err(RenameError::InvalidName(path.to_string()));
+            }
+            if !self.may_write(path) {
+                return Err(RenameError::Denied);
+            }
+        }
+        if from == to || to.starts_with(&format!("{from}/")) {
+            return Err(RenameError::InvalidName(to.to_string()));
+        }
+        let origin = self.folder_path(from)?;
+        let destination = self.folder_path(to)?;
+        let mut moved = BTreeMap::new();
+        self.folder_entries(from, to, &mut moved)?;
+        if destination.exists() {
+            return Err(RenameError::Exists(to.to_string()));
+        }
+        self.flush_open_notes()?;
+        self.sweep()?;
+        let mut replacements: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for (old, new) in &moved {
+            let target = new.trim_end_matches(".md");
+            rewrite::validate_link_name(target)
+                .map_err(|_| RenameError::InvalidName(to.to_string()))?;
+            for (source, names) in self.inbound(old)? {
+                for name in names {
+                    replacements
+                        .entry(source.clone())
+                        .or_default()
+                        .insert(name, target.to_string());
+                }
+            }
+        }
+        let mut planned = Vec::new();
+        for (path, names) in replacements {
+            let source =
+                std::fs::read_to_string(self.vault.notes_root().join(&path)).map_err(|_| {
+                    RenameError::Failed("could not read a note for rewriting".to_string())
+                })?;
+            let changed = rewrite::rename_link_targets(&source, &names)
+                .map_err(|_| RenameError::Unverified)?;
+            if changed.changed() {
+                planned.push(Planned {
+                    path,
+                    text: changed.text().to_string(),
+                    count: changed.count(),
+                });
+            }
+        }
+        for old in moved.keys() {
+            self.sync
+                .close(self.vault, old)
+                .map_err(|error| RenameError::Failed(error.to_string()))?;
+        }
+        let parent = destination.parent().ok_or(RenameError::Denied)?;
+        std::fs::create_dir_all(parent).map_err(|error| RenameError::Failed(error.to_string()))?;
+        std::fs::rename(origin, destination)
+            .map_err(|error| RenameError::Failed(error.to_string()))?;
+        for (old, new) in &moved {
+            if let Err(error) = crate::sync::relocate_sidecar(self.vault.root(), old, new) {
+                self.audit(to, &moved.values().cloned().collect::<Vec<_>>(), false);
+                return Err(RenameError::Failed(error.to_string()));
+            }
+        }
+        let outcome = self.write(planned, &moved, to)?;
+        self.settle();
+        Ok(outcome)
+    }
+
+    fn folder_path(&self, path: &str) -> Result<PathBuf, RenameError> {
+        let mut full = self.vault.notes_root().to_path_buf();
+        for segment in path.split('/') {
+            full.push(segment);
+            match std::fs::symlink_metadata(&full) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err(RenameError::Denied),
+            }
+        }
+        Ok(full)
+    }
+
+    fn folder_entries(
+        &self,
+        from: &str,
+        to: &str,
+        moved: &mut BTreeMap<String, String>,
+    ) -> Result<(), RenameError> {
+        if !self.may_write(from) || !self.may_write(to) {
+            return Err(RenameError::Denied);
+        }
+        let entries =
+            std::fs::read_dir(self.folder_path(from)?).map_err(|_| RenameError::Denied)?;
+        for entry in entries {
+            let entry = entry.map_err(|_| RenameError::Denied)?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| RenameError::Denied)?;
+            let old = format!("{from}/{name}");
+            let new = format!("{to}/{name}");
+            let kind = entry.file_type().map_err(|_| RenameError::Denied)?;
+            if name.starts_with('.') || !self.may_write(&old) || !self.may_write(&new) {
+                return Err(RenameError::Denied);
+            }
+            if kind.is_dir() {
+                self.folder_entries(&old, &new, moved)?;
+            } else if kind.is_file() && crate::vault::valid_note_path(&old) {
+                moved.insert(old, new);
+            } else {
+                return Err(RenameError::Denied);
+            }
+        }
+        Ok(())
+    }
+
     /// Renames a tag and every tag nested under it, across the whole vault (§9.3, §6.6).
     ///
     /// **Requires vault-wide `owner`.** A tag has no owner the way a note does — it is a
@@ -323,7 +447,7 @@ impl<'a> Rename<'a> {
         moved: &BTreeMap<String, String>,
         to: &str,
     ) -> Result<Renamed, RenameError> {
-        let mut touched = Vec::new();
+        let mut touched: Vec<String> = moved.values().cloned().collect();
         let mut notes = 0usize;
         let mut references = 0usize;
         let mut failure = None;

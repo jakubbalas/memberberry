@@ -1,30 +1,35 @@
 # Handoff
 
-**Last updated:** Memory Berry branding, 2026-09-22.
+**Last updated:** Folder drag-and-drop, 2026-09-22.
 
 ## Current change
 
-The approved berry/bookmark concept is now a standalone SVG at `web/public/icon.svg`.
-It replaces the favicon on server-rendered pages, the editor favicon, and the manifest's
-regular/maskable app icons. Manifest colors match the Paper theme. A revision query in
-the editor/manifest and precache list makes the branding update retire the old offline
-cache. The unversioned icon remains cached for existing references.
+Folders now drag into other folders and back to root via the Notes heading or tree
+background. A folder's Move button or F2 opens the destination dialog, usable on mobile
+and by keyboard; leave it blank for root. Invalid self/descendant drops are inert.
+Moves use `kind: "folder"` on the existing rename endpoint, preserve titles and nested
+empty folders, relocate sidecars, rewrite links simultaneously, and update open descendant
+tabs after success. Refusals are shown. Permissions and limits are in SPEC §6.6/§8.2/E14.
 
-The first browser test exposed invalid XML comments in the previous SVG (CSS token names
-contained forbidden double hyphens); the new SVG fixes that. Browser tests render the
-actual sign-in favicon at 16, 32 and 192 pixels, check the editor/manifest agreement,
-and decode the icon offline. Tiny leaf edges allow a small antialiasing tolerance.
-Production frontend and Rust CLI builds pass; 12 precache tests and all four desktop/mobile
-branding browser checks pass. The rendered 16/32/192px preview was visually inspected.
-Typechecking reports zero errors/warnings; the design-token check and diff hygiene pass.
-Full `make check`, coverage and performance
-measurement are deferred; full `make e2e` remains pending user-run manual validation.
+Focused verification passed: 34 rewrite unit/property tests, 25 server rename tests, 38
+permission-leak tests, 50 tree/rename DOM and client tests, typechecking, focused Rust Clippy,
+the mb-core WASM compile check, formatting/diff checks, and both rebuilt
+`folder-move.spec.ts` browser tests on desktop/mobile. Two existing leak tests initially hit
+sandbox socket denials; the suite passed with localhost access enabled. The drag test was deliberately broken
+by disabling folder dragging, observed failing, and restored. Full `make check`, local
+coverage and performance measurement are deferred; full `make e2e` remains pending user-run
+manual validation. Existing broader failures remain below.
 
-The user reports the app is already deployed with Compose. This change has not been
-deployed. Rebuild the image and recreate the app container on the server after transferring
-the changes. Server-rendered pages embed the SVG at Rust compile time, so updating only
-`web/dist` is insufficient. Existing browser tabs can keep the old service worker until
-closed; installed launchers may refresh their icon separately.
+Next: user validation in their deployed app. This change is not deployed. Rebuild the
+Compose image and recreate the container after transferring the changes; both frontend and
+server changed. The prior Memory Berry icon change also required a server rebuild.
+
+Open for this slice: moving folders does not rewrite saved bookmarks or notify other
+clients of new paths, consistent with existing note rename. Disk failure after the directory
+move can leave sidecar/link updates partial; there is no rollback transaction. Symlinks,
+hidden files and non-Markdown files inside a source folder are refused, rather than moving
+content with no supported permission/link model. Concurrent filesystem changes retain the
+existing rename path's limitations. These need separate design work if expanded.
 
 ## Other unresolved verification
 
@@ -44,7 +49,7 @@ closed; installed launchers may refresh their icon separately.
   and recorded budget breaches remain unresolved.
 - Emoji picker loading no longer blocks editor startup. Its focused browser/unit checks
   passed, but this does not resolve every cause of the CI perf timeout.
-- These items are carried forward rather than investigated as part of an icon change.
+- These items are carried forward rather than investigated as part of folder dragging.
 
 ## Local operation
 
@@ -54,8 +59,8 @@ Server state uses the platform application-data directory; on this Mac that is
 Container provisioning and backups are in `docs/DEPLOYMENT.md` and `docs/BACKUP.md`.
 
 Focused browser verification rebuilds first:
-`npm --prefix web run build && npm --prefix web run e2e -- branding.spec.ts --workers 2`.
-Also rebuild `cargo build -p mb-cli` after changing the embedded SVG. Browser tests use
+`npm --prefix web run build && npm --prefix web run e2e -- folder-move.spec.ts --workers 2`.
+Also rebuild `cargo build -p mb-cli` after server changes. Browser tests use
 disposable vaults on 9012; the sandbox requires escalation for localhost sockets/Chromium.
 Avoid concurrent WASM builds from the dev supervisor and test setup.
 New feedback belongs in the gitignored `local/debug/` directory.
@@ -65,7 +70,7 @@ New feedback belongs in the gitignored `local/debug/` directory.
 ### From the container deployment
 
 - The user reports the Compose deployment is running on their server. Docker is unavailable
-  in this workspace, so the logo update still needs an image rebuild and rollout there.
+  in this workspace, so application updates still need an image rebuild and rollout there.
 - **The backup wrapper intentionally causes downtime.** A coordinated offline snapshot is safer
   than independently copying SQLite, CRDT, and MinIO while they are being written.
 - **Retention and backup encryption remain operator responsibilities.** The job never deletes an

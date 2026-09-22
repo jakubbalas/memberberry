@@ -2637,6 +2637,10 @@ struct TaggedNote {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum RenameRequest {
+    Folder {
+        from: String,
+        to: String,
+    },
     /// `from` is anything a link can name; `to` is a vault-relative path ending in `.md`.
     Note {
         from: String,
@@ -2645,7 +2649,10 @@ enum RenameRequest {
         title: Option<String>,
     },
     /// `from` is a tag or a tag prefix; every tag nested under it moves with it (§9.3).
-    Tag { from: String, to: String },
+    Tag {
+        from: String,
+        to: String,
+    },
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -2709,6 +2716,7 @@ async fn rename(
                 rename.note_with_title(&from, &to, title.as_deref())
             }
             RenameRequest::Tag { from, to } => rename.tag(&from, &to),
+            RenameRequest::Folder { from, to } => rename.folder(&from, &to),
         }
     })
     .await;

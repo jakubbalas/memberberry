@@ -263,7 +263,7 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .tree:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); border-radius: var(--radius-sm); }
 .tree-row { display: flex; align-items: center; gap: var(--space-3); width: 100%; min-height: var(--tree-row-height); padding: 0 var(--space-3) 0 calc(var(--space-3) + var(--tree-depth, 0) * var(--tree-indent)); border: 0; border-radius: var(--radius-sm); color: var(--text-primary); background: none; font: var(--text-sm)/var(--leading-flat) var(--font-ui); text-align: left; cursor: pointer; transition: background-color var(--motion-quick); }
 .tree-row:hover { background: var(--surface-hover); }
-.tree[data-drop-target="true"], .tree-row[data-drop-target="true"] { background: var(--surface-accent-soft); outline: var(--focus-ring-width) dashed var(--accent-primary); outline-offset: -2px; }
+.tree[data-drop-target="true"], .tree-row[data-drop-target="true"], .tree-section-header[data-drop-target="true"] { background: var(--surface-accent-soft); outline: var(--focus-ring-width) dashed var(--accent-primary); outline-offset: -2px; }
 .tree-row[data-dragging="true"] { opacity: .45; cursor: grabbing; }
 .tree-row[draggable="true"] { cursor: grab; }
 .note-context-menu { position: fixed; z-index: 1000; min-width: 9rem; padding: var(--space-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-raised); box-shadow: var(--shadow-lg); }

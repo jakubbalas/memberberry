@@ -127,6 +127,11 @@ export async function renameTag(
   return send(vault, { kind: "tag", from, to }, options);
 }
 
+/** Moves an entire folder through the server's permission-checked rename operation. */
+export async function renameFolder(vault: string, from: string, to: string, options: RenameOptions = {}): Promise<RenameResult> {
+  return send(vault, { kind: "folder", from, to }, options);
+}
+
 async function send(
   vault: string,
   body: Record<string, string>,
@@ -161,7 +166,7 @@ async function send(
  */
 export function refusal(status: number, body: unknown): string {
   if (status === 404) {
-    return "That note or tag cannot be renamed — it may not exist, or you may not have access to it.";
+    return "That item cannot be moved or renamed — it may not exist, or you may not have access to it.";
   }
   if (typeof body === "object" && body !== null) {
     const message = (body as Record<string, unknown>)["error"];

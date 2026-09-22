@@ -134,6 +134,143 @@ fn split_access() -> Access {
     .expect("policy")
 }
 
+#[test]
+fn folder_move_preserves_titles_empty_directories_and_repoints_internal_and_external_links() {
+    let fixture = Fixture::new(
+        "folder-move",
+        &[
+            (
+                "Source/One.md",
+                "# Custom title\n\n[[Source/Nested/Two#part|two]]\n",
+            ),
+            ("Source/Nested/Two.md", "# Two\n\n[[Source/One]]\n"),
+            (
+                "Private/Links.md",
+                "# Links\n\n[[Source/One]] [[Source/Nested/Two]]\n",
+            ),
+        ],
+    );
+    std::fs::create_dir_all(fixture.dir.path().join("Source/Empty")).expect("empty folder");
+    let access = split_access();
+    let result = fixture
+        .rename(&access, "bob")
+        .folder("Source", "Archive/Source")
+        .expect("move");
+    assert_eq!(result.notes, 2);
+    assert_eq!(
+        fixture.read("Archive/Source/One.md"),
+        "# Custom title\n\n[[Archive/Source/Nested/Two#part|two]]\n"
+    );
+    assert!(
+        fixture
+            .read("Private/Links.md")
+            .contains("[[Archive/Source/One]] [[Archive/Source/Nested/Two]]")
+    );
+    assert!(fixture.exists("Archive/Source/Empty"));
+    assert!(!fixture.exists("Source"));
+    fixture
+        .rename(&access, "bob")
+        .folder("Archive/Source", "Source")
+        .expect("move to root");
+    assert!(fixture.exists("Source/Nested/Two.md"));
+}
+
+#[test]
+fn folder_move_refuses_cycles_collisions_and_invalid_paths_without_changes() {
+    let fixture = Fixture::new(
+        "folder-refusals",
+        &[
+            ("Source/Note.md", "# Note\n"),
+            ("Taken/Note.md", "# Taken\n"),
+        ],
+    );
+    let access = owner_only("alice");
+    for destination in [
+        "Source",
+        "Source/Nested",
+        "../escape",
+        "",
+        "/absolute",
+        "Taken",
+    ] {
+        assert!(
+            fixture
+                .rename(&access, "alice")
+                .folder("Source", destination)
+                .is_err()
+        );
+        assert_eq!(fixture.read("Source/Note.md"), "# Note\n");
+    }
+}
+
+#[test]
+fn empty_folder_move_succeeds_without_any_notes() {
+    let fixture = Fixture::new("empty-folder-move", &[]);
+    std::fs::create_dir_all(fixture.dir.path().join("Source/Nested")).expect("folder");
+    fixture
+        .rename(&owner_only("alice"), "alice")
+        .folder("Source", "Moved")
+        .expect("move");
+    assert!(fixture.exists("Moved/Nested"));
+    assert!(!fixture.exists("Source"));
+}
+
+#[test]
+fn folder_move_refuses_an_unsafe_link_rewrite_before_relocating_anything() {
+    let fixture = Fixture::new(
+        "folder-unverified",
+        &[
+            ("Source/Note.md", "# Note\n"),
+            ("Other.md", "Costs $5 and [[Source/Note]] here.\n"),
+        ],
+    );
+    assert!(matches!(
+        fixture
+            .rename(&owner_only("alice"), "alice")
+            .folder("Source", "Q1$Q2"),
+        Err(RenameError::Unverified)
+    ));
+    assert_eq!(fixture.read("Source/Note.md"), "# Note\n");
+    assert_eq!(
+        fixture.read("Other.md"),
+        "Costs $5 and [[Source/Note]] here.\n"
+    );
+    assert!(!fixture.exists("Q1$Q2"));
+}
+
+#[test]
+fn folder_move_relocates_every_descendant_sidecar() {
+    let fixture = Fixture::new(
+        "folder-sidecars",
+        &[
+            ("Source/One.md", "# One\n"),
+            ("Source/Nested/Two.md", "# Two\n"),
+        ],
+    );
+    for path in ["Source/One.md", "Source/Nested/Two.md"] {
+        let canonical = fixture.vault.canonical_note(path).expect("canonical");
+        drop(
+            mb_server::sync::NoteCoordinator::open(&fixture.vault, &canonical)
+                .expect("coordinator"),
+        );
+    }
+    let sidecars = || {
+        std::fs::read_dir(fixture.dir.path().join(".memberberry/crdt"))
+            .expect("sidecars")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let before = sidecars();
+    assert!(!before.is_empty());
+    fixture
+        .rename(&owner_only("alice"), "alice")
+        .folder("Source", "Moved")
+        .expect("move");
+    let after = sidecars();
+    assert_eq!(after.len(), before.len());
+    assert!(before.is_disjoint(&after));
+}
+
 fn owner_only(name: &str) -> Access {
     Access::new(
         vec![Member {

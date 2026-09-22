@@ -45,7 +45,7 @@
   import { fromVisiblePane } from "./outline.js";
   import { OutlineView } from "./outline.svelte.js";
   import type { createNote as createNoteRequest } from "./create.js";
-  import { notePathFor, renameNote as renameNoteRequest, type renameTag as renameTagRequest } from "./rename.js";
+  import { notePathFor, renameNote as renameNoteRequest, renameFolder as renameFolderRequest, type renameTag as renameTagRequest } from "./rename.js";
   import { titleForNoteName } from "./create.js";
   import { TagView } from "./tags.svelte.js";
   import { SearchView } from "./search.svelte.js";
@@ -116,6 +116,7 @@
     readonly resolveLink?: typeof resolveNote | undefined;
     /** How a rename is sent (§6.6). Injectable so a test needs no server. */
     readonly renameNote?: typeof renameNoteRequest | undefined;
+    readonly renameFolder?: typeof renameFolderRequest | undefined;
     readonly renameTag?: typeof renameTagRequest | undefined;
     readonly createNote?: typeof createNoteRequest | undefined;
     readonly daily?: DailyView | undefined;
@@ -145,6 +146,7 @@
     outline: suppliedOutline,
     resolveLink,
     renameNote,
+    renameFolder = renameFolderRequest,
     renameTag,
     createNote,
     daily: suppliedDaily,
@@ -393,17 +395,18 @@
     void catalog.refresh();
   }
 
-  async function moveFromTree(from: string, to: string): Promise<void> {
+  async function moveFromTree(from: string, to: string, kind: "note" | "folder"): Promise<string | undefined> {
     const title = catalog.notes.find((note) => note.path === from)?.title;
-    const result = await (renameNote ?? renameNoteRequest)(
+    const result = kind === "folder" ? await renameFolder(vaultSlug, from, to) : await (renameNote ?? renameNoteRequest)(
       vaultSlug,
       from,
       to,
       title === null || title === undefined ? {} : { title },
     );
-    if ("refused" in result) return;
+    if ("refused" in result) return result.refused;
     for (const tab of store.tabs) {
       if (tab.note === from) store.navigate(tab.id, result.ok.to);
+      else if (kind === "folder" && tab.note.startsWith(`${from}/`)) store.navigate(tab.id, `${result.ok.to}${tab.note.slice(from.length)}`);
     }
     void catalog.refresh();
     void refreshFolders();
@@ -577,7 +580,7 @@
         activeNote={showingHome ? undefined : store.activeTab?.note}
         onopen={openNavigationNote}
         ondelete={(path) => void deleteFromTree(path)}
-        onmove={(from, to) => void moveFromTree(from, to)}
+        onmove={moveFromTree}
         oncreate={() => requestPalette("create", target ?? window)}
         onfolder={() => { folderError = undefined; folderPrompt = true; }}
         {target}

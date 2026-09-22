@@ -90,7 +90,7 @@ function render(
       vault: string,
       from: string,
       to: string,
-    ) => Promise<{ ok: { to: string; notes: number; references: number } }>;
+    ) => Promise<{ ok: { to: string; notes: number; references: number } } | { refused: string }>;
   } = {},
 ) {
   const ids = sessionIds();
@@ -131,6 +131,7 @@ function render(
       catalog,
       bookmarks,
       renameNote: options.rename,
+      renameFolder: options.rename,
     },
   });
   return { store, bookmarks, server, eventTarget, teardown: () => unmount(app) };
@@ -309,6 +310,84 @@ describe("the tree", () => {
     } finally {
       teardown();
     }
+  });
+
+  it("moves a folder and updates its open descendant tab", async () => {
+    const moves: string[][] = [];
+    const { store, teardown } = render({
+      notes: [...NOTES, { path: "Archive/Existing.md", title: "Existing", conflicts: 0 }],
+      open: ["Projects/Roadmap.md"],
+      rename: async (_vault, from, to) => {
+        moves.push([from, to]);
+        return { ok: { to, notes: 0, references: 0 } };
+      },
+    });
+    try {
+      await flush();
+      const source = rows().find((row) => row.title === "Projects");
+      const destination = rows().find((row) => row.title === "Archive");
+      if (source === undefined || destination === undefined) throw new Error("folders");
+      expect(source.draggable).toBe(true);
+      const transfer = dragData("Projects");
+      dispatchDrag("dragstart", source, transfer);
+      dispatchDrag("drop", destination, transfer);
+      await flush();
+      expect(moves).toEqual([["Projects", "Archive/Projects"]]);
+      expect(store.activeTab?.note).toBe("Archive/Projects/Roadmap.md");
+    } finally { teardown(); }
+  });
+
+  it("shows a refused folder move without navigating its open notes", async () => {
+    const { store, teardown } = render({ open: ["Projects/Roadmap.md"], rename: async () => ({ refused: "The move was refused." }) });
+    try {
+      await flush();
+      const source = rows().find((row) => row.title === "Projects");
+      const destination = rows().find((row) => row.title === "Archive");
+      if (source === undefined || destination === undefined) throw new Error("folders");
+      const transfer = dragData("Projects");
+      dispatchDrag("dragstart", source, transfer);
+      dispatchDrag("drop", destination, transfer);
+      await flush();
+      expect(target.querySelector('[role="alert"]')?.textContent).toBe("The move was refused.");
+      expect(store.activeTab?.note).toBe("Projects/Roadmap.md");
+    } finally { teardown(); }
+  });
+
+  it("opens the folder destination dialog using F2", async () => {
+    const { teardown } = render();
+    try {
+      await flush();
+      await press("F2");
+      const dialog = target.querySelector<HTMLDialogElement>('dialog[aria-label="Move folder"]');
+      expect(dialog?.open).toBe(true);
+      expect(document.activeElement).toBe(dialog?.querySelector("input"));
+    } finally { teardown(); }
+  });
+
+  it("rejects dropping a folder on itself or a descendant and ignores external text", async () => {
+    const moves: string[][] = [];
+    const { teardown } = render({ notes: [...NOTES, { path: "Projects/Nested/Note.md", title: "Note", conflicts: 0 }], rename: async (_vault, from, to) => {
+      moves.push([from, to]);
+      return { ok: { to, notes: 0, references: 0 } };
+    } });
+    try {
+      await flush();
+      const source = rows().find((row) => row.title === "Projects");
+      if (source === undefined) throw new Error("folder");
+      source.click();
+      await tick();
+      const destination = rows().find((row) => row.title.startsWith("Projects/") && row.dataset["kind"] === "folder");
+      if (destination === undefined) throw new Error("nested folder");
+      const transfer = dragData("Projects");
+      for (const folder of [source, destination]) {
+        dispatchDrag("dragstart", source, transfer);
+        dispatchDrag("dragover", folder, transfer);
+        dispatchDrag("drop", folder, transfer);
+      }
+      dispatchDrag("drop", source, dragData("external.md"));
+      await flush();
+      expect(moves).toEqual([]);
+    } finally { teardown(); }
   });
 
   it("moves a note out of a folder when it is dropped on the tree root", async () => {

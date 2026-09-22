@@ -18,6 +18,108 @@ use mb_server::vault::Slug;
 use support::TempDir;
 
 #[test]
+fn e14_folder_moves_deny_hidden_descendants_and_destinations_without_partial_moves() {
+    let directory = TempDir::new("folder-move-leak");
+    directory.write("Source/Public.md", "# Public\n");
+    directory.write("Source/Secret.md", "# Secret\n");
+    directory.write("Private/Existing/Note.md", "# Hidden\n");
+    directory.write("access.toml", "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[members]]\nuser = \"bob\"\nrole = \"editor\"\n[[rules]]\npath = \"Source/Secret.md\"\ngrant = { bob = \"none\" }\n[[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n[[rules]]\npath = \"Target/Public.md\"\ngrant = { bob = \"viewer\" }\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        directory.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access");
+    let index = mb_server::indexing::IndexRegistry::default()
+        .get(&vault)
+        .expect("index");
+    let sync = mb_server::sync::SyncRegistry::default();
+    for actor in ["bob", "guest"] {
+        let rename = mb_server::rename::Rename::new(
+            &vault,
+            access.policy(),
+            Username::parse(actor).expect("user"),
+            &index,
+            &sync,
+            None,
+        );
+        for (from, to) in [
+            ("Source", "Moved"),
+            ("Source", "Private/Existing"),
+            ("Source", "Private/Missing"),
+            ("Private/Existing", "Moved"),
+            ("Private/Missing", "Moved"),
+        ] {
+            assert!(matches!(
+                rename.folder(from, to),
+                Err(mb_server::rename::RenameError::Denied)
+            ));
+        }
+    }
+    std::fs::remove_file(directory.path().join("Source/Secret.md")).expect("remove hidden fixture");
+    let rename = mb_server::rename::Rename::new(
+        &vault,
+        access.policy(),
+        Username::parse("bob").expect("user"),
+        &index,
+        &sync,
+        None,
+    );
+    assert!(matches!(
+        rename.folder("Source", "Target"),
+        Err(mb_server::rename::RenameError::Denied)
+    ));
+    assert!(directory.path().join("Source/Public.md").exists());
+    assert!(!directory.path().join("Moved").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn e14_folder_moves_refuse_symlinks_in_sources_and_destinations() {
+    let directory = TempDir::new("folder-move-symlink");
+    directory.write("Source/Note.md", "# Note\n");
+    directory.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let outside = TempDir::new("folder-move-outside");
+    std::os::unix::fs::symlink(outside.path(), directory.path().join("Escape")).expect("symlink");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        directory.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access");
+    let index = mb_server::indexing::IndexRegistry::default()
+        .get(&vault)
+        .expect("index");
+    let sync = mb_server::sync::SyncRegistry::default();
+    let rename = mb_server::rename::Rename::new(
+        &vault,
+        access.policy(),
+        Username::parse("alice").expect("user"),
+        &index,
+        &sync,
+        None,
+    );
+    for (from, to) in [("Source", "Escape/Moved"), ("Escape", "Moved")] {
+        assert!(matches!(
+            rename.folder(from, to),
+            Err(mb_server::rename::RenameError::Denied)
+        ));
+    }
+    std::os::unix::fs::symlink(outside.path(), directory.path().join("Source/Linked"))
+        .expect("nested symlink");
+    assert!(matches!(
+        rename.folder("Source", "Moved"),
+        Err(mb_server::rename::RenameError::Denied)
+    ));
+    assert!(directory.path().join("Source/Note.md").exists());
+}
+
+#[test]
 fn e28_empty_folders_are_filtered_and_creation_authorizes_before_probing() {
     let directory = TempDir::new("leak-empty-folders");
     directory.write("Shared/Welcome.md", "# Welcome\n");

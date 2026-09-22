@@ -37,7 +37,7 @@
 //! leaves only the cases that depend on the note it lands in.
 
 use core::ops::Range;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
@@ -159,6 +159,44 @@ pub fn rename_link_target(
         }
     });
     finish(source, edits, &expected)
+}
+
+/// Repoints several link targets simultaneously, without cascading replacements.
+/// Keys are original link spellings; matching uses the same folding as note resolution.
+///
+/// # Errors
+/// Returns `InvalidName` for an unusable destination or `Unverified` if the rewrite
+/// changes anything other than the requested targets.
+pub fn rename_link_targets(
+    source: &str,
+    replacements: &BTreeMap<String, String>,
+) -> Result<Rewrite, RewriteError> {
+    let mut folded = BTreeMap::new();
+    for (from, to) in replacements {
+        validate_name(to)?;
+        let key = names::fold_name(from);
+        if let Some(previous) = folded.insert(key, to)
+            && previous != to
+        {
+            return Err(RewriteError::Unverified);
+        }
+    }
+    let mut expected = crate::parse(source);
+    map_blocks(&mut expected.blocks, &mut |inline| {
+        if let Inline::WikiLink(link) = inline
+            && let Some(to) = folded.get(&names::fold_name(&link.target))
+        {
+            link.target = (*to).clone();
+        }
+    });
+    let (body, base, scan) = scannable(source);
+    let mut edits = Vec::new();
+    walk(body, &scan, |target, name| {
+        if let Some(to) = folded.get(&names::fold_name(name)) {
+            edits.push((base + target.start..base + target.end, (*to).clone()));
+        }
+    });
+    finish(source, edits, &crate::canonicalize(expected))
 }
 
 /// Renames a tag and every tag nested under it, and changes nothing else (§9.3).

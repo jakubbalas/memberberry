@@ -16,9 +16,18 @@ import {
   readRenamed,
   refusal,
   renameNote,
+  renameFolder,
   renameTag,
   renamedMessage,
 } from "./rename.js";
+
+it("sends folder moves with their distinct operation kind and validates the reply", async () => {
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ to: "Archive/📓", notes: 2, references: 3 })));
+  expect(await renameFolder("personal", "📓", "Archive/📓", { fetch })).toEqual({ ok: { to: "Archive/📓", notes: 2, references: 3 } });
+  expect(fetch).toHaveBeenCalledWith("/api/v1/vaults/personal/rename", expect.objectContaining({
+    method: "POST", body: JSON.stringify({ kind: "folder", from: "📓", to: "Archive/📓" }),
+  }));
+});
 
 describe("notePathFor", () => {
   it("keeps a note in its folder when only a name is typed", () => {
