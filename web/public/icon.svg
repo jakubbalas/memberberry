@@ -1,18 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Memberberry">
   <!--
-    The application icon. Two colours, and both are literals rather than design tokens
-    (AGENTS.md §4.4): a browser reads this before any stylesheet exists, and an installed
-    icon cannot be re-themed at runtime. They are the light theme's `--surface-canvas` and
-    `--accent-primary`, kept in step with `web/src/shell/tokens.css` by hand.
-
-    Drawn inside the middle 80% so the `maskable` purpose can crop it to a circle without
-    cutting the berries.
+    why: standalone icons cannot inherit CSS tokens. These are the Paper theme's
+    accent-primary and surface-canvas from web/src/shell/tokens.css.
+    The berry and bookmark cutout stay inside the maskable icon's central safe circle.
   -->
-  <rect width="192" height="192" fill="#f4f0e8"/>
-  <g fill="#ae4d28">
-    <circle cx="76" cy="112" r="30"/>
-    <circle cx="118" cy="112" r="30"/>
-    <circle cx="97" cy="76" r="30"/>
+  <rect width="192" height="192" fill="#6651a3"/>
+  <g fill="#f7f7f5">
+    <path d="M84 68C59 58 36 76 36 103C36 132 72 156 96 160C120 156 156 132 156 103C156 76 133 58 108 68V111L96 100L84 111Z"/>
+    <path d="M98 58C98 40 112 34 134 34C132 51 118 59 98 58Z"/>
   </g>
-  <path d="M97 46c0-14 10-24 24-26-2 16-10 25-24 26z" fill="#24332c"/>
 </svg>

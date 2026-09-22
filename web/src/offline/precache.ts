@@ -27,7 +27,13 @@ export const SHELL_URL = "/app.html";
  * The manifest and its icon are what make the application installable; without them in the
  * cache an installed window that starts offline has no manifest to read.
  */
-export const ALWAYS: readonly string[] = [SHELL_URL, "/manifest.webmanifest", "/icon.svg"];
+export const ALWAYS: readonly string[] = [
+  SHELL_URL,
+  "/manifest.webmanifest",
+  "/icon.svg",
+  // why: a new URL retires the old precache even when only the public branding assets change.
+  "/icon.svg?v=memory-berry",
+];
 
 /** A cache name and the exact set of URLs it should hold. */
 export interface PrecachePlan {

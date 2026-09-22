@@ -1127,6 +1127,11 @@ three: under §6.5 a note the server will not list does not exist for this reade
 as a second, library-mode Vite build after the application build, because a worker has to
 land at a fixed root-scoped URL — `/sw.js`, never `/assets/sw-a1b2c3.js` — and has to be one
 self-contained file. `mb-server` serves it, the manifest and the icon from the build root.
+The application mark is a light berry with a bookmark-shaped cutout on Paper-theme purple,
+shared by browser favicons and the installable app. Its standalone SVG uses the Paper
+`--accent-primary` and `--surface-canvas` values and fits the maskable safe circle. The
+editor and manifest use `/icon.svg?v=memory-berry`; both that URL and `/icon.svg` are
+precached so the branding revision also changes the worker's cache version.
 The decisions worth arguing:
 
 - **The precache list is injected into the worker's source, not fetched by it.** A browser

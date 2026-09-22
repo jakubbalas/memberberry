@@ -18,17 +18,17 @@
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#f4f0e8",
-  "theme_color": "#ae4d28",
+  "background_color": "#f7f7f5",
+  "theme_color": "#6651a3",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "/icon.svg?v=memory-berry",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
     },
     {
-      "src": "/icon.svg",
+      "src": "/icon.svg?v=memory-berry",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "maskable"
