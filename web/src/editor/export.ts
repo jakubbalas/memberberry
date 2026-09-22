@@ -16,6 +16,7 @@ export async function standaloneHtml(options: HtmlExportOptions): Promise<string
   const content = options.root.cloneNode(true);
   if (!(content instanceof HTMLElement)) throw new Error("the rendered note could not be cloned");
   content.removeAttribute("contenteditable");
+  for (const handle of content.querySelectorAll(".table-row-handle")) handle.remove();
   for (const editable of content.querySelectorAll("[contenteditable]")) editable.removeAttribute("contenteditable");
   await inlineMedia(content, fetch);
   const title = escapeHtml(options.title);

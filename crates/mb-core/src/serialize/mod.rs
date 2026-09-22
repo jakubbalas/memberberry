@@ -552,6 +552,7 @@ fn inline(item: &Inline, ctx: Ctx, prev_star: bool, next_star: bool) -> String {
         }
         Inline::Emoji(name) => format!(":{name}:"),
         Inline::FootnoteRef(n) => format!("[^{n}]"),
+        Inline::SoftBreak | Inline::HardBreak if ctx.in_table => "<br>".to_string(),
         Inline::SoftBreak => "\n".to_string(),
         Inline::HardBreak => "\\\n".to_string(),
     }

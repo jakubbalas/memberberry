@@ -22,6 +22,7 @@ import type { MediaUploader } from "./media-upload.js";
 import { mountEmojiPicker, type EmojiChoices, type EmojiImportOptions } from "./emoji-picker.js";
 import { downloadHtml, printPanel, standaloneHtml } from "./export.js";
 import type { MediaRenderContext } from "./schema.js";
+import { mountTableTools } from "./table-tools.js";
 
 export interface EditorShell {
   destroy(): void;
@@ -82,6 +83,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     ["List", () => insertBlock(options.editor, "bullet_list")],
     ["1. List", () => insertBlock(options.editor, "ordered_list")],
     ["Task", () => insertBlock(options.editor, "task_item")],
+    ["Table", () => insertBlock(options.editor, "table")],
     ["Quote", () => insertBlock(options.editor, "blockquote")],
     ["Callout", () => insertBlock(options.editor, "callout")],
     ["Code", () => insertBlock(options.editor, "code_block")],
@@ -91,7 +93,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   ] as const) {
     const control = button(label, `Insert ${label.toLowerCase()} block`);
     control.addEventListener("click", () => action());
-    if (["Text", "H1", "List", "Task"].includes(label)) toolbar.append(control);
+    if (["Text", "H1", "List", "Task", "Table"].includes(label)) toolbar.append(control);
     else secondary.append(control);
   }
   toolbar.append(sourceToggle);
@@ -149,6 +151,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
 
   const inspector = taskInspector(options.editor);
   controls.append(inspector.element, source);
+  const tableTools = mountTableTools(options.editor, controls);
   options.panel.prepend(controls);
   const presence = options.awareness === undefined
     ? undefined
@@ -373,6 +376,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       media?.destroy();
       imageEditor?.destroy();
       emoji.destroy();
+      tableTools.destroy();
       slash.destroy();
       window.removeEventListener(TEMPLATE_EVENT, onTemplate);
       options.editor.view.dom.removeEventListener("focusin", rememberFocus);

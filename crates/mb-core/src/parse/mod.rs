@@ -97,6 +97,7 @@ fn parse_events(body: &str, options: Options, math: &math::Table) -> Vec<Block> 
         ev: events,
         i: 0,
         math: math.clone(),
+        in_table_cell: false,
     };
     p.blocks(None)
 }
@@ -145,6 +146,7 @@ struct Cursor<'a> {
     ev: Vec<(Event<'a>, Range<usize>)>,
     i: usize,
     math: math::Table,
+    in_table_cell: bool,
 }
 
 impl<'a> Cursor<'a> {
@@ -443,7 +445,9 @@ impl<'a> Cursor<'a> {
                 }
                 Event::Start(Tag::TableCell) => {
                     self.bump();
+                    self.in_table_cell = true;
                     cells.push(self.inlines_until(Some(TagEnd::TableCell)));
+                    self.in_table_cell = false;
                 }
                 _ => {
                     self.bump();
@@ -510,6 +514,15 @@ impl<'a> Cursor<'a> {
                     out.push(item(Inline::HardBreak));
                 }
                 Event::InlineHtml(h) => {
+                    if self.in_table_cell
+                        && ["<br>", "<br/>", "<br />"]
+                            .iter()
+                            .any(|tag| h.eq_ignore_ascii_case(tag))
+                    {
+                        self.bump();
+                        out.push(item(Inline::HardBreak));
+                        continue;
+                    }
                     // Same rule as block HTML: keep the text, drop the HTML semantics, and
                     // never let a raw line ending survive inside a `Text` inline.
                     let text = h.to_string();

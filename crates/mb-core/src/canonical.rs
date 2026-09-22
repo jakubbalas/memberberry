@@ -161,7 +161,21 @@ fn table(t: Table) -> Option<Table> {
     }
     let mut alignments = t.alignments;
     alignments.resize(cols, Alignment::default());
-    let cell = |c: Vec<Inline>| trim_edges(inlines(c));
+    let cell = |content: Vec<Inline>| {
+        // why: HTML breaks in a pipe cell preserve leading, trailing and repeated empty lines.
+        let mut output = Vec::new();
+        let mut line = Vec::new();
+        for item in content {
+            if matches!(item, Inline::HardBreak | Inline::SoftBreak) {
+                output.extend(trim_edges(inlines(std::mem::take(&mut line))));
+                output.push(Inline::HardBreak);
+            } else {
+                line.push(item);
+            }
+        }
+        output.extend(trim_edges(inlines(line)));
+        output
+    };
     let row = |mut r: Vec<Vec<Inline>>| {
         r.resize_with(cols, Vec::new);
         r.into_iter().map(cell).collect()

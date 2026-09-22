@@ -65,6 +65,19 @@ body {
 .editor-toolbar { padding: var(--space-1) 0 var(--space-3); border-bottom: 1px solid var(--border-subtle); background: var(--surface-note); }
 .editor-control, .task-chip { min-height: var(--control-height); border: 1px solid transparent; border-radius: var(--radius-sm); padding: var(--space-3) var(--space-4); color: var(--text-muted); background: transparent; font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); cursor: pointer; }
 .editor-control:hover { background: var(--surface-hover); color: var(--text-primary); }
+.table-tools { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.table-tools[hidden] { display: none; }
+.table-tools button:disabled { color: var(--text-muted); cursor: default; opacity: 0.5; }
+.tiptap table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+.table-row-menu { position: fixed; z-index: 20; display: grid; max-width: 100vw; padding: var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-raised); box-shadow: var(--shadow-md); }
+.table-row-menu button { text-align: left; min-height: var(--touch-target-min); }
+.tiptap td { position: relative; min-width: var(--touch-target-min); height: var(--touch-target-min); padding: var(--space-3); border: 1px solid var(--border-subtle); }
+.tiptap tr:first-child { background: var(--surface-hover); font-weight: var(--weight-bold); }
+.tiptap td:first-child { padding-left: calc(var(--touch-target-min) + var(--space-3)); }
+.table-row-handle { position: absolute; left: 0; top: 0; width: var(--touch-target-min); height: var(--touch-target-min); border: 0; color: var(--text-muted); background: transparent; cursor: grab; touch-action: none; }
+.table-drop-target { outline: var(--focus-ring-width) solid var(--focus-ring); }
+.table-row-handle:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); }
+@media print { .table-row-handle, .table-row-menu { display: none; } }
 .editor-control:focus-visible, .task-chip:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
 .image-editor-trigger { position: fixed; z-index: 5; box-shadow: var(--shadow-md); }
 .emoji-picker-wrap { position: relative; }

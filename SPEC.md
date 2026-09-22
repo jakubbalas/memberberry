@@ -325,6 +325,41 @@ Every block type maps 1:1 to canonical Markdown.
 | `callout` > `callout_title` | `> [!note] Title` / `> [!warning]-` (collapsed) / `> [!conflict]` (§3.5) — Obsidian syntax |
 | `math_block` | `$$ … $$` |
 
+**Visual tables (2026-09-22).** The editor's Table button and slash command insert two
+columns with a header and two body rows, placing the caret in the header. Selecting a cell
+shows Edit header (above the selected column), Add row (below the current row), Add column (to the right), Row up and
+Row down. Body rows have mouse/touch drag handles; dropping on another body row moves the
+source to that row's index. Clicking, tapping or keyboard-activating a handle opens a
+nearby menu with New row above, New row below and Delete row. The menu targets that row
+and closes on document changes, selection changes to another row, outside clicks, Escape,
+scrolling or resizing. Escape restores focus to the handle. Deleting the final body row
+removes the whole table, including its header, leaving a blank paragraph ready for typing.
+This applies to row-menu deletion and empty-row Backspace. Inserting above or directly
+deleting the header is refused.
+Backspace at the start of the first cell deletes a body row only when every cell is
+empty. In an empty cell with a column to its left, Backspace moves the caret to the end
+of that left cell without changing content. In the first cell, other populated cells
+prevent row deletion. At the start of a populated cell it leaves the structure intact
+rather than joining cells or rows. Text deletion inside a cell and deletion of selected text retain their normal
+behavior. The same empty-row rule applies to mobile backward-deletion input.
+Columns divide the available table width equally and wrap text, so empty cells and long
+content do not redistribute column widths. Keyboard and mobile users can select a row's handle and use
+Row up/down. The first row is always the Markdown header and stays fixed. Empty header
+cells are permitted; headerless tables and merged cells are not added.
+Enter and Shift+Enter insert an in-cell hard line break, including in empty cells and
+headers, without adding rows or columns. Cmd+Enter (Ctrl+Enter on Windows/Linux) inserts
+a complete row below the current row and focuses its first cell; the Add row button
+advertises the shortcut. Plain Markdown stores cell breaks as `<br>` on
+the same physical pipe-table line; leading, trailing and repeated unmarked breaks survive
+round trips. The parser recognizes bare `<br>`, `<br/>` and `<br />` case-insensitively only
+inside table cells. Other raw HTML remains literal text; escaped tags and code spans stay
+literal. New rows are inserted through the table controls. This extends the earlier
+single-line-cell limitation without changing the CRDT schema.
+Row moves preserve inline content and formatting; column insertion preserves existing
+alignment. A changed document or a different destination table cancels an outstanding
+drag. Controls are inert in read-only editors. Editing handles are excluded from HTML
+exports and printing. Storage uses GFM pipe tables with the cell-break convention above.
+
 **Orderedness belongs to the list, not the item.** An earlier revision of this table named
 `bullet_item` and `ordered_item`; that shape cannot represent `1. [ ] x`, a task
 inside an ordered list, which this parser accepts. So the list node carries

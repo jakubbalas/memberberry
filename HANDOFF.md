@@ -1,35 +1,49 @@
 # Handoff
 
-**Last updated:** Folder drag-and-drop, 2026-09-22.
+**Last updated:** Visual table editing, 2026-09-22.
 
 ## Current change
 
-Folders now drag into other folders and back to root via the Notes heading or tree
-background. A folder's Move button or F2 opens the destination dialog, usable on mobile
-and by keyboard; leave it blank for root. Invalid self/descendant drops are inert.
-Moves use `kind: "folder"` on the existing rename endpoint, preserve titles and nested
-empty folders, relocate sidecars, rewrite links simultaneously, and update open descendant
-tabs after success. Refusals are shown. Permissions and limits are in SPEC §6.6/§8.2/E14.
+The editor has a Table button, an editable header above every column, contextual row/column insertion,
+mouse/touch row dragging and keyboard-accessible Row up/down actions. Cell line breaks now
+use `<br>` within plain Markdown pipe rows; the CRDT schema is unchanged. Details and scope
+are in SPEC §4.4.
 
-Focused verification passed: 34 rewrite unit/property tests, 25 server rename tests, 38
-permission-leak tests, 50 tree/rename DOM and client tests, typechecking, focused Rust Clippy,
-the mb-core WASM compile check, formatting/diff checks, and both rebuilt
-`folder-move.spec.ts` browser tests on desktop/mobile. Two existing leak tests initially hit
-sandbox socket denials; the suite passed with localhost access enabled. The drag test was deliberately broken
-by disabling folder dragging, observed failing, and restored. Full `make check`, local
-coverage and performance measurement are deferred; full `make e2e` remains pending user-run
-manual validation. Existing broader failures remain below.
+Enter and Shift+Enter insert line breaks inside the selected cell, including empty cells.
+Backspace in an empty non-first cell now moves to the end of its left neighbor. In the
+first cell it is inert if another cell has content, and deletes a wholly empty body row.
+Deleting the last body row now removes the entire table and leaves a blank paragraph with
+the caret ready to type; row-menu deletion and empty-row Backspace use the same behavior.
+Table creation focuses synchronously, and clicking an empty cell explicitly positions
+the caret there. Browser verification caught empty-cell typing landing in the header;
+both focus and empty-cell selection regressions were observed failing before correction.
+Cmd+Enter / Ctrl+Enter now adds a full row below and focuses its first cell. The shortcut
+test failed before implementation; browser coverage saves and reloads its new row.
+Leading and repeated empty lines survive Markdown persistence and reload. Bare break tags
+are recognized only within cells; other HTML remains literal. Backspace still deletes a
+wholly empty body row at its first cell, without joining rows. Column widths remain stable;
+the row grip opens insertion/deletion actions and header editing targets the selected column.
 
-Next: user validation in their deployed app. This change is not deployed. Rebuild the
-Compose image and recreate the container after transferring the changes; both frontend and
-server changed. The prior Memory Berry icon change also required a server rebuild.
+Focused verification: 75 DOM/unit/property tests pass across tables, editor shell, commands
+and exports. The table browser spec verifies creation, header editing, expansion, row
+buttons, native desktop dragging, touch dragging, disk Markdown and reload on both
+viewports; all six rebuilt browser tests passed, including multiline-cell disk persistence.
+133 core tests passed across Markdown, HTML, round-trip properties and table breaks.
+Core Clippy, WASM build, typechecking and the diff whitespace check passed.
+The native-drag pointer-cancellation regression was observed red before its fix; header
+focus was also observed red before correction. A 100-row typing benchmark was run with
+and without controls in laptop jsdom, alongside 100-row multiline normalization through
+WASM; these do not establish physical-phone budgets.
+Full `make check`, local coverage and device performance checks remain deferred; full
+`make e2e` remains pending user-run manual validation. Broader known failures remain below.
 
-Open for this slice: moving folders does not rewrite saved bookmarks or notify other
-clients of new paths, consistent with existing note rename. Disk failure after the directory
-move can leave sidecar/link updates partial; there is no rollback transaction. Symlinks,
-hidden files and non-Markdown files inside a source folder are refused, rather than moving
-content with no supported permission/link model. Concurrent filesystem changes retain the
-existing rename path's limitations. These need separate design work if expanded.
+Next: user validation in the deployed app. This change is not deployed. Rebuild the
+Compose image and recreate the container after transferring changes. Rebuild both frontend
+WASM and server: both need the updated Markdown parser/serializer for cell line breaks.
+
+Open for this slice: no drag auto-scroll for offscreen rows; use Row up/down for those.
+No simultaneous multi-client table-edit browser test was added. Column deletion and manual
+column resizing remain outside scope. Headerless tables need a separate format decision.
 
 ## Other unresolved verification
 
@@ -59,7 +73,7 @@ Server state uses the platform application-data directory; on this Mac that is
 Container provisioning and backups are in `docs/DEPLOYMENT.md` and `docs/BACKUP.md`.
 
 Focused browser verification rebuilds first:
-`npm --prefix web run build && npm --prefix web run e2e -- folder-move.spec.ts --workers 2`.
+`npm --prefix web run build && npm --prefix web run e2e -- tables.spec.ts --workers 2`.
 Also rebuild `cargo build -p mb-cli` after server changes. Browser tests use
 disposable vaults on 9012; the sandbox requires escalation for localhost sockets/Chromium.
 Avoid concurrent WASM builds from the dev supervisor and test setup.
@@ -188,6 +202,9 @@ Written down so they are not rediscovered as surprises. None blocks a milestone.
 
 ### From the rename work
 
+- Folder moves also leave saved bookmarks unchanged. Hidden files, non-Markdown files and
+  symlinks inside source folders are refused. Partial sidecar/link writes after the directory
+  move are not rolled back; concurrent filesystem changes retain rename's existing limits.
 - **A client with the note open is not told it moved.**
 - **A failure part-way through the writes leaves the note moved and some links stale.**
 - **The refusal for an unsafe rewrite cannot name the note.**

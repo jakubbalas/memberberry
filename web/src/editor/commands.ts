@@ -4,6 +4,7 @@ import { Extension, InputRule, textblockTypeInputRule, wrappingInputRule, type E
 import { Fragment } from "@tiptap/pm/model";
 import { parseNaturalDate, toggledTaskAttributes, type TaskPriority } from "./task-metadata.js";
 import type { EmojiEntry } from "../notes.js";
+import { insertTable } from "./tables.js";
 
 export type BlockKind = "paragraph" | "heading" | "bullet_list" | "ordered_list" | "task_item" | "blockquote" | "callout" | "code_block" | "divider" | "table";
 
@@ -102,6 +103,7 @@ export function resolveEmojiInput(
 
 /** Inserts a generated block at the current selection. */
 export function insertBlock(editor: Editor, kind: BlockKind): boolean {
+  if (kind === "table") return insertTable(editor);
   const content = blockContent(kind);
   return editor.chain().focus().insertContent(content).run();
 }
@@ -171,7 +173,7 @@ export function runTaskSlashCommand(editor: Editor, query: string, now?: Date): 
   return null;
 }
 
-function blockContent(kind: BlockKind) {
+function blockContent(kind: Exclude<BlockKind, "table">) {
   switch (kind) {
     case "paragraph": return { type: "paragraph" };
     case "heading": return { type: "heading", attrs: { level: 1 } };
@@ -182,7 +184,6 @@ function blockContent(kind: BlockKind) {
     case "callout": return { type: "callout", attrs: { kind: "note", fold: "none" }, content: [{ type: "callout_title" }, { type: "paragraph" }] };
     case "code_block": return { type: "code_block" };
     case "divider": return { type: "divider" };
-    case "table": return { type: "table", attrs: { alignments: ["none", "none"] }, content: [{ type: "table_row", content: [{ type: "table_cell" }, { type: "table_cell" }] }] };
   }
 }
 
