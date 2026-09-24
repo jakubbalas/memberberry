@@ -2520,6 +2520,9 @@ must not claim it found the matching block. Results indicate online (Tantivy, ex
 offline (compact index, prefix) mode rather than silently differing; quoted offline phrases
 also say that they use all-word matching.
 
+Online results retain each matching block in server order, including multiple blocks from
+the same note and blocks with identical context. A note path is not a unique result identity.
+
 ---
 
 ## 15. Daily notes and templates (A3)

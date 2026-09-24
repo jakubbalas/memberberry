@@ -36,7 +36,7 @@
       <p class="tree-empty">No matching notes.</p>
     {:else}
       <ul class="search-results">
-        {#each view.answer.hits as hit (hit.path)}
+        {#each view.answer.hits as hit}
           <li>
             <button type="button" class="search-result" data-path={hit.path} onclick={() => onopen(hit.path)}>
               <span class="tree-label">{hit.title ?? hit.path}</span>

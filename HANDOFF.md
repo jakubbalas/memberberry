@@ -1,33 +1,25 @@
 # Handoff
 
-**Last updated:** Persistent folder expansion, 2026-09-22.
+**Last updated:** Search result rendering, 2026-09-24.
 
 ## Current work
 
-Expanded/collapsed tree folders now survive reload, scoped to the local user and vault.
-The tree persists pointer/keyboard changes and successful folder-move path updates.
-Malformed or unavailable storage cannot prevent navigation; saved paths never populate
-the readable tree. SPEC §8.2 documents the local-only preference.
+Fixed disappearing search results when the server returns multiple matching blocks from
+one note. `SearchPane.svelte` keyed results by note path, which is not unique for block
+matches. The regression reproduced an empty result list and Svelte's `each_key_duplicate`
+error before the fix. Rendering now retains every returned block, including identical
+contexts, in server order; SPEC §14.3 makes that contract explicit.
 
-The remount regression failed before implementation. Focused verification passes: 70
-tests across tree expansion storage, tree navigation and NoteTree DOM, including seeded
-round trips, account/vault isolation, storage failures and a stale-hidden-folder test.
-A fresh build plus `tree-expansion.spec.ts` passes on desktop and mobile, checking nested
-expansion and subsequent collapse through real reloads. TypeScript/Svelte checks pass.
-Full checks and coverage are deferred; full E2E remains pending manual validation.
-Pre-commit verification reran all six affected unit/DOM suites together: 141 tests pass.
-
-The file-list New note button now carries the pointer/keyboard-selected folder to the
-creation prompt instead of always using the root. Selected notes supply their parent folder;
-with no explicit tree selection the existing root default remains. SPEC §6.10 records the
-destination and explicit-path override behavior. Server authorization is unchanged.
-
-Both pointer and keyboard regressions failed before the fix. Focused verification passes:
-107 tests across NoteTree, CommandCenter, create and palette; TypeScript/Svelte checks have
-zero errors/warnings. A fresh build plus the selected-folder browser test passes on desktop
-and mobile and checks the Markdown file in Projects/. Full checks and coverage are deferred;
-full E2E remains pending manual validation. Folder improvements and creation regressions
-are included together in this change.
+Focused unit/DOM verification passes (7 tests), including successive queries, repeated
+paths and contexts, opening each result, and existing denied/offline search behavior.
+The frontend build and TypeScript/Svelte checks pass. The focused browser regression
+creates a real multi-block Fedora note and searches `fe`, `fed`, `fedora`, then `fe`.
+All four focused browser tests pass on desktop/mobile after rebuilding. The initial
+sandbox run could not bind port 9012; execution with socket permission succeeded. The new
+test uses isolated vaults because broad `fe` matches in the shared fixture hit the server's
+100-result cap and excluded the test note before it reached the UI.
+Full `make check` and local coverage are deferred; full E2E is pending manual validation.
+Next: deploy the rebuilt frontend and confirm the friend's affected note renders correctly.
 
 ## Unresolved sync panic
 
@@ -118,7 +110,7 @@ Server state uses the platform application-data directory; on this Mac that is
 Container provisioning and backups are in `docs/DEPLOYMENT.md` and `docs/BACKUP.md`.
 
 Focused browser verification rebuilds first:
-`npm --prefix web run build && npm --prefix web run e2e -- tables.spec.ts --workers 2`.
+`npm --prefix web run build && npm --prefix web run e2e -- search.spec.ts --workers 2`.
 Also rebuild `cargo build -p mb-cli` after server changes. Browser tests use
 disposable vaults on 9012; the sandbox requires escalation for localhost sockets/Chromium.
 Avoid concurrent WASM builds from the dev supervisor and test setup.

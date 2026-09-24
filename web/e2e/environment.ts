@@ -265,7 +265,7 @@ export const E2E_NOTES: Readonly<Record<string, string>> = {
  * One per test and project rather than one shared: `fullyParallel` runs every test against
  * one server, and "this vault has no notes" is not a claim two tests can make about one vault.
  */
-export const E2E_EMPTY_PURPOSES: readonly string[] = ["registration", "first-note", "name-clash", "home-labels", "bookmarks"];
+export const E2E_EMPTY_PURPOSES: readonly string[] = ["registration", "first-note", "name-clash", "home-labels", "bookmarks", "search"];
 
 /** The slug of the empty vault belonging to this test and project. */
 export function emptyVaultSlug(project: string, purpose: string): string {
