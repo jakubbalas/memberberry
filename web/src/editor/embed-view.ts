@@ -33,7 +33,7 @@ import {
   embedLabel,
   resolveEmbed,
 } from "./embed.js";
-import { type OpenNoteIntent, openIntent, referenceOf, requestOpenNote } from "./links.js";
+import { activateDocumentLink, type OpenNoteIntent, openIntent, referenceOf, requestOpenNote } from "./links.js";
 import { DrawingBlock, drawingExportsUrl, drawingUrl, readDrawing } from "./drawing.js";
 
 /** What an embed needs to know about the note it is written in. */
@@ -64,6 +64,7 @@ export class EmbedBlock {
   private readonly children: EmbedBlock[] = [];
   private readonly onToggle: () => void;
   private readonly onBodyClick: (event: MouseEvent) => void;
+  private readonly onBodyKey: (event: KeyboardEvent) => void;
   private collapsed = false;
   /** The note this embed resolved to, once it has. What jump-to-source opens. */
   private note: string | undefined;
@@ -94,8 +95,10 @@ export class EmbedBlock {
 
     this.body = document.createElement("span");
     this.body.className = "note-embed-body";
-    this.onBodyClick = (event) => this.followLink(event);
+    this.onBodyClick = (event) => { if (event.button === 0) this.followLink(event); };
+    this.onBodyKey = (event) => { if (event.key === "Enter") this.followLink(event); };
     this.body.addEventListener("click", this.onBodyClick);
+    this.body.addEventListener("keydown", this.onBodyKey);
 
     this.dom.append(this.bar, this.body);
     this.showStatus("Loading the embedded note…");
@@ -108,6 +111,7 @@ export class EmbedBlock {
     this.aborter.abort();
     this.toggle.removeEventListener("click", this.onToggle);
     this.body.removeEventListener("click", this.onBodyClick);
+    this.body.removeEventListener("keydown", this.onBodyKey);
     for (const child of this.children) child.destroy();
     this.children.length = 0;
   }
@@ -232,23 +236,13 @@ export class EmbedBlock {
     this.toggle.textContent = collapsed ? "▸" : "▾";
   }
 
-  /** A wikilink inside the embedded content opens in the app, not as a page load. */
-  private followLink(event: MouseEvent): void {
+  /** Links resolve from the embedded source, never from the host or an outer embed. */
+  private followLink(event: MouseEvent | KeyboardEvent): void {
     const target = event.target;
-    if (!(target instanceof Element)) return;
-    const anchor = target.closest<HTMLElement>("a[data-target]");
-    if (anchor === null || !this.body.contains(anchor)) return;
-    const reference = referenceOf(anchor);
-    if (reference === undefined) return;
-    event.preventDefault();
-    requestOpenNote(this.dom, {
-      ...reference,
-      intent: openIntent(event),
-      resolved: false,
-      // The link was written in the note this embed is *showing*, not in the note the pane
-      // is on, and which note it means depends on which of the two it is read from (§4.3).
-      ...(this.note === undefined ? {} : { from: this.note }),
-    });
+    if (event.defaultPrevented || !(target instanceof Element)) return;
+    const anchor = target.closest<HTMLElement>("a, [data-wikilink]");
+    if (anchor === null || !this.body.contains(anchor) || anchor.closest(".note-embed") !== this.dom) return;
+    activateDocumentLink(anchor, event, this.note ?? this.context.note);
   }
 
   private open(target: string, resolved: boolean, intent: OpenNoteIntent): void {

@@ -17,6 +17,8 @@
  * (E9), so only the server can answer it. Nothing here resolves anything.
  */
 
+import { Extension } from "@tiptap/core";
+import { Plugin } from "@tiptap/pm/state";
 import type { EmbedAnchorKind } from "./embed.js";
 
 /**
@@ -95,4 +97,106 @@ export function referenceOf(
     return { target, anchorKind: kind, anchor: anchor ?? null };
   }
   return { target, anchorKind: "none", anchor: null };
+}
+
+/** A DOM destination, not a Markdown parser: link marks already carry decoded hrefs. */
+export type LinkDestination =
+  | { readonly kind: "external"; readonly href: string }
+  | { readonly kind: "note"; readonly target: string; readonly anchorKind: EmbedAnchorKind; readonly anchor: string | null }
+  | { readonly kind: "blocked" };
+
+/** Accepts only explicit safe schemes or vault document references; rejects URL obfuscation. */
+export function linkDestination(href: string): LinkDestination {
+  const value = href.trim();
+  if (value === "" || /[\u0000-\u001f\u007f\\]/u.test(value) || value.startsWith("//")) return { kind: "blocked" };
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(value)?.[1]?.toLowerCase();
+  if (scheme !== undefined) {
+    if (!["http", "https", "mailto", "tel"].includes(scheme)) return { kind: "blocked" };
+    try {
+      const url = new URL(value);
+      if ((scheme === "http" || scheme === "https") && url.hostname === "") return { kind: "blocked" };
+      return { kind: "external", href: value };
+    } catch {
+      return { kind: "blocked" };
+    }
+  }
+  const hash = value.indexOf("#");
+  try {
+    const target = decodeURIComponent(hash < 0 ? value : value.slice(0, hash));
+    const fragment = hash < 0 ? "" : decodeURIComponent(value.slice(hash + 1));
+    // why: decoding must not smuggle a scheme, control character or authority past the first check.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || /[\u0000-\u001f\u007f\\?]/u.test(target) || target.startsWith("//")) return { kind: "blocked" };
+    return {
+      kind: "note", target,
+      anchorKind: fragment === "" ? "none" : fragment.startsWith("^") ? "block" : "heading",
+      anchor: fragment === "" ? null : fragment.startsWith("^") ? fragment.slice(1) : fragment,
+    };
+  } catch {
+    return { kind: "blocked" };
+  }
+}
+
+/** Normalizes explicit relative paths without resolving or bypassing server authorization. */
+export function documentReference(target: string, from: string): string | undefined {
+  if (target === "") return from;
+  if (!target.startsWith("./") && !target.startsWith("../") && !target.startsWith("/")) return target;
+  const parts = target.startsWith("/") ? [] : from.split("/").slice(0, -1);
+  for (const part of target.split("/")) {
+    if (part === "." || part === "") continue;
+    if (part === "..") {
+      if (parts.length === 0) return undefined;
+      parts.pop();
+    } else parts.push(part);
+  }
+  return parts.join("/") || undefined;
+}
+
+/** Activates one rendered link. Used by editors and by read-only transcluded content. */
+export function activateDocumentLink(
+  element: HTMLElement,
+  event: MouseEvent | KeyboardEvent,
+  from: string,
+): boolean {
+  event.preventDefault();
+  if (element.getAttribute("aria-disabled") === "true") return true;
+  const reference = referenceOf(element);
+  if (reference !== undefined) {
+    requestOpenNote(element, { ...reference, intent: openIntent(event), resolved: false, ...(from === "" ? {} : { from }) });
+    return true;
+  }
+  const destination = linkDestination(element.getAttribute("href") ?? "");
+  if (destination.kind === "external") {
+    element.ownerDocument.defaultView?.open(destination.href, "_blank", "noopener,noreferrer");
+  } else if (destination.kind === "note") {
+    const target = documentReference(destination.target, from);
+    if (target !== undefined) requestOpenNote(element, {
+      target, anchorKind: destination.anchorKind, anchor: destination.anchor,
+      intent: openIntent(event), resolved: false, ...(from === "" ? {} : { from }),
+    });
+  }
+  return true;
+}
+
+/** Handles clicks in contenteditable, where native anchor navigation is suppressed by browsers. */
+export function documentLinks(from: string): Extension {
+  return Extension.create({
+    name: "memberberryDocumentLinks",
+    addProseMirrorPlugins: () => [new Plugin({
+      props: {
+        handleDOMEvents: {
+          click: (view, event) => {
+            if (event.defaultPrevented || event.button !== 0 || !(event.target instanceof Element)) return false;
+            const link = event.target.closest<HTMLElement>("a, [data-wikilink]");
+            if (link === null || !view.dom.contains(link)) return false;
+            return activateDocumentLink(link, event, from);
+          },
+          keydown: (view, event) => {
+            if (event.key !== "Enter" || !(event.target instanceof HTMLElement) || !view.dom.contains(event.target)) return false;
+            if (!event.target.matches("a, [data-wikilink]")) return false;
+            return activateDocumentLink(event.target, event, from);
+          },
+        },
+      },
+    })],
+  });
 }

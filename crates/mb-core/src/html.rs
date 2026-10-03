@@ -694,9 +694,16 @@ fn inline(i: &Inline, urls: &Urls<'_>, out: &mut String) {
             title,
             content,
         } => {
-            out.push_str("<a href=\"");
-            escape_attr(&safe_url(dest), out);
-            out.push('"');
+            let safe_dest = safe_url(dest);
+            if safe_dest == *dest {
+                out.push_str("<a href=\"");
+                escape_attr(&safe_dest, out);
+                out.push('"');
+            } else {
+                // why: a neutralized URL is not a heading reference to `#blocked`.
+                // Keep its disabled identity and omit href so native activation is inert too.
+                out.push_str("<a aria-disabled=\"true\"");
+            }
             if let Some(title) = title {
                 out.push_str(" title=\"");
                 escape_attr(title, out);

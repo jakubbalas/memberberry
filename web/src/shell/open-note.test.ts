@@ -59,6 +59,12 @@ describe("placing a note", () => {
     expect(store.groups).toHaveLength(1);
   });
 
+  it("Mod-click opens a new tab even if the note is already open", () => {
+    const store = storeWith("Q3.md");
+    placeNote(pane(store), "Q3.md", "tab");
+    expect(store.tabs.map((tab) => tab.note)).toEqual(["Q3.md", "Q3.md"]);
+  });
+
   it("splits the pane for Mod-Alt-click", () => {
     const store = storeWith("Q3.md");
     placeNote(pane(store), "Projects/Roadmap.md", "split");
@@ -90,6 +96,15 @@ describe("resolving before placing", () => {
     const store = storeWith("Q3.md");
     await followLink({ ...pane(store), vault: "v", from: "Q3.md", resolve: resolved }, DETAIL);
     expect(store.activeTab?.note).toBe("Projects/Roadmap.md");
+  });
+
+  it("does not navigate after the originating request was aborted", async () => {
+    const store = storeWith("Q3.md");
+    const controller = new AbortController();
+    await followLink({ ...pane(store), vault: "v", from: "Q3.md", signal: controller.signal,
+      resolve: async () => { controller.abort(); return { note: "Other.md", title: null }; },
+    }, DETAIL);
+    expect(store.activeTab?.note).toBe("Q3.md");
   });
 
   it("does nothing when the reference resolves to nothing", async () => {

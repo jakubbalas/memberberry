@@ -35,6 +35,17 @@ export interface ResidentPatch {
   readonly base?: string;
 }
 
+/** One open body's writes, invalidated by a newer permission reconciliation. */
+export interface ReplicaSession {
+  readonly revoked: boolean;
+  /** Records residency and dirty state atomically, unless this session was revoked. */
+  opened(dirty?: boolean): Promise<void>;
+  /** Updates an existing record only while this session remains permitted. */
+  measured(patch: ResidentPatch): Promise<void>;
+  /** Releases the session; later writes from it are ignored. */
+  close(): void;
+}
+
 /** Deletes a Y document's own IndexedDB database. */
 export type DropBody = (vault: string, note: string) => Promise<void>;
 
@@ -48,6 +59,8 @@ export interface ReplicaOptions {
 }
 
 export interface Replica {
+  /** Tracks an opening body before its first sync, so reconciliation can revoke it too. */
+  session(vault: string, note: string): ReplicaSession;
   /**
    * Applies the server's answer and returns the list the client should use.
    *
@@ -60,8 +73,11 @@ export interface Replica {
   isResident(vault: string, note: string): Promise<boolean>;
   /** What the replica knows *about* a note, which is what that state has to show. */
   metadata(vault: string, note: string): Promise<ReplicatedNote | undefined>;
-  /** Records that a note's body is here, and that it was just opened. */
-  opened(vault: string, note: string): Promise<void>;
+  /**
+   * Records that a note's body is here, with its current dirty state in the same write.
+   * Omitting `dirty` preserves restored unsent edits until the transport reconciles them.
+   */
+  opened(vault: string, note: string, dirty?: boolean): Promise<void>;
   /**
    * Records what a note now weighs, or whether it has changes the server has not seen.
    *
@@ -93,20 +109,69 @@ export interface Replica {
 export function createReplica(options: ReplicaOptions): Replica {
   const now = options.now ?? Date.now;
   const caps = options.caps ?? DEFAULT_CAPS;
+  const sessions = new Set<{ vault: string; note: string; revoke(): void }>();
+  const opened = async (vault: string, note: string, dirty?: boolean, current = (): boolean => true): Promise<void> => {
+    await options.store.updateResident(vault, note, (existing) => {
+      // why: check under the same lock as residency/dirty, not before an asynchronous read.
+      if (!current()) return undefined;
+      return {
+        vault,
+        note,
+        openedAt: now(),
+        bytes: existing?.bytes ?? 0,
+        dirty: dirty ?? existing?.dirty ?? false,
+        ...(existing?.base === undefined ? {} : { base: existing.base }),
+      };
+    });
+  };
+  const measured = async (vault: string, note: string, patch: ResidentPatch, current = (): boolean => true): Promise<void> => {
+    await options.store.updateResident(vault, note, (existing) => {
+      // A measurement cannot create residency or outlive its body's authorization.
+      if (existing === undefined || !current()) return undefined;
+      return {
+        ...existing,
+        ...(patch.bytes === undefined ? {} : { bytes: patch.bytes }),
+        ...(patch.dirty === undefined ? {} : { dirty: patch.dirty }),
+        ...(patch.base === undefined ? {} : { base: patch.base }),
+      };
+    });
+  };
   return {
+    session(vault, note): ReplicaSession {
+      let revoked = false;
+      let closed = false;
+      const current = (): boolean => !revoked && !closed;
+      const tracked = { vault, note, revoke: (): void => { revoked = true; } };
+      sessions.add(tracked);
+      return {
+        get revoked(): boolean { return revoked; },
+        opened: (dirty) => opened(vault, note, dirty, current),
+        measured: (patch) => measured(vault, note, patch, current),
+        close: (): void => { closed = true; sessions.delete(tracked); },
+      };
+    },
     async reconcile(vault, answer): Promise<readonly ReplicatedNote[]> {
       if (answer.kind === "unreachable") {
         return (await options.store.getNotes(vault)) ?? [];
+      }
+      const readable = new Set(answer.kind === "ok" ? answer.notes.map((note) => note.path) : []);
+      const opening = new Set<string>();
+      // why: synced is historical, not authorization. Invalidate before the first await,
+      // including bodies whose first sync is still buffered behind editor startup.
+      for (const session of sessions) {
+        if (session.vault !== vault || readable.has(session.note)) continue;
+        session.revoke();
+        opening.add(session.note);
       }
       if (answer.kind === "denied") {
         // Everything, not just the metadata: a vault this user can no longer open is one
         // whose note bodies they may no longer read either (§6.7).
         const residents = await options.store.residents(vault);
         await options.store.deleteVault(vault);
-        await Promise.all(residents.map((body) => options.dropBody(body.vault, body.note)));
+        const notes = new Set([...opening, ...residents.map((body) => body.note)]);
+        await Promise.all([...notes].map((note) => options.dropBody(vault, note)));
         return [];
       }
-      const readable = new Set(answer.notes.map((note) => note.path));
       const gone = unreadable(await options.store.residents(vault), readable);
       // A pin for a note that is no longer readable is a standing instruction to fetch
       // something this user may not have. It goes with the body.
@@ -115,9 +180,9 @@ export function createReplica(options: ReplicaOptions): Replica {
       }
       // Bodies first, then the metadata: interrupted half-way, the honest failure is a
       // device that has dropped what it may not read and will re-fetch what it may.
-      for (const body of gone) {
-        await options.dropBody(body.vault, body.note);
-        await options.store.deleteResident(body.vault, body.note);
+      for (const note of new Set([...opening, ...gone.map((body) => body.note)])) {
+        await options.dropBody(vault, note);
+        await options.store.deleteResident(vault, note);
       }
       await options.store.putNotes(vault, answer.notes);
       return answer.notes;
@@ -130,32 +195,8 @@ export function createReplica(options: ReplicaOptions): Replica {
       const notes = await options.store.getNotes(vault);
       return notes?.find((entry) => entry.path === note);
     },
-    async opened(vault, note): Promise<void> {
-      // Read first, so opening a note does not forget what it weighed, that it has unsent
-      // changes, or what its merge base is — `putResident` replaces the record rather than
-      // merging it, and a forgotten base makes the next divergence undetectable (§3.5).
-      const existing = await options.store.getResident(vault, note);
-      await options.store.putResident({
-        vault,
-        note,
-        openedAt: now(),
-        bytes: existing?.bytes ?? 0,
-        dirty: existing?.dirty ?? false,
-        ...(existing?.base === undefined ? {} : { base: existing.base }),
-      });
-    },
-    async measured(vault, note, patch): Promise<void> {
-      const existing = await options.store.getResident(vault, note);
-      // Only for a note this device holds. Measuring one it does not would create a record
-      // claiming a body that is not there, and `isResident` would then hide §7.2's state.
-      if (existing === undefined) return;
-      await options.store.putResident({
-        ...existing,
-        ...(patch.bytes === undefined ? {} : { bytes: patch.bytes }),
-        ...(patch.dirty === undefined ? {} : { dirty: patch.dirty }),
-        ...(patch.base === undefined ? {} : { base: patch.base }),
-      });
-    },
+    opened,
+    measured,
     async base(vault, note): Promise<string | undefined> {
       return (await options.store.getResident(vault, note))?.base;
     },

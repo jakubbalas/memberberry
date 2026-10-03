@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { Editor } from "@tiptap/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createMemberberryExtensions } from "./schema.js";
 import { TASK_CHIP_EVENT, taskItemView, type TaskChipEventDetail } from "./task-view.js";
@@ -184,6 +184,210 @@ describe("the task checkbox", () => {
   });
 });
 
+/** jsdom has no PointerEvent constructor; preserve the browser's event fields at this boundary. */
+function pointer(target: EventTarget, type: string, options: Partial<PointerEventInit> = {}): Event {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 20, clientY: 100, ...options });
+  Object.defineProperties(event, {
+    pointerId: { value: options.pointerId ?? 1 },
+    pointerType: { value: options.pointerType ?? "touch" },
+    isPrimary: { value: options.isPrimary ?? true },
+  });
+  target.dispatchEvent(event);
+  return event;
+}
+
+function pointerClick(target: EventTarget): void {
+  target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+}
+
+describe("task gestures", () => {
+  it.each(["pointercancel", "drag", "return drag", "release movement", "ancestor scroll", "second touch"])(
+    "does not untick after %s, but accepts the next deliberate tap",
+    (gesture) => {
+      const mounted = mount({ status: "done", done: "2026-08-28" });
+      try {
+        const down = pointer(mounted.checkbox, "pointerdown");
+        expect(down.defaultPrevented).toBe(false);
+        if (gesture === "pointercancel") pointer(document, "pointercancel");
+        if (gesture === "drag" || gesture === "return drag") {
+          const move = pointer(document, "pointermove", { clientY: 45 });
+          expect(move.defaultPrevented).toBe(false);
+        }
+        if (gesture === "return drag") pointer(document, "pointermove", { clientY: 100 });
+        if (gesture === "ancestor scroll") mounted.element.dispatchEvent(new Event("scroll"));
+        if (gesture === "second touch") pointer(document, "pointerdown", { pointerId: 2, isPrimary: false });
+        if (gesture !== "pointercancel") pointer(document, "pointerup", { clientY: gesture === "release movement" ? 45 : 100 });
+        // Some engines/embedders still deliver a compatibility click after a cancelled gesture.
+        pointerClick(mounted.checkbox);
+        expect(mounted.attrs()["status"]).toBe("done");
+        expect(mounted.attrs()["done"]).toBe("2026-08-28");
+        pointer(mounted.checkbox, "pointerdown");
+        pointer(document, "pointerup");
+        pointerClick(mounted.checkbox);
+        expect(mounted.attrs()["status"]).toBe("todo");
+      } finally { mounted.destroy(); }
+    },
+  );
+
+  it.each(["touch", "pen", "mouse"])("accepts a deliberate %s tap with small movement exactly once", (pointerType) => {
+    const mounted = mount();
+    const changed = vi.fn();
+    mounted.editor.on("update", changed);
+    try {
+      pointer(mounted.checkbox, "pointerdown", { pointerType });
+      pointer(document, "pointermove", { pointerType, clientX: 22, clientY: 103 });
+      pointer(document, "pointerup", { pointerType, clientX: 22, clientY: 103 });
+      expect(mounted.attrs()["status"]).toBe("todo");
+      pointerClick(mounted.checkbox);
+      expect(mounted.attrs()["status"]).toBe("done");
+      expect(changed).toHaveBeenCalledTimes(1);
+    } finally { mounted.destroy(); }
+  });
+
+  it("does not let unrelated scrolls or other pointer movement cancel a tap", () => {
+    const mounted = mount();
+    const other = document.createElement("div");
+    document.body.append(other);
+    try {
+      pointer(mounted.checkbox, "pointerdown");
+      other.dispatchEvent(new Event("scroll"));
+      pointer(document, "pointermove", { pointerId: 2, clientY: 5 });
+      pointer(document, "pointerup", { pointerId: 2 });
+      pointer(document, "pointerup");
+      pointerClick(mounted.checkbox);
+      expect(mounted.attrs()["status"]).toBe("done");
+    } finally { other.remove(); mounted.destroy(); }
+  });
+
+  it("preserves keyboard/programmatic activation after a cancelled touch", () => {
+    const mounted = mount();
+    try {
+      pointer(mounted.checkbox, "pointerdown");
+      pointer(document, "pointercancel");
+      mounted.checkbox.click();
+      expect(mounted.attrs()["status"]).toBe("done");
+    } finally { mounted.destroy(); }
+  });
+
+  it("rejects a touch PointerEvent click with zero detail after cancellation", () => {
+    const mounted = mount();
+    try {
+      pointer(mounted.checkbox, "pointerdown");
+      pointer(document, "pointercancel");
+      pointer(mounted.checkbox, "click", { detail: 0 });
+      expect(mounted.attrs()["status"]).toBe("todo");
+      mounted.checkbox.click();
+      expect(mounted.attrs()["status"]).toBe("done");
+    } finally { mounted.destroy(); }
+  });
+
+  it("does not edit a read-only task or open its metadata picker", () => {
+    const mounted = mount({ due: "2026-09-30" });
+    const changed = vi.fn();
+    const picker = vi.fn();
+    mounted.editor.on("update", changed);
+    mounted.editor.view.dom.addEventListener(TASK_CHIP_EVENT, picker);
+    try {
+      mounted.editor.setEditable(false);
+      changed.mockClear();
+      mounted.checkbox.click();
+      mounted.chips()[0]?.click();
+      expect(mounted.attrs()["status"]).toBe("todo");
+      expect(changed).not.toHaveBeenCalled();
+      expect(picker).not.toHaveBeenCalled();
+      mounted.editor.setEditable(true);
+      mounted.checkbox.click();
+      expect(mounted.attrs()["status"]).toBe("done");
+    } finally { mounted.destroy(); }
+  });
+
+  it.each(["pointerup", "pointercancel"])("removes document gesture listeners on %s rather than on every later scroll", (end) => {
+    const mounted = mount();
+    const add = vi.spyOn(document, "addEventListener");
+    const remove = vi.spyOn(document, "removeEventListener");
+    try {
+      pointer(mounted.checkbox, "pointerdown");
+      const listeners = add.mock.calls.filter(([type]) => ["pointermove", "pointerup", "pointercancel", "pointerdown", "scroll"].includes(type));
+      expect(listeners).toHaveLength(5);
+      pointer(document, end);
+      for (const [type, handler] of listeners) {
+        expect(remove.mock.calls.some(([removedType, removedHandler, capture]) => removedType === type && removedHandler === handler && capture === true)).toBe(true);
+      }
+    } finally { mounted.destroy(); vi.restoreAllMocks(); }
+  });
+
+  it("does not track or prevent native pointer input in task text", () => {
+    const mounted = mount();
+    const add = vi.spyOn(document, "addEventListener");
+    try {
+      const body = mounted.item.querySelector(".task-body");
+      if (body === null) throw new Error("missing task body");
+      expect(pointer(body, "pointerdown").defaultPrevented).toBe(false);
+      expect(add.mock.calls.filter(([type]) => type === "pointermove" || type === "scroll")).toEqual([]);
+      mounted.editor.commands.insertContent("Typed ");
+      expect(mounted.editor.getText()).toContain("Typed ");
+      expect(mounted.attrs()["status"]).toBe("todo");
+    } finally { mounted.destroy(); vi.restoreAllMocks(); }
+  });
+
+  it("does not open a chip after a drag, but accepts a deliberate tap on its nested label", () => {
+    const mounted = mount({ due: "2026-09-30" });
+    const picker = vi.fn();
+    mounted.editor.view.dom.addEventListener(TASK_CHIP_EVENT, picker);
+    try {
+      const label = mounted.chips()[0]?.querySelector(".task-chip-label");
+      if (label == null) throw new Error("missing chip label");
+      pointer(label, "pointerdown");
+      pointer(document, "pointermove", { clientY: 40 });
+      pointer(document, "pointerup");
+      pointerClick(label);
+      expect(picker).not.toHaveBeenCalled();
+      pointer(label, "pointerdown");
+      pointer(document, "pointerup");
+      pointerClick(label);
+      expect(picker).toHaveBeenCalledTimes(1);
+    } finally { mounted.destroy(); }
+  });
+
+  it("disposes a chip's active gesture and click handler when metadata replaces it", () => {
+    const mounted = mount({ due: "2026-09-30" });
+    const chip = mounted.chips()[0];
+    const picker = vi.fn();
+    mounted.editor.view.dom.addEventListener(TASK_CHIP_EVENT, picker);
+    try {
+      if (chip === undefined) throw new Error("missing chip");
+      pointer(chip, "pointerdown");
+      mounted.editor.commands.updateAttributes("task_item", { due: "2026-10-10" });
+      pointer(document, "pointerup");
+      chip.click();
+      expect(picker).not.toHaveBeenCalled();
+      mounted.chips()[0]?.click();
+      expect(picker).toHaveBeenCalledTimes(1);
+    } finally { mounted.destroy(); }
+  });
+
+  it("removes active gesture listeners and leaves detached controls inert on teardown", () => {
+    const mounted = mount({ due: "2026-09-30" });
+    const dispatch = vi.spyOn(mounted.editor.view, "dispatch");
+    const add = vi.spyOn(document, "addEventListener");
+    const remove = vi.spyOn(document, "removeEventListener");
+    const chip = mounted.chips()[0];
+    try {
+      pointer(mounted.checkbox, "pointerdown");
+      const listeners = add.mock.calls.filter(([type]) => ["pointermove", "pointerup", "pointercancel", "pointerdown", "scroll"].includes(type));
+      mounted.destroy();
+      for (const [type, handler] of listeners) {
+        expect(remove.mock.calls.some(([removedType, removedHandler]) => removedType === type && removedHandler === handler)).toBe(true);
+      }
+      dispatch.mockClear();
+      pointer(document, "pointerup");
+      mounted.checkbox.click();
+      chip?.click();
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally { vi.restoreAllMocks(); }
+  });
+});
+
 describe("the inline metadata chips", () => {
   it("renders a due date as a chip a reader can see", () => {
     const mounted = mount({ due: "2026-09-30" });
@@ -279,6 +483,37 @@ describe("the inline metadata chips", () => {
 });
 
 describe("the task view and the document underneath it", () => {
+  it("ignores its own checkbox/chip mutations without rereading them as note edits", async () => {
+    const mounted = mount({ due: "2026-09-30", priority: "high" });
+    const changed = vi.fn();
+    mounted.editor.on("update", changed);
+    try {
+      mounted.checkbox.click();
+      await Promise.resolve();
+      const snapshot = mounted.editor.getJSON();
+      const chip = mounted.chips()[0];
+      if (chip === undefined) throw new Error("missing rendered chip");
+      mounted.checkbox.setAttribute("data-test-paint", "touched");
+      chip.append(document.createTextNode("Decoration only"));
+      await Promise.resolve();
+      expect(mounted.editor.getJSON()).toEqual(snapshot);
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(mounted.editor.state.doc.textContent).toBe("Write the tests");
+    } finally { mounted.destroy(); }
+  });
+
+  it("still reads native text mutations in contentDOM, preserving task metadata and node identity", async () => {
+    const mounted = mount({ status: "done", done: "2026-08-28", due: "2026-09-30" });
+    try {
+      const text = mounted.item.querySelector(".task-body p")?.firstChild;
+      if (text === undefined || text === null) throw new Error("missing editable text");
+      text.nodeValue = "Native input survives";
+      await vi.waitFor(() => expect(mounted.editor.state.doc.textContent).toBe("Native input survives"));
+      expect(mounted.attrs()["status"]).toBe("done");
+      expect(mounted.attrs()["due"]).toBe("2026-09-30");
+      expect(mounted.item.querySelector(".task-checkbox")).toBe(mounted.checkbox);
+    } finally { mounted.destroy(); }
+  });
   it("leaves the task's text as note content and the chips out of it", () => {
     // The failure this rules out is the node view's own DOM being parsed back in: chips are
     // outside `contentDOM`, and if ProseMirror read them as an edit the due date would

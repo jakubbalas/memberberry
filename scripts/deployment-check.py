@@ -25,7 +25,7 @@ def check_static_contract() -> None:
     entrypoint = (ROOT / "deploy/container-entrypoint.sh").read_text()
     dockerignore = (ROOT / ".dockerignore").read_text().splitlines()
     gitignore = (ROOT / ".gitignore").read_text().splitlines()
-    for pattern in ["**/vaults", ".env"]:
+    for pattern in ["**/vaults", ".env", "local"]:
         if pattern not in dockerignore:
             raise SystemExit(f"deployment-check: .dockerignore must exclude {pattern}")
     if "**/vaults/" not in gitignore:

@@ -15,5 +15,7 @@ auth.db
 audit.log*
 server.toml
 backups
+# Local debug material, rollout snapshots and credentials must never enter build context.
+local
 **/vaults
 .env

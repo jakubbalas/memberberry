@@ -597,6 +597,9 @@ impl SyncRegistry {
                 errors.push(error.to_string());
             }
         }
+        // A last-subscriber flush may have failed. Keep its coordinator until a retry
+        // materializes the accepted content, then release it like any other empty room.
+        rooms.retain(|_, room| !room.peers.is_empty() || room.coordinator.write_due.is_some());
         (errors, flushed)
     }
 }
@@ -627,11 +630,14 @@ fn retract(room: &mut Room, connection: ConnectionId, slug: &str) -> Vec<u64> {
 
 /// Materializes and closes an empty room, so a note nobody has open costs nothing.
 fn release(rooms: &mut BTreeMap<String, Room>, key: &str) -> Result<(), SyncError> {
-    let Some(mut room) = rooms.remove(key) else {
+    let Some(room) = rooms.get_mut(key) else {
         return Ok(());
     };
+    // why: removing first stranded accepted content in the sidecar after a transient
+    // disk error, with nobody left to retry the Markdown write (C2).
     room.coordinator
         .flush_if_due(Instant::now() + MARKDOWN_WRITE_DEBOUNCE)?;
+    rooms.remove(key);
     Ok(())
 }
 

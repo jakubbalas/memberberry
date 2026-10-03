@@ -17,11 +17,15 @@
 -->
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import SidebarDivider from "./SidebarDivider.svelte";
 
   interface Props {
     readonly side: "left" | "right";
     readonly label: string;
     readonly collapsed: boolean;
+    readonly width?: number | undefined;
+    readonly maximum?: number | undefined;
+    readonly onresize?: ((width: number) => void) | undefined;
     /** The panes rendered inside the panel. */
     readonly children?: Snippet;
     /** View controls kept reachable while the panel body scrolls. */
@@ -32,7 +36,7 @@
     readonly awaiting?: string;
   }
 
-  const { side, label, collapsed, children, controls, awaiting, user }: Props = $props();
+  const { side, label, collapsed, width, maximum, onresize, children, controls, awaiting, user }: Props = $props();
 
   const id = $derived(`sidebar-${side}`);
   /** One letter, as a stand-in for a portrait this application will never fetch (C1). */
@@ -40,7 +44,7 @@
 </script>
 
 <div class="sidebar-frame" data-side={side} data-collapsed={collapsed}>
-  <aside {id} class="sidebar" aria-label={label} hidden={collapsed}>
+  <aside {id} class="sidebar" aria-label={label} hidden={collapsed} style={width === undefined ? undefined : `--sidebar-width: ${width}px`}>
     {#if controls}
       {@render controls()}
     {/if}
@@ -65,4 +69,7 @@
       </div>
     {/if}
   </aside>
+  {#if !collapsed && width !== undefined && maximum !== undefined && onresize !== undefined}
+    <SidebarDivider {side} {label} {width} {maximum} {onresize} />
+  {/if}
 </div>

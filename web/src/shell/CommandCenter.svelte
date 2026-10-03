@@ -81,6 +81,8 @@
     readonly renameNote?: typeof renameNoteRequest | undefined;
     readonly renameTag?: typeof renameTagRequest | undefined;
     readonly createNote?: typeof createNoteRequest | undefined;
+    /** Reveals the successfully created note beneath shell overlays; never called on refusal. */
+    readonly oncreated?: (() => void) | undefined;
     /**
      * Which notes this device keeps offline (§7.2).
      *
@@ -109,6 +111,7 @@
     renameNote = renameNoteRequest,
     renameTag = renameTagRequest,
     createNote = createNoteRequest,
+    oncreated,
     pins,
     daily,
     user,
@@ -245,6 +248,7 @@
     renaming = undefined;
     renameNotice = `Created ${result.ok.path}.`;
     store.open(result.ok.path);
+    oncreated?.();
     void catalog.refresh();
   }
 

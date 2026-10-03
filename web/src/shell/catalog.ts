@@ -6,10 +6,10 @@
  * permission logic here at all, which is the point: the only safe place for it is the one
  * place it already is.
  *
- * The note list is fetched **once per vault per session** and ranked client-side, because
- * §21.2 budgets the switcher at 80 ms and a round trip per keystroke cannot meet that. The
- * cost is that a note created in another window is missing until the page reloads; `refresh`
- * exists for when there is something to trigger it, which today there is not.
+ * The shared note list is loaded on demand and ranked client-side, because §21.2 budgets
+ * the switcher at 80 ms and a round trip per keystroke cannot meet that. The workspace
+ * refreshes it on focus, visible-tab restoration and reconnect so another device's new
+ * notes become discoverable without polling or a page reload.
  */
 
 import { readReplicatedTasks, type ReplicatedNote } from "../offline/db.js";

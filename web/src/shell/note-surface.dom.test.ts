@@ -16,16 +16,20 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import type { Extensions } from "@tiptap/core";
+import { Editor, type Extensions } from "@tiptap/core";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { Doc, applyUpdate, encodeStateAsUpdate } from "yjs";
+import { Doc, XmlElement, XmlText, applyUpdate, encodeStateAsUpdate } from "yjs";
+import { IndexeddbPersistence } from "y-indexeddb";
 
-import type { LocalPersistence } from "../editor/collaboration.js";
-import type { ConnectionState } from "../editor/sync.js";
+import { persistenceName, type LocalPersistence } from "../editor/collaboration.js";
+import { createSyncProvider, decodeBinaryFrame, encodeBinaryFrame, type ConnectionState } from "../editor/sync.js";
 import { stubReplica } from "../offline/testing.js";
+import { openOfflineStore } from "../offline/db.js";
+import { createReplica, dropBodyWith } from "../offline/replica.js";
 import { createMemberberryExtensions } from "../editor/schema.js";
-import { load, updateFromMarkdown } from "../notes.js";
+import { load, markdownFromUpdate, updateFromMarkdown } from "../notes.js";
 import { LOCAL_ONLY, openNoteSurface } from "./note-surface.js";
 
 const fixture = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
@@ -35,6 +39,9 @@ const contract = JSON.parse(
 ) as unknown;
 
 beforeAll(async () => {
+  // jsdom has no Range layout; focusing the real editor still asks this browser boundary.
+  Range.prototype.getClientRects = () => document.createElement("span").getClientRects();
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
   await load(readFileSync(fixture("../wasm/mb_bg.wasm")));
 });
 
@@ -168,6 +175,459 @@ describe("opening a note pane", () => {
     } finally {
       await surface.destroy();
     }
+  });
+});
+
+describe("source task actions", () => {
+  const markdown = "# Tasks\n\n- [ ] First\n- [ ] Middle\n- [ ] Last\n";
+
+  async function taskPane(resident = false, initial?: Uint8Array) {
+    const update = initial ?? await updateFromMarkdown(markdown);
+    let doc: Doc | undefined;
+    let report: ((state: ConnectionState) => void) | undefined;
+    let revoked = false;
+    const pane = await open({
+      bootstrap: { vault: "personal", note: "Tasks.md", user: "alice" },
+      replica: async () => stubReplica({
+        isResident: async () => resident,
+        session: () => ({
+          get revoked() { return revoked; },
+          opened: async () => undefined, measured: async () => undefined, close: () => undefined,
+        }),
+      }),
+      createPersistence: (_name, document) => {
+        doc = document;
+        if (resident) applyUpdate(document, update);
+        return localPersistence();
+      },
+      createRemoteSync: (_options, _doc, _awareness, changed) => {
+        report = changed;
+        return { connected: true, pending: 0, synced: false, sendAwareness: () => undefined, destroy: () => undefined };
+      },
+    });
+    const editor = (pane.dom.surface.querySelector(".tiptap") as HTMLElement & { editor?: Editor })?.editor;
+    if (doc === undefined || !(editor instanceof Editor)) throw new Error("missing task editor/document");
+    const document = doc;
+    return { ...pane, editor, document,
+      body: () => applyUpdate(document, update),
+      synced: () => report?.({ connected: true, pending: 0, synced: true }),
+      revoke: (value = true) => { revoked = value; },
+      states: () => [...pane.dom.surface.querySelectorAll(".task-checkbox")].map((box) => box.getAttribute("aria-checked")),
+    };
+  }
+
+  it.each([0, 1, 2])("edits only source ordinal %s, not all later tasks", async (ordinal) => {
+    const pane = await taskPane(true);
+    try {
+      expect(pane.surface.editTask?.(ordinal, { kind: "toggle" })).toBe(true);
+      expect(pane.states()).toEqual([0, 1, 2].map((index) => String(index === ordinal)));
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it.each(["todo", "cancelled"] as const)("completes a %s task without reopening it on a fresh completion intent", async (status) => {
+    const initial = await updateFromMarkdown(status === "todo" ? markdown
+      : "# Tasks\n\n- [-] First ❌ 2026-09-01\n- [ ] Middle\n- [ ] Last\n");
+    const pane = await taskPane(true, initial);
+    try {
+      expect(pane.surface.editTask?.(0, { kind: "complete" })).toBe(true);
+      expect(pane.states()).toEqual(["true", "false", "false"]);
+      const completed = await markdownFromUpdate(encodeStateAsUpdate(pane.document));
+      expect(completed).toMatch(/- \[x\] First.*✅ \d{4}-\d{2}-\d{2}/);
+      if (status === "cancelled") expect(completed).toContain("❌ 2026-09-01");
+      const transaction = vi.fn();
+      pane.editor.on("transaction", transaction);
+      try {
+        expect(pane.surface.editTask?.(0, { kind: "complete" })).toBe(true);
+        expect(pane.states()).toEqual(["true", "false", "false"]);
+        expect(transaction).not.toHaveBeenCalled();
+        expect(await markdownFromUpdate(encodeStateAsUpdate(pane.document))).toBe(completed);
+      } finally { pane.editor.off("transaction", transaction); }
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it("keeps a remounted completed task unchanged and unfocused when a cached inbox row completes it again", async () => {
+    const first = await taskPane(true);
+    let saved: Uint8Array;
+    try {
+      expect(first.surface.editTask?.(0, { kind: "complete" })).toBe(true);
+      saved = encodeStateAsUpdate(first.document);
+    } finally { await first.surface.destroy(); }
+    const reopened = await taskPane(true, saved);
+    const transaction = vi.fn();
+    const focus = vi.spyOn(reopened.editor.view, "focus");
+    reopened.editor.on("transaction", transaction);
+    try {
+      const before = encodeStateAsUpdate(reopened.document);
+      const selection = reopened.editor.state.selection;
+      expect(reopened.surface.editTask?.(0, { kind: "complete" })).toBe(true);
+      expect(reopened.surface.editTask?.(0, { kind: "complete" })).toBe(true);
+      expect(reopened.states()).toEqual(["true", "false", "false"]);
+      expect(reopened.editor.state.selection).toBe(selection);
+      expect(transaction).not.toHaveBeenCalled();
+      expect(focus).not.toHaveBeenCalled();
+      expect(encodeStateAsUpdate(reopened.document)).toEqual(before);
+    } finally {
+      reopened.editor.off("transaction", transaction);
+      focus.mockRestore();
+      await reopened.surface.destroy();
+    }
+  });
+
+  it.each([false, true])("defers completion until first sync and never reopens the source (already done: %s)", async (done) => {
+    const initial = await updateFromMarkdown(done
+      ? "# Tasks\n\n- [x] First ✅ 2026-09-01\n- [ ] Middle\n- [ ] Last\n" : markdown);
+    const pane = await taskPane(false, initial);
+    try {
+      expect(pane.surface.editTask?.(0, { kind: "complete" })).toBe(true);
+      expect(pane.surface.editTask?.(0, { kind: "complete" })).toBe(true);
+      pane.body();
+      await Promise.resolve();
+      expect(pane.states()).toEqual([String(done), "false", "false"]);
+      pane.synced();
+      await Promise.resolve();
+      expect(pane.states()).toEqual(["true", "false", "false"]);
+      const completed = await markdownFromUpdate(encodeStateAsUpdate(pane.document));
+      expect(completed).toMatch(/- \[x\] First.*✅/);
+      if (done) expect(completed).toContain("✅ 2026-09-01");
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it.each(["read-only", "revoked"] as const)("refuses completion of an already done %s source instead of reporting success", async (denial) => {
+    const pane = await taskPane(true, await updateFromMarkdown("# Tasks\n\n- [x] First ✅ 2026-09-01\n"));
+    const action = { kind: "complete" } as const;
+    try {
+      if (denial === "revoked") pane.revoke();
+      else pane.editor.setEditable(false);
+      const before = encodeStateAsUpdate(pane.document);
+      expect(pane.surface.editTask?.(0, action)).toBe(false);
+      expect(encodeStateAsUpdate(pane.document)).toEqual(before);
+      pane.revoke(false);
+      pane.editor.setEditable(true);
+      expect(pane.surface.editTask?.(0, action)).toBe(false);
+      expect(pane.surface.editTask?.(0, { kind: "complete" })).toBe(true);
+      expect(encodeStateAsUpdate(pane.document)).toEqual(before);
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it.each(["read-only", "revoked"] as const)("terminally rejects deferred completion if the source becomes %s before sync", async (denial) => {
+    const pane = await taskPane();
+    const action = { kind: "complete" } as const;
+    try {
+      expect(pane.surface.editTask?.(0, action)).toBe(true);
+      pane.body();
+      pane.synced();
+      if (denial === "revoked") pane.revoke();
+      else pane.editor.setEditable(false);
+      await Promise.resolve();
+      expect(pane.states()).toEqual(["false", "false", "false"]);
+      pane.revoke(false);
+      pane.editor.setEditable(true);
+      expect(pane.surface.editTask?.(0, action)).toBe(false);
+      expect(pane.surface.editTask?.(0, { kind: "complete" })).toBe(true);
+      expect(pane.states()).toEqual(["true", "false", "false"]);
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it("queues an unopened source action until its authorized body arrives and applies it once", async () => {
+    const pane = await taskPane();
+    try {
+      expect(pane.surface.editTask?.(1, { kind: "toggle" })).toBe(true);
+      pane.body();
+      await Promise.resolve();
+      expect(pane.states()).toEqual(["false", "false", "false"]);
+      pane.synced();
+      await vi.waitFor(() => expect(pane.states()).toEqual(["false", "true", "false"]));
+      pane.synced();
+      pane.editor.commands.insertContent("Typed after sync ");
+      await Promise.resolve();
+      expect(pane.states()).toEqual(["false", "true", "false"]);
+      expect(await markdownFromUpdate(encodeStateAsUpdate(pane.document))).toMatch(/- \[x\] .*Middle.*✅/);
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it("keeps distinct pending edits in order but accepts the same action only once", async () => {
+    const pane = await taskPane();
+    const action = { kind: "toggle" } as const;
+    try {
+      pane.surface.editTask?.(0, action);
+      pane.surface.editTask?.(0, action);
+      pane.surface.editTask?.(1, { kind: "due", value: "2026-10-10" });
+      pane.body();
+      pane.synced();
+      await vi.waitFor(() => expect(pane.states()).toEqual(["true", "false", "false"]));
+      const body = await markdownFromUpdate(encodeStateAsUpdate(pane.document));
+      expect(body).toContain("Middle 📅 2026-10-10");
+      pane.surface.editTask?.(0, action);
+      expect(pane.states()).toEqual(["true", "false", "false"]);
+      pane.surface.editTask?.(0, { kind: "toggle" });
+      expect(pane.states()).toEqual(["false", "false", "false"]);
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it.each(["read-only", "revoked"] as const)("drops deferred edits when the source becomes %s", async (denial) => {
+    const pane = await taskPane();
+    try {
+      pane.surface.editTask?.(0, { kind: "toggle" });
+      if (denial === "revoked") pane.revoke();
+      else pane.editor.setEditable(false);
+      pane.body();
+      pane.synced();
+      await Promise.resolve();
+      expect(pane.states()).toEqual(["false", "false", "false"]);
+      expect(pane.surface.editTask?.(1, { kind: "toggle" })).toBe(false);
+      pane.revoke(false);
+      pane.editor.setEditable(true);
+      pane.synced();
+      await Promise.resolve();
+      expect(pane.states()).toEqual(["false", "false", "false"]);
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it("drops stale ordinals rather than applying them when a later task appears", async () => {
+    const pane = await taskPane(true);
+    try {
+      expect(pane.surface.editTask?.(3, { kind: "toggle" })).toBe(false);
+      pane.editor.commands.insertContentAt(pane.editor.state.doc.content.size, {
+        type: "bullet_list", content: [{ type: "task_item", attrs: { status: "todo", unknown: [] },
+          content: [{ type: "paragraph", content: [{ type: "text", text: "Later task" }] }] }],
+      });
+      pane.synced();
+      await Promise.resolve();
+      expect(pane.states()).toEqual(["false", "false", "false", "false"]);
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it("does not resurrect a stale rejected ordinal after remounting with a new task", async () => {
+    const action = { kind: "toggle" } as const;
+    const first = await taskPane(true);
+    expect(first.surface.editTask?.(3, action)).toBe(false);
+    first.editor.commands.insertContentAt(first.editor.state.doc.content.size, {
+      type: "bullet_list", content: [{ type: "task_item", attrs: { status: "todo", unknown: [] },
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Later task" }] }] }],
+    });
+    const saved = encodeStateAsUpdate(first.document);
+    await first.surface.destroy();
+    const reopened = await taskPane(true, saved);
+    try {
+      expect(reopened.surface.editTask?.(3, action)).toBe(false);
+      expect(reopened.states()).toEqual(["false", "false", "false", "false"]);
+      expect(reopened.surface.editTask?.(3, { kind: "toggle" })).toBe(true);
+      expect(reopened.states()).toEqual(["false", "false", "false", "true"]);
+    } finally { await reopened.surface.destroy(); }
+  });
+
+  it("does not resurrect an ordinal rejected after deferred sync when a later task appears", async () => {
+    const action = { kind: "toggle" } as const;
+    const first = await taskPane();
+    let saved: Uint8Array;
+    try {
+      expect(first.surface.editTask?.(3, action)).toBe(true);
+      first.body();
+      first.synced();
+      await Promise.resolve();
+      expect(first.surface.editTask?.(3, action)).toBe(false);
+      first.editor.commands.insertContentAt(first.editor.state.doc.content.size, {
+        type: "bullet_list", content: [{ type: "task_item", attrs: { status: "todo", unknown: [] },
+          content: [{ type: "paragraph", content: [{ type: "text", text: "Later task" }] }] }],
+      });
+      expect(first.surface.editTask?.(3, action)).toBe(false);
+      expect(first.states()).toEqual(["false", "false", "false", "false"]);
+      saved = encodeStateAsUpdate(first.document);
+    } finally { await first.surface.destroy(); }
+    const reopened = await taskPane(true, saved);
+    try {
+      expect(reopened.surface.editTask?.(3, action)).toBe(false);
+      expect(reopened.states()).toEqual(["false", "false", "false", "false"]);
+      expect(reopened.surface.editTask?.(3, { kind: "toggle" })).toBe(true);
+      expect(reopened.states()).toEqual(["false", "false", "false", "true"]);
+    } finally { await reopened.surface.destroy(); }
+  });
+
+  it.each(["read-only", "revoked"] as const)("does not resurrect a denied deferred action after remounting an editable source (%s)", async (denial) => {
+    const action = { kind: "toggle" } as const;
+    const first = await taskPane();
+    first.surface.editTask?.(0, action);
+    if (denial === "revoked") first.revoke();
+    else first.editor.setEditable(false);
+    first.body();
+    first.synced();
+    await Promise.resolve();
+    expect(first.surface.editTask?.(0, action)).toBe(false);
+    await first.surface.destroy();
+    const reopened = await taskPane(true);
+    try {
+      expect(reopened.surface.editTask?.(0, action)).toBe(false);
+      expect(reopened.states()).toEqual(["false", "false", "false"]);
+      expect(reopened.surface.editTask?.(0, { kind: "toggle" })).toBe(true);
+      expect(reopened.states()).toEqual(["true", "false", "false"]);
+    } finally { await reopened.surface.destroy(); }
+  });
+
+  it.each(["read-only", "revoked"] as const)("records %s denial at teardown even without a body or connection update", async (denial) => {
+    const action = { kind: "toggle" } as const;
+    const first = await taskPane();
+    expect(first.surface.editTask?.(0, action)).toBe(true);
+    if (denial === "revoked") first.revoke();
+    else first.editor.setEditable(false);
+    await first.surface.destroy();
+    const reopened = await taskPane(true);
+    try {
+      expect(reopened.surface.editTask?.(0, action)).toBe(false);
+      expect(reopened.states()).toEqual(["false", "false", "false"]);
+      expect(reopened.surface.editTask?.(0, { kind: "toggle" })).toBe(true);
+      expect(reopened.states()).toEqual(["true", "false", "false"]);
+    } finally { await reopened.surface.destroy(); }
+  });
+
+  it.each(["read-only", "revoked"] as const)("does not replay an immediate %s rejection after remounting", async (denial) => {
+    const action = { kind: "toggle" } as const;
+    const first = await taskPane(true);
+    try {
+      if (denial === "revoked") first.revoke();
+      else first.editor.setEditable(false);
+      expect(first.surface.editTask?.(0, action)).toBe(false);
+    } finally { await first.surface.destroy(); }
+    const reopened = await taskPane(true);
+    try {
+      expect(reopened.surface.editTask?.(0, action)).toBe(false);
+      expect(reopened.states()).toEqual(["false", "false", "false"]);
+      expect(reopened.surface.editTask?.(0, { kind: "toggle" })).toBe(true);
+      expect(reopened.states()).toEqual(["true", "false", "false"]);
+    } finally { await reopened.surface.destroy(); }
+  });
+
+  it.each(["read-only", "revoked"] as const)("rechecks %s permission before a scheduled edit applies", async (denial) => {
+    const pane = await taskPane();
+    const action = { kind: "toggle" } as const;
+    try {
+      expect(pane.surface.editTask?.(0, action)).toBe(true);
+      pane.body();
+      pane.synced();
+      if (denial === "revoked") pane.revoke();
+      else pane.editor.setEditable(false);
+      await Promise.resolve();
+      expect(pane.states()).toEqual(["false", "false", "false"]);
+      pane.revoke(false);
+      pane.editor.setEditable(true);
+      expect(pane.surface.editTask?.(0, action)).toBe(false);
+      expect(pane.surface.editTask?.(0, { kind: "toggle" })).toBe(true);
+      expect(pane.states()).toEqual(["true", "false", "false"]);
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it.each(["read-only", "revoked"] as const)("rechecks %s permission after selecting the task but before editing it", async (denial) => {
+    const pane = await taskPane(true);
+    const action = { kind: "toggle" } as const;
+    const deny = (): void => {
+      if (denial === "revoked") pane.revoke();
+      else pane.editor.setEditable(false);
+    };
+    try {
+      pane.editor.on("selectionUpdate", deny);
+      expect(pane.surface.editTask?.(0, action)).toBe(false);
+      pane.editor.off("selectionUpdate", deny);
+      expect(pane.states()).toEqual(["false", "false", "false"]);
+      pane.revoke(false);
+      pane.editor.setEditable(true);
+      expect(pane.surface.editTask?.(0, action)).toBe(false);
+      expect(pane.surface.editTask?.(0, { kind: "toggle" })).toBe(true);
+      expect(pane.states()).toEqual(["true", "false", "false"]);
+    } finally {
+      pane.editor.off("selectionUpdate", deny);
+      await pane.surface.destroy();
+    }
+  });
+
+  it("returns a terminal command failure rather than acceptance after deferred sync", async () => {
+    const pane = await taskPane();
+    const action = { kind: "due", value: "not a date" } as const;
+    try {
+      expect(pane.surface.editTask?.(0, action)).toBe(true);
+      pane.body();
+      pane.synced();
+      await Promise.resolve();
+      expect(pane.surface.editTask?.(0, action)).toBe(false);
+      expect(await markdownFromUpdate(encodeStateAsUpdate(pane.document))).not.toContain("📅");
+      expect(pane.surface.editTask?.(0, { kind: "due", value: "2026-10-10" })).toBe(true);
+      expect(await markdownFromUpdate(encodeStateAsUpdate(pane.document))).toContain("First 📅 2026-10-10");
+    } finally { await pane.surface.destroy(); }
+  });
+
+  it("does not replay a completed intent when the source is remounted after a temporary view", async () => {
+    const action = { kind: "toggle" } as const;
+    const first = await taskPane(true);
+    first.surface.editTask?.(0, action);
+    const saved = encodeStateAsUpdate(first.document);
+    await first.surface.destroy();
+    const reopened = await taskPane(true, saved);
+    try {
+      reopened.surface.editTask?.(0, action);
+      expect(reopened.states()).toEqual(["true", "false", "false"]);
+      reopened.surface.editTask?.(0, { kind: "toggle" });
+      expect(reopened.states()).toEqual(["false", "false", "false"]);
+    } finally { await reopened.surface.destroy(); }
+  });
+
+  it("applies a shared intent once across two source panes that finish loading separately", async () => {
+    const initial = await updateFromMarkdown(markdown);
+    const first = await taskPane(false, initial);
+    const second = await taskPane(false, initial);
+    const action = { kind: "toggle" } as const;
+    try {
+      first.surface.editTask?.(1, action);
+      second.surface.editTask?.(1, action);
+      first.body();
+      first.synced();
+      await vi.waitFor(() => expect(first.states()).toEqual(["false", "true", "false"]));
+      // The other pane receives the same authorized body, including the first pane's edit.
+      applyUpdate(second.document, encodeStateAsUpdate(first.document));
+      second.synced();
+      await Promise.resolve();
+      expect(second.states()).toEqual(["false", "true", "false"]);
+    } finally { await first.surface.destroy(); await second.surface.destroy(); }
+  });
+
+  it("shares a deferred rejection with a second pane even when that pane loads a matching task", async () => {
+    const first = await taskPane();
+    const second = await taskPane(false, await updateFromMarkdown(`${markdown}- [ ] Later task\n`));
+    const action = { kind: "toggle" } as const;
+    try {
+      expect(first.surface.editTask?.(3, action)).toBe(true);
+      expect(second.surface.editTask?.(3, action)).toBe(true);
+      first.body();
+      first.synced();
+      await Promise.resolve();
+      second.body();
+      second.synced();
+      await Promise.resolve();
+      expect(second.states()).toEqual(["false", "false", "false", "false"]);
+      expect(second.surface.editTask?.(3, action)).toBe(false);
+      expect(second.surface.editTask?.(3, { kind: "toggle" })).toBe(true);
+      expect(second.states()).toEqual(["false", "false", "false", "true"]);
+    } finally { await first.surface.destroy(); await second.surface.destroy(); }
+  });
+
+  it("does not consume a deferred intent if its pane closes before applying it", async () => {
+    const action = { kind: "toggle" } as const;
+    const first = await taskPane();
+    first.surface.editTask?.(0, action);
+    await first.surface.destroy();
+    const reopened = await taskPane(true);
+    try {
+      reopened.surface.editTask?.(0, action);
+      expect(reopened.states()).toEqual(["true", "false", "false"]);
+    } finally { await reopened.surface.destroy(); }
+  });
+
+  it("cancels scheduled edits synchronously when its pane closes", async () => {
+    const pane = await taskPane();
+    pane.surface.editTask?.(0, { kind: "toggle" });
+    pane.body();
+    pane.synced();
+    const closing = pane.surface.destroy();
+    await closing;
+    expect(await markdownFromUpdate(encodeStateAsUpdate(pane.document))).not.toContain("[x]");
+    expect(pane.surface.editTask?.(0, { kind: "toggle" })).toBe(false);
   });
 });
 
@@ -423,6 +883,260 @@ describe("keeping §7.2's bookkeeping", () => {
   const bootstrap = { vault: "personal", note: "Projects/Roadmap.md", user: "alice" } as const;
   const location = { protocol: "http:", host: "localhost:9010" } as Location;
 
+  it.each(["before body", "while applying body", "before subscription"] as const)(
+    "protects first residency until server echo when sync arrives %s",
+    async (arrival) => {
+      const store = await openOfflineStore(new IDBFactory());
+      const dropped: string[] = [];
+      const replica = createReplica({
+        store,
+        now: () => 1_000,
+        caps: { notes: 1, bytes: 1_000_000 },
+        dropBody: async (_vault, note) => { dropped.push(note); },
+      });
+      class Socket extends EventTarget {
+        readyState: number = WebSocket.CONNECTING;
+        binaryType: BinaryType = "arraybuffer";
+        readonly sent: Uint8Array[] = [];
+        send(data: string | Uint8Array): void {
+          if (typeof data !== "string") this.sent.push(data);
+        }
+        close(): void { this.readyState = WebSocket.CLOSED; }
+        receive(tag: number, update: Uint8Array): void {
+          this.dispatchEvent(new MessageEvent("message", {
+            data: encodeBinaryFrame(tag, bootstrap.vault, bootstrap.note, update).buffer,
+          }));
+        }
+      }
+      const socket = new Socket();
+      const server = new Doc();
+      applyUpdate(server, await updateFromMarkdown("# Roadmap\n\nDownloaded body.\n"));
+      const connect = (): void => {
+        socket.readyState = WebSocket.OPEN;
+        socket.dispatchEvent(new Event("open"));
+        socket.receive(0x01, encodeStateAsUpdate(server));
+      };
+      await store.putResident({ vault: bootstrap.vault, note: "Pinned.md", openedAt: 2_000, bytes: 0, dirty: false });
+      await replica.setPinned(bootstrap.vault, "Pinned.md", true);
+      const pane = await open({
+        bootstrap,
+        location,
+        replica: async () => replica,
+        createRemoteSync: (options, document, awareness, onConnectionChange, onServerState) => {
+          const provider = createSyncProvider({
+            ...options, document, awareness, onConnectionChange, onServerState,
+            connect: () => socket as unknown as WebSocket,
+            network: new EventTarget(),
+          });
+          // A real local Yjs update before the first body, like editor normalization.
+          // The real transport retains it until echo, including across the sync frame.
+          if (arrival === "while applying body") {
+            const fragment = document.getXmlFragment("prosemirror");
+            const normalize = (): void => {
+              if (socket.readyState !== WebSocket.OPEN) return;
+              fragment.unobserve(normalize);
+              document.getMap("normalization").set("revision", 1);
+            };
+            fragment.observe(normalize);
+          } else {
+            document.getMap("normalization").set("revision", 1);
+          }
+          if (arrival === "before subscription") connect();
+          return provider;
+        },
+      });
+      try {
+        if (arrival !== "before subscription") {
+          expect(pane.dom.panel.dataset["body"]).toBe("waiting");
+          expect(await replica.isResident(bootstrap.vault, bootstrap.note)).toBe(false);
+          connect();
+        }
+        await vi.waitFor(async () => expect(await replica.base(bootstrap.vault, bootstrap.note)).toBeDefined());
+        expect(pane.dom.panel.dataset["body"]).toBeUndefined();
+        expect(socket.sent.length).toBeGreaterThan(0);
+        // Force a real LRU decision, not a spy assertion about a requested dirty patch.
+        await replica.evict(bootstrap.vault);
+        expect(dropped).toEqual([]);
+        expect((await store.getResident(bootstrap.vault, bootstrap.note))?.dirty).toBe(true);
+
+        for (let bytes = socket.sent.shift(); bytes !== undefined; bytes = socket.sent.shift()) {
+          const frame = decodeBinaryFrame(bytes);
+          if (frame === null) throw new Error("invalid outgoing update");
+          applyUpdate(server, frame.payload);
+          socket.receive(0x02, frame.payload);
+        }
+        await vi.waitFor(async () => expect((await store.getResident(bootstrap.vault, bootstrap.note))?.dirty).toBe(false));
+        expect(await replica.evict(bootstrap.vault)).toEqual([bootstrap.note]);
+      } finally {
+        await pane.surface.destroy();
+        server.destroy();
+        store.close();
+      }
+    },
+  );
+
+  it.each([
+    { answer: "denied", disconnect: true },
+    { answer: "removed", disconnect: true },
+    { answer: "denied", disconnect: false },
+  ] as const)(
+    "does not replay a buffered first sync after a newer permission reconciliation ($answer, disconnect: $disconnect)",
+    async ({ answer, disconnect }) => {
+      const factory = new IDBFactory();
+      vi.stubGlobal("indexedDB", factory);
+      vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+      const store = await openOfflineStore(factory);
+      const replica = createReplica({ store, dropBody: dropBodyWith(factory) });
+      class Socket extends EventTarget {
+        readyState: number = WebSocket.CONNECTING;
+        binaryType: BinaryType = "arraybuffer";
+        send(): void {}
+        close(): void { this.readyState = WebSocket.CLOSED; }
+      }
+      const socket = new Socket();
+      const network = new EventTarget();
+      let releaseExtensions: ((extensions: Extensions) => void) | undefined;
+      const extensions = new Promise<Extensions>((resolve) => { releaseExtensions = resolve; });
+      let transportReady: (() => void) | undefined;
+      const connected = new Promise<void>((resolve) => { transportReady = resolve; });
+      const persistenceDestroyed: string[] = [];
+      let connections = 0;
+      const dom = elements();
+      const opening = openNoteSurface({
+        ...dom, bootstrap, location, replica: async () => replica,
+        createPersistence: (name, document) => {
+          const persistence = new IndexeddbPersistence(name, document);
+          return {
+            whenSynced: persistence.whenSynced,
+            destroy: async () => { await persistence.destroy(); persistenceDestroyed.push(name); },
+          };
+        },
+        loadExtensions: () => extensions,
+        createRemoteSync: (options, document, awareness, onConnectionChange, onServerState) => {
+          const provider = createSyncProvider({
+            ...options, document, awareness, onConnectionChange, onServerState, network,
+            connect: () => { connections += 1; return socket as unknown as WebSocket; },
+          });
+          transportReady?.();
+          return provider;
+        },
+      });
+      await connected;
+      expect(await replica.isResident(bootstrap.vault, bootstrap.note)).toBe(false);
+      socket.readyState = WebSocket.OPEN;
+      socket.dispatchEvent(new Event("open"));
+      const restricted = await updateFromMarkdown("# Secret\n\nRestricted content.\n");
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: encodeBinaryFrame(0x01, bootstrap.vault, bootstrap.note, restricted).buffer,
+      }));
+      // The transport has latched synced and buffered the body, but no pane subscriber
+      // exists yet. An authoritative catalog answer revokes it before editor startup.
+      await replica.reconcile(bootstrap.vault, answer === "denied"
+        ? { kind: "denied" }
+        : { kind: "ok", notes: [] });
+      if (disconnect) {
+        socket.dispatchEvent(new MessageEvent("message", {
+          data: JSON.stringify({ type: "error", code: "not_found" }),
+        }));
+      }
+      releaseExtensions?.(await loadExtensions());
+      const surface = await opening;
+      try {
+        expect(dom.panel.dataset["body"]).toBe("waiting");
+        await surface.destroy();
+        network.dispatchEvent(new Event("online"));
+        socket.dispatchEvent(new MessageEvent("message", {
+          data: encodeBinaryFrame(0x01, bootstrap.vault, bootstrap.note, restricted).buffer,
+        }));
+        expect(await store.getResident(bootstrap.vault, bootstrap.note)).toBeUndefined();
+        expect(await replica.base(bootstrap.vault, bootstrap.note)).toBeUndefined();
+        const name = persistenceName(bootstrap.vault, bootstrap.note);
+        expect(persistenceDestroyed).toEqual([name]);
+        expect((await factory.databases()).map((database) => database.name)).not.toContain(name);
+        expect(socket.readyState).toBe(WebSocket.CLOSED);
+        expect(connections).toBe(1);
+      } finally {
+        await surface.destroy();
+        store.close();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it.each(["failed", "closed"] as const)("releases a nonresident session after startup is %s", async (outcome) => {
+    const store = await openOfflineStore(new IDBFactory());
+    const dropped: string[] = [];
+    const replica = createReplica({ store, dropBody: async (_vault, note) => { dropped.push(note); } });
+    const opening = open({
+      bootstrap, location, replica: async () => replica,
+      loadExtensions: outcome === "closed" ? loadExtensions : async () => { throw new Error("extensions unavailable"); },
+      createRemoteSync: () => ({
+        connected: false, pending: 0, synced: false,
+        sendAwareness: () => undefined, destroy: () => undefined,
+      }),
+    });
+    try {
+      if (outcome === "failed") await expect(opening).rejects.toThrow("extensions unavailable");
+      else await (await opening).surface.destroy();
+      await replica.reconcile(bootstrap.vault, { kind: "denied" });
+      // No downloaded body and no live opening: a leaked session would still be purged.
+      expect(dropped).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("preserves restored unsent residency at zero pending until reconciliation", async () => {
+    const store = await openOfflineStore(new IDBFactory());
+    const replica = createReplica({ store, caps: { notes: 0, bytes: 0 }, dropBody: async () => undefined });
+    await store.putResident({ vault: bootstrap.vault, note: bootstrap.note, openedAt: 1, bytes: 10, dirty: true });
+    let report: ((state: ConnectionState) => void) | undefined;
+    const pane = await open({
+      bootstrap, location, replica: async () => replica,
+      createRemoteSync: (_options, _document, _awareness, onConnectionChange) => {
+        report = onConnectionChange;
+        return { connected: false, pending: 0, synced: false, sendAwareness: () => undefined, destroy: () => undefined };
+      },
+    });
+    try {
+      report?.({ connected: true, pending: 0, synced: false });
+      expect(await replica.evict(bootstrap.vault)).toEqual([]);
+      expect((await store.getResident(bootstrap.vault, bootstrap.note))?.dirty).toBe(true);
+      report?.({ connected: true, pending: 1, synced: true });
+      expect(await replica.evict(bootstrap.vault)).toEqual([]);
+    } finally {
+      await pane.surface.destroy();
+      store.close();
+    }
+  });
+
+  it("does not recreate denied residency when the synced transport disconnects", async () => {
+    const store = await openOfflineStore(new IDBFactory());
+    const dropped: string[] = [];
+    const replica = createReplica({ store, dropBody: async (_vault, note) => { dropped.push(note); } });
+    let report: ((state: ConnectionState) => void) | undefined;
+    const pane = await open({
+      bootstrap, location, replica: async () => replica,
+      createRemoteSync: (_options, _document, _awareness, onConnectionChange) => {
+        report = onConnectionChange;
+        return { connected: false, pending: 0, synced: false, sendAwareness: () => undefined, destroy: () => undefined };
+      },
+    });
+    try {
+      report?.({ connected: true, pending: 1, synced: true });
+      await vi.waitFor(async () => expect(await replica.isResident(bootstrap.vault, bootstrap.note)).toBe(true));
+      await replica.reconcile(bootstrap.vault, { kind: "denied" });
+      // synced is latched: denial disconnects the socket without undoing its first sync.
+      report?.({ connected: false, pending: 1, synced: true });
+      await pane.surface.destroy();
+      expect(dropped).toEqual([bootstrap.note]);
+      expect(await store.getResident(bootstrap.vault, bootstrap.note)).toBeUndefined();
+    } finally {
+      await pane.surface.destroy();
+      store.close();
+    }
+  });
+
   /** A replica that records every call the pane makes about residency. */
   function accounting() {
     const patches: Array<{ note: string; bytes?: number; dirty?: boolean }> = [];
@@ -450,6 +1164,32 @@ describe("keeping §7.2's bookkeeping", () => {
     const { surface } = await open({ bootstrap, location, replica: store.handle });
     try {
       await vi.waitFor(() => expect(store.evicted).toEqual(["personal"]));
+    } finally {
+      await surface.destroy();
+    }
+  });
+
+  it("does not mark a restored replica clean before the server has reconciled it", async () => {
+    const store = accounting();
+    let report: ((state: ConnectionState) => void) | undefined;
+    const { surface } = await open({
+      bootstrap,
+      location,
+      replica: store.handle,
+      createRemoteSync: (_options, _document, _awareness, onConnectionChange) => {
+        report = onConnectionChange;
+        return { connected: false, pending: 0, synced: false, sendAwareness: () => undefined, destroy: () => undefined };
+      },
+    });
+    try {
+      // The transport counter starts at zero even when IndexedDB holds offline edits.
+      // Clearing the durable dirty flag now lets the opening LRU sweep delete those edits.
+      report?.({ connected: true, pending: 0, synced: false });
+      expect(store.patches.some((patch) => patch.dirty === false)).toBe(false);
+      report?.({ connected: true, pending: 1, synced: true });
+      await vi.waitFor(() => expect(store.patches).toContainEqual({ note: bootstrap.note, dirty: true }));
+      report?.({ connected: true, pending: 0, synced: true });
+      await vi.waitFor(() => expect(store.patches).toContainEqual({ note: bootstrap.note, dirty: false }));
     } finally {
       await surface.destroy();
     }
@@ -583,6 +1323,105 @@ describe("reconciling §3.5's conflicts", () => {
   async function stateOf(markdown: string): Promise<Uint8Array> {
     return updateFromMarkdown(markdown);
   }
+
+  it.each([false, true])("does not mark a saved prefix as a conflict after a local-only offline edit (reload: %s)", async (reload) => {
+    // Real transport, Yjs/editor and WASM merge; only the network and IndexedDB are fake.
+    // The merge base predates an acknowledged online edit, exactly as in autosave.spec.ts.
+    class Socket extends EventTarget {
+      readyState: number = WebSocket.CONNECTING;
+      binaryType: BinaryType = "arraybuffer";
+      readonly sent: Uint8Array[] = [];
+      send(data: string | Uint8Array): void {
+        if (typeof data !== "string") this.sent.push(data);
+      }
+      close(): void { this.readyState = WebSocket.CLOSED; }
+      receive(tag: number, update: Uint8Array): void {
+        this.dispatchEvent(new MessageEvent("message", {
+          data: encodeBinaryFrame(tag, bootstrap.vault, bootstrap.note, update).buffer,
+        }));
+      }
+    }
+    const initial = "# Roadmap\n\nCafé 🧠.\n";
+    const expected = "# Roadmap\n\nCafé 🧠. Saved online. Added offline.\n";
+    let persisted = await stateOf(initial);
+    const server = new Doc();
+    applyUpdate(server, persisted);
+    const store = withBase(initial);
+    const network = new EventTarget();
+    let local: Doc | undefined;
+    let socket = new Socket();
+    const mount = async () => open({
+      bootstrap,
+      location,
+      replica: store.handle,
+      createPersistence: (_name, document) => {
+        local = document;
+        applyUpdate(document, persisted);
+        return localPersistence();
+      },
+      createRemoteSync: (options, document, awareness, onConnectionChange, onServerState) =>
+        createSyncProvider({
+          ...options,
+          document,
+          awareness,
+          onConnectionChange,
+          onServerState,
+          network,
+          connect: () => {
+            socket = new Socket();
+            return socket as unknown as WebSocket;
+          },
+        }),
+    });
+    const connect = (): void => {
+      socket.readyState = WebSocket.OPEN;
+      socket.dispatchEvent(new Event("open"));
+      socket.receive(0x01, encodeStateAsUpdate(server));
+    };
+    const accept = (): void => {
+      for (let bytes = socket.sent.shift(); bytes !== undefined; bytes = socket.sent.shift()) {
+        const frame = decodeBinaryFrame(bytes);
+        if (frame !== null) {
+          applyUpdate(server, frame.payload);
+          socket.receive(0x02, frame.payload);
+        }
+      }
+    };
+    const append = (suffix: string): void => {
+      const paragraph = local?.getXmlFragment("prosemirror").get(1);
+      if (!(paragraph instanceof XmlElement)) throw new Error("missing paragraph");
+      const text = paragraph.get(0);
+      if (!(text instanceof XmlText)) throw new Error("missing paragraph text");
+      text.insert(text.length, suffix);
+    };
+    let pane = await mount();
+    try {
+      connect();
+      accept();
+      await vi.waitFor(() => expect(store.written.at(-1)).toBe(initial));
+      append(" Saved online.");
+      accept();
+      network.dispatchEvent(new Event("offline"));
+      append(" Added offline.");
+      if (reload) {
+        if (local === undefined) throw new Error("missing local document");
+        persisted = encodeStateAsUpdate(local);
+        await pane.surface.destroy();
+        pane = await mount();
+      } else {
+        network.dispatchEvent(new Event("online"));
+      }
+      connect();
+      accept();
+
+      expect(pane.dom.panel.querySelector(".conflict-action")).toBeNull();
+      await vi.waitFor(() => expect(store.written.at(-1)).toBe(expected));
+      expect(await markdownFromUpdate(encodeStateAsUpdate(server))).toBe(expected);
+    } finally {
+      await pane.surface.destroy();
+      server.destroy();
+    }
+  });
 
   it("marks a collision against the stored base and shows the count", async () => {
     const store = withBase("Three levels.\n");

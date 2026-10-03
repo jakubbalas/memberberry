@@ -117,6 +117,12 @@ An update is durable when it is **accepted**, not when the debounce fires: the s
 append is `fsync`ed before the frame is acknowledged. That is the 3.8 ms floor measured in
 §21.6 and the reason a restart can recover.
 
+The browser keeps an edit pending until the server echoes its accepted update, not merely
+until `WebSocket.send` queues it. Refused updates remain in the local document and reconnect
+reconciles the complete missing state. Closing the last subscription attempts the Markdown
+flush before releasing its coordinator; a failed flush retains the room for maintenance retry
+so accepted content is not stranded in a sidecar.
+
 **On restart**, a coordinator compares the file on disk against its `.last-write` marker:
 
 - **matches** — the file is exactly what this server wrote, so anything the sidecar holds
@@ -168,6 +174,13 @@ An external edit landing while a device is offline with conflicting local edits 
 block granularity, which can duplicate paragraphs rather than merge words. This is the
 inherent "a text file has no operation history" problem and is not solvable in v1. It is
 made **visible inline**, never silently merged.
+
+Unsent changes alone are not a conflict. Before reconnect reconciliation, the client tests
+whether the received server state is already contained in its pre-merge CRDT history,
+including delete sets (state-vector clocks alone do not cover deletions). An ancestor server
+state means a one-sided local edit that only needs uploading; stale Markdown merge bases
+must not invent a conflict with the user's own earlier saved text. Two-sided divergence
+still follows the conflict-callout path.
 
 The local version stays in place. The divergent version is inserted immediately after it
 as a **callout block**:
@@ -729,7 +742,7 @@ ships.
 | E25 | **Whole-vault static export** (§19.2) | The CLI requires an existing enabled account and constructs an `AuthorizedVault` from the live `access.toml` before reading any note. Pages, search data, graph edges and copied media are all derived exclusively from that readable view. Export is built in a temporary directory and published only after it is complete; a successful run replaces the whole prior output, so tightening an ACL cannot leave a stale private page from an earlier run. |
 | E26 | **Browser vault creation** (§6.1) | Only an enabled server administrator authenticated by a signed session may create a vault. Scoped API tokens do not grant server administration. Authorization and same-origin checks precede filesystem access; validated slugs cannot traverse out of the managed root. New vaults receive an explicit owner ACL for the creator, with no change to any existing vault's access. |
 | E27 | **Browser first-account setup** (§6.8) | Only an uninitialized, loopback-bound server with a trusted loopback peer and localhost Host accepts the setup form. Origin validation rejects cross-site claims; forwarded headers cannot supply the peer. The auth transaction permits exactly one initial administrator. Once initialized, GET and POST both return a neutral not-found response. |
-| E28 | **Empty folders** (§8.2) | `GET /api/v1/vaults/{slug}/folders` requires vault discovery access and returns only physically empty directories the caller can read, through `AuthorizedVault::empty_folders`. Hidden directories and symlinks are excluded. Nonempty folders remain inferred from readable notes, so a folder containing only denied notes remains invisible. `POST` requires editor-or-owner on the requested folder path before any filesystem lookup, validates containment, and refuses existing paths without overwriting. A denied existing and absent path give the same response. |
+| E28 | **Empty folders** (§8.2) | `GET /api/v1/vaults/{slug}/folders` requires vault discovery access and returns only physically empty directories the caller can read, through `AuthorizedVault::empty_folders`. Existing readable empty folders also permit discovery for a path-only reader. Traversal prunes denied subtrees before filesystem reads, while preserving valid deeper grants under default-denied ancestors; explicit denials remain absorbing. Hidden directories and symlinks are excluded. Nonempty folders remain inferred from readable notes, so a folder containing only denied notes remains invisible. `POST` requires editor-or-owner on the requested folder path before any filesystem lookup, validates containment, and refuses existing paths without overwriting. A denied existing and absent path give the same response. |
 
 **Every sync-frame denial is one reply.** An unknown vault, a path that does not resolve,
 a missing ACL and a role of `none` all return the same `not_found` error frame. Sending
@@ -1040,7 +1053,11 @@ token — every one returns `{"type":"error","code":"not_found"}`. Returning *no
 a distinguishable answer, so no denial is silent (§6.5).
 
 **Limits.** 512 KiB per frame; 240 frames/second per connection. A room is released — its
-coordinator flushed and dropped — when its last subscriber leaves.
+coordinator flushed and dropped — when its last subscriber leaves and its Markdown flush
+succeeds. A failed final flush retains the coordinator for the normal maintenance retry.
+Pending local changes are cleared only by the durable update echo or a reconnect proving
+the server already has the state. An initially disconnected transport must not clear a
+restored replica's durable dirty flag before reconciliation.
 
 ### 7.2 Replication scope — calibrated for 10k+ notes (A8) and permissions (A14)
 
@@ -1072,7 +1089,12 @@ That is the honest outcome; the alternative is deleting something the user asked
 
 - **"Has unsent changes" is written the moment there are any**, from the transport's own
   count, not when the pane closes. A tab is usually closed by being closed, so a flag written
-  only on teardown would be missing from exactly the session that produced it.
+  only on teardown would be missing from exactly the session that produced it. First
+  residency and the current dirty flag are committed atomically before a cap sweep; a
+  pending update before body arrival must not falsely mark an unloaded body downloaded.
+  Resident size, merge-base and dirty updates share an IndexedDB read/write transaction,
+  so overlapping updates cannot overwrite the unsynced flag. Restored dirty state remains
+  protected until server reconciliation/acknowledgement, not merely socket connection.
 - **The size is measured on teardown**, because it costs a serialization of the document.
   A note that was never measured reads as zero bytes, which the note half of the cap catches.
 - **A record written before those fields existed reads as dirty.** It might hold unsent
@@ -1168,6 +1190,11 @@ and a tunnel wipes the offline replica of a 10 000-note vault. So:
 A note leaves the readable set because an ACL tightened, because it was deleted, or because
 it was renamed, and this cannot tell them apart. Dropping the local body is right for all
 three: under §6.5 a note the server will not list does not exist for this reader.
+Opening editor sessions are tracked before body restoration. A newer authoritative catalog
+refusal/removal invalidates them before asynchronous storage work begins, including sessions
+whose first sync is buffered behind editor startup. Invalidated sessions cannot recreate
+residency, dirty state or merge bases during startup or teardown; the purge also covers
+not-yet-resident body databases. Buffered sync is historical content, not fresh authorization.
 
 **The shell (M6).** `web/src/offline/` holds the worker; `web/scripts/build-sw.ts` builds it
 as a second, library-mode Vite build after the application build, because a worker has to
@@ -1399,8 +1426,9 @@ shown only in the Notes view. New note opens the existing creation dialog
 at the vault root; typing `Folder/Note` creates inside that folder. The palette's existing
 New note command still creates beside the active note. New folder creates an ordinary empty
 directory, including nested paths, and refreshes the tree. Empty folders are listed through
-E28 and are not cached for offline use. A path-only grant still requires an existing readable
-note to discover a vault (§6.1); empty directories alone do not broaden discovery.
+E28 and are not cached for offline use. A path-only grant permits discovery when an existing
+readable note or physically empty folder falls within it (§6.1); an absent granted path does
+not make a vault discoverable.
 The fallback HTML library and creation form remain available when no frontend bundle is
 installed. The account's vault chooser at `/` remains separate.
 
@@ -1416,6 +1444,30 @@ A thin top bar, left sidebar (note tree, search, tags, tasks, bookmarks),
 main area with recursive splits and tab groups, right sidebar (backlinks, outline, local
 graph). Sidebars collapsible; splits drag-resizable; tabs draggable between groups.
 Cmd/Ctrl-click a link opens it in a new tab; Cmd/Ctrl-Alt-click opens in a split.
+
+**Sidebar controls (2026-10-03).** On desktop, each sidebar also has a labelled, focusable
+separator supporting pointer dragging, Arrow keys and Home/End. Widths range from 248 to
+560 CSS pixels, clamped to reserve at least 320 pixels for the main area; restored widths
+are re-clamped on viewport changes. Below 768px, both mobile drawers fill the screen width
+under the top bar; desktop and tablet widths are unchanged. The sidebar body's top padding
+is zero without changing the shared spacing scale.
+Widths and the affirmative **Show filenames** setting are stored locally per user and vault,
+not synced. Filenames show the original basename including `.md` in the note tree and
+bookmarks; the default remains the Markdown heading. Blocked or malformed local storage
+falls back to usable in-memory defaults. **Show filenames** lives in the Notes heading's
+three-dot menu beside New folder, not in a permanently visible row.
+
+Every file and bookmark row exposes a three-dot menu with the same actions as desktop
+right-click (and Shift+F10/ContextMenu): Open in new tab, Rename, Delete when available,
+and Add/Remove bookmark. Bookmark stars are no longer separate row buttons. Tree actions
+remain reachable through the tree's single-tab-stop keyboard model.
+
+Every folder row has a three-dot menu with **Open in main panel** and **Move folder**;
+right-click and Shift+F10 open the same keyboard-operable menu. Opening a folder presents
+its authorized immediate subfolders and notes, an empty state, parent navigation, and Close.
+This is a temporary folder contents view, not a note or a new persisted tab type: no fake
+Markdown is created, existing note tabs are retained, and its URL is the vault Home URL.
+The view is built only from the server-filtered catalog and E28 list.
 
 **Implemented, M7.** `Workspace.svelte` over `PaneTree.svelte`, which is recursive because the
 model is. The frame is a labelled, collapsible, keyboard-reachable region whose collapse state
@@ -1492,6 +1544,14 @@ Folder expansion is stored locally per user and vault and restored on reload, in
 nested expansion beneath a collapsed parent. Storage failures fall back to session-only
 navigation. Saved paths only control expansion of the server-filtered tree; they never
 introduce folders or notes into it. This preference does not sync across devices.
+On window focus, visible-tab restoration and reconnection, the workspace refreshes the
+shared note catalog and empty-folder list without polling. Bursts are coalesced and listeners
+are removed on teardown. A catalog denial always purges the replica, even when a newer request
+failed due to an unreachable server. It invalidates requests already in flight; only a request
+started after that denial may restore metadata. Queued successes and offline reads cannot
+resurrect the denied names, pins, merge bases or bodies.
+This makes another device's newly created notes discoverable when returning to the app.
+Successful note creation closes the mobile navigation drawer so it does not cover the editor.
 Existing permission-filtered loaders and their lifecycles are unchanged; hiding a view is
 presentation, never authorization. `e2e/navigation.spec.ts` checks actual visibility,
 keyboard activation, target sizes and retained search state in both viewports.
@@ -1509,8 +1569,8 @@ keyboard activation, target sizes and retained search state in both viewports.
 - **Notes and tabs have a custom context menu** with a Rename action. It opens the shared rename
   prompt, which validates the destination and rewrites inbound links through §6.6.
 - **Notes and folders can be dragged into an inferred or empty folder, or back to the vault
-  root** by dropping on the Notes heading or tree background. Folder rows also offer a Move
-  folder button and F2 opens the same destination dialog; an empty destination means root.
+  root** by dropping on the Notes heading or tree background. The folder menu offers Move
+  folder and F2 opens the same destination dialog; an empty destination means root.
   Self-drops, descendant drops and unchanged locations are ignored. External text drops do
   not initiate moves. The gesture calls the audited rename endpoint; refusals are visible,
   and the client updates open descendant tabs only after server success.
@@ -1530,10 +1590,10 @@ keyboard activation, target sizes and retained search state in both viewports.
   on read**, so a note whose access was revoked leaves the sidebar instead of sitting there as
   a name the user may no longer see. A bookmark outlives the permission that created it, which
   a short-lived pane layout does not.
-  Each bookmark row's single leading star is a labelled, keyboard-accessible remove button
-  with a touch-sized target; there is no trailing star. It removes only that bookmark,
-  without opening or deleting the note, and persists
-  through the same bookmark save path as the file-tree toggle.
+  Each bookmark row exposes **Remove bookmark** through its three-dot/right-click menu,
+  with a touch-sized trigger and keyboard support. It removes only that bookmark,
+  without opening or deleting the note, and persists through the same bookmark save path
+  as the file-tree menu action.
 
 **Following a link, M8.** A wikilink click navigates the tab, Cmd/Ctrl-click opens a tab in
 the same pane, and Cmd/Ctrl-Alt-click splits it — the same direction `Mod+\` takes. Three
@@ -1548,6 +1608,29 @@ things are worth recording:
   can land on a different note, because §4.3 resolves relative to where the reference is read.
 - **A split the layout has no room for opens a tab instead** (§8.3 caps panes on a phone). A
   modified click that silently did nothing would read as broken rather than adapted.
+
+**Document links and lookup (2026-10-03).** Ordinary Markdown links activate in the editable
+surface as well as wikilinks. Internal document destinations go through the existing
+authorized resolver, retaining the tab/split modifiers. Explicit `./`, `../` and root-relative
+paths are normalized within the vault; traversal above the vault is inert. Only `http`,
+`https`, `mailto` and `tel` external schemes are activated, in a separate browsing context
+without an opener; unsafe and obfuscated schemes are inert without rewriting the note's
+stored Markdown. Sanitized core-rendered links retain `aria-disabled="true"` without an
+`href`; a legitimate `#blocked` heading is not confused with the sanitizer's old placeholder.
+Wikilinks are keyboard-activatable. Heading and block suffixes scroll the destination pane
+after its editor is ready, including same-note jumps. Heading identity uses core-extracted
+visible text, including aliases and inline atoms, folded to NFC and lowercase. Links inside
+transclusions resolve relative to the embedded source note,
+not its host. Pending jumps are scoped to the vault, note and tab and are discarded on
+unmount. Missing anchors leave the opened note in place.
+
+Typing `[[` opens document lookup, ranked by readable title and path with the path shown
+for disambiguation. Arrow keys choose a result, Enter/Tab inserts it, Escape dismisses,
+and pointer/touch selection does the same. Selecting a result creates the canonical wikilink
+node and retains an existing heading/block suffix or display alias. Code content does not
+trigger lookup. The catalog is loaded lazily through the existing E5-filtered notes API,
+never through unfiltered filesystem discovery, and is not fetched on every keystroke.
+This is an editor input affordance; the WASM parser remains the only Markdown parser.
 
 The URL follows the focused note tab, including navigation, tab switching and renames.
 The shell replaces the current browser history entry; each tab's own back/forward stack
@@ -2174,6 +2257,15 @@ of a task places the cursor instead of completing it. The task inspector is **sh
 width, where it used to be hidden — now that it appears only for a selected task it is also
 the only keyboard route to completing one, and hiding it would make that a mouse-only feature.
 
+**Scroll-safe task activation (2026-10-03).** Scroll offset updates cannot replay an inbox
+edit: one deliberate action is consumed only once across pane updates, remounts and splits.
+An unopened source defers the action until its authorized body is ready; revoked/read-only
+or destroyed surfaces cannot apply queued edits. Missing task ordinals are inert, not
+requests to act on a task introduced later. Native touch/pen scrolling, cancelled gestures
+and ancestor scrolls do not activate checkbox or metadata controls; a new deliberate tap
+and the keyboard inspector remain available. Scrolling leaves the task DOM and document
+unchanged rather than repeatedly focusing or recreating controls.
+
 ### 10.3 Task views
 
 A dedicated pane, and the query blocks that satisfy PROJECT.md's TODO requirement:
@@ -2195,6 +2287,22 @@ open. The note catalog carries the same permission-filtered open-task rows into 
 metadata tier, so an unfiltered inbox remains available offline without opening resident note
 bodies. Filtered offline queries remain unavailable when the route cannot answer; the cache has
 no tag rows and must not pretend to reproduce the server's tag filter.
+
+**Task presentation and placement (2026-10-03).** The sticky Tasks heading has a right-hand
+three-dot menu. **Open in main panel** opens the same filtered inbox in the main area, with
+Close and existing note tabs retained, not a synthetic Markdown note or persisted tab type.
+Its URL is the vault Home URL; opening/editing a source task returns to that note. On mobile,
+opening the main view or a source note closes the navigation drawer. Main and sidebar inboxes
+share filters, sort and display preferences, with unique HTML control/heading identities.
+**Show filenames** replaces the source heading with the original basename including `.md`;
+**Show file paths** independently adds the full vault-relative path. Both default off and
+are stored per user/vault/device, separately from the file-tree setting. Blocked storage
+leaves the in-memory controls usable. A labelled, touch-sized checkbox sits to the left of
+each editable task instead of the former Toggle button; it uses the same source-editor write
+path, not a separate persistence endpoint. Inbox completion is idempotent: checking a
+cached row again cannot undo a task already completed in its source. Refused edits never
+pretend to be saved. Due and priority controls remain available.
+The heading stays visible in both the sidebar and main scrollports.
 
 **M14: index query and editing boundary.** `GET /api/v1/vaults/{slug}/tasks` returns only
 open tasks through E18. It supports `folder`, `tag`, `priority`, inclusive `due_from` /

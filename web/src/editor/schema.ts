@@ -10,6 +10,7 @@ import type { DOMOutputSpec, Schema } from "@tiptap/pm/model";
 
 import { schema as loadSchemaContract, tagInputParser } from "../notes.js";
 import { tagInputRules } from "./commands.js";
+import { linkDestination } from "./links.js";
 
 type AttributeType = "string" | "boolean" | "integer" | "enum" | "date" | "string[]" | "enum[]";
 
@@ -167,8 +168,17 @@ function renderNode(
         src: mediaSource(stringValue(attrs["dest"]), media),
         alt: stringValue(attrs["alt"]),
       }];
-    case "wikilink":
-      return ["span", { ...htmlAttributes, "data-wikilink": "" }, `[[${stringValue(attrs["target"])}]]`];
+    case "wikilink": {
+      const target = stringValue(attrs["target"]);
+      const kind = stringValue(attrs["anchor_kind"]);
+      const anchor = stringValue(attrs["anchor_text"]);
+      const suffix = anchor === "" ? "" : `#${kind === "block" ? "^" : ""}${anchor}`;
+      const alias = stringValue(attrs["alias"]);
+      return ["span", {
+        ...htmlAttributes, "data-wikilink": "", "data-target": target,
+        "data-anchor-kind": kind, "data-anchor": anchor, role: "link", tabindex: "0",
+      }, alias === "" ? `[[${target}${suffix}]]` : alias];
+    }
     case "tag":
       return ["span", { ...htmlAttributes, "data-tag": "" }, `#${stringValue(attrs["name"])}`];
     case "emoji":
@@ -199,8 +209,17 @@ function renderMark(name: string, htmlAttributes: Readonly<Record<string, unknow
       return ["mark", htmlAttributes, 0];
     case "code":
       return ["code", htmlAttributes, 0];
-    case "link":
-      return ["a", htmlAttributes, 0];
+    case "link": {
+      const href = stringValue(htmlAttributes["href"]);
+      const destination = linkDestination(href);
+      const { href: _href, ...attributes } = htmlAttributes;
+      // why: event handlers alone cannot protect context-menu/new-tab activation of an unsafe href.
+      return ["a", {
+        ...attributes, "data-document-link": "", tabindex: "0",
+        ...(destination.kind === "blocked" ? { "aria-disabled": "true" } : { href }),
+        ...(destination.kind === "external" ? { target: "_blank", rel: "noopener noreferrer" } : {}),
+      }, 0];
+    }
     default:
       return ["span", htmlAttributes, 0];
   }

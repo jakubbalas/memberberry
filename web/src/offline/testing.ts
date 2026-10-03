@@ -13,7 +13,13 @@ import type { Replica } from "./replica.js";
 
 /** A replica that holds nothing and records nothing, with any part overridable. */
 export function stubReplica(overrides: Partial<Replica> = {}): Replica {
-  return {
+  const replica: Replica = {
+    session: (vault, note) => ({
+      revoked: false,
+      opened: (dirty) => replica.opened(vault, note, dirty),
+      measured: (patch) => replica.measured(vault, note, patch),
+      close: () => undefined,
+    }),
     reconcile: async (_vault, answer) => (answer.kind === "ok" ? answer.notes : []),
     isResident: async () => false,
     metadata: async () => undefined,
@@ -25,4 +31,5 @@ export function stubReplica(overrides: Partial<Replica> = {}): Replica {
     setPinned: async () => undefined,
     ...overrides,
   };
+  return replica;
 }

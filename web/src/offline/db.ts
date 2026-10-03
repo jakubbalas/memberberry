@@ -118,6 +118,12 @@ export interface OfflineStore {
   getNotes(vault: string): Promise<readonly ReplicatedNote[] | undefined>;
   /** Records that a note's body is resident, and when it was last opened. */
   putResident(body: ResidentBody): Promise<void>;
+  /** Atomically reads and changes one resident record; `undefined` leaves it untouched. */
+  updateResident(
+    vault: string,
+    note: string,
+    update: (existing: ResidentBody | undefined) => ResidentBody | undefined,
+  ): Promise<void>;
   /** One note's record, or `undefined` if this device does not hold it. */
   getResident(vault: string, note: string): Promise<ResidentBody | undefined>;
   /** Every resident body for a vault. */
@@ -209,6 +215,16 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
     },
     async putResident(body: ResidentBody): Promise<void> {
       await promised(transaction(BODIES, "readwrite").put({ ...body }));
+    },
+    async updateResident(vault, note, update): Promise<void> {
+      // why: separate get/put transactions let a concurrent open, merge-base write or
+      // teardown overwrite a newer dirty flag. The read and write must share the lock.
+      const whole = database.transaction(BODIES, "readwrite");
+      const bodies = whole.objectStore(BODIES);
+      const record: unknown = await promised(bodies.get([vault, note]));
+      const next = update(readResident(record)[0]);
+      if (next !== undefined) await promised(bodies.put({ ...next }));
+      await completed(whole);
     },
     async getResident(vault: string, note: string): Promise<ResidentBody | undefined> {
       const record: unknown = await promised(transaction(BODIES, "readonly").get([vault, note]));

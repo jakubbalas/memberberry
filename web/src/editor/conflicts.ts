@@ -29,7 +29,7 @@ export interface ReconcileOptions {
   readonly view: EditorView;
   readonly document: Doc;
   readonly bridge: NoteBridge;
-  /** The server's whole state, and what this device held that it had not seen. */
+  /** The server's whole state, and this device's pre-merge state on a two-sided divergence. */
   readonly state: ServerState;
   /**
    * The Markdown this note had when the two sides were last in sync (§3.5).
@@ -69,8 +69,8 @@ export interface Reconciliation {
 export function reconcile(options: ReconcileOptions): Reconciliation {
   const current = editorMarkdownWith(options.bridge, options.document);
   if (options.state.mine === undefined) {
-    // The server already had everything this device holds, so the merge that just happened
-    // could not have dropped anything of ours. What both sides hold is what is on screen.
+    // One side already contained the other's complete history, including deletions. There
+    // is nothing to reconcile; the ordinary CRDT merge and pending flush preserve it all.
     return { conflicts: options.bridge.count(current), base: current };
   }
   const mine = options.bridge.markdownFromUpdate(options.state.mine);

@@ -27,6 +27,7 @@ import { Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
 import type { EditorView, NodeView } from "@tiptap/pm/view";
 
 import { isTaskComplete, taskChips, toggledTaskAttributes, type TaskChipField } from "./task-metadata.js";
+import { bindTaskTap } from "./task-tap.js";
 
 /**
  * Fired at the editor's DOM when a chip is clicked, so the toolbar can open the right
@@ -53,7 +54,8 @@ class TaskItemView implements NodeView {
   private readonly checkbox: HTMLButtonElement;
   private readonly chips: HTMLElement;
   private node: ProseMirrorNode;
-  private readonly onCheckboxClick: () => void;
+  private readonly unbindCheckbox: () => void;
+  private readonly unbindChips: (() => void)[] = [];
 
   constructor(
     node: ProseMirrorNode,
@@ -75,8 +77,7 @@ class TaskItemView implements NodeView {
     // ProseMirror this subtree is not the document, and not every DOM implementation
     // reflects the property back onto the attribute the editor actually reads.
     this.checkbox.setAttribute("contenteditable", "false");
-    this.onCheckboxClick = () => this.toggle();
-    this.checkbox.addEventListener("click", this.onCheckboxClick);
+    this.unbindCheckbox = bindTaskTap(this.checkbox, () => this.toggle());
 
     const line = document.createElement("div");
     line.className = "task-line";
@@ -129,7 +130,8 @@ class TaskItemView implements NodeView {
   }
 
   destroy(): void {
-    this.checkbox.removeEventListener("click", this.onCheckboxClick);
+    this.unbindCheckbox();
+    for (const unbind of this.unbindChips.splice(0)) unbind();
   }
 
   private render(): void {
@@ -142,6 +144,7 @@ class TaskItemView implements NodeView {
     this.checkbox.setAttribute("aria-checked", complete ? "true" : "false");
     this.checkbox.setAttribute("aria-label", complete ? "Mark task not done" : "Mark task done");
 
+    for (const unbind of this.unbindChips.splice(0)) unbind();
     this.chips.replaceChildren();
     for (const chip of taskChips(attrs)) {
       // Inert: §10.4 says a marker this version does not model is preserved and shown, not
@@ -160,13 +163,14 @@ class TaskItemView implements NodeView {
       if (element instanceof HTMLButtonElement) {
         element.type = "button";
         element.tabIndex = -1;
-        element.addEventListener("click", () => this.openChip(chip.field));
+        this.unbindChips.push(bindTaskTap(element, () => this.openChip(chip.field)));
       }
       this.chips.append(element);
     }
   }
 
   private toggle(): void {
+    if (!this.view.editable) return;
     const pos = this.getPos();
     if (pos === undefined) return;
     const attrs = { ...this.node.attrs, ...toggledTaskAttributes(this.node.attrs) };
@@ -180,6 +184,7 @@ class TaskItemView implements NodeView {
    * date picker while the cursor sat in some other block would edit the wrong task.
    */
   private openChip(field: TaskChipField): void {
+    if (!this.view.editable) return;
     const pos = this.getPos();
     if (pos === undefined) return;
     const inside = this.view.state.doc.resolve(pos + 1);

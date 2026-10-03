@@ -32,6 +32,10 @@
     readonly oncreate?: (from: string) => void;
     /** Opens folder creation from the file-list heading. */
     readonly onfolder?: () => void;
+    /** Opens a contents view; a folder is never passed to the note editor. */
+    readonly onopenfolder?: (path: string) => void;
+    readonly showFilenames?: boolean;
+    readonly onfilenames?: (show: boolean) => void;
     /** Moves a note to the server-owned trash after confirmation. */
     readonly ondelete?: (path: string) => void;
     /** Moves a note to a vault-relative folder, or to the vault root when empty. */
@@ -40,12 +44,15 @@
     readonly expansion?: TreeExpansion;
   }
 
-  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder, ondelete, onmove, target, expansion }: Props = $props();
+  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder, onopenfolder, showFilenames = false, onfilenames, ondelete, onmove, target, expansion }: Props = $props();
 
   let expanded = $state<ReadonlySet<string>>(new Set());
   let cursor = $state(0);
   let selectionMade = $state(false);
-  let context = $state<{ path: string; x: number; y: number } | undefined>(undefined);
+  let context = $state<{ path: string; kind: "note" | "folder"; source: "tree" | "bookmark"; x: number; y: number } | undefined>(undefined);
+  let settings = $state<{ x: number; y: number } | undefined>(undefined);
+  let treeElement = $state<HTMLDivElement | undefined>(undefined);
+  let panel = $state<HTMLDivElement | undefined>(undefined);
   let draggingPath = $state<string | undefined>(undefined);
   let dropFolder = $state<string | undefined>(undefined);
   let moveSubject = $state<string | undefined>(undefined);
@@ -70,7 +77,7 @@
       const note = catalog.notes.find((candidate) => candidate.path === path);
       return {
         path,
-        label: note?.title ?? (path.split("/").pop() ?? path).replace(/\.md$/, ""),
+        label: showFilenames ? basename(path) : (note?.title ?? basename(path).replace(/\.md$/, "")),
         conflicts: note?.conflicts ?? 0,
       };
     }),
@@ -86,6 +93,11 @@
 
   function onkeydown(event: KeyboardEvent): void {
     const row = rows[cursor];
+    if (row !== undefined && isMenuKey(event)) {
+      openContextMenu(event, row.node.path, row.node.kind);
+      return;
+    }
+    if (event.target instanceof HTMLButtonElement) return;
     if (event.key === "F2" && row?.node.kind === "folder") {
       event.preventDefault();
       moveError = undefined;
@@ -112,13 +124,58 @@
     }
   }
 
-  function openContextMenu(event: MouseEvent, path: string): void {
-    event.preventDefault();
-    context = { path, x: event.clientX, y: event.clientY };
+  function isMenuKey(event: KeyboardEvent): boolean {
+    return event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
   }
 
+  function openContextMenu(event: MouseEvent | KeyboardEvent, path: string, kind: "note" | "folder" = "note"): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const element = event.currentTarget;
+    if (!(element instanceof HTMLElement)) return;
+    const source = element.closest(".bookmark-list") === null ? "tree" : "bookmark";
+    if (event.type === "click" && context?.path === path && context.source === source) {
+      context = undefined;
+      element.focus();
+      return;
+    }
+    settings = undefined;
+    if (source === "tree") {
+      const index = rows.findIndex((row) => row.node.path === path);
+      if (index >= 0) cursor = index;
+    }
+    // why: right-click need not focus its target, and touch clicks differ across browsers.
+    // Restore tree focus for row menus, but the actual button for explicit menu clicks.
+    const opener = source === "tree" && !(element instanceof HTMLButtonElement) ? treeElement : element;
+    opener?.focus();
+    const bounds = (source === "tree" && event instanceof KeyboardEvent ? treeElement?.querySelector<HTMLElement>(`#tree-row-${cursor}`) : element)?.getBoundingClientRect();
+    context = {
+      path, kind, source,
+      x: event.type === "contextmenu" && event instanceof MouseEvent ? event.clientX : bounds?.left ?? 0,
+      y: event.type === "contextmenu" && event instanceof MouseEvent ? event.clientY : bounds?.bottom ?? 0,
+    };
+  }
+
+  function openSettings(event: MouseEvent): void {
+    context = undefined;
+    if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus();
+    if (settings !== undefined) { settings = undefined; return; }
+    const bounds = event.currentTarget instanceof HTMLElement ? event.currentTarget.getBoundingClientRect() : undefined;
+    settings = { x: bounds?.left ?? 0, y: bounds?.bottom ?? 0 };
+  }
+
+  function toggleBookmark(): void {
+    if (context === undefined) return;
+    const removedRow = context.source === "bookmark" && bookmarks.has(context.path);
+    bookmarks.toggle(context.path);
+    // why: removing a bookmark also removes its menu opener; keep focus in navigation.
+    if (removedRow) (treeElement ?? panel)?.focus();
+    context = undefined;
+  }
+
+  const basename = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
   const label = (row: (typeof rows)[number]): string =>
-    row.node.kind === "note" ? (row.node.title ?? row.node.name) : row.node.name;
+    row.node.kind === "note" ? (showFilenames ? basename(row.node.path) : row.node.title ?? row.node.name) : row.node.name;
 
   const icon = (row: (typeof rows)[number]): string | undefined =>
     row.node.kind === "note" && row.node.icon !== undefined && row.node.icon !== null && row.node.icon !== ""
@@ -190,7 +247,7 @@
   }
 </script>
 
-<div class="tree-panel">
+<div class="tree-panel" tabindex="-1" bind:this={panel}>
   {#if bookmarked.length > 0}
     <section class="tree-section" aria-labelledby="bookmarks-heading">
       <h3 class="tree-heading" id="bookmarks-heading">Bookmarks</h3>
@@ -199,19 +256,12 @@
           <li>
             <button
               type="button"
-              class="tree-bookmark"
-              aria-pressed="true"
-              aria-label={`Remove bookmark for ${entry.label}`}
-              title={`Remove bookmark for ${entry.label}`}
-              onclick={() => bookmarks.toggle(entry.path)}
-            >★</button>
-            <button
-              type="button"
               class="tree-row is-bookmark"
               data-current={entry.path === activeNote}
               title={entry.path}
               onclick={(event) => onopen(entry.path, event.metaKey || event.ctrlKey)}
               oncontextmenu={(event) => openContextMenu(event, entry.path)}
+              onkeydown={(event) => { if (isMenuKey(event)) openContextMenu(event, entry.path); }}
             >
               <span class="tree-label">{entry.label}</span>
               {#if entry.conflicts > 0}
@@ -220,6 +270,7 @@
                 </span>
               {/if}
             </button>
+            <button type="button" class="icon-button row-actions" aria-label={`Note actions for ${entry.label}`} title="Note actions (Shift+F10)" aria-haspopup="menu" aria-expanded={context?.path === entry.path && context.source === "bookmark"} onclick={(event) => openContextMenu(event, entry.path)} oncontextmenu={(event) => openContextMenu(event, entry.path)} onkeydown={(event) => { if (isMenuKey(event)) openContextMenu(event, entry.path); }}><Icon name="more" /></button>
           </li>
         {/each}
       </ul>
@@ -229,7 +280,7 @@
   <section class="tree-section" aria-labelledby="notes-heading">
     <div class="tree-section-header" role="group" aria-label="Vault root" data-drop-target={dropFolder === ""} ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")}>
       <h3 class="tree-heading" id="notes-heading">Notes</h3>
-      {#if oncreate !== undefined || onfolder !== undefined}
+      {#if oncreate !== undefined || onfolder !== undefined || onfilenames !== undefined}
         <div class="tree-actions" role="group" aria-label="File actions">
           {#if oncreate !== undefined}
             <button type="button" class="icon-button" aria-label="New note" title="New note" onclick={() => {
@@ -239,6 +290,9 @@
           {/if}
           {#if onfolder !== undefined}
             <button type="button" class="icon-button" aria-label="New folder" title="New folder" onclick={onfolder}><Icon name="folder-plus" /></button>
+          {/if}
+          {#if onfilenames !== undefined}
+            <button type="button" class="icon-button" aria-label="File settings" title="File settings" aria-haspopup="menu" aria-expanded={settings !== undefined} onclick={openSettings}><Icon name="more" /></button>
           {/if}
         </div>
       {/if}
@@ -256,6 +310,7 @@
       <div
         class="tree"
         role="tree"
+        bind:this={treeElement}
         aria-label="Notes"
         tabindex="0"
         aria-activedescendant={rows[cursor] === undefined ? undefined : `tree-row-${cursor}`}
@@ -275,6 +330,7 @@
             class="tree-row"
             id={`tree-row-${index}`}
             role="treeitem"
+            aria-label={label(row)}
             tabindex="-1"
             aria-level={row.depth + 1}
             aria-expanded={row.node.kind === "folder" ? row.expanded === true : undefined}
@@ -291,7 +347,7 @@
               if (row.node.kind === "note") onopen(row.node.path, event.metaKey || event.ctrlKey);
               else setExpanded(row.node.path, row.expanded !== true);
             }}
-            oncontextmenu={row.node.kind === "note" ? (event) => openContextMenu(event, row.node.path) : undefined}
+            oncontextmenu={(event) => openContextMenu(event, row.node.path, row.node.kind)}
             draggable={onmove !== undefined && !moveBusy}
             ondragstart={(event) => startDrag(event, row.node.path)}
             ondragover={row.node.kind === "folder" ? (event) => dragOver(event, row.node.path) : undefined}
@@ -315,35 +371,18 @@
               {/if}
             </span>
             <span class="tree-label">{label(row)}</span>
-            {#if row.node.kind === "folder" && onmove !== undefined}
-              <button type="button" class="icon-button" aria-label={`Move folder ${row.node.name}`} title="Move folder (F2)" onclick={(event) => {
-                event.stopPropagation();
-                moveError = undefined;
-                moveSubject = row.node.path;
-              }}><Icon name="folder" /></button>
+            {#if row.node.kind === "folder"}
+              <!-- Shift+F10 / ContextMenu opens this without a tab stop per folder. -->
+              <button type="button" tabindex="-1" class="icon-button folder-actions row-actions" aria-label={`Folder actions for ${row.node.name}`} title="Folder actions (Shift+F10)" aria-haspopup="menu" aria-expanded={context?.path === row.node.path && context.source === "tree"} onclick={(event) => openContextMenu(event, row.node.path, "folder")}><Icon name="more" /></button>
             {/if}
 
             {#if row.node.kind === "note"}
-              {@const path = row.node.path}
               {#if row.node.conflicts > 0}
                 <span class="tree-conflicts" aria-label={conflictLabel(row.node.conflicts)}>
                   {row.node.conflicts}
                 </span>
               {/if}
-              <button
-                type="button"
-                class="tree-bookmark"
-                aria-pressed={bookmarks.has(path)}
-                aria-label={`${bookmarks.has(path) ? "Remove" : "Add"} bookmark for ${label(row)}`}
-                onclick={(event) => {
-                  // Without this the click also reaches the row and opens the note, which is
-                  // not what someone reaching for a star meant.
-                  event.stopPropagation();
-                  bookmarks.toggle(path);
-                }}
-              >
-                {bookmarks.has(path) ? "★" : "☆"}
-              </button>
+              <button type="button" tabindex="-1" class="icon-button row-actions" aria-label={`Note actions for ${label(row)}`} title="Note actions (Shift+F10)" aria-haspopup="menu" aria-expanded={context?.path === row.node.path && context.source === "tree"} onclick={(event) => openContextMenu(event, row.node.path)}><Icon name="more" /></button>
             {/if}
           </div>
         {/each}
@@ -367,6 +406,33 @@
 }} ondismiss={() => { if (!moveBusy) moveSubject = undefined; }} />
 {/if}
 
+{#if settings !== undefined}
+<ContextMenu
+  open={true}
+  label="File settings"
+  x={settings.x}
+  y={settings.y}
+  options={[{ label: "Show filenames", checked: showFilenames, ontoggle: () => onfilenames?.(!showFilenames) }]}
+  ondismiss={() => (settings = undefined)}
+/>
+{:else if context?.kind === "folder"}
+<ContextMenu
+  open={true}
+  label="Folder actions"
+  x={context.x}
+  y={context.y}
+  onopenmain={onopenfolder === undefined ? undefined : () => {
+    if (context !== undefined) onopenfolder(context.path);
+    context = undefined;
+  }}
+  onmove={onmove === undefined ? undefined : () => {
+    moveError = undefined;
+    moveSubject = context?.path;
+    context = undefined;
+  }}
+  ondismiss={() => (context = undefined)}
+/>
+{:else}
 <ContextMenu
   open={context !== undefined}
   x={context?.x ?? 0}
@@ -383,5 +449,8 @@
     if (context !== undefined) ondelete?.(context.path);
     context = undefined;
   }}
+  bookmarked={context !== undefined && bookmarks.has(context.path)}
+  onbookmark={toggleBookmark}
   ondismiss={() => (context = undefined)}
 />
+{/if}

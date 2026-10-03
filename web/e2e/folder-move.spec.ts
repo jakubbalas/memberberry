@@ -20,7 +20,8 @@ test("folders move into another folder and back to root with their notes", async
   if (info.project.name === "desktop") {
     await row(source).dragTo(row(destination));
   } else {
-    await page.getByRole("button", { name: `Move folder ${source}`, exact: true }).click();
+    await page.getByRole("button", { name: `Folder actions for ${source}`, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Move folder", exact: true }).click();
     await page.getByRole("dialog", { name: "Move folder", exact: true }).getByLabel("Destination folder").fill(destination);
     await page.getByRole("button", { name: "Move", exact: true }).click();
   }
@@ -31,7 +32,8 @@ test("folders move into another folder and back to root with their notes", async
   if (info.project.name === "desktop") {
     await row(`${destination}/${source}`).dragTo(page.getByRole("group", { name: "Vault root", exact: true }));
   } else {
-    await page.getByRole("button", { name: `Move folder ${source}`, exact: true }).click();
+    await page.getByRole("button", { name: `Folder actions for ${source}`, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Move folder", exact: true }).click();
     await page.getByRole("button", { name: "Move", exact: true }).click();
   }
   await expect(row(source)).toBeVisible();

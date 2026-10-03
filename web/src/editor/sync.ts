@@ -1,6 +1,6 @@
 /** Permission-aware WebSocket transport for a single persisted Yjs note. */
 
-import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVectorFromUpdate } from "yjs";
+import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVectorFromUpdate, snapshot, snapshotContainsUpdate } from "yjs";
 import {
   Awareness,
   applyAwarenessUpdate,
@@ -40,7 +40,7 @@ const BINARY_HEADER_BYTES = 5;
 
 export interface SyncProvider {
   readonly connected: boolean;
-  /** Local changes produced while the socket was not open, and so not yet sent. */
+  /** Local changes not yet acknowledged by the server's durable update echo. */
   readonly pending: number;
   /** Whether the server has sent this note's state at least once (§7.2). */
   readonly synced: boolean;
@@ -78,18 +78,18 @@ export interface CreateSyncProviderOptions {
    *
    * Raised even when there is nothing to reconcile, because the handler's other job is to
    * record what both sides now hold as §3.5's merge base. That is also the cheap case: with
-   * nothing unsent, `mine` is absent and no state is serialized.
+   * no divergence, `mine` is absent and no local state is serialized.
    */
   readonly onServerState?: (state: ServerState) => void;
 }
 
-/** The server's whole state, and what this device held that the server had not seen. */
+/** The server's whole state, and this device's pre-merge state when the two have diverged. */
 export interface ServerState {
   /**
-   * This device's state before the merge, absent when the server already had everything.
+   * This device's state before a two-sided merge; absent for a one-sided change.
    *
-   * Present is exactly the §3.5 case: the local replica held updates the server's frame did
-   * not cover, so the merge that is about to happen can drop one of them.
+   * Local-only edits need a flush, not conflict reconciliation: the server's version is
+   * already part of this device's history, even if the stored Markdown base is older.
    */
   readonly mine?: Uint8Array;
   /** The server's whole state, as it arrived. */
@@ -99,7 +99,7 @@ export interface ServerState {
 /** What the transport reports about itself, for a UI that has to say so (§7.4). */
 export interface ConnectionState {
   readonly connected: boolean;
-  /** Local changes produced while the socket was not open, and so not yet sent. */
+  /** Local changes not yet acknowledged by the server's durable update echo. */
   readonly pending: number;
   /**
    * Whether the server has sent this note's state at least once in this session.
@@ -132,6 +132,9 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   let connected = false;
   let pending = 0;
   let synced = false;
+  // why: WebSocket.send only queues bytes locally. The server echoes updates after fsync;
+  // that echo, not a successful send, is the existing protocol's durability acknowledgement.
+  let inFlight: Array<{ readonly update: Uint8Array; readonly count: number }> = [];
   /** Consecutive failed connections, which is what the backoff grows from. */
   let attempts = 0;
   let destroyed = false;
@@ -185,15 +188,16 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   };
   const sendUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === REMOTE_SYNC_ORIGIN) return;
+    setPending(pending + 1);
     if (!isOpen()) {
       // why: counted rather than queued. The document itself is the queue — every one of
       // these is already in the Y doc and, a moment later, in IndexedDB — so keeping the
       // bytes as well would be a second copy that can disagree with the first. What
       // reconnecting sends is the difference between this document and the server's, which
       // is exact however many updates went unsent (§7.4).
-      setPending(pending + 1);
       return;
     }
+    inFlight.push({ update, count: 1 });
     sendBinary(encodeBinaryFrame(FRAME_UPDATE, options.vault, options.note, update));
   };
   /**
@@ -210,15 +214,20 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
    * caller, before the merge, because it is also what detects §3.5's divergence — and after
    * the merge there is no difference left to see.
    */
-  const flush = (missing: Uint8Array): void => {
+  const flush = (missing: Uint8Array, beforeMerge: number): void => {
     if (hasContent(missing)) {
+      const count = Math.max(1, beforeMerge);
+      pending = pending - beforeMerge + count;
+      inFlight.push({ update: missing, count });
       sendBinary(encodeBinaryFrame(FRAME_UPDATE, options.vault, options.note, missing));
+    } else {
+      // A reconnect can prove the server accepted an edit whose echo the network lost.
+      pending -= beforeMerge;
     }
     // Both at once, and one announcement: a subscriber must never see this half-applied,
     // and the *first* sync is news even when the count was already zero. `ConnectionStatus`
     // drops a repeat of an identical state, so announcing unconditionally costs nothing.
     synced = true;
-    pending = 0;
     announce();
   };
   const onOpen = (): void => {
@@ -232,6 +241,13 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
       if (frame === null || frame.vault !== options.vault || frame.note !== options.note) return;
       if (frame.tag === FRAME_UPDATE) {
         applyUpdate(options.document, frame.payload, REMOTE_SYNC_ORIGIN);
+        const acknowledged = inFlight.findIndex(({ update }) =>
+          update.length === frame.payload.length
+          && update.every((byte, index) => byte === frame.payload[index]));
+        if (acknowledged !== -1) {
+          const [accepted] = inFlight.splice(acknowledged, 1);
+          if (accepted !== undefined) setPending(Math.max(0, pending - accepted.count));
+        }
         return;
       }
       if (frame.tag !== FRAME_SYNC) return;
@@ -246,9 +262,20 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
         options.document,
         encodeStateVectorFromUpdate(frame.payload),
       );
-      const mine = hasContent(missing) ? encodeStateAsUpdate(options.document) : undefined;
+      // why: unsent does not mean divergent. With only local edits the server is an
+      // ancestor, and comparing against an older Markdown base invents a conflict with
+      // our own previously saved text. Check before applying the frame, including its
+      // delete set: state vectors alone miss external deletions (which add no clock).
+      const mine = hasContent(missing)
+        && !snapshotContainsUpdate(snapshot(options.document), frame.payload)
+        ? encodeStateAsUpdate(options.document)
+        : undefined;
+      const beforeMerge = pending;
+      inFlight = [];
       applyUpdate(options.document, frame.payload, REMOTE_SYNC_ORIGIN);
-      flush(missing);
+      // Applying server state can synchronously produce an editor normalization edit.
+      // It is newer than this snapshot and must retain its own pending acknowledgement.
+      flush(missing, beforeMerge);
       options.onServerState?.({
         theirs: frame.payload,
         ...(mine === undefined ? {} : { mine }),
@@ -257,7 +284,14 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     }
     if (typeof event.data !== "string") return;
     const frame = parseControlFrame(event.data);
-    if (frame === null || frame.type === "error") return;
+    if (frame === null) return;
+    if (frame.type === "error") {
+      // Rejected edits remain in the durable local doc and must never look saved. Close
+      // this subscription, so its successor reconciles the missing state rather than
+      // continuing to send dependent increments after a rejected update.
+      onOffline();
+      return;
+    }
     if (frame.vault !== options.vault || frame.note !== options.note) return;
     if (frame.type === "awareness") applyRemoteAwareness(frame.user, frame.state);
     // why: §7.5 requires a disconnected client's cursor to disappear on socket close. The
@@ -287,6 +321,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     socket?.removeEventListener("message", onMessage);
     socket?.removeEventListener("close", onClose);
     socket = undefined;
+    inFlight = [];
   };
   /**
    * Gives up the socket when the browser says the network has gone.

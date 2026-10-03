@@ -29,6 +29,7 @@ export type IconName =
   | "vault"
   | "appearance"
   | "plus"
+  | "more"
   | "close";
 
 /**
@@ -60,5 +61,6 @@ export const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
   // control only chooses between light and dark.
   appearance: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "M12 3v18", "M12 7.5h6.4", "M12 12h8.9", "M12 16.5h6.4"],
   plus: ["M12 5.5v13", "M5.5 12h13"],
+  more: ["M5 12h.01", "M12 12h.01", "M19 12h.01"],
   close: ["m6.5 6.5 11 11", "m17.5 6.5-11 11"],
 };
