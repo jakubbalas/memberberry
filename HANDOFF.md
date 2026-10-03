@@ -1,13 +1,21 @@
 # Handoff
 
-**Updated:** 2026-10-03 — combined sync, navigation, document-link and task fixes ready for review.
+**Updated:** 2026-10-03 — PR #2 CI test corrections.
 
 ## Current state / next step
 
-Branch: `fix/local-navigation-sync-links`, based on upstream `main`.
-Paul tested the deployed changes, reported that they are working, and authorized committing
-both this batch and the preceding fixes and opening a PR for Jakub's approval. Next is
-Jakub's review; do not merge automatically. The running app is unchanged by publication.
+Branch: `fix/local-navigation-sync-links`, published as upstream PR #2.
+Paul tested the deployed application changes and authorized the PR. This correction aligns
+three stale test assertions with the documented behavior and adds explicit unaliased-link
+and missing-folder regressions. No production code or behavior changes in this correction.
+
+All three original failures were reproduced locally before repair. Focused regression and
+negative mutation checks passed after repair. Independent specification and code-quality
+reviews both passed. Full CI verification is pending. Require fresh `check`, `web`, `perf` and
+`fuzz-build` success on the corrected PR head before declaring this ready to merge.
+Jakub retains upstream review/merge ownership. The newer Tasks-tab/completed-task follow-up
+is separate and must not be released until this corrected PR is merged. The running app
+is unchanged by these test corrections.
 
 Machine-specific Compose mounts, networks and resource limits remain local and are not part
 of the PR. Private rollout manifests, snapshots, deployment notes and debug material remain
@@ -76,8 +84,19 @@ private backup and rollback image were retained. The login page and scratch edit
 without JavaScript errors. Paul subsequently confirmed the deployed changes work; this is
 user acceptance feedback, not a claim that the full browser suite or performance gate ran.
 
-**Deferred / limits:** full `make check`, coverage measurement and full `make e2e` were not
-run for this iteration. Full E2E remains user-run unless explicitly requested. Existing
+**CI correction verification:** the three original failures were reproduced in the isolated
+PR worktree. The corrected note-editor file passes all 6 tests; the script-injection,
+malformed-rename and missing-folder HTTP regressions each pass. Eight temporary negative
+mutation probes failed as intended; sources were restored and focused tests rerun green.
+The exact GitHub CI jobs, including Rust/frontend coverage floors, are required for this
+correction and are not yet established. Full local frontend verification passed: **1,862
+tests across 130 files**, typecheck with zero errors/warnings, and the coverage gate
+(editor 87.63%, shell 93.51%, other 94.68%). The complete server HTTP suite passed
+**179 tests**, as did workspace formatting and the token contract. Full-test orchestration,
+WASM-cache and manual E2E workflow regressions passed. The local coverage-helper regression could not run: the
+development container lacks `cargo-llvm-cov` and places temporary test crates inside the
+parent workspace. The GitHub workflow installs the coverage tool and remains authoritative.
+Full manual `make e2e` is separate and remains user-run unless explicitly requested. Existing
 performance breaches remain open; host/jsdom microbenchmarks are not physical Android FPS.
 Two focused suites still emit the pre-existing ProseMirror `TextSelection` startup warning
 when a heading precedes a list. Existing third-party directive/large-chunk build warnings

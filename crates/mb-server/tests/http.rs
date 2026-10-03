@@ -2448,7 +2448,10 @@ fn note_content_cannot_inject_script_into_the_page() {
         body.contains("&lt;img src=x onerror=alert(1)&gt;"),
         "{body}"
     );
-    assert!(body.contains("href=\"#blocked\""), "{body}");
+    assert!(
+        body.contains("<a aria-disabled=\"true\">click</a>"),
+        "a blocked link must keep its label and disabled marker without an href: {body}"
+    );
 }
 
 #[test]
@@ -5572,7 +5575,7 @@ fn a_rename_body_that_is_not_a_rename_is_refused_without_touching_the_vault() {
     let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
     for payload in [
         "{}",
-        r#"{"kind":"folder","from":"a","to":"b"}"#,
+        r#"{"kind":"unknown","from":"Roadmap.md","to":"Plan.md"}"#,
         r#"{"kind":"note","from":"Roadmap.md"}"#,
         "not json at all",
     ] {
@@ -5582,7 +5585,40 @@ fn a_rename_body_that_is_not_a_rename_is_refused_without_touching_the_vault() {
             "{payload} answered {status}"
         );
     }
-    assert!(dir.path().join("Roadmap.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Roadmap.md")).expect("Roadmap.md"),
+        "# Roadmap\n"
+    );
+    assert!(!dir.path().join("Plan.md").exists());
+}
+
+#[test]
+fn renaming_a_missing_folder_is_not_found_without_touching_the_vault() {
+    let dir = TempDir::new("http-rename-missing-folder");
+    dir.write("Roadmap.md", "# Roadmap\n");
+    dir.write("One.md", "See [[a/Roadmap]].\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let snapshot = || {
+        ["Roadmap.md", "One.md", "access.toml"]
+            .map(|path| std::fs::read(dir.path().join(path)).expect("durable vault file"))
+    };
+    let before = snapshot();
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/rename",
+        "",
+        r#"{"kind":"folder","from":"a","to":"b"}"#,
+    );
+
+    assert!(is_not_found(&status), "{status} {body}");
+    assert_eq!(body, "{}");
+    assert_eq!(
+        snapshot(),
+        before,
+        "a missing folder must not change the vault"
+    );
+    assert!(!dir.path().join("a").exists());
+    assert!(!dir.path().join("b").exists());
 }
 
 // ---------------------------------------------------------------- note creation (§6.10)
