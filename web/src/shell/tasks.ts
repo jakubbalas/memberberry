@@ -190,10 +190,11 @@ export function readInboxTasks(body: unknown): readonly InboxTask[] | undefined 
   return valid;
 }
 
-/** What a row is labelled with beside the task text: note title, else the filename stem. */
-export function inboxSourceLabel(task: InboxTask): string {
+/** Source heading by default, or the original basename and extension when requested. */
+export function inboxSourceLabel(task: InboxTask, showFilename = false): string {
+  const filename = task.path.slice(task.path.lastIndexOf("/") + 1);
+  if (showFilename) return filename;
   if (task.title !== null && task.title !== "") return task.title;
-  const filename = task.path.split("/").pop() ?? task.path;
   return filename.replace(/\.md$/, "");
 }
 

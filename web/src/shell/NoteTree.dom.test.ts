@@ -584,22 +584,82 @@ describe("the tree's accessibility structure", () => {
   });
 });
 
+it.each(["click", "contextmenu", "Shift+F10", "ContextMenu"])("opens the same bookmark actions with %s and restores Escape focus", async (gesture) => {
+  const view = render({ bookmarked: ["Welcome.md"] });
+  try {
+    await flush();
+    const opener = target.querySelector<HTMLButtonElement>(gesture === "click" ? '.bookmark-list [aria-label="Note actions for Welcome"]' : '.bookmark-list .tree-row');
+    expect(opener).not.toBeNull();
+    opener?.focus();
+    if (gesture === "click") opener?.click();
+    else if (gesture === "contextmenu") opener?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    else opener?.dispatchEvent(new KeyboardEvent("keydown", { key: gesture === "Shift+F10" ? "F10" : "ContextMenu", shiftKey: gesture === "Shift+F10", bubbles: true, cancelable: true }));
+    await flush();
+    expect([...target.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual(["Open in new tab", "Rename", "Delete", "Remove bookmark"]);
+    document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await flush();
+    expect(target.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(view.store.tabs).toEqual([]);
+  } finally { await view.teardown(); }
+});
+
+it.each(["click", "contextmenu", "Shift+F10", "ContextMenu"])("opens the same file actions with %s without opening its note", async (gesture) => {
+  const view = render();
+  try {
+    await flush();
+    await press("End");
+    const row = rows().find((item) => item.title === "Welcome.md");
+    const menuButton = row?.querySelector<HTMLButtonElement>('[aria-label="Note actions for Welcome"]');
+    if (gesture === "click") { expect(menuButton).not.toBeNull(); menuButton?.click(); }
+    else if (gesture === "contextmenu") row?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    else { tree()?.focus(); tree()?.dispatchEvent(new KeyboardEvent("keydown", { key: gesture === "Shift+F10" ? "F10" : "ContextMenu", shiftKey: gesture === "Shift+F10", bubbles: true, cancelable: true })); }
+    await flush();
+    expect([...target.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual(["Open in new tab", "Rename", "Delete", "Add bookmark"]);
+    expect(view.store.tabs).toEqual([]);
+    document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flush();
+    expect(target.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(gesture === "click" ? menuButton : tree());
+  } finally { await view.teardown(); }
+});
+
 describe("bookmarks", () => {
+  it("dismisses a right-click menu when a different tree row is pressed", async () => {
+    const view = render();
+    try {
+      await flush();
+      const note = rows().find((item) => item.title === "Welcome.md");
+      note?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      await flush();
+      expect(target.querySelector('[role="menu"]')).not.toBeNull();
+      const folder = rows().find((item) => item.title === "Projects");
+      folder?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      folder?.click(); await flush();
+      expect(target.querySelector('[role="menu"]')).toBeNull();
+      expect(folder?.getAttribute("aria-expanded")).toBe("true");
+    } finally { await view.teardown(); }
+  });
+
   it("removes a bookmark from its section without opening or deleting the note", async () => {
     const { bookmarks, server, store, teardown } = render({ bookmarked: ["Welcome.md"] });
     try {
       await flush();
-      const remove = target.querySelector<HTMLButtonElement>('.bookmark-list button[aria-label="Remove bookmark for Welcome"]');
-      expect(remove).not.toBeNull();
-      expect(target.querySelector(".bookmark-list li")?.textContent?.match(/★/g)).toHaveLength(1);
-      expect(target.querySelector(".bookmark-list li button")).toBe(remove);
+      const menu = target.querySelector<HTMLButtonElement>('.bookmark-list button[aria-label="Note actions for Welcome"]');
+      expect(menu).not.toBeNull();
+      expect(target.querySelector(".tree-bookmark")).toBeNull();
+      menu?.click(); await flush();
+      const remove = [...target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent === "Remove bookmark");
+      expect(remove).toBeDefined();
       remove?.click();
       await flush();
       expect(bookmarks.paths).toEqual([]);
       expect(server.writes.at(-1)).toEqual([]);
       expect(store.tabs).toEqual([]);
       expect(target.querySelector("#bookmarks-heading")).toBeNull();
-      expect(target.querySelector('.tree button[aria-label="Add bookmark for Welcome"]')).not.toBeNull();
+      expect(target.querySelector('.tree button[aria-label="Note actions for Welcome"]')).not.toBeNull();
+      expect(target.querySelector('[role="menu"]')).toBeNull();
+      expect(document.activeElement).toBe(tree());
     } finally {
       teardown();
     }
@@ -626,14 +686,16 @@ describe("bookmarks", () => {
     }
   });
 
-  it("toggle from the star, and write the new list", async () => {
+  it("toggle from the note actions menu, and write the new list", async () => {
     const { bookmarks, server, teardown } = render();
     try {
       await flush();
-      const star = target.querySelector<HTMLButtonElement>(".tree-bookmark");
-      expect(star?.getAttribute("aria-pressed")).toBe("false");
-
-      star?.click();
+      const menu = target.querySelector<HTMLButtonElement>('.tree button[aria-label="Note actions for Welcome"]');
+      expect(menu).not.toBeNull();
+      menu?.click(); await flush();
+      const add = [...target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent === "Add bookmark");
+      expect(add).toBeDefined();
+      add?.click();
       await flush();
       expect(bookmarks.paths).toHaveLength(1);
       expect(server.writes.at(-1)).toEqual(bookmarks.paths);
@@ -642,15 +704,19 @@ describe("bookmarks", () => {
     }
   });
 
-  it("do not also open the note when the star is clicked", async () => {
-    // The star sits inside the row, so without `stopPropagation` reaching for it opens the
-    // note as well — which is not what someone bookmarking meant.
+  it("do not also open the note when its actions button or bookmark action is clicked", async () => {
+    // The actions button sits inside the row, but opening a menu must not open the note.
     const { store, teardown } = render();
     try {
       await flush();
-      target.querySelector<HTMLButtonElement>(".tree-bookmark")?.click();
-      await flush();
+      const menu = target.querySelector<HTMLButtonElement>('.tree button[aria-label="Note actions for Welcome"]');
+      expect(menu).not.toBeNull();
+      menu?.click(); await flush();
       expect(store.tabs).toEqual([]);
+      const add = [...target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent === "Add bookmark");
+      add?.click(); await flush();
+      expect(store.tabs).toEqual([]);
+      expect(document.activeElement).toBe(menu);
     } finally {
       teardown();
     }
@@ -699,13 +765,15 @@ describe("bookmarks", () => {
     }
   });
 
-  it("say what the star will do, for a reader who cannot see it", async () => {
+  it("names the note actions button and keeps it outside the tree's tab sequence", async () => {
     const { teardown } = render();
     try {
       await flush();
-      // The first two rows are folders, which have no star — only a note can be bookmarked.
-      const star = target.querySelector<HTMLButtonElement>(".tree-bookmark");
-      expect(star?.getAttribute("aria-label")).toBe("Add bookmark for Welcome");
+      const menu = target.querySelector<HTMLButtonElement>('.tree button[aria-label="Note actions for Welcome"]');
+      expect(menu?.getAttribute("aria-haspopup")).toBe("menu");
+      expect(menu?.getAttribute("aria-expanded")).toBe("false");
+      expect(menu?.tabIndex).toBe(-1);
+      expect(target.querySelectorAll('.tree button:not([tabindex="-1"])')).toHaveLength(0);
     } finally {
       teardown();
     }
@@ -726,6 +794,7 @@ describe("bookmarks", () => {
         "Open in new tab",
         "Rename",
         "Delete",
+        "Add bookmark",
       ]);
       target.querySelector<HTMLButtonElement>('[role="menuitem"]:nth-of-type(2)')?.click();
       await tick();

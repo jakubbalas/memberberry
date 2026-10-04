@@ -430,7 +430,7 @@ describe("splits", () => {
     try {
       await tick();
       expect(panes()).toHaveLength(2);
-      const divider = target.querySelector('[role="separator"]');
+      const divider = target.querySelector('[role="separator"][aria-label="Resize panes"]');
       expect(divider?.getAttribute("aria-orientation")).toBe("vertical");
       expect(divider?.getAttribute("aria-valuenow")).toBe("50");
     } finally {
@@ -443,14 +443,14 @@ describe("splits", () => {
     workspace.split(workspace.focusedGroup, "vertical", "Two.md");
     const teardown = render(workspace);
     try {
-      const divider = target.querySelector<HTMLElement>('[role="separator"]');
+      const divider = target.querySelector<HTMLElement>('[role="separator"][aria-label="Resize panes"]');
       divider?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
       await tick();
-      expect(target.querySelector('[role="separator"]')?.getAttribute("aria-valuenow")).toBe("52");
+      expect(target.querySelector('[role="separator"][aria-label="Resize panes"]')?.getAttribute("aria-valuenow")).toBe("52");
 
       divider?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
       await tick();
-      expect(target.querySelector('[role="separator"]')?.getAttribute("aria-valuenow")).toBe("12");
+      expect(target.querySelector('[role="separator"][aria-label="Resize panes"]')?.getAttribute("aria-valuenow")).toBe("12");
     } finally {
       teardown();
     }
@@ -487,7 +487,7 @@ describe("splits", () => {
       await tick();
 
       expect(panes()).toHaveLength(1);
-      expect(target.querySelector('[role="separator"]')).toBeNull();
+      expect(target.querySelector('[role="separator"][aria-label="Resize panes"]')).toBeNull();
     } finally {
       teardown();
     }
@@ -865,7 +865,7 @@ describe("dragging a split divider", () => {
     const teardown = render(workspace);
     try {
       await tick();
-      const divider = target.querySelector<HTMLElement>(".pane-divider");
+      const divider = target.querySelector<HTMLElement>('.workspace-main [aria-label="Resize panes"]');
       const split = target.querySelector<HTMLElement>(".pane-split");
       if (divider === null || split === null) throw new Error("expected a split and a divider");
       prepare(divider, split);
@@ -874,7 +874,7 @@ describe("dragging a split divider", () => {
       divider.dispatchEvent(pointer("pointermove", 300, 400));
       await tick();
       // 300 of 1000 across, so 30%.
-      expect(target.querySelector(".pane-divider")?.getAttribute("aria-valuenow")).toBe("30");
+      expect(target.querySelector('.workspace-main [aria-label="Resize panes"]')?.getAttribute("aria-valuenow")).toBe("30");
     } finally {
       teardown();
     }
@@ -886,7 +886,7 @@ describe("dragging a split divider", () => {
     const teardown = render(workspace);
     try {
       await tick();
-      const divider = target.querySelector<HTMLElement>(".pane-divider");
+      const divider = target.querySelector<HTMLElement>('.workspace-main [aria-label="Resize panes"]');
       const split = target.querySelector<HTMLElement>(".pane-split");
       if (divider === null || split === null) throw new Error("expected a split and a divider");
       prepare(divider, split);
@@ -894,7 +894,7 @@ describe("dragging a split divider", () => {
       // No `pointerdown` first: the pointer is down on something else and merely passing over.
       divider.dispatchEvent(pointer("pointermove", 200, 400));
       await tick();
-      expect(target.querySelector(".pane-divider")?.getAttribute("aria-valuenow")).toBe("50");
+      expect(target.querySelector('.workspace-main [aria-label="Resize panes"]')?.getAttribute("aria-valuenow")).toBe("50");
     } finally {
       teardown();
     }
@@ -906,7 +906,7 @@ describe("dragging a split divider", () => {
     const teardown = render(workspace);
     try {
       await tick();
-      const divider = target.querySelector<HTMLElement>(".pane-divider");
+      const divider = target.querySelector<HTMLElement>('.workspace-main [aria-label="Resize panes"]');
       const split = target.querySelector<HTMLElement>(".pane-split");
       if (divider === null || split === null) throw new Error("expected a split and a divider");
       prepare(divider, split);
@@ -916,7 +916,7 @@ describe("dragging a split divider", () => {
       divider.dispatchEvent(pointer("pointerup", 400, 400));
       divider.dispatchEvent(pointer("pointermove", 900, 400));
       await tick();
-      expect(target.querySelector(".pane-divider")?.getAttribute("aria-valuenow")).toBe("40");
+      expect(target.querySelector('.workspace-main [aria-label="Resize panes"]')?.getAttribute("aria-valuenow")).toBe("40");
     } finally {
       teardown();
     }

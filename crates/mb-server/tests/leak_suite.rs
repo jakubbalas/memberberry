@@ -120,6 +120,64 @@ fn e14_folder_moves_refuse_symlinks_in_sources_and_destinations() {
 }
 
 #[test]
+fn e28_nested_empty_folders_preserve_deeper_grants_without_exposing_denied_notes() {
+    use mb_core::{Access, NotePath, Role, Rule};
+    use std::collections::BTreeMap;
+    let directory = TempDir::new("leak-nested-empty-folders");
+    directory.write("notes/OnlyDenied/Secret.md", "# Hidden note\n");
+    directory.write("notes/HiddenContent/.keep", "not physically empty");
+    for folder in [
+        "Shared/Parent/Leaf",
+        "Private/Denied",
+        "Private/Allowed/Leaf",
+        "DefaultDenied/Allowed/Leaf",
+        ".hidden/Leaf",
+    ] {
+        std::fs::create_dir_all(directory.path().join("notes").join(folder)).expect("folder");
+    }
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        directory.path(),
+    )
+    .expect("vault");
+    let bob = Username::parse("bob").expect("user");
+    let access = Access::new(
+        vec![],
+        [
+            ("Shared", Role::Viewer),
+            ("DefaultDenied/Allowed", Role::Viewer),
+            ("Private", Role::None),
+            ("Private/Allowed", Role::Viewer),
+            ("OnlyDenied", Role::Viewer),
+            ("OnlyDenied/Secret.md", Role::None),
+            ("HiddenContent", Role::Viewer),
+            (".hidden", Role::Viewer),
+        ]
+        .into_iter()
+        .map(|(path, role)| Rule {
+            path: NotePath::parse(path).expect("path"),
+            grants: BTreeMap::from([(bob.clone(), role)]),
+        })
+        .collect(),
+    )
+    .expect("ACL");
+    let view = AuthorizedVault::new(&vault, &access, bob);
+    assert_eq!(
+        view.empty_folders().expect("filtered folders"),
+        vec!["DefaultDenied/Allowed/Leaf", "Shared/Parent/Leaf"]
+    );
+    assert!(view.notes().expect("filtered notes").is_empty());
+    let deny = Access::default();
+    assert!(
+        AuthorizedVault::new(&vault, &deny, Username::parse("admin").expect("user"))
+            .empty_folders()
+            .expect("no policy")
+            .is_empty()
+    );
+}
+
+#[test]
 fn e28_empty_folders_are_filtered_and_creation_authorizes_before_probing() {
     let directory = TempDir::new("leak-empty-folders");
     directory.write("Shared/Welcome.md", "# Welcome\n");

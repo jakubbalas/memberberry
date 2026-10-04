@@ -50,6 +50,62 @@ fn access() -> Access {
 }
 
 #[test]
+fn a_path_only_reader_can_discover_an_existing_empty_folder_without_any_note() {
+    let dir = TempDir::new("repository-empty-discovery");
+    std::fs::create_dir_all(dir.path().join("Shared/Nested/Empty")).expect("empty tree");
+    std::fs::create_dir_all(dir.path().join("Private/Empty")).expect("private tree");
+    let vault = vault(&dir);
+    let policy = Access::new(
+        vec![],
+        vec![Rule {
+            path: path("Shared"),
+            grants: BTreeMap::from([(user("alice"), Role::Viewer)]),
+        }],
+    )
+    .expect("path-only ACL");
+    let view = AuthorizedVault::new(&vault, &policy, user("alice"));
+    assert_eq!(
+        view.empty_folders().expect("list"),
+        vec!["Shared/Nested/Empty"]
+    );
+    assert!(view.has_any_access().expect("discovery"));
+    assert!(
+        !AuthorizedVault::new(&vault, &policy, user("guest"))
+            .has_any_access()
+            .expect("guest")
+    );
+    std::fs::remove_dir_all(dir.path().join("Shared")).expect("remove allowed tree");
+    assert!(
+        !view
+            .has_any_access()
+            .expect("no phantom vault from a grant")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_folder_listing_does_not_probe_an_unreadable_denied_subtree() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new("repository-denied-directory");
+    std::fs::create_dir_all(dir.path().join("Shared/Empty")).expect("visible tree");
+    std::fs::create_dir_all(dir.path().join("Private/Empty")).expect("private tree");
+    let private = dir.path().join("Private");
+    let original = std::fs::metadata(&private)
+        .expect("permissions")
+        .permissions();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o000))
+        .expect("deny OS access");
+    let vault = vault(&dir);
+    let policy = access();
+    let result = AuthorizedVault::new(&vault, &policy, user("alice")).empty_folders();
+    std::fs::set_permissions(&private, original).expect("restore cleanup permissions");
+    assert_eq!(
+        result.expect("a denied subtree cannot break a readable list"),
+        vec!["Shared/Empty"]
+    );
+}
+
+#[test]
 fn unreadable_notes_do_not_exist_in_a_repository_list_or_lookup() {
     let dir = TempDir::new("repository-list");
     dir.write("Public.md", "# Public\n");

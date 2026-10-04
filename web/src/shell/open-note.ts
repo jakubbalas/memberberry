@@ -14,6 +14,8 @@
  * server knows, and neither belongs in the editor.
  */
 
+import { tick } from "svelte";
+import { requestNoteAnchor } from "./note-anchor.js";
 import type { OpenNoteDetail, OpenNoteIntent } from "../editor/links.js";
 import { splitLimitFor, type LayoutMode } from "./layout.js";
 import type { WorkspaceStore } from "./workspace-store.svelte.js";
@@ -97,17 +99,18 @@ export function placeNote(
   { store, group, tab, layout }: PlaceNoteOptions,
   note: string,
   intent: OpenNoteIntent,
-): void {
+): TabId | undefined {
   if (intent === "split" && store.groups.length <= splitLimitFor(layout)) {
     // "Split right", the same direction `Mod+\` takes (§8.4).
     store.split(group, "vertical", note);
-    return;
+    return store.activeTab?.id;
   }
   if (intent === "here" && tab !== undefined) {
     store.navigate(tab, note);
-    return;
+    return store.tabs.find((candidate) => candidate.id === tab && candidate.note === note)?.id;
   }
-  store.open(note, { group });
+  store.open(note, { group, reuse: intent === "here" });
+  return store.activeTab?.id;
 }
 
 export interface FollowLinkOptions extends PlaceNoteOptions {
@@ -130,16 +133,19 @@ export async function followLink(
   options: FollowLinkOptions,
   detail: OpenNoteDetail,
 ): Promise<void> {
-  if (detail.resolved) {
-    placeNote(options, detail.target, detail.intent);
-    return;
-  }
+  if (options.signal?.aborted === true) return;
   const resolve = options.resolve ?? resolveNote;
   // `detail.from` wins: a link inside transcluded content was written in the embedded note.
   const from = detail.from ?? options.from;
-  const found = await resolve(options.vault, detail.target, from, {
+  const found = detail.resolved ? { note: detail.target } : await resolve(options.vault, detail.target, from, {
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
-  if (found === undefined) return;
-  placeNote(options, found.note, detail.intent);
+  if (found === undefined || options.signal?.aborted) return;
+  const tab = placeNote(options, found.note, detail.intent);
+  if (tab === undefined || detail.anchorKind === "none" || detail.anchor === null) return;
+  // why: navigation mounts a new NotePane synchronously with Svelte's next flush, but
+  // restoring its editor/body is asynchronous. The pane queues the jump across that gap.
+  await tick();
+  if (options.signal?.aborted || !options.store.tabs.some((candidate) => candidate.id === tab && candidate.note === found.note)) return;
+  requestNoteAnchor(options.vault, tab, found.note, detail);
 }

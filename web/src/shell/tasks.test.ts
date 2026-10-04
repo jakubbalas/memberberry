@@ -249,6 +249,11 @@ describe("InboxView", () => {
 });
 
 describe("inboxSourceLabel", () => {
+  it.each(["Inbox/raw.md", "Folder/日本語 🧠.md", "עברית.md"])("shows the original basename and extension independently of the title: %s", (path) => {
+    const row = task({ path, title: "A different heading", text: "x" });
+    expect(inboxSourceLabel(row, true)).toBe(path.slice(path.lastIndexOf("/") + 1));
+    expect(inboxSourceLabel(row, false)).toBe("A different heading");
+  });
   it("prefers the title and falls back to the filename stem", () => {
     expect(inboxSourceLabel(task({ path: "A.md", title: "Named", text: "x" }))).toBe("Named");
     expect(inboxSourceLabel(task({ path: "Folder/Bare.md", title: null, text: "x" }))).toBe("Bare");

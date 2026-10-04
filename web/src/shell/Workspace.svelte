@@ -22,6 +22,9 @@
   import PaneTree from "./PaneTree.svelte";
   import Icon from "./Icon.svelte";
   import Home from "./Home.svelte";
+  import FolderContents from "./FolderContents.svelte";
+  import "./navigation.css";
+  import { clampSidebarWidths, MIN_SIDEBAR_WIDTH, readSidebarPreferences, sidebarMaximum, writeSidebarPreferences, type SidebarPreferences } from "./sidebar-preferences.js";
   import NamePrompt from "./NamePrompt.svelte";
   import { createFolder, fetchFolders } from "./folders.js";
   import Sidebar from "./Sidebar.svelte";
@@ -29,6 +32,7 @@
   import TagPane from "./TagPane.svelte";
   import SearchPane from "./SearchPane.svelte";
   import InboxPane from "./InboxPane.svelte";
+  import { readTaskDisplay, writeTaskDisplay, type TaskDisplayPreferences } from "./task-display.js";
   import CalendarPane from "./CalendarPane.svelte";
   import { BacklinkView } from "./backlinks.svelte.js";
   import { GraphView } from "./graph.svelte.js";
@@ -157,10 +161,16 @@
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
   const initialWorkspace = untrack(() => store.current);
+  // why: this is a temporary catalog view, not a note tab or persisted workspace schema.
+  // A command opening/focusing a note changes the workspace and dismisses the folder view.
+  let selectedFolder = $state.raw<{ path: string; workspace: typeof initialWorkspace } | undefined>();
+  const folderPath = $derived(selectedFolder?.workspace === store.current ? selectedFolder.path : undefined);
+  let taskWorkspace = $state.raw<typeof initialWorkspace | undefined>();
+  const showingTasks = $derived(taskWorkspace !== undefined && taskWorkspace === store.current);
   const showingHome = $derived(home && store.current === initialWorkspace);
   $effect(() => {
     if (session === undefined) return;
-    const note = showingHome ? undefined : store.activeTab?.note;
+    const note = showingHome || showingTasks || folderPath !== undefined ? undefined : store.activeTab?.note;
     const base = `/v/${encodeURIComponent(session.vault)}`;
     const path = note === undefined ? base : `${base}/${note.split("/").map(encodeURIComponent).join("/")}`;
     if (window.location.pathname !== path) window.history.replaceState(window.history.state, "", path);
@@ -170,15 +180,53 @@
   let folderBusy = $state(false);
   let folderError = $state<string | undefined>();
   let folderStatus = $state("");
+  let foldersLoading = $state(false);
+  let folderRequest = 0;
 
   async function refreshFolders(): Promise<void> {
+    const request = ++folderRequest;
+    foldersLoading = true;
     const folders = await fetchFolders(vaultSlug);
+    // why: a response started before a later denial must not restore revoked folder names.
+    if (request !== folderRequest) return;
     emptyFolders = folders ?? [];
     folderStatus = folders === undefined ? "Empty folders are unavailable." : "";
+    foldersLoading = false;
   }
 
   $effect(() => {
-    if (session !== undefined) void refreshFolders();
+    if (session === undefined) return;
+    void refreshFolders();
+    let disposed = false;
+    let pending = false;
+    const refresh = (): void => {
+      if (disposed || pending) return;
+      pending = true;
+      // why: focus, visibility and online often arrive together. One queued/in-flight read
+      // serves that burst; there is no timer or periodic whole-vault polling.
+      void Promise.resolve().then(async () => {
+        if (disposed) return;
+        try { await Promise.all([catalog.refresh(), refreshFolders()]); }
+        finally { pending = false; }
+      });
+    };
+    const focus = (event: FocusEvent): void => {
+      if (!(event.target instanceof Node) && document.visibilityState === "visible") refresh();
+    };
+    const visible = (): void => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", focus);
+    window.addEventListener("online", refresh);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      disposed = true;
+      // Invalidate a folder request still resolving after this workspace has gone away.
+      folderRequest += 1;
+      window.removeEventListener("focus", focus);
+      window.removeEventListener("online", refresh);
+      document.removeEventListener("visibilitychange", visible);
+    };
   });
 
   async function submitFolder(typed: string): Promise<void> {
@@ -255,11 +303,36 @@
   let taskEdit = $state<{ readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined>(undefined);
 
   function editTask(path: string, ordinal: number, action: TaskEditAction): void {
+    taskWorkspace = undefined;
+    selectedFolder = undefined;
+    showGraph = false;
+    if (narrowViewport) collapsed = { ...collapsed, left: true };
     taskEdit = { path, ordinal, action };
     store.open(path);
   }
 
+  function openTasks(): void {
+    selectedFolder = undefined;
+    showGraph = false;
+    taskWorkspace = store.current;
+    if (narrowViewport) collapsed = { ...collapsed, left: true };
+  }
+
+  function closeTasks(): void {
+    taskWorkspace = undefined;
+    // why: the close button is removed with the view; return focus to a visible shell control.
+    queueMicrotask(() => {
+      const control = shell?.querySelector<HTMLButtonElement>(collapsed.left || navigationView !== "Tasks"
+        ? 'button[aria-controls="sidebar-left"]'
+        : '#navigation-tasks button[aria-label="Task options"]');
+      control?.focus();
+    });
+  }
+
   function openNavigationNote(path: string, newTab = false): void {
+    taskWorkspace = undefined;
+    selectedFolder = undefined;
+    if (narrowViewport) collapsed = { ...collapsed, left: true };
     if (newTab) {
       store.open(path, { reuse: false });
       return;
@@ -319,6 +392,34 @@
     chrome ?? (typeof localStorage === "undefined" ? undefined : localStorage),
   );
 
+  const sidebarScope = untrack(() => ({ user: session?.user ?? "local-demo", vault: vaultSlug, storage: chrome }));
+  let sidebarPreferences = $state(readSidebarPreferences(sidebarScope));
+  let taskDisplay = $state(readTaskDisplay(sidebarScope));
+
+  function saveTaskDisplay(next: TaskDisplayPreferences): void {
+    taskDisplay = next;
+    writeTaskDisplay(sidebarScope, next);
+  }
+  let viewportWidth = $state(window.innerWidth);
+
+  function saveSidebarPreferences(next: SidebarPreferences): void {
+    sidebarPreferences = next;
+    writeSidebarPreferences(sidebarScope, next);
+  }
+
+  function resizeSidebar(side: "left" | "right", width: number): void {
+    const opposite = side === "left" ? "right" : "left";
+    const maximum = sidebarMaximum(viewportWidth, collapsed[opposite] ? 0 : panelWidths[opposite]);
+    saveSidebarPreferences({ ...sidebarPreferences, [side]: Math.max(MIN_SIDEBAR_WIDTH, Math.min(maximum, width)) });
+  }
+
+  function openFolder(path: string): void {
+    taskWorkspace = undefined;
+    selectedFolder = { path, workspace: store.current };
+    showGraph = false;
+    if (narrowViewport) collapsed = { ...collapsed, left: true };
+  }
+
   /**
    * Sidebars start closed on a narrow viewport.
    *
@@ -342,6 +443,7 @@
   }
 
   let collapsed = $state(readCollapsed());
+  const panelWidths = $derived(clampSidebarWidths(sidebarPreferences, viewportWidth, collapsed));
 
   $effect(() => {
     if (!narrowViewport) return;
@@ -527,6 +629,8 @@
 
 </script>
 
+<svelte:window bind:innerWidth={viewportWidth} />
+
 <div
   class="workspace-shell"
   role="application"
@@ -553,6 +657,9 @@
     side="left"
     label="Navigation"
     collapsed={collapsed.left}
+    width={layout === "desktop" ? panelWidths.left : undefined}
+    maximum={layout === "desktop" ? sidebarMaximum(viewportWidth, collapsed.right ? 0 : panelWidths.right) : undefined}
+    onresize={(width) => resizeSidebar("left", width)}
     user={session?.user}
   >
     {#snippet controls()}
@@ -578,7 +685,10 @@
         {catalog}
         {bookmarks}
         {emptyFolders}
-        activeNote={showingHome ? undefined : store.activeTab?.note}
+        activeNote={showingHome || showingTasks || folderPath !== undefined ? undefined : store.activeTab?.note}
+        onopenfolder={openFolder}
+        showFilenames={sidebarPreferences.showFilenames}
+        onfilenames={(showFilenames) => saveSidebarPreferences({ ...sidebarPreferences, showFilenames })}
         onopen={openNavigationNote}
         ondelete={(path) => void deleteFromTree(path)}
         onmove={moveFromTree}
@@ -598,7 +708,7 @@
       <TagPane view={tags} onopen={openNavigationNote} />
     </section>
     <section class="navigation-view" id="navigation-tasks" aria-label="Tasks" hidden={navigationView !== "Tasks"}>
-      <InboxPane view={inbox} onopen={openNavigationNote} onedit={editTask} />
+      <InboxPane view={inbox} onopen={openNavigationNote} onedit={editTask} display={taskDisplay} ondisplay={saveTaskDisplay} onopenmain={openTasks} />
     </section>
     <section class="navigation-view" id="navigation-calendar" aria-label="Calendar" hidden={navigationView !== "Calendar"}>
       <CalendarPane view={daily} onopen={openNavigationNote} />
@@ -618,7 +728,13 @@
         onclose={() => (showGraph = false)}
       />
     {/if}
-    {#if showingHome}
+    {#if showingTasks}
+      <div class="inbox-main">
+        <InboxPane idPrefix="main-inbox" view={inbox} onopen={openNavigationNote} onedit={editTask} display={taskDisplay} ondisplay={saveTaskDisplay} onclose={closeTasks} />
+      </div>
+    {:else if folderPath !== undefined}
+      <FolderContents path={folderPath} {catalog} {emptyFolders} {foldersLoading} onopen={openNavigationNote} onfolder={openFolder} onclose={() => { selectedFolder = undefined; }} />
+    {:else if showingHome}
       <Home {catalog} onopen={openNavigationNote} oncreate={() => requestPalette("create", target ?? window)} />
     {:else if layout === "mobile"}
       <MobileMain {store} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} ontitlechange={handleTitleChange} />
@@ -627,7 +743,10 @@
     {/if}
   </main>
 
-  <Sidebar side="right" label="Context" collapsed={collapsed.right}>
+  <Sidebar side="right" label="Context" collapsed={collapsed.right}
+    width={layout === "desktop" ? panelWidths.right : undefined}
+    maximum={layout === "desktop" ? sidebarMaximum(viewportWidth, collapsed.left ? 0 : panelWidths.left) : undefined}
+    onresize={(width) => resizeSidebar("right", width)}>
     <Outline view={outline} note={store.activeTab?.note} />
     <Backlinks
       view={backlinks}
@@ -669,6 +788,12 @@
   {renameNote}
   {renameTag}
   {createNote}
+  oncreated={() => {
+    taskWorkspace = undefined;
+    selectedFolder = undefined;
+    showGraph = false;
+    if (narrowViewport) collapsed = { left: true, right: true };
+  }}
   vault={vaultSlug}
   {layout}
   {target}

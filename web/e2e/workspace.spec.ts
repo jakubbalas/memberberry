@@ -521,14 +521,17 @@ test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
   });
 
   test("bookmarks a note, and keeps it across a reload", async ({ page }) => {
-    // The whole path: the star writes to the server, the server stores it under this user,
+    // The whole path: the menu writes to the server, the server stores it under this user,
     // and the next session reads it back — filtered by what they can still see.
     await openWorkspace(page);
     const tree = page.getByRole("tree", { name: "Notes" });
 
-    await tree.getByRole("treeitem", { name: /Welcome/ }).hover();
-    await page.getByRole("button", { name: "Add bookmark for Welcome" }).click();
-    await expect(tree.getByRole("button", { name: "Remove bookmark for Welcome" })).toBeVisible();
+    const actions = tree.getByRole("button", { name: "Note actions for Welcome", exact: true });
+    await actions.click();
+    await page.getByRole("menuitem", { name: "Add bookmark", exact: true }).click();
+    await actions.click();
+    await expect(page.getByRole("menuitem", { name: "Remove bookmark", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
 
     // The save is debounced; poll the server rather than sleeping.
     await expect

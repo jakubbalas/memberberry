@@ -15,6 +15,8 @@
   import { untrack } from "svelte";
 
   import type { NoteBootstrap } from "./bootstrap.js";
+  import type { NoteAnchor } from "../editor/note-anchor.js";
+  import { NOTE_ANCHOR_EVENT } from "./note-anchor.js";
   import { type NoteSurface, type TaskEditAction, openNoteSurface } from "./note-surface.js";
   import type { Tab } from "./workspace.js";
   import type { DailyView } from "./daily.svelte.js";
@@ -40,7 +42,7 @@
   let status = $state<HTMLElement | undefined>(undefined);
   let failure = $state<string | undefined>(undefined);
   let liveSurface = $state<NoteSurface | undefined>(undefined);
-  let appliedEdit: object | undefined;
+
 
   const bootstrap = $derived(
     session === undefined || tab === undefined
@@ -79,6 +81,14 @@
 
     let live = true;
     let opened: NoteSurface | undefined;
+    let pendingAnchor: NoteAnchor | undefined;
+    const jump = (event: Event): void => {
+      if (!(event instanceof CustomEvent)) return;
+      pendingAnchor = event.detail as NoteAnchor;
+      opened?.scrollToAnchor?.(pendingAnchor);
+    };
+    // Installed before restoring IndexedDB: a link can arrive while openSurface awaits it.
+    scroller.addEventListener(NOTE_ANCHOR_EVENT, jump);
     void openSurface({
       ...elements,
       bootstrap: untrack(() => bootstrap),
@@ -100,6 +110,7 @@
         // per-tab scroll offset was written as 0 and restored as nothing, silently, for two
         // milestones. `e2e/workspace.spec.ts` now switches tabs and looks.
         if (restore > 0) scroller.scrollTop = restore;
+        if (pendingAnchor !== undefined) result.scrollToAnchor?.(pendingAnchor);
       })
       .catch((error: unknown) => {
         failure = error instanceof Error ? error.message : "the note could not be opened";
@@ -107,16 +118,26 @@
 
     return () => {
       live = false;
+      scroller.removeEventListener(NOTE_ANCHOR_EVENT, jump);
+      pendingAnchor = undefined;
       void opened?.destroy();
       opened = undefined;
       liveSurface = undefined;
     };
   });
 
+  // why: both layouts recreate taskEdit's wrapper on immutable setScroll. Derive its stable
+  // values so scrolling never replays/focuses an edit. Surface changes still deliver an
+  // intent whose former editor closed before first sync; the surface owns once-only apply
+  // across remounts and splits, not this component's lifetime.
+  const taskAction = $derived(taskEdit?.action);
+  const taskOrdinal = $derived(taskEdit?.ordinal);
   $effect(() => {
-    if (taskEdit === undefined || liveSurface === undefined || appliedEdit === taskEdit) return;
-    liveSurface.editTask?.(taskEdit.ordinal, taskEdit.action);
-    appliedEdit = taskEdit;
+    const action = taskAction;
+    const ordinal = taskOrdinal;
+    const opened = liveSurface;
+    if (action === undefined || ordinal === undefined || opened === undefined) return;
+    untrack(() => opened.editTask?.(ordinal, action));
   });
 
   /**
@@ -148,7 +169,7 @@
   </div>
 {:else}
   {#key `${tab.id}:${tab.note}`}
-    <div class="note-pane" bind:this={pane} onscroll={reportScroll}>
+    <div class="note-pane" data-note-tab={tab.id} data-note-vault={session?.vault} data-note-path={tab.note} bind:this={pane} onscroll={reportScroll}>
       {#if previousDaily !== undefined || nextDaily !== undefined}
         <nav class="daily-navigation" aria-label="Daily note navigation">
           <button type="button" aria-label="Previous day" disabled={previousDaily === undefined} onclick={() => previousDaily && ondailyopen?.(previousDaily.path)}>Previous day</button>

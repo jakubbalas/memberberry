@@ -20,6 +20,9 @@ import { taskItemView } from "./task-view.js";
 import { pdfViews } from "./pdf-view.js";
 import { emojiInputRules } from "./commands.js";
 import { emojiAutocomplete } from "./emoji-autocomplete.js";
+import { documentLinks } from "./links.js";
+import { documentLinkAutocomplete, type DocumentLinkLoader } from "./document-link-autocomplete.js";
+import { fetchNotes } from "../shell/catalog.js";
 import { emojiCatalog } from "../emoji-catalog.js";
 import type { EmojiEntry } from "../notes.js";
 
@@ -61,6 +64,8 @@ export interface StartNoteEditorOptions extends CreateNoteCollaborationOptions {
   readonly bridge?: NoteBridge | undefined;
   readonly media?: MediaRenderContext | undefined;
   readonly loadEmojiCatalog?: () => Promise<readonly EmojiEntry[]>;
+  /** Injectable permission-filtered catalog; defaults to the existing vault /notes endpoint. */
+  readonly loadLinkNotes?: DocumentLinkLoader;
 }
 
 /** A mounted editor and the local Y.Doc it is attached to. */
@@ -105,6 +110,12 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
         memberberryInputRules,
         emojiInputRules(catalog),
         emojiAutocomplete(catalog),
+        documentLinks(options.noteId),
+        documentLinkAutocomplete(options.loadLinkNotes ?? (async () => {
+          if (options.embeds === undefined) return [];
+          const answer = await fetchNotes(options.embeds.vault);
+          return answer.kind === "ok" ? answer.notes : [];
+        })),
         taskItemView,
         ...(options.embeds === undefined ? [] : [embedViews(options.embeds)]),
         ...(options.media === undefined ? [] : [pdfViews(options.media)]),

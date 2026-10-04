@@ -959,6 +959,42 @@ fn vault_home_bootstraps_an_empty_workspace_and_denies_unreadable_vaults() {
     server.stop();
 }
 
+#[cfg(unix)]
+#[test]
+fn folder_routes_list_a_path_only_viewers_nested_empty_tree_on_a_read_only_notes_root() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = TempDir::new("http-folders-read-only-root");
+    directory.write(
+        "access.toml",
+        "[[rules]]\npath = \"Shared\"\ngrant = { alice = \"viewer\" }\n",
+    );
+    let notes = directory.path().join("notes");
+    std::fs::create_dir_all(notes.join("Shared/Nested/Empty")).expect("shared empty tree");
+    std::fs::create_dir_all(notes.join("Private/Empty")).expect("private tree");
+    let original = std::fs::metadata(&notes)
+        .expect("permissions")
+        .permissions();
+    std::fs::set_permissions(&notes, std::fs::Permissions::from_mode(0o555))
+        .expect("read-only notes");
+    let server = TestServer::authenticated(vec![vault(&directory, "personal", "Personal")]);
+    let route = "/api/v1/vaults/personal/folders";
+    let listed = server.get(route);
+    let existing = server.post_json(route, "", r#"{"path":"Shared/Nested/Empty"}"#);
+    let absent = server.post_json(route, "", r#"{"path":"Shared/New"}"#);
+    let guest = server.request("GET", route, "", "");
+    let missing = server.request("GET", "/api/v1/vaults/missing/folders", "", "");
+    server.stop();
+    std::fs::set_permissions(&notes, original).expect("restore cleanup permissions");
+    assert!(is_ok(&listed.0), "{listed:?}");
+    assert_eq!(listed.1, r#"{"folders":["Shared/Nested/Empty"]}"#);
+    assert!(is_not_found(&existing.0));
+    assert_eq!(
+        existing, absent,
+        "read-only denial does not probe existence"
+    );
+    assert_eq!(guest, missing, "a guest cannot discover the vault");
+}
+
 #[test]
 fn folder_routes_filter_names_and_refuse_unauthorized_creation_without_probing() {
     let directory = TempDir::new("http-folders");
@@ -2412,7 +2448,10 @@ fn note_content_cannot_inject_script_into_the_page() {
         body.contains("&lt;img src=x onerror=alert(1)&gt;"),
         "{body}"
     );
-    assert!(body.contains("href=\"#blocked\""), "{body}");
+    assert!(
+        body.contains("<a aria-disabled=\"true\">click</a>"),
+        "a blocked link must keep its label and disabled marker without an href: {body}"
+    );
 }
 
 #[test]
@@ -5536,7 +5575,7 @@ fn a_rename_body_that_is_not_a_rename_is_refused_without_touching_the_vault() {
     let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
     for payload in [
         "{}",
-        r#"{"kind":"folder","from":"a","to":"b"}"#,
+        r#"{"kind":"unknown","from":"Roadmap.md","to":"Plan.md"}"#,
         r#"{"kind":"note","from":"Roadmap.md"}"#,
         "not json at all",
     ] {
@@ -5546,7 +5585,40 @@ fn a_rename_body_that_is_not_a_rename_is_refused_without_touching_the_vault() {
             "{payload} answered {status}"
         );
     }
-    assert!(dir.path().join("Roadmap.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Roadmap.md")).expect("Roadmap.md"),
+        "# Roadmap\n"
+    );
+    assert!(!dir.path().join("Plan.md").exists());
+}
+
+#[test]
+fn renaming_a_missing_folder_is_not_found_without_touching_the_vault() {
+    let dir = TempDir::new("http-rename-missing-folder");
+    dir.write("Roadmap.md", "# Roadmap\n");
+    dir.write("One.md", "See [[a/Roadmap]].\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    let snapshot = || {
+        ["Roadmap.md", "One.md", "access.toml"]
+            .map(|path| std::fs::read(dir.path().join(path)).expect("durable vault file"))
+    };
+    let before = snapshot();
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/rename",
+        "",
+        r#"{"kind":"folder","from":"a","to":"b"}"#,
+    );
+
+    assert!(is_not_found(&status), "{status} {body}");
+    assert_eq!(body, "{}");
+    assert_eq!(
+        snapshot(),
+        before,
+        "a missing folder must not change the vault"
+    );
+    assert!(!dir.path().join("a").exists());
+    assert!(!dir.path().join("b").exists());
 }
 
 // ---------------------------------------------------------------- note creation (§6.10)

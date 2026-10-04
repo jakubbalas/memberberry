@@ -16,6 +16,7 @@ import { Editor, type Extensions } from "@tiptap/core";
 import { encodeStateAsUpdate, type Doc } from "yjs";
 
 import type { EditorView } from "@tiptap/pm/view";
+import { TextSelection } from "@tiptap/pm/state";
 
 import { noteBridge, type NoteBridge } from "../notes.js";
 import type {
@@ -27,10 +28,11 @@ import { reconcile } from "../editor/conflicts.js";
 import { mountEditorShell } from "../editor/editor-shell.js";
 import { setTaskDue, setTaskPriority, toggleTask } from "../editor/commands.js";
 import type { TaskPriority } from "../editor/task-metadata.js";
+import { noteAnchorNavigator, type NoteAnchor } from "../editor/note-anchor.js";
 import { placeCursorBelowTitle, startNoteEditor } from "../editor/note-editor.js";
 import { localReplica } from "../offline/local.js";
 import { notDownloaded } from "../offline/not-downloaded.js";
-import type { Replica } from "../offline/replica.js";
+import type { Replica, ReplicaSession } from "../offline/replica.js";
 import { type NoteBootstrap, remoteSyncFor } from "./bootstrap.js";
 import { createMediaUploader } from "../editor/media-upload.js";
 import { loadEmojiChoices } from "../editor/emoji-picker.js";
@@ -92,18 +94,29 @@ export interface NoteSurface {
    * Idempotent: calling it again returns the same promise rather than tearing down twice.
    */
   destroy(): Promise<void>;
-  /** Applies one inbox edit to the task at its source-note ordinal. */
+  /** Accepts one inbox edit, deferring until an authorized source body arrives if needed. */
   editTask?(ordinal: number, action: TaskEditAction): boolean;
+  /** Scrolls now or when the authorized body arrives. Replaces any older pending jump. */
+  scrollToAnchor?(anchor: NoteAnchor): void;
 }
 
+/** One user intent. Callers create a fresh object for each deliberate edit, even a repeat. */
 export type TaskEditAction =
   | { readonly kind: "toggle" }
+  | { readonly kind: "complete" }
   | { readonly kind: "due"; readonly value: string }
   | { readonly kind: "priority"; readonly value: TaskPriority | null };
 
+// why: a temporary main view can remount a pane and multiple splits can show the same note.
+// Both success and rejection belong to the shared intent: a stale ordinal or denied edit must
+// never revive on remount. Pending work stays transferable across ordinary pane teardown.
+const taskEditOutcomes = new WeakMap<TaskEditAction, boolean>();
+
 interface ResidencyOptions {
+  readonly resident: boolean;
   readonly bootstrap: NoteBootstrap;
   readonly replica: Replica;
+  readonly session: ReplicaSession;
   readonly collaboration: { readonly document: Doc };
   readonly connection: ConnectionStatus | undefined;
 }
@@ -124,20 +137,45 @@ interface ResidencyOptions {
  *
  * The sweep runs once, on open: it is the moment a new body has just been added.
  */
-function trackResidency(options: ResidencyOptions): { settle(): Promise<void> } {
-  const { bootstrap, replica } = options;
+function trackResidency(options: ResidencyOptions): { arrived(): void; settle(): Promise<void> } {
+  const { bootstrap, replica, session } = options;
+  let opening: Promise<readonly string[]> | undefined;
+  let opened = false;
   let dirty: boolean | undefined;
-  const unsubscribe = options.connection?.subscribe((state) => {
-    const next = state.pending > 0;
-    if (next === dirty) return;
+  const record = (state: ConnectionStatus["state"] | undefined): void => {
+    if (session.revoked) return;
+    // why: a fresh transport starts at zero even when IndexedDB holds unsent edits.
+    // Preserve the durable dirty flag until the server's state has reconciled them.
+    const next = state === undefined || (!state.synced && state.pending === 0)
+      ? undefined
+      : state.pending > 0;
+    if (!opened) {
+      // Normalization can produce pending updates before the first body arrives. Do not
+      // claim it is downloaded then, or cache a dirty patch that has no resident to update.
+      if (!options.resident && state?.synced !== true) return;
+      opened = true;
+      dirty = next;
+      // First residency and its dirty flag are one atomic write, before any cap sweep.
+      opening = session.opened(next)
+        .then(() => replica.evict(bootstrap.vault));
+      return;
+    }
+    if (next === undefined || next === dirty) return;
     dirty = next;
-    void replica.measured(bootstrap.vault, bootstrap.note, { dirty: next });
-  });
-  void replica.evict(bootstrap.vault);
+    void session.measured({ dirty: next });
+  };
+  const unsubscribe = options.connection?.subscribe(record);
+  if (options.connection === undefined) record(undefined);
   return {
+    arrived: (): void => record({
+      connected: options.connection?.state.connected ?? false,
+      pending: options.connection?.state.pending ?? 0,
+      synced: true,
+    }),
     settle: async (): Promise<void> => {
       unsubscribe?.();
-      await replica.measured(bootstrap.vault, bootstrap.note, {
+      await opening;
+      await session.measured({
         bytes: encodeStateAsUpdate(options.collaboration.document).byteLength,
       });
     },
@@ -148,6 +186,7 @@ interface WaitingOptions {
   readonly resident: boolean;
   readonly bootstrap: NoteBootstrap;
   readonly replica: Replica;
+  readonly session: ReplicaSession;
   readonly panel: HTMLElement;
   readonly connection: ConnectionStatus | undefined;
   readonly setTimer: (run: () => void, ms: number) => () => void;
@@ -188,7 +227,7 @@ function defaultTimer(run: () => void, ms: number): () => void {
  */
 function waitingForBody(options: WaitingOptions): { destroy(): void } {
   const { bootstrap, replica, panel } = options;
-  if (options.resident || options.connection === undefined) {
+  if (!options.session.revoked && (options.resident || options.connection === undefined)) {
     return { destroy: (): void => undefined };
   }
   const notice = notDownloaded(bootstrap.note, undefined);
@@ -210,15 +249,14 @@ function waitingForBody(options: WaitingOptions): { destroy(): void } {
     cancel();
     notice.remove();
     delete panel.dataset["body"];
-    void replica.opened(bootstrap.vault, bootstrap.note);
   };
-  const unsubscribe = options.connection.subscribe((state) => {
-    if (state.synced) arrived();
+  const unsubscribe = options.connection?.subscribe((state) => {
+    if (state.synced && !options.session.revoked) arrived();
   });
   return {
     destroy: (): void => {
       cancel();
-      unsubscribe();
+      unsubscribe?.();
       notice.remove();
       delete panel.dataset["body"];
     },
@@ -228,10 +266,12 @@ function waitingForBody(options: WaitingOptions): { destroy(): void } {
 interface ReconcileConflictsOptions {
   readonly bootstrap: NoteBootstrap;
   readonly replica: Replica;
+  readonly session: ReplicaSession;
   readonly view: EditorView;
   readonly document: Doc;
   readonly bridge: NoteBridge;
   readonly serverState: ServerStateSignal;
+  readonly onBody: () => void;
 }
 
 /**
@@ -265,6 +305,9 @@ function reconcileConflicts(options: ReconcileConflictsOptions): { destroy(): vo
       loaded = true;
     });
   const unsubscribe = options.serverState.subscribe((state) => {
+    // why: a buffered sync predates the catalog's revocation even when delivered now.
+    if (options.session.revoked) return;
+    options.onBody();
     const result = reconcile({
       view: options.view,
       document: options.document,
@@ -276,17 +319,9 @@ function reconcileConflicts(options: ReconcileConflictsOptions): { destroy(): vo
     // against the version from before the first one.
     base = result.base;
     loaded = true;
-    // `opened` first, and that ordering is load-bearing: `measured` writes nothing for a note
-    // with no resident record, and the *first* sync of a note is exactly when there is none
-    // yet. Without this the first base of every note was dropped, so the first offline edit
-    // after opening it fell back to the two-way comparison — silently.
-    //
-    // Recording it here is also what that arrival means: the server has sent this note's
-    // whole state, so this device holds the body. It is the same conclusion `waitingForBody`
-    // draws from the same frame.
-    void replica
-      .opened(bootstrap.vault, bootstrap.note)
-      .then(() => replica.measured(bootstrap.vault, bootstrap.note, { base: result.base }))
+    // why: residency accounting queues the atomic open before this patch. A separate
+    // read/replace here could overwrite dirty state, or recreate a record after denial.
+    void options.session.measured({ base: result.base })
       .catch(() => undefined);
   });
   return {
@@ -309,13 +344,28 @@ export const LOCAL_ONLY = { vault: "local-demo", note: "scratch-note" } as const
  * down on failure, so a rejection here leaves nothing behind to clean up.
  */
 export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<NoteSurface> {
-  const { bootstrap, surface, panel, status } = options;
   // Tiptap attaches and paints its document before the controls can be mounted below. Keep the
   // surface covered across that async gap so switching notes never shows a partially built pane.
-  panel.dataset["editor"] = "loading";
+  options.panel.dataset["editor"] = "loading";
+  const replica = await (options.replica ?? localReplica)();
+  const session = options.bootstrap === undefined ? undefined
+    : replica?.session(options.bootstrap.vault, options.bootstrap.note);
+  try {
+    return await mountNoteSurface(options, replica, session);
+  } catch (error) {
+    session?.close();
+    throw error;
+  }
+}
+
+async function mountNoteSurface(
+  options: OpenNoteSurfaceOptions,
+  replica: Replica | undefined,
+  session: ReplicaSession | undefined,
+): Promise<NoteSurface> {
+  const { bootstrap, surface, panel, status } = options;
   const location = options.location ?? window.location;
   const remoteSync = bootstrap === undefined ? undefined : remoteSyncFor(bootstrap, location);
-  const replica = await (options.replica ?? localReplica)();
   // §7.2's tiered replication: the body of a note nobody has opened on this device is not
   // here. Resolved *before* the editor exists, because what it decides is whether there is
   // anything to type into — see `waitingForBody` below.
@@ -394,77 +444,154 @@ export async function openNoteSurface(options: OpenNoteSurfaceOptions): Promise<
   });
   delete panel.dataset["editor"];
 
-  // A note this device already holds is open now, and the write moves it to the front of
-  // §7.2's LRU. One it does not is *waiting*, and `waiting` is what removes the notice and
-  // records it — when the server sends the body, and not before.
+  // A missing body stays covered until the server sends it; residency accounting below
+  // owns the durable record so uncovering the UI cannot race the dirty flag.
   const waiting =
-    bootstrap === undefined || replica === undefined
+    bootstrap === undefined || replica === undefined || session === undefined
       ? undefined
       : waitingForBody({
           resident,
           bootstrap,
           replica,
+          session,
           panel,
           connection: collaboration.connection,
           setTimer: options.setTimer ?? defaultTimer,
         });
-  if (resident && bootstrap !== undefined && replica !== undefined) {
-    await replica.opened(bootstrap.vault, bootstrap.note);
-  }
 
   // §7.2's cap. After the pane is up and not awaited: nothing on screen depends on it, and a
   // reader opening a note should not wait for a sweep over five hundred records.
   const accounting =
-    bootstrap === undefined || replica === undefined
+    bootstrap === undefined || replica === undefined || session === undefined
       ? undefined
-      : trackResidency({ bootstrap, replica, collaboration, connection: collaboration.connection });
+      : trackResidency({ resident, bootstrap, replica, session, collaboration, connection: collaboration.connection });
 
   // §3.5. After the shell, so the count it announces has somewhere to be rendered, and only
   // with a server behind it: a local-only replica has nothing to diverge from.
   const conflicts =
-    bootstrap === undefined || replica === undefined || bridge === undefined
+    bootstrap === undefined || replica === undefined || bridge === undefined || session === undefined
       ? undefined
       : reconcileConflicts({
           bootstrap,
           replica,
+          session,
           view: editor.editor.view,
           document: collaboration.document,
           bridge,
           serverState: collaboration.serverState,
+          onBody: () => accounting?.arrived(),
         });
 
+  const anchors = noteAnchorNavigator(tiptap, () => panel.dataset["body"] !== "waiting");
+  const unwatchAnchorBody = collaboration.connection?.subscribe(() => anchors.refresh());
+  let taskEditsClosed = false;
+  let taskEditScheduled = false;
+  const pendingTaskEdits: { readonly ordinal: number; readonly action: TaskEditAction }[] = [];
+  const canEditTask = (): boolean => !taskEditsClosed && !tiptap.isDestroyed && tiptap.isEditable && session?.revoked !== true;
+  const finishTaskEdit = (action: TaskEditAction, outcome: boolean): boolean => {
+    taskEditOutcomes.set(action, outcome);
+    return outcome;
+  };
+  const rejectPendingTaskEdits = (): void => {
+    for (const { action } of pendingTaskEdits.splice(0)) {
+      // Another split may already have settled the same intent. Its terminal result wins.
+      if (!taskEditOutcomes.has(action)) finishTaskEdit(action, false);
+    }
+  };
+  const applyTaskEdit = (ordinal: number, action: TaskEditAction): boolean => {
+    if (taskEditsClosed || tiptap.isDestroyed) return false;
+    const outcome = taskEditOutcomes.get(action);
+    if (outcome !== undefined) return outcome;
+    if (!canEditTask()) return finishTaskEdit(action, false);
+    let taskPosition: number | undefined;
+    let taskNumber = 0;
+    tiptap.state.doc.descendants((node, position) => {
+      // why: returning false skips children, not later siblings. Do not overwrite a match.
+      if (taskPosition !== undefined) return false;
+      if (node.type.name === "task_item" && taskNumber++ === ordinal) {
+        taskPosition = position;
+        return false;
+      }
+      return true;
+    });
+    if (taskPosition === undefined) return finishTaskEdit(action, false);
+    // why: inbox rows can be cached unchecked after the source was completed. A new click
+    // still means complete, not reopen; do not even move selection/focus for this no-op.
+    if (action.kind === "complete" && tiptap.state.doc.nodeAt(taskPosition)?.attrs["status"] === "done") {
+      return finishTaskEdit(action, true);
+    }
+    tiptap.view.dispatch(tiptap.state.tr.setSelection(TextSelection.near(tiptap.state.doc.resolve(taskPosition + 1))));
+    // Selection listeners can close the pane or revoke editing synchronously. Teardown is
+    // transferable, but denial is terminal; neither permits the following mutation.
+    if (taskEditsClosed || tiptap.isDestroyed) return false;
+    if (!canEditTask()) return finishTaskEdit(action, false);
+    const applied = action.kind === "toggle" || action.kind === "complete" ? toggleTask(tiptap)
+      : action.kind === "due" ? setTaskDue(tiptap, action.value)
+        : setTaskPriority(tiptap, action.value);
+    return finishTaskEdit(action, applied);
+  };
+  const refreshTaskEdits = (): void => {
+    if (taskEditsClosed || tiptap.isDestroyed) return;
+    if (!canEditTask()) {
+      rejectPendingTaskEdits();
+      return;
+    }
+    if (pendingTaskEdits.length === 0 || taskEditScheduled || panel.dataset["body"] === "waiting") return;
+    taskEditScheduled = true;
+    // why: first sync applies the CRDT, normalizes the editor and uncovers the body in one
+    // stack. Wait until all three finish rather than editing an empty/partially applied doc.
+    queueMicrotask(() => {
+      taskEditScheduled = false;
+      if (taskEditsClosed || tiptap.isDestroyed) return;
+      if (!canEditTask()) { rejectPendingTaskEdits(); return; }
+      if (panel.dataset["body"] === "waiting") return;
+      // Consume before dispatch (which emits another update). Missing ordinals are stale,
+      // not permission to toggle a task added by some later keystroke or remote edit.
+      for (const { ordinal, action } of pendingTaskEdits.splice(0)) applyTaskEdit(ordinal, action);
+    });
+  };
+  tiptap.on("update", refreshTaskEdits);
+  const unwatchTaskBody = collaboration.connection?.subscribe(refreshTaskEdits);
   let closing: Promise<void> | undefined;
   return {
+    scrollToAnchor: (anchor) => anchors.follow(anchor),
     editTask: (ordinal, action): boolean => {
-      let taskPosition: number | undefined;
-      let taskNumber = 0;
-      tiptap.state.doc.descendants((node, position) => {
-        if (node.type.name !== "task_item") return true;
-        if (taskNumber === ordinal) {
-          taskPosition = position;
-          return false;
-        }
-        taskNumber += 1;
-        return true;
-      });
-      if (taskPosition === undefined) return false;
-      tiptap.commands.setTextSelection(taskPosition + 1);
-      if (action.kind === "toggle") return toggleTask(tiptap);
-      if (action.kind === "due") return setTaskDue(tiptap, action.value);
-      return setTaskPriority(tiptap, action.value);
+      if (taskEditsClosed || tiptap.isDestroyed) return false;
+      const outcome = taskEditOutcomes.get(action);
+      if (outcome !== undefined) return outcome;
+      if (!canEditTask()) {
+        rejectPendingTaskEdits();
+        return finishTaskEdit(action, false);
+      }
+      if (!Number.isInteger(ordinal) || ordinal < 0) return finishTaskEdit(action, false);
+      if (pendingTaskEdits.some((pending) => pending.action === action)) return true;
+      if (panel.dataset["body"] !== "waiting") return applyTaskEdit(ordinal, action);
+      // An unopened source resolves its surface before first sync. Acceptance is not a
+      // terminal outcome: normal teardown may transfer this intent to a replacement pane.
+      pendingTaskEdits.push({ ordinal, action });
+      return true;
     },
     destroy: (): Promise<void> => {
       // A pane can be closed by the user and then again by the layout unmounting it, and
       // Tiptap throws if destroyed twice. Caching the promise makes the second call a no-op
       // that still resolves when teardown actually finished.
       closing ??= (async () => {
-        await accounting?.settle();
-        removeBodyPlacementListener?.();
+        // A denial may close the pane before another sync/update can observe it. Ordinary
+        // unmounts leave unfinished intents reusable, but a known denial must not escape.
+        if (!tiptap.isEditable || session?.revoked === true) rejectPendingTaskEdits();
+        taskEditsClosed = true;
+        pendingTaskEdits.length = 0;
+        tiptap.off("update", refreshTaskEdits);
+        unwatchTaskBody?.();
+        anchors.destroy();
+        unwatchAnchorBody?.();
         conflicts?.destroy();
         waiting?.destroy();
+        await accounting?.settle();
+        removeBodyPlacementListener?.();
         shell.destroy();
         await editor.destroy();
-      })();
+      })().finally(() => session?.close());
       return closing;
     },
   };

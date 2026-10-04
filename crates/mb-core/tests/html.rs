@@ -372,6 +372,15 @@ fn an_attribute_cannot_be_closed_from_content() {
 }
 
 #[test]
+fn a_sanitized_link_is_disabled_without_stealing_a_real_blocked_heading() {
+    let out = h("[unsafe](javascript:alert(1)) [heading](#blocked)\n");
+    assert_eq!(
+        out,
+        "<p><a aria-disabled=\"true\">unsafe</a> <a href=\"#blocked\">heading</a></p>\n"
+    );
+}
+
+#[test]
 fn a_javascript_url_is_neutralised() {
     for scheme in [
         "javascript:alert(1)",
@@ -384,7 +393,7 @@ fn a_javascript_url_is_neutralised() {
         let md = format!("[click]({scheme})\n");
         let out = h(&md);
         assert!(
-            out.contains("#blocked"),
+            out.contains("<a aria-disabled=\"true\">click</a>"),
             "{scheme:?} was not blocked: {out}"
         );
         assert!(!out.to_lowercase().contains("javascript:"), "{out}");

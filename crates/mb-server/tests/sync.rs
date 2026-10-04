@@ -24,6 +24,119 @@ fn vault(dir: &TempDir) -> Vault {
 }
 
 #[test]
+fn a_missing_external_note_does_not_starve_another_rooms_markdown_autosave() {
+    let dir = TempDir::new("sync-missing-isolation");
+    let missing = dir.write("notes/A-moved-externally.md", "old location\n");
+    let saved = dir.write("notes/Z-new-note.md", "# Z-new-note\n");
+    let vault = vault(&dir);
+    let registry = SyncRegistry::default();
+    let user = Username::parse("alice").unwrap();
+    let (outbound, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    for name in ["A-moved-externally.md", "Z-new-note.md"] {
+        registry
+            .subscribe(
+                &vault,
+                &vault.canonical_note(name).unwrap(),
+                name,
+                &user,
+                ConnectionId::issue(),
+                outbound.clone(),
+            )
+            .unwrap();
+    }
+    std::fs::remove_file(&missing).unwrap();
+    let canonical = vault.canonical_note("Z-new-note.md").unwrap();
+    let coordinator = NoteCoordinator::open(&vault, &canonical).unwrap();
+    let update = edit_to(
+        &coordinator,
+        "# Z-new-note\n\nAutosaved despite another missing file.\n",
+    );
+    drop(coordinator);
+    registry
+        .apply_update(&vault, &canonical, &update, &permit_all)
+        .unwrap();
+    assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Update { .. })));
+    let (errors, flushed) = registry.maintain_with_flushed(
+        Instant::now() + MARKDOWN_WRITE_DEBOUNCE,
+        &Changes::All,
+        &permit_all,
+    );
+    assert_eq!(
+        errors.len(),
+        1,
+        "the missing note is reported, not fatal to the tick"
+    );
+    assert_eq!(flushed, vec![saved.clone()]);
+    assert_eq!(
+        std::fs::read_to_string(saved).unwrap(),
+        "# Z-new-note\n\nAutosaved despite another missing file.\n"
+    );
+}
+
+#[test]
+fn a_failed_last_subscriber_flush_retains_the_room_for_maintenance_retry() {
+    let dir = TempDir::new("sync-flush-retry");
+    let note = dir.write("notes/One.md", "before\n");
+    let vault = vault(&dir);
+    let canonical = vault.canonical_note("One.md").unwrap();
+    let registry = SyncRegistry::default();
+    let connection = ConnectionId::issue();
+    let (outbound, _inbox) = tokio::sync::mpsc::unbounded_channel();
+    let initial = registry
+        .subscribe(
+            &vault,
+            &canonical,
+            "One.md",
+            &Username::parse("alice").unwrap(),
+            connection,
+            outbound,
+        )
+        .unwrap();
+    let ServerFrame::Sync { update, .. } = initial else {
+        panic!("initial sync")
+    };
+    let remote = document_from_update_v1(&update).unwrap();
+    let vector = remote.transact().state_vector();
+    apply_external_markdown(&remote, "accepted and must become Markdown\n").unwrap();
+    registry
+        .apply_update(
+            &vault,
+            &canonical,
+            &remote.transact().encode_state_as_update_v1(&vector),
+            &permit_all,
+        )
+        .unwrap();
+    // A directory occupying the atomic-write temporary filename deterministically fails,
+    // even under root. No timing, permission assumptions, or production paths involved.
+    let blocked = note.with_file_name(".One.md.memberberry.tmp");
+    std::fs::create_dir(&blocked).unwrap();
+    assert!(
+        registry
+            .unsubscribe(&vault, &canonical, connection)
+            .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(&note).unwrap(), "before\n");
+    std::fs::remove_dir(&blocked).unwrap();
+    let (errors, flushed) = registry.maintain_with_flushed(
+        Instant::now() + MARKDOWN_WRITE_DEBOUNCE,
+        &Changes::Only(Default::default()),
+        &permit_all,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(flushed, vec![note.clone()]);
+    assert_eq!(
+        std::fs::read_to_string(note).unwrap(),
+        "accepted and must become Markdown\n"
+    );
+    assert!(
+        registry
+            .apply_update(&vault, &canonical, &[0, 0], &permit_all)
+            .is_err(),
+        "the empty room is released after its retry succeeds"
+    );
+}
+
+#[test]
 fn remote_updates_are_durable_debounced_and_written_as_canonical_markdown() {
     let dir = TempDir::new("sync-write");
     let note = dir.write("notes/One.md", "before\n");

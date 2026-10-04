@@ -1,0 +1,27 @@
+/* Shell-only navigation additions; all surfaces and controls inherit theme tokens. */
+.sidebar .sidebar-body { padding-top: 0; }
+.row-actions { flex: 0 0 auto; }
+.bookmark-list .row-actions { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
+.note-context-menu { max-width: 100vw; max-height: 100dvh; overflow: auto; overflow-wrap: anywhere; }
+.note-context-menu button { min-height: var(--control-height); }
+.note-context-menu button[role="menuitemcheckbox"] { display: flex; align-items: center; gap: var(--space-3); }
+.menu-check { position: relative; flex: 0 0 var(--space-4); height: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+[aria-checked="true"] > .menu-check { color: var(--accent-primary); border-color: currentColor; }
+[aria-checked="true"] > .menu-check::after { content: ""; position: absolute; left: var(--space-1); top: 0; width: var(--space-1); height: var(--space-2); border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
+.folder-navigation { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-bottom: var(--space-5); color: var(--text-muted); font: var(--text-sm)/var(--leading-snug) var(--font-ui); overflow-wrap: anywhere; }
+.folder-navigation button { min-height: var(--touch-target-min); padding: var(--space-2) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-canvas); color: var(--text-primary); font: inherit; cursor: pointer; }
+.folder-contents h1:focus { outline: none; }
+.folder-contents header { gap: var(--space-3); }
+.folder-contents h1 { overflow-wrap: anywhere; min-width: 0; }
+.workspace-shell[data-layout="desktop"] .sidebar-frame { position: relative; }
+.sidebar-frame .sidebar-divider { position: absolute; top: 0; bottom: 0; z-index: 2; touch-action: none; }
+.sidebar-divider[data-side="left"] { right: 0; }
+.sidebar-divider[data-side="right"] { left: 0; }
+@media (max-width: 767.98px), (pointer: coarse) {
+  .tree-actions .icon-button, .row-actions, .note-context-menu button { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
+}
+@media (max-width: 767.98px) {
+  /* Collapsed frames must stay empty, or their invisible boxes intercept editor taps. */
+  .workspace-shell .sidebar-frame[data-collapsed="false"] { width: 100%; }
+  .workspace-shell .sidebar { width: 100%; }
+}

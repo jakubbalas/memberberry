@@ -18,7 +18,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { Editor } from "@tiptap/core";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+
+import { load, toHtml } from "../notes.js";
 
 import { EmbedBlock, embedViews } from "./embed-view.js";
 import type { EmbedOutcome, EmbedRequest, resolveEmbed } from "./embed.js";
@@ -29,6 +31,8 @@ const contractPath = resolve(process.cwd(), "../crates/mb-core/schema.json");
 const contract = JSON.parse(readFileSync(contractPath, "utf8")) as unknown;
 
 const REQUEST: EmbedRequest = { target: "Roadmap", anchorKind: "none", anchor: null };
+
+beforeAll(async () => { await load(readFileSync("src/wasm/mb_bg.wasm")); });
 
 /** A resolver that answers with `outcome`, recording the stacks it was asked about. */
 function resolver(...outcomes: readonly EmbedOutcome[]) {
@@ -280,7 +284,109 @@ describe("following a link out of an embed", () => {
     embed.destroy();
   });
 
-  it("leaves an ordinary external link alone", async () => {
+  it("follows a Markdown link relative to its embedded source", async () => {
+    const embed = await block(content("Projects/Roadmap.md", '<p><a href="./Next.md#%5Epinned">Next</a></p>'));
+    const link = embed.dom.querySelector<HTMLElement>("a");
+    const seen = await opened(embed.dom, () => link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true })));
+    expect(seen).toEqual([{ target: "Projects/Next.md", anchorKind: "block", anchor: "pinned", intent: "tab", resolved: false, from: "Projects/Roadmap.md" }]);
+    embed.destroy();
+  });
+
+  it("activates embedded Markdown links with Enter and tears down the listener", async () => {
+    const embed = await block(content("Projects/Roadmap.md", '<p><a href="#Goals">Goals</a></p>'));
+    const link = embed.dom.querySelector<HTMLElement>("a");
+    const press = () => link?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(await opened(embed.dom, press)).toEqual([{ target: "Projects/Roadmap.md", anchorKind: "heading", anchor: "Goals", intent: "here", resolved: false, from: "Projects/Roadmap.md" }]);
+    embed.destroy();
+    expect(await opened(embed.dom, press)).toEqual([]);
+  });
+
+  it.each(["click", "Enter"])("never activates WASM-sanitized transclusion links with %s", async (activation) => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const html = await toHtml([
+      "[script](javascript:alert(1))",
+      "[mixed](JaVaScRiPt:alert(1))",
+      "[data](data:text/html,payload)",
+      "[vb](vbscript:msgbox(1))",
+      "[file](file:///etc/passwd)",
+    ].join("\n\n"), { note: "", media: "" });
+    const embed = await block(content("Sub/Source.md", html));
+    try {
+      const links = embed.dom.querySelectorAll<HTMLElement>(".note-embed-body a");
+      expect(links).toHaveLength(5);
+      for (const link of links) {
+        const event = activation === "click"
+          ? new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true })
+          : new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+        expect(await opened(embed.dom, () => link.dispatchEvent(event))).toEqual([]);
+        expect(event.defaultPrevented).toBe(true);
+        expect(link.getAttribute("aria-disabled")).toBe("true");
+        expect(link.getAttribute("href")).toBeNull();
+      }
+      expect(open).not.toHaveBeenCalled();
+    } finally { open.mockRestore(); embed.destroy(); }
+  });
+
+  it.each(["click", "Enter"])("still follows a genuine WASM-rendered #blocked heading link with %s", async (activation) => {
+    const html = await toHtml("[real heading](#blocked)\n\n## blocked\n", { note: "", media: "" });
+    const embed = await block(content("Sub/Source.md", html));
+    try {
+      const link = embed.dom.querySelector<HTMLElement>("a");
+      if (link === null) throw new Error("missing rendered link");
+      const event = activation === "click"
+        ? new MouseEvent("click", { bubbles: true, cancelable: true })
+        : new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      expect(await opened(embed.dom, () => link.dispatchEvent(event))).toEqual([
+        { target: "Sub/Source.md", anchorKind: "heading", anchor: "blocked", intent: "here", resolved: false, from: "Sub/Source.md" },
+      ]);
+      expect(link.hasAttribute("aria-disabled")).toBe(false);
+    } finally { embed.destroy(); }
+  });
+
+  it.each(["click", "Enter"])("honors an explicit disabled marker before routing a sanitized href with %s", async (activation) => {
+    const embed = await block(content("A.md", '<a href="#blocked" aria-disabled="true">Blocked</a>'));
+    try {
+      const link = embed.dom.querySelector<HTMLElement>("a");
+      if (link === null) throw new Error("missing disabled link");
+      const event = activation === "click"
+        ? new MouseEvent("click", { bubbles: true, cancelable: true })
+        : new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      expect(await opened(embed.dom, () => link.dispatchEvent(event))).toEqual([]);
+      expect(event.defaultPrevented).toBe(true);
+    } finally { embed.destroy(); }
+  });
+
+  it("never opens blocked embedded destinations or follows non-primary clicks", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const embed = await block(content("A.md", '<a href="javascript:alert(1)">Blocked</a><a href="Other.md">Other</a>'));
+    const links = embed.dom.querySelectorAll<HTMLElement>("a");
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    expect(await opened(embed.dom, () => links[0]?.dispatchEvent(event))).toEqual([]);
+    expect(event.defaultPrevented).toBe(true);
+    // jsdom navigates even on a synthetic right-button click. Cancel only after the
+    // embed's own listener ran, so the no-open assertion still detects a missing guard.
+    embed.dom.addEventListener("click", (event) => event.preventDefault(), { once: true });
+    expect(await opened(embed.dom, () => links[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 2 })))).toEqual([]);
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
+    embed.destroy();
+  });
+
+  it("a nested embedded Markdown link is handled once by the innermost source", async () => {
+    const { resolve } = resolver(
+      content("Outer.md", '<p><a data-embed="true" data-target="Inner">Inner</a></p>'),
+      content("Sub/Inner.md", '<p><a href="./Next.md">Next</a></p>'),
+    );
+    const embed = new EmbedBlock({ vault: "v", note: "Host.md", resolve }, REQUEST, ["Host.md"]);
+    document.body.append(embed.dom);
+    await vi.waitFor(() => expect(embed.dom.querySelector("a[href]")).not.toBeNull());
+    const seen = await opened(embed.dom, () => embed.dom.querySelector<HTMLElement>("a[href]")?.click());
+    expect(seen).toEqual([{ target: "Sub/Next.md", anchorKind: "none", anchor: null, intent: "here", resolved: false, from: "Sub/Inner.md" }]);
+    embed.destroy();
+  });
+
+  it("opens ordinary external links safely", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
     const embed = await block(
       content("A.md", '<p><a href="https://example.com">out</a></p>'),
     );
@@ -288,6 +394,8 @@ describe("following a link out of an embed", () => {
       embed.dom.querySelector<HTMLElement>("a[href]")?.click(),
     );
     expect(seen).toEqual([]);
+    expect(open).toHaveBeenCalledWith("https://example.com", "_blank", "noopener,noreferrer");
+    open.mockRestore();
     embed.destroy();
   });
 });
@@ -327,6 +435,18 @@ describe("the node view", () => {
     const { editor, element } = mount({ embed: true }, content("A.md", "<p>embedded</p>"));
     await vi.waitFor(() => expect(element.textContent).toContain("embedded"));
     expect(element.querySelector(".note-embed")).not.toBeNull();
+    editor.destroy();
+  });
+
+  it("follows Markdown links despite the transclusion node view owning its events", async () => {
+    const { editor, element } = mount({ embed: true }, content("Sub/Source.md", '<p><a href="./Next.md#Goals">Next</a></p>'));
+    const seen: OpenNoteDetail[] = [];
+    element.addEventListener(OPEN_NOTE_EVENT, (event) => {
+      if (event instanceof CustomEvent) seen.push(event.detail as OpenNoteDetail);
+    });
+    await vi.waitFor(() => expect(element.querySelector(".note-embed-body a")).not.toBeNull());
+    element.querySelector<HTMLElement>(".note-embed-body a")?.click();
+    expect(seen).toEqual([{ target: "Sub/Next.md", anchorKind: "heading", anchor: "Goals", intent: "here", resolved: false, from: "Sub/Source.md" }]);
     editor.destroy();
   });
 

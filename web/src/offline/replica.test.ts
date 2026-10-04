@@ -146,6 +146,71 @@ describe("no answer at all", () => {
   });
 });
 
+describe("opening sessions", () => {
+  it.each(["denied", "removed"] as const)("revokes a not-yet-resident body before dropping it (%s)", async (answer) => {
+    const session = replica.session("personal", "Secret.md");
+    const revoking = replica.reconcile("personal", answer === "denied"
+      ? { kind: "denied" }
+      : { kind: "ok", notes: [] });
+    // Invalidation happens before any storage await; a buffered sync is already stale.
+    expect(session.revoked).toBe(true);
+    await Promise.all([revoking, session.opened(true)]);
+    await session.measured({ dirty: false, bytes: 4_096, base: "Secret.\n" });
+    expect(await store.getResident("personal", "Secret.md")).toBeUndefined();
+    expect(dropped).toEqual(["personal/Secret.md"]);
+    session.close();
+  });
+
+  it("keeps a readable first open, offline edits and another vault's session", async () => {
+    const session = replica.session("personal", "One.md");
+    const other = replica.session("work", "One.md");
+    await replica.reconcile("personal", {
+      kind: "ok", notes: [{ path: "One.md", title: "One", conflicts: 0 }],
+    });
+    await replica.reconcile("personal", { kind: "unreachable" });
+    await session.opened(true);
+    await session.measured({ base: "# One\n" });
+    expect(session.revoked).toBe(false);
+    expect(await store.getResident("personal", "One.md")).toMatchObject({ dirty: true, base: "# One\n" });
+    await other.opened(true);
+    await replica.reconcile("personal", { kind: "denied" });
+    expect(other.revoked).toBe(false);
+    expect(await store.getResident("work", "One.md")).toMatchObject({ dirty: true });
+    expect(await store.getResident("personal", "One.md")).toBeUndefined();
+    expect(dropped).toEqual(["personal/One.md"]);
+    session.close();
+    other.close();
+  });
+
+  it("does not let a revoked session overwrite a newly authorized opening", async () => {
+    const stale = replica.session("personal", "One.md");
+    await replica.reconcile("personal", { kind: "denied" });
+    await replica.reconcile("personal", {
+      kind: "ok", notes: [{ path: "One.md", title: "One", conflicts: 0 }],
+    });
+    const fresh = replica.session("personal", "One.md");
+    await fresh.opened(true);
+    await fresh.measured({ base: "Authorized content.\n" });
+    await stale.opened(false);
+    await stale.measured({ dirty: false, base: "Old restricted content.\n" });
+    expect(await store.getResident("personal", "One.md")).toMatchObject({
+      dirty: true, base: "Authorized content.\n",
+    });
+    stale.close();
+    fresh.close();
+  });
+
+  it("releases tracking and ignores late writes when a session closes", async () => {
+    const session = replica.session("personal", "One.md");
+    session.close();
+    session.close();
+    await session.opened(false);
+    await replica.reconcile("personal", { kind: "denied" });
+    expect(dropped).toEqual([]);
+    expect(await store.getResident("personal", "One.md")).toBeUndefined();
+  });
+});
+
 describe("resident bodies", () => {
   it("records a note as resident when it is opened", async () => {
     expect(await replica.isResident("personal", "One.md")).toBe(false);
@@ -244,6 +309,49 @@ describe("measuring a note", () => {
     const [record] = await store.residents("personal");
     expect(record?.bytes).toBe(4_096);
     expect(record?.dirty).toBe(true);
+  });
+
+  it("preserves dirty, size and base across overlapping opens and measurements", async () => {
+    await replica.opened("personal", "One.md");
+    await Promise.all([
+      replica.measured("personal", "One.md", { dirty: true }),
+      replica.opened("personal", "One.md"),
+      replica.measured("personal", "One.md", { bytes: 4_096 }),
+      replica.measured("personal", "One.md", { base: "# One\n" }),
+    ]);
+    expect(await store.getResident("personal", "One.md")).toEqual({
+      vault: "personal", note: "One.md", openedAt: 1_000,
+      dirty: true, bytes: 4_096, base: "# One\n",
+    });
+  });
+
+  it("keeps the newest dirty state when acknowledgement overlaps a new edit and size measurement", async () => {
+    await replica.opened("personal", "One.md");
+    await replica.measured("personal", "One.md", { dirty: true });
+    await Promise.all([
+      replica.measured("personal", "One.md", { dirty: false }),
+      replica.measured("personal", "One.md", { bytes: 2_048 }),
+      replica.measured("personal", "One.md", { dirty: true }),
+      replica.measured("personal", "One.md", { base: "Saved prefix.\n" }),
+    ]);
+    expect(await store.getResident("personal", "One.md")).toMatchObject({
+      dirty: true, bytes: 2_048, base: "Saved prefix.\n",
+    });
+  });
+
+  it.each(["denied", "removed"] as const)("keeps permission purge final across overlapping writes (%s)", async (answer) => {
+    await replica.opened("personal", "Secret.md");
+    await replica.measured("personal", "Secret.md", { dirty: true, base: "Secret.\n" });
+    await Promise.all([
+      replica.opened("personal", "Secret.md"),
+      replica.measured("personal", "Secret.md", { bytes: 4_096 }),
+      replica.reconcile("personal", answer === "denied" ? { kind: "denied" } : { kind: "ok", notes: [] }),
+      replica.measured("personal", "Secret.md", { base: "New secret.\n" }),
+    ]);
+    // A late teardown/acknowledgement is not a fresh authorized body.
+    await replica.measured("personal", "Secret.md", { dirty: false, bytes: 8_192 });
+    expect(await store.getResident("personal", "Secret.md")).toBeUndefined();
+    expect(dropped).toEqual(["personal/Secret.md"]);
   });
 
   it("does not invent a record for a note this device does not hold", async () => {

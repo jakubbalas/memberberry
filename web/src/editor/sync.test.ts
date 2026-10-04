@@ -181,6 +181,89 @@ describe("parseControlFrame", () => {
 });
 
 describe("createSyncProvider", () => {
+  it("keeps an online edit pending until the server durably accepts and echoes it", () => {
+    const { socket, document, sync } = provider();
+    socket.emit("open", {});
+    document.getText("body").insert(0, "must reach the server");
+    expect(sync.pending).toBe(1);
+    const sent = socket.binary()[0];
+    expect(sent).toBeDefined();
+    socket.emit("message", { data: sent?.buffer });
+    expect(sync.pending).toBe(0);
+    sync.destroy();
+  });
+
+  it.each(["invalid_update", "read_only", "not_found"])("does not report a rejected %s edit as saved", (code) => {
+    const { socket, document, sync } = provider();
+    socket.emit("open", {});
+    document.getText("body").insert(0, "only on this device");
+    socket.emit("message", { data: JSON.stringify({ type: "error", code }) });
+    expect(sync.pending).toBe(1);
+    expect(sync.connected).toBe(false);
+    expect(document.getText("body").toString()).toBe("only on this device");
+    sync.destroy();
+  });
+
+  it("reconnects with the full missing state after a refused update instead of sending dependent increments", () => {
+    const network = new EventTarget();
+    const { socket, sockets, document, sync } = provider({ network });
+    socket.emit("open", {});
+    document.getText("body").insert(0, "first ");
+    socket.emit("message", { data: JSON.stringify({ type: "error", code: "invalid_update" }) });
+    document.getText("body").insert(6, "second");
+    expect(sync.pending).toBe(2);
+    expect(socket.closed).toBe(1);
+    const next = new FakeSocket();
+    sockets.push(next);
+    network.dispatchEvent(new Event("online"));
+    next.emit("open", {});
+    const server = new Doc();
+    next.emit("message", { data: encodeBinaryFrame(0x01, "personal", "One.md", encodeStateAsUpdate(server)).buffer });
+    expect(sync.pending).toBe(2);
+    for (const bytes of next.binary()) {
+      const frame = decodeBinaryFrame(bytes);
+      if (frame !== null) applyUpdate(server, frame.payload);
+      next.emit("message", { data: bytes.buffer });
+    }
+    expect(server.getText("body").toString()).toBe("first second");
+    expect(sync.pending).toBe(0);
+    sync.destroy();
+  });
+
+  it("does not acknowledge local edits made by editor normalization during initial sync", () => {
+    const { socket, document, sync } = provider();
+    socket.emit("open", {});
+    const source = new Doc();
+    source.getText("body").insert(0, "title");
+    const normalize = (_update: Uint8Array, origin: unknown): void => {
+      if (origin === REMOTE_SYNC_ORIGIN && document.getText("body").toString() === "title") {
+        document.getText("body").insert(5, " and new body");
+      }
+    };
+    document.on("update", normalize);
+    socket.emit("message", { data: encodeBinaryFrame(0x01, "personal", "One.md", encodeStateAsUpdate(source)).buffer });
+    expect(sync.pending).toBe(1);
+    for (const bytes of socket.binary()) socket.emit("message", { data: bytes.buffer });
+    expect(sync.pending).toBe(0);
+    document.off("update", normalize);
+    sync.destroy();
+  });
+
+  it("another client's update cannot acknowledge this client's pending edit", () => {
+    const { socket, document, sync } = provider();
+    socket.emit("open", {});
+    document.getText("body").insert(0, "mine");
+    const source = new Doc();
+    source.getText("body").insert(0, "theirs");
+    socket.emit("message", { data: encodeBinaryFrame(0x02, "personal", "One.md", encodeStateAsUpdate(source)).buffer });
+    expect(sync.pending).toBe(1);
+    const accepted = socket.binary()[0];
+    socket.emit("message", { data: accepted?.buffer });
+    socket.emit("message", { data: accepted?.buffer });
+    expect(sync.pending).toBe(0);
+    sync.destroy();
+  });
+
   it("subscribes on open and reports the connection", () => {
     const changes: ConnectionState[] = [];
     const { socket, sync } = provider({ onConnectionChange: (state) => changes.push(state) });
@@ -498,8 +581,12 @@ describe("editing with the socket closed (SPEC §7.4)", () => {
     socket.emit("message", { data: syncFrame(encodeStateAsUpdate(new Doc())) });
 
     const server = new Doc();
-    for (const frame of socket.binary().map(decodeBinaryFrame)) {
-      if (frame !== null) applyUpdate(server, frame.payload);
+    for (const bytes of socket.binary()) {
+      const frame = decodeBinaryFrame(bytes);
+      if (frame !== null) {
+        applyUpdate(server, frame.payload);
+        socket.emit("message", { data: bytes.buffer });
+      }
     }
     expect(server.getText("body").toString()).toBe("written on a train");
     expect(sync.pending).toBe(0);
@@ -551,6 +638,54 @@ describe("detecting a divergence (SPEC §3.5)", () => {
     // And the local document really did move on, so the capture is the only copy of it.
     expect(document.getText("body").toString()).not.toBe("written on a train");
     sync.destroy();
+  });
+
+  it.each([false, true])("does not flag local-only offline edits as divergence (known deletions: %s)", (withDeletion) => {
+    const states: Array<{ mine?: Uint8Array; theirs: Uint8Array }> = [];
+    const { socket, document, sync } = provider({ onServerState: (state) => states.push(state) });
+    const server = new Doc();
+    server.getText("body").insert(0, "already saved");
+    if (withDeletion) server.getText("body").delete(0, 1);
+    applyUpdate(document, encodeStateAsUpdate(server), REMOTE_SYNC_ORIGIN);
+    document.getText("body").insert(document.getText("body").length, " plus offline");
+
+    try {
+      socket.emit("open", {});
+      socket.emit("message", { data: syncFrame(encodeStateAsUpdate(server)) });
+
+      // An older Markdown base must not turn our own saved prefix into an external edit.
+      expect(states.at(-1)?.mine).toBeUndefined();
+      for (const bytes of socket.binary()) {
+        const frame = decodeBinaryFrame(bytes);
+        if (frame !== null) applyUpdate(server, frame.payload);
+        socket.emit("message", { data: bytes.buffer });
+      }
+      expect(server.getText("body").toString()).toBe(document.getText("body").toString());
+      expect(sync.pending).toBe(0);
+    } finally {
+      sync.destroy();
+      server.destroy();
+    }
+  });
+
+  it("still detects an unseen server deletion although it adds no state-vector clock", () => {
+    const states: Array<{ mine?: Uint8Array; theirs: Uint8Array }> = [];
+    const { socket, document, sync } = provider({ onServerState: (state) => states.push(state) });
+    const server = new Doc();
+    server.getText("body").insert(0, "shared paragraph");
+    applyUpdate(document, encodeStateAsUpdate(server), REMOTE_SYNC_ORIGIN);
+    document.getText("body").insert(document.getText("body").length, " local edit");
+    const beforeDeletion = encodeStateVector(server);
+    server.getText("body").delete(0, 6);
+    expect(encodeStateVector(server)).toEqual(beforeDeletion);
+    try {
+      socket.emit("open", {});
+      socket.emit("message", { data: syncFrame(encodeStateAsUpdate(server)) });
+      expect(states.at(-1)?.mine).toBeDefined();
+    } finally {
+      sync.destroy();
+      server.destroy();
+    }
   });
 
   it("reports no local state when the server already had everything", () => {
@@ -622,8 +757,12 @@ describe("detecting a divergence (SPEC §3.5)", () => {
 
     const server = new Doc();
     applyUpdate(server, theirs);
-    for (const frame of socket.binary().map(decodeBinaryFrame)) {
-      if (frame !== null) applyUpdate(server, frame.payload);
+    for (const bytes of socket.binary()) {
+      const frame = decodeBinaryFrame(bytes);
+      if (frame !== null) {
+        applyUpdate(server, frame.payload);
+        socket.emit("message", { data: bytes.buffer });
+      }
     }
     expect(server.getText("body").toString()).toBe(document.getText("body").toString());
     expect(sync.pending).toBe(0);

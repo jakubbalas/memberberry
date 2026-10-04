@@ -129,7 +129,8 @@ describe("mounted note editor", () => {
     expect(element.querySelectorAll("table tr")).toHaveLength(2);
     expect(element.querySelector("strong")?.textContent).toBe("strong");
     expect(element.querySelector("a")?.getAttribute("href")).toBe("https://example.com");
-    expect(element.querySelector("[data-wikilink]")?.textContent).toBe("[[Target]]");
+    expect(element.querySelector("[data-wikilink]")?.textContent).toBe("alias");
+    expect(element.querySelector("[data-wikilink]")?.getAttribute("data-target")).toBe("Target");
     expect(element.querySelector("[data-tag]")?.textContent).toBe("#nested/tag");
     expect(element.querySelector("[data-emoji]")?.textContent).toBe(":berry:");
     expect(element.querySelector("[data-inline-math]")?.textContent).toBe("$x+y$");
@@ -137,5 +138,33 @@ describe("mounted note editor", () => {
 
     editor.destroy();
     element.remove();
+  });
+
+  it("renders an unaliased wikilink using its target", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const editor = new Editor({
+      element,
+      extensions: createMemberberryExtensions(fullContract),
+      content: {
+        type: "doc",
+        content: [{
+          type: "paragraph",
+          content: [{
+            type: "wikilink",
+            attrs: { target: "Target", alias: null, anchor_kind: "none", anchor_text: null, embed: false },
+          }],
+        }],
+      },
+    });
+
+    try {
+      const wikilink = element.querySelector("[data-wikilink]");
+      expect(wikilink?.textContent).toBe("[[Target]]");
+      expect(wikilink?.getAttribute("data-target")).toBe("Target");
+    } finally {
+      editor.destroy();
+      element.remove();
+    }
   });
 });

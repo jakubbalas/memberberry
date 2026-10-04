@@ -45,6 +45,19 @@ impl<'a> AuthorizedVault<'a> {
         let mut pending = vec![root.to_path_buf()];
         let mut folders = Vec::new();
         while let Some(directory) = pending.pop() {
+            // why: a denied subtree must neither reveal names nor make a readable list
+            // fail because the OS refuses access. Still descend toward explicit deeper
+            // grants below a default-denied parent; effective_role keeps an explicit
+            // denial absorbing, so no descendant grant can reopen that subtree.
+            if directory != root
+                && !directory
+                    .strip_prefix(root)
+                    .ok()
+                    .and_then(Path::to_str)
+                    .is_some_and(|relative| self.may_read_subtree(relative))
+            {
+                continue;
+            }
             let entries = std::fs::read_dir(&directory)
                 .and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
                 .map_err(|source| Error::ReadDir {
@@ -79,7 +92,7 @@ impl<'a> AuthorizedVault<'a> {
     /// Returns whether this user may discover this vault in the switcher.
     ///
     /// A vault-wide membership makes even an empty vault discoverable. A path-specific
-    /// grant makes it discoverable only once it applies to an existing readable note.
+    /// grant makes it discoverable once it applies to an existing readable note or empty folder.
     pub fn has_any_access(&self) -> Result<bool, Error> {
         if self
             .access
@@ -88,7 +101,7 @@ impl<'a> AuthorizedVault<'a> {
         {
             return Ok(true);
         }
-        Ok(!self.notes()?.is_empty())
+        Ok(!self.empty_folders()?.is_empty() || !self.notes()?.is_empty())
     }
 
     /// Returns whether this user may write anywhere in the vault.
@@ -242,6 +255,17 @@ impl<'a> AuthorizedVault<'a> {
         NotePath::parse(relative)
             .map(|path| self.access.effective_role(&self.user, &path) != Role::None)
             .unwrap_or(false)
+    }
+
+    fn may_read_subtree(&self, relative: &str) -> bool {
+        self.can_read(relative)
+            || self.access.rules().any(|rule| {
+                rule.path
+                    .as_str()
+                    .strip_prefix(relative)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+                    && self.access.effective_role(&self.user, &rule.path) != Role::None
+            })
     }
 }
 
