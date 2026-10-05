@@ -394,6 +394,58 @@ range of text and an atom does not:
 - Atom nodes: `wikilink`, `image`, `tag` (`#tag`, `#nested/tag`), `emoji` (`:name:`),
   `inline_math` (`$x$`), `footnote_ref`, `soft_break`, `hard_break`.
 
+**Namespace formatting contract, requested 2026-10-04 — implementation in progress.**
+Normal formatting stays ordinary Markdown. The new inline source form is
+`:mb-style[label]{attributes}`, limited to properties Markdown does not already encode:
+
+```markdown
+:mb-style[underlined]{underline="true"}
+:mb-style[**important** text]{color="red" background="yellow" size="large"}
+```
+
+- Supported properties are `underline="true"`, `color`, `background` and `size`. Colour
+  values are `gray`, `brown`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink`, `red`;
+  size values are `small`, `large`. Default/normal/unset is absence of the property. These
+  names are semantic presets, not arbitrary CSS, HTML, font names or numeric sizes.
+- Use exact lowercase attribute names/values and double quotes. At least one supported
+  attribute is required. Input attribute order may vary; canonical order is underline,
+  color, background, size with one space between attributes. Reject unknown/duplicate
+  attributes or unsupported values as a whole declaration, not a partly applied style.
+- A label is one inline scope/physical line and uses native inline Markdown. Protect code,
+  math, escapes, wikilinks, links, tags, emoji and table boundaries. Apply styles only to
+  eligible text; preserve and split around atoms, code and breaks. A visual edit must not
+  claim that an atom's label or literal code has received a style the CRDT cannot retain.
+- Unknown, malformed, incomplete or escaped directives remain readable literal Markdown,
+  including their wrapper/attribute characters. Never omit an unhandled directive or
+  consume the remainder of a note as an implicitly closed container. Canonical escaping
+  may normalize source spelling; do not promise arbitrary-file byte preservation.
+- Bound authored style-label nesting at 16 and attribute metadata at 256 bytes before
+  attribute parsing; over-budget declarations remain literal as a whole. Canonical style
+  wrappers have at most the four supported property dimensions. These namespace-specific
+  budgets do not establish a total CommonMark parser CPU/input-size bound.
+- Use one typed style-property family in the core and independent schema/CRDT marks
+  `mb_underline`, `mb_color`, `mb_background`, `mb_size`; each excludes itself. Colour,
+  background and size have validated enum `value` attributes. Separate properties must
+  not compete by overwriting a compound style object in one Y.Text key. Existing code
+  exclusion, native mark conventions and ordinary Markdown representation remain intact.
+- Native and WASM parsing/serialization, CRDT materialization, schema-conformance fixtures,
+  extraction, links/rename/anchors/conflicts and rendering must agree. No TypeScript
+  Markdown parser is introduced. Require canonical-model/source convergence, property
+  tests, independent-dimension concurrency and actual generated-WASM binding/save proof.
+- HTML uses only fixed validated classes `mb-underline`, `mb-color-{preset}`,
+  `mb-background-{preset}`, `mb-size-{preset}`. Palette values belong in theme tokens;
+  include the same formatting rules in editor, safe share/fallback, static export and
+  standalone HTML/print. Preserve legacy native highlight; a namespace background has
+  explicit visual precedence without silently deleting that stored mark.
+
+The proposed later block extension is a `:::mb-toggle` container with a readable ordinary
+text/ATX-heading summary and Markdown body, an explicit closer and view-only disclosure.
+Its exact nesting/anchor grammar and schema are not implemented or certified by the
+inline-style slice. Do not declare placeholder toggle types to pretend it is supported.
+The upcoming actual schema revision is 2; the compatibility prerequisite and user's
+refresh-only decision are in §8.4. This section records the requested contract, not a
+claim that the current deployed editor already supports it.
+
 Block anchors: `^block-id` at end of a block, auto-generated on first reference.
 Every block-level node carries the attribute, so any block can be an anchor
 target.
@@ -415,7 +467,9 @@ the round-trip and idempotence properties in §22.1 were both satisfied by the b
 **Deliberately excluded from v1.** Each would break Markdown isomorphism or balloon
 scope. Do not add these without an explicit decision:
 - Multi-column page layouts, synced blocks, database/table views with formulas
-- Arbitrary HTML blocks, coloured text
+- Arbitrary HTML blocks, note-authored CSS and unbounded style values. The explicit
+  bounded `mb-style` contract above is the user-requested exception for coloured text;
+  it is not permission to restore general-purpose HTML storage/editing.
 - **Mermaid diagrams** — explicitly declined in A9; not an oversight
 - **Freeform canvas workspaces** — explicitly declined in A9; Excalidraw covers the need
 - **Task recurrence (`🔁`)** — deferred; see §10.4
@@ -760,6 +814,24 @@ than structural.
 frames/second, because awareness carries opaque client JSON that is rebroadcast to a whole
 room. A room is released — coordinator flushed and dropped — when its last subscriber
 leaves, so a note nobody has open costs no memory and no file watching.
+
+**Requested schema-2 admission contract (development upgrade; not a claim of deployment).**
+E2 must check the actual Rust-owned editor schema revision after note authorization and
+before opening/publishing CRDT bootstrap; a mismatched editor requires refresh without
+receiving note state. E3 must validate the complete prospective merged document before
+appending the sidecar, changing live state or broadcasting a persisted echo. Validation
+includes declared node/mark names, all supplied attribute names and their schema types,
+not merely successful Markdown materialization. Undeclared fields and scalar payloads for
+object-valued native marks are invalid even when the decoder could ignore them. Preserve
+valid optional/default attributes, authored link titles, native mark-removal semantics and
+all supported finite styles; do not silently strip or normalize malformed candidate state.
+An authorized current-revision writer's invalid candidate receives `invalid_update` with
+live and durable state unchanged. E2/E3 permission/invisibility rules still take precedence;
+shape errors must not reveal a note to a caller who cannot read it. Browser restored and
+incoming state is checked prospectively before the installed binding can mutate it, with
+live/view/IndexedDB bytes and pending edits retained on terminal refresh refusal. This
+contract requires focused wire/permission/leak and actual Rust/WASM/browser parity tests;
+a positive style/save/reopen tracer alone does not certify the boundary.
 
 ### 6.5 The invisibility rule (A17)
 
@@ -1753,7 +1825,124 @@ scattered literals. A browser owns `Mod+N` for creating a window and does not re
 it; “New note…” therefore remains palette-only by default and remappable to an available chord.
 The vault switcher, splits, daily note and graph defaults are also defined in that keymap.
 
-**The editor's control strip, M7 follow-up.** The strip above a note is a toolbar, a slash
+**Editor redesign requested, 2026-10-04 — implementation in progress, not yet certified.**
+The normal note editor keeps `.md` storage and uses a compact selection-triggered formatting
+panel rather than an always-visible format strip. The first implementation slice uses only
+existing native Markdown marks, with a real Strong/Clear → durable Markdown → independent
+reopen tracer before expanding the menu. Source, export, emoji/media, slash insertion,
+task inspection and table tools remain reachable; formatting presentation does not remove
+those utilities.
+
+- Show the panel for nonempty eligible body-text selections in an editable editor. Do not
+  format the protected first-H1 title, literal code/math, atom-only selections, source mode,
+  a waiting body, a destroyed editor or native composition. Check eligibility again at the
+  action boundary, not just when drawing a button.
+- Pointer and keyboard handoff retain the intended selection while focus enters the panel,
+  submenus or link controls. A changed document invalidates a captured selection instead of
+  applying an action to a replacement range. Its automatic mapped `selectionUpdate`, a
+  geometry frame, controller refresh or retained control must not mint a new workflow;
+  require fresh selection intent. After invalidation, ordinary `selectionSet`, focus,
+  readiness recovery and popup/synthetic gestures are not renewal. A subsequent native
+  editor selection gesture must move the observed range in an unchanged document; the
+  explicit, range/eligibility-checked `controller.select({from,to})` API is deliberate
+  programmatic intent, not a refresh shortcut. Valid own-format actions may retain their
+  resulting eligible selection. Escape dismisses and returns focus/selection; native
+  scroll and viewport changes position or safely dismiss the panel without editing.
+- A destination-only link action preserves each existing selected link run's unedited
+  title, whether the href is unchanged or changed. Newly linked plain text has no title;
+  do not collapse differently titled runs or remove titles implicitly. Unlink and Clear
+  explicitly remove the complete link mark. Reusing an unchanged destination must not
+  manufacture a needless rewrite/undo entry that erases authored data.
+- Use the existing CRDT transaction/undo path. One formatting action is isolated from prior
+  and subsequent typing; clear formatting removes supported marks, not text, atoms, block
+  anchors, list structure or task metadata. Unsafe link schemes stay inert.
+- Keyboard and mobile routes are required. Use scoped, labelled controls and existing theme
+  tokens, no external assets/services. Every portal/listener/frame has an idempotent disposer.
+- The later block-type menu must convert existing selected content rather than inserting
+  unrelated blank blocks. Vertical rearrangement must move the complete labelled unit,
+  preserve protected-title boundaries and be undoable. The existing binding's move/edit
+  behavior is not a stable logical-block move; its verified limitation and the user's
+  single-editor scope decision follow below.
+
+Bounded `mb-` styles and collapsible toggle containers are requested follow-up slices, not
+current codec capabilities. Existing `#tags`, `[[wikilinks]]`, emoji, code and native Markdown
+remain unchanged. Page/Page-in, synced blocks, comments/reactions and AI screenshot entries
+are not part of this formatting request; arbitrary HTML/CSS and multi-column layouts stay
+excluded. Unsupported menu actions must not appear as fake working buttons. Before adding
+new wire nodes/marks, verify schema admission and restored/received-state preflight:
+the installed old binding can mutate/delete unknown content during conversion even
+without a user edit. The requested inline grammar is in §4.4; the toggle grammar remains
+pending. The refresh-only rollout decision follows below.
+
+**Rearrangement scope decision, 2026-10-04.** Real two-bound-editor characterization
+invalidated both the existing adjacent swap and bounded delete/insert as safe collaborative
+moves: pending typing can attach to another logical block, disappear, or be misplaced by
+undo, despite both replicas converging. After this was disclosed, the user chose:
+“No: single-editor-per-note rearrangement is enough for now; concurrent/offline multi-editor
+rearrangement can be explicitly unsupported.” Implement vertical movement for that
+single-editor scope; do not redesign the entire collaborative block-ordering representation
+in this iteration or relabel the failing partition probes as successes.
+
+- Handles, the movement menu and documentation state that the note must not be edited in
+  another tab/browser/device while rearranging, including offline edits elsewhere. Presence
+  detects only known peers, not hidden offline replicas; no distributed-lock guarantee is
+  implied. Ordinary formatting/typing sync continues through the existing authorized path.
+- Refuse movement on known peer presence, multiple mounted editors of the same note,
+  disconnected/not-yet-synced routed notes or outstanding unsent updates. Refuse read-only,
+  source/waiting/composing/destroyed states and stale/cross-editor drag tokens at invocation.
+  Local-only synthetic fixtures are explicit controls, not proof of a routed online guard.
+- Move a complete root unit, preserving body, native/style marks, anchors, task metadata,
+  media, nested content and the original first-H1 title. Root lists/tables/containers move
+  as a whole in the first slice, never extract a cell or nested paragraph under a misleading
+  label. Nonadjacent drop, adjacent keyboard/touch actions and one-step undo must retain
+  unrelated content and separate earlier/later typing history.
+- Drag handles are hover/focus contextual; labelled keyboard/touch Move up/down and an
+  insertion indicator are required. No always-visible formatting strip or UI nodes inside
+  serialized content. Parent integration, rebuilt desktop/mobile browser saves/reopen and
+  independent review are required before declaring this slice verified.
+
+**Structural-conversion scope decision, 2026-10-04.** Held peer typing survives ordinary
+edits but can disappear during heading/list/quote/callout conversions through the current
+binding, even when replicas converge; local undo does not recover that intent. After this
+was disclosed separately from movement, the user selected:
+“Yes—single-editor conversions, with a visible warning and refusal on known peers,
+duplicate editors, disconnected/unsynced notes or pending writes.” Paragraph ↔
+heading/list/task/quote/Note-callout/representable code/math conversion therefore has the
+same explicit single-editor-per-note limitation as rearrangement, not a collaborative
+structural-identity guarantee. Do not redesign collaborative content/order identity in
+this iteration or relabel the retained concurrent-intent failures as successes.
+
+- Before enabling structural conversions, render the single-editor warning and recheck
+  actual note/editor/document identity, known peer presence, duplicate mounted note editors,
+  connection/sync readiness, pending writes and ordinary editability/admission/lifetime
+  conditions at both capability and invocation boundaries. Missing routed context fails
+  closed; synthetic local fixtures are explicit controls, not proof of routed safety.
+- Another tab/browser/device must not edit that note while converting blocks, including
+  hidden offline replicas. Awareness detects known peers only and is not a distributed lock.
+  Ordinary typing and inline formatting remain on their existing authorized sync path.
+- Preserve selected authored content, marks/atoms, metadata, title boundaries, neighboring
+  blocks and ordered local undo/redo. A portable PM/Markdown value does not prove safe undo
+  for its actual imported Yjs source shape. Unsafe fragmented imports remain refused without
+  hidden normalization or writes; narrowing a conversion capability must be visible and
+  consistent between disabled choices and direct handlers. Never enable a destructive
+  conversion merely because concurrent conversions are now explicitly unsupported.
+- This is the approved target contract, not integration or runtime certification. Warning,
+  guard machinery, routed wiring, actual schema-2 union, browser/server/disk reopen and
+  independent review are required before enabling the resulting controls.
+
+**Compatibility decision, 2026-10-04.** Asked whether the upgrade may require editor
+refreshes instead of retaining old-cache editing compatibility, the user answered:
+“no need to keep anything cached, we are in development mode and there is only one other
+developer using it in production and he can refresh just fine”. Use a coordinated server/
+editor upgrade and an explicit refresh-required schema mismatch, rather than a backward-
+compatibility or old-replica migration framework. New-schema replicas may start from the
+server in a revision-isolated namespace without importing old cached/offline edits. This
+is not authorization to deploy, modify real notes or proactively clear caches during
+implementation. Version admission/preflight still prevents an incompatible editor from
+mutating or sending unsupported content. Schema revision and lib0 wire encoding are
+separate: a new editor schema does not change the existing lib0 v1 update format.
+
+**The editor's existing control strip, M7 follow-up.** The strip above a note is a toolbar, a slash
 menu and the §10.2 task inspector. Through M7 all three were *permanently* visible — about
 380px above every note and twice that in a split — because the latter two were built always-on
 for M3's convenience. The slash menu belongs to a `/` being typed and the inspector to a task

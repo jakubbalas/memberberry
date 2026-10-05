@@ -574,7 +574,8 @@ describe("the toolbar above the virtual keyboard", () => {
     // left on `visualViewport` is a fast leak rather than a slow one.
     const fake = fakeViewport(window.innerHeight);
     const mounted = await mountWithViewport(fake);
-    expect(fake.listenerCount).toBe(2);
+    // The utility strip and contextual selection popup each own resize/scroll listeners.
+    expect(fake.listenerCount).toBe(4);
 
     mounted.destroy();
     expect(fake.listenerCount).toBe(0);

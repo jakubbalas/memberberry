@@ -23,6 +23,8 @@ import { mountEmojiPicker, type EmojiChoices, type EmojiImportOptions } from "./
 import { downloadHtml, printPanel, standaloneHtml } from "./export.js";
 import type { MediaRenderContext } from "./schema.js";
 import { mountTableTools } from "./table-tools.js";
+import { mountSelectionMenu } from "./selection-menu.js";
+import "./selection-menu.css";
 
 export interface EditorShell {
   destroy(): void;
@@ -74,6 +76,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   const print = button("Print PDF", "Print note or save it as PDF");
   const html = button("Export HTML", "Export note as self-contained HTML");
   let sourceVisible = false;
+  let sourcePending = false;
   let latestMarkdown = "";
   let committedTitle = options.editor.state.doc.firstChild?.textContent.trim() ?? "";
 
@@ -93,8 +96,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   ] as const) {
     const control = button(label, `Insert ${label.toLowerCase()} block`);
     control.addEventListener("click", () => action());
-    if (["Text", "H1", "List", "Task", "Table"].includes(label)) toolbar.append(control);
-    else secondary.append(control);
+    secondary.append(control);
   }
   toolbar.append(sourceToggle);
   secondary.append(copy, print, html);
@@ -152,6 +154,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   const inspector = taskInspector(options.editor);
   controls.append(inspector.element, source);
   const tableTools = mountTableTools(options.editor, controls);
+  const selectionMenu = mountSelectionMenu({ editor: options.editor, panel: options.panel, canInteract: () => !sourceVisible && !sourcePending && !shellDestroyed });
   options.panel.prepend(controls);
   const presence = options.awareness === undefined
     ? undefined
@@ -263,7 +266,11 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       options.status.textContent = "Markdown source applied.";
       return;
     }
-    latestMarkdown = await editorMarkdown(options.document);
+    if (sourcePending || shellDestroyed || options.editor.isDestroyed) return;
+    sourcePending = true;
+    selectionMenu.refresh();
+    try { latestMarkdown = await editorMarkdown(options.document); } finally { sourcePending = false; }
+    if (shellDestroyed || options.editor.isDestroyed) return;
     source.value = latestMarkdown;
     options.editor.view.dom.hidden = true;
     source.hidden = false;
@@ -345,9 +352,11 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   options.editor.view.dom.addEventListener(CONFLICT_EVENT, onConflicts);
   const conflictCount = mountConflicts(options.editor);
 
-  return {
+  const shell: EditorShell = {
     destroy: () => {
+      if (shellDestroyed) return;
       shellDestroyed = true;
+      options.editor.off("destroy", shell.destroy);
       options.editor.view.dom.removeEventListener("keydown", onKeyDown);
       options.editor.view.dom.removeEventListener("keyup", onKeyUp);
       options.editor.view.dom.removeEventListener(TASK_CHIP_EVENT, onChip);
@@ -377,12 +386,15 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       imageEditor?.destroy();
       emoji.destroy();
       tableTools.destroy();
+      selectionMenu.destroy();
       slash.destroy();
       window.removeEventListener(TEMPLATE_EVENT, onTemplate);
       options.editor.view.dom.removeEventListener("focusin", rememberFocus);
       if (focusedEditor === options.editor) focusedEditor = undefined;
     },
   };
+  options.editor.on("destroy", shell.destroy);
+  return shell;
 }
 
 interface MediaControls {
