@@ -4,7 +4,7 @@
 
 ## Current state / next
 
-Five editor fixes have passed focused verification and user acceptance in an isolated preview. The next delivery step is the exact-head automatic CI check on the pull request, followed by Jakub's review. The changes are not merged upstream. The separately running Memberberry instance needs its current frontend preserved when these editor fixes are integrated; this branch alone does not contain its other unmerged UI work.
+Five editor fixes passed focused verification and Paul's manual acceptance in an isolated preview. An editor-only frontend image is live over the previous Memberberry runtime, with the Tasks UI and server binary preserved; the changes are not merged upstream. Finish all four automatic CI jobs on the final PR head before requesting Jakub's review. The current checkout also has unrelated local Tasks/security changes; do not include those in this branch or rebuild them into the live image.
 
 ## Delivered in this branch
 
@@ -18,11 +18,11 @@ No note content moves out of Markdown, and no new endpoint, dependency, permissi
 ## Verification and limits
 
 - Focused DOM suites: 78/78 across editor input, autocomplete, undo, commands, document links, note editor and collaboration. New behavioral tests were observed red when their corresponding behavior was disabled, then green when restored.
-- Rebuilt production frontend and ran focused desktop/mobile browser tests: undo (2/2), keyboard/inline code (2/2) and autocomplete navigation with saved canonical Markdown and reload (2/2). TypeScript/Svelte typecheck passed with zero errors/warnings; `make wasm` and production web build passed.
+- Rebuilt the production frontend with optimized, unchanged WASM and reran focused desktop/mobile browser tests: undo (2/2), keyboard/inline code (2/2) and autocomplete navigation with saved canonical Markdown and reload (2/2). TypeScript/Svelte typecheck passed with zero errors/warnings; `make wasm` and production web build passed.
 - The single-worker jsdom keystroke benchmark runs, but its high variance cannot establish the SPEC §21 real-device performance budget.
-- Full automatic CI (`check`, `web`, `perf`, `fuzz-build`) is pending on the exact PR head. Local `make check` should be reported with actual results; do not substitute focused tests for it. Full `make e2e` remains user-run/manually dispatched, not an automatic push/PR gate. The user has accepted the five behaviors in an isolated preview; this does not constitute a full E2E suite pass.
+- Automatic CI `check`, `web` and `fuzz-build` passed on the initial PR head; `perf` is still pending, and any later documentation commit requires a new exact-head run. The full non-root local Rust test suite passed, but local `make check` stopped at `coverage-gate` because the dev container lacks `cargo-llvm-cov`; CI installed it and passed coverage. Two server HTTP tests failed under root and passed individually as the ordinary container user. Full `make e2e` remains user-run/manually dispatched, not an automatic push/PR gate. Paul's preview acceptance and the six focused browser tests do not constitute a full E2E suite pass.
 - The older `sync registry lock poisoned` panic remains unresolved. No broader concurrent/remote undo browser tests were added. Existing performance-budget exceptions and dependency-audit findings are not claimed fixed here.
-- Previously reported server tests `onboarding_failed_config_write_removes_the_unpublished_vault_and_allows_retry` and `unreadable_vault_shows_recovery_guidance_only_to_its_member` were not newly investigated here; the exact-head CI check must resolve whether they pass now. Existing false-conflict callouts are not removed automatically; real-browser cross-tab cap eviction is still not covered by this editor change.
+- A clean upstream-base build reproduced all 382 previously deployed served frontend files byte-for-byte with the same optimized WASM (only Vite's local-path manifest differed). The replacement image preserved the old binary, runtime configuration and canonical Markdown hashes across all registered vaults; its 383 frontend files matched the staged build. Live app HTML, referenced JavaScript/CSS and WASM returned successfully in a browser. No authenticated live feature interaction was claimed. Existing false-conflict callouts are not removed automatically; real-browser cross-tab cap eviction is still not covered by this editor change.
 
 ## Running locally
 
