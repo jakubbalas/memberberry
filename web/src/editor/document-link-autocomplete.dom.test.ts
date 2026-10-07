@@ -4,6 +4,7 @@ import { Editor } from "@tiptap/core";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startNoteEditor, type NoteEditor } from "./note-editor.js";
+import type { DocumentLinkLoader } from "./document-link-autocomplete.js";
 import { createMemberberryExtensions } from "./schema.js";
 
 const contract: unknown = JSON.parse(readFileSync("../crates/mb-core/schema.json", "utf8"));
@@ -18,7 +19,7 @@ afterEach(async () => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
-async function mount(loadLinkNotes = async () => readable) {
+async function mount(loadLinkNotes: DocumentLinkLoader = async () => readable) {
   const element = document.createElement("div");
   document.body.append(element);
   const session = await startNoteEditor({
@@ -67,13 +68,14 @@ describe("document-link IntelliSense", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
-  it("supports keyboard selection and writes a schema wikilink, not a second Markdown dialect", async () => {
+  it("supports keyboard selection and writes an ordinary Markdown link mark", async () => {
     const editor = await mount();
     editor.commands.insertContent("[[road");
     await suggestions();
     key(editor, "ArrowDown");
     key(editor, "Enter");
-    expect(editor.getJSON().content?.[0]?.content?.[0]).toMatchObject({ type: "wikilink", attrs: { target: "Archive/Roadmap", embed: false } });
+    expect(editor.getJSON().content?.[0]?.content?.[0]).toMatchObject({ type: "text", text: "Older Roadmap",
+      marks: [{ type: "link", attrs: { href: "Archive/Roadmap.md" } }] });
     expect(popup()).toBeNull();
   });
 
@@ -87,14 +89,13 @@ describe("document-link IntelliSense", () => {
     expect(editor.state.doc.textContent).toBe("[[road");
   });
 
-  it("pointer selection preserves an existing heading and alias", async () => {
+  it("pointer selection preserves an existing heading and uses the alias as link text", async () => {
     const editor = await mount();
     editor.commands.insertContent("[[road#Goals|The plan");
     const menu = await suggestions();
     menu.querySelector<HTMLElement>('[role="option"]')?.click();
-    expect(editor.getJSON().content?.[0]?.content?.[0]).toMatchObject({ type: "wikilink", attrs: {
-      target: "Projects/Roadmap", alias: "The plan", anchor_kind: "heading", anchor_text: "Goals",
-    } });
+    expect(editor.getJSON().content?.[0]?.content?.[0]).toMatchObject({ type: "text", text: "The plan",
+      marks: [{ type: "link", attrs: { href: "Projects/Roadmap.md#Goals" } }] });
   });
 
   it("replaces the complete unfinished link around the cursor without duplicating suffixes", async () => {
@@ -104,8 +105,38 @@ describe("document-link IntelliSense", () => {
     await suggestions();
     key(editor, "Enter");
     expect(editor.getJSON().content?.[0]?.content).toMatchObject([
-      { type: "wikilink", attrs: { target: "Projects/Roadmap", alias: "Plan", anchor_kind: "block", anchor_text: "pinned" } },
+      { type: "text", text: "Plan", marks: [{ type: "link", attrs: { href: "Projects/Roadmap.md#^pinned" } }] },
       { type: "text", text: " after" },
+    ]);
+  });
+
+  it("choosing an empty [[ trigger creates a labeled link to the selected source", async () => {
+    const editor = await mount();
+    editor.commands.insertContent("[[");
+    const menu = await suggestions();
+    menu.querySelector<HTMLElement>('[role="option"]')?.click();
+    expect(editor.getJSON().content?.[0]?.content?.[0]).toMatchObject({ type: "text", text: "Older Roadmap",
+      marks: [{ type: "link", attrs: { href: "Archive/Roadmap.md" } }] });
+  });
+
+  it("uses the filename for an untitled note", async () => {
+    const editor = await mount(async () => [{ path: "Ideas/Untitled.md", title: null }]);
+    editor.commands.insertContent("[[");
+    await suggestions();
+    key(editor, "Enter");
+    expect(editor.getJSON().content?.[0]?.content?.[0]).toMatchObject({ type: "text", text: "Untitled",
+      marks: [{ type: "link", attrs: { href: "Ideas/Untitled.md" } }] });
+  });
+
+  it("does not extend the selected Markdown link into text typed after it", async () => {
+    const editor = await mount();
+    editor.commands.insertContent("[[road");
+    await suggestions();
+    key(editor, "Enter");
+    editor.commands.insertContent(" next");
+    expect(editor.getJSON().content?.[0]?.content).toMatchObject([
+      { type: "text", text: "Roadmap", marks: [{ type: "link", attrs: { href: "Projects/Roadmap.md" } }] },
+      { type: "text", text: " next" },
     ]);
   });
 

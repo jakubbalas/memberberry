@@ -1626,11 +1626,16 @@ unmount. Missing anchors leave the opened note in place.
 
 Typing `[[` opens document lookup, ranked by readable title and path with the path shown
 for disambiguation. Arrow keys choose a result, Enter/Tab inserts it, Escape dismisses,
-and pointer/touch selection does the same. Selecting a result creates the canonical wikilink
-node and retains an existing heading/block suffix or display alias. Code content does not
-trigger lookup. The catalog is loaded lazily through the existing E5-filtered notes API,
-never through unfiltered filesystem discovery, and is not fetched on every keystroke.
-This is an editor input affordance; the WASM parser remains the only Markdown parser.
+and pointer/touch selection does the same. Selection replaces the trigger with an
+ordinary Markdown link such as
+`[Roadmap](Projects/Roadmap.md)`, using the readable title (or filename when untitled)
+as its label, or the explicitly typed `|alias` as its label. An existing heading/block
+suffix is retained in the destination. Handwritten `[[wikilinks]]` and embeds keep their
+§4.3 semantics; the chooser's output changes, not the parser or existing notes.
+Code content does not trigger lookup. The catalog is loaded lazily through the existing
+E5-filtered notes API, never through unfiltered filesystem discovery, and is not fetched
+on every keystroke. This is an editor input affordance; the WASM parser remains the only
+Markdown parser.
 
 The URL follows the focused note tab, including navigation, tab switching and renames.
 The shell replaces the current browser history entry; each tab's own back/forward stack
@@ -1707,6 +1712,11 @@ exactly the devices nobody tried.
 - In the editable note body, Cmd/Ctrl-Z undoes local edits; Cmd/Ctrl-Shift-Z or
   Cmd/Ctrl-Y redoes them through the CRDT undo stack. This stack lasts for the open
   editor session and is separate from server version history (§18).
+- In lists, Enter after a nonempty bullet starts a sibling bullet; Enter on an empty
+  final item leaves the list. Tab nests a bullet below its preceding sibling, and
+  Shift-Tab outdents it. Other focusable controls retain their ordinary Tab behavior.
+- Typing paired single backticks in ordinary text creates the inline `code` mark;
+  unmatched and escaped backticks remain text. Fenced code remains a block.
 - Fully remappable hotkeys, with the defaults documented in §8.4.
 - Every action reachable by keyboard. No mouse-only feature ships.
 
