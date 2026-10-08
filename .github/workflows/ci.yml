@@ -38,6 +38,9 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+      - name: Release-only tests
+        run: make test-release
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 

@@ -22,7 +22,10 @@ import type { MediaUploader } from "./media-upload.js";
 import { mountEmojiPicker, type EmojiChoices, type EmojiImportOptions } from "./emoji-picker.js";
 import { downloadHtml, printPanel, standaloneHtml } from "./export.js";
 import type { MediaRenderContext } from "./schema.js";
-import { mountTableTools } from "./table-tools.js";
+import { assertTableToolsReady, mountTableTools } from "./table-tools.js";
+import { mountSelectionMenu } from "./selection-menu.js";
+import { createSingleEditorGate } from "./single-editor.js";
+import "./selection-menu.css";
 
 export interface EditorShell {
   destroy(): void;
@@ -35,6 +38,13 @@ export interface MountEditorShellOptions {
   readonly status: HTMLElement;
   readonly awareness?: Awareness;
   readonly connection?: ConnectionStatus;
+  /**
+   * Vault-qualified note identity for the single-editor gate (SPEC §8.4).
+   *
+   * why: absent for a local-only replica, which has no routed peers or sync state to check,
+   * so structural conversions fail closed there instead of assuming nobody else is editing.
+   */
+  readonly noteKey?: string;
   readonly user?: string;
   readonly title?: string;
   readonly onTitleChange?: (title: string) => string | undefined;
@@ -45,9 +55,15 @@ export interface MountEditorShellOptions {
 }
 
 let focusedEditor: Editor | undefined;
+// why: reloading is page-wide; another mounted note's pending work also forbids it.
+const reloadBlockers = new Set<() => boolean>();
+const reloadRenders = new Set<() => void>();
+function refreshReloadControls(): void { for (const render of reloadRenders) render(); }
 
 /** Mounts the M3 editor controls and releases every listener when the note closes. */
 export function mountEditorShell(options: MountEditorShellOptions): EditorShell {
+  // why: the shell owns UI, not the bound plugin list or undo-manager lifetime.
+  assertTableToolsReady(options.editor);
   const controls = document.createElement("div");
   controls.className = "editor-controls";
   controls.setAttribute("aria-label", "Editor controls");
@@ -74,6 +90,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   const print = button("Print PDF", "Print note or save it as PDF");
   const html = button("Export HTML", "Export note as self-contained HTML");
   let sourceVisible = false;
+  let sourcePending = false;
   let latestMarkdown = "";
   let committedTitle = options.editor.state.doc.firstChild?.textContent.trim() ?? "";
 
@@ -92,9 +109,11 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     ["Move down", () => moveCurrentBlock(options.editor, "down")],
   ] as const) {
     const control = button(label, `Insert ${label.toLowerCase()} block`);
-    control.addEventListener("click", () => action());
-    if (["Text", "H1", "List", "Task", "Table"].includes(label)) toolbar.append(control);
-    else secondary.append(control);
+    // why: an open menu covers the block it just inserted. Moves keep it open so a block
+    // can be stepped several places without reopening the menu.
+    const closes = !label.startsWith("Move");
+    control.addEventListener("click", () => { action(); if (closes) more.open = false; });
+    secondary.append(control);
   }
   toolbar.append(sourceToggle);
   secondary.append(copy, print, html);
@@ -152,8 +171,44 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   const inspector = taskInspector(options.editor);
   controls.append(inspector.element, source);
   const tableTools = mountTableTools(options.editor, controls);
+  const terminal = (): boolean => options.connection?.state.refreshRequired === true;
+  const blockGate = options.noteKey === undefined ? undefined : createSingleEditorGate({
+    editor: options.editor, document: options.document, noteKey: options.noteKey,
+    ...(options.awareness === undefined ? {} : { awareness: options.awareness }),
+    ...(options.connection === undefined ? {} : { connection: options.connection }),
+  });
+  const selectionMenu = mountSelectionMenu({ editor: options.editor, panel: options.panel,
+    canInteract: () => !sourceVisible && !sourcePending && !shellDestroyed && !terminal(),
+    onDraftStateChange: refreshReloadControls,
+    ...(blockGate === undefined ? {} : { blockGate }) });
+  const blocksReload = (): boolean => sourceVisible || sourcePending || selectionMenu.hasOpenDraft()
+    || (options.connection?.state.pending ?? 0) > 0;
+  reloadBlockers.add(blocksReload);
+  const canReload = (): boolean => ![...reloadBlockers].some((blocks) => blocks());
+  const reload = button("Reload editor", "Reload editor");
+  reload.hidden = true;
+  const renderReload = (): void => {
+    reload.hidden = !terminal();
+    reload.disabled = !terminal() || !canReload();
+    sourceToggle.disabled = terminal() && sourceVisible;
+  };
+  reloadRenders.add(renderReload);
+  const onReload = (): void => {
+    // why: native disabled state can lag a form opening or an unsent update.
+    if (shellDestroyed || !terminal() || !canReload()) return;
+    window.location.reload();
+  };
+  reload.addEventListener("click", onReload);
+  toolbar.append(reload);
+  const onSourceInput = (): void => refreshReloadControls();
+  source.addEventListener("input", onSourceInput);
+  const unsubscribeRefresh = options.connection?.subscribe(() => {
+    if (terminal()) selectionMenu.requireRefresh();
+    refreshReloadControls();
+  });
+  renderReload();
   options.panel.prepend(controls);
-  const presence = options.awareness === undefined
+  const presence = options.awareness === undefined && options.connection === undefined
     ? undefined
     : mountPresence(options.panel, options.awareness, options.connection);
 
@@ -255,21 +310,33 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
 
   const onSourceToggle = async (): Promise<void> => {
     if (sourceVisible) {
-      await applySourceMarkdown(options.editor, source.value);
+      if (terminal()) {
+        options.status.textContent = "Refresh required. Copy your Source draft before reloading; it has not been applied.";
+        return;
+      }
+      await applySourceMarkdown(options.editor, source.value, () => !terminal() && !shellDestroyed);
+      if (terminal() || shellDestroyed || options.editor.isDestroyed) return;
       source.hidden = true;
       options.editor.view.dom.hidden = false;
       sourceToggle.setAttribute("aria-pressed", "false");
       sourceVisible = false;
       options.status.textContent = "Markdown source applied.";
+      refreshReloadControls();
       return;
     }
-    latestMarkdown = await editorMarkdown(options.document);
+    if (sourcePending || shellDestroyed || options.editor.isDestroyed) return;
+    sourcePending = true;
+    refreshReloadControls();
+    selectionMenu.refresh();
+    try { latestMarkdown = await editorMarkdown(options.document); } finally { sourcePending = false; }
+    if (shellDestroyed || options.editor.isDestroyed) return;
     source.value = latestMarkdown;
     options.editor.view.dom.hidden = true;
     source.hidden = false;
     source.focus();
     sourceToggle.setAttribute("aria-pressed", "true");
     sourceVisible = true;
+    refreshReloadControls();
   };
   const onCopy = async (): Promise<void> => {
     latestMarkdown = sourceVisible ? source.value : await editorMarkdown(options.document);
@@ -345,9 +412,17 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   options.editor.view.dom.addEventListener(CONFLICT_EVENT, onConflicts);
   const conflictCount = mountConflicts(options.editor);
 
-  return {
+  const shell: EditorShell = {
     destroy: () => {
+      if (shellDestroyed) return;
       shellDestroyed = true;
+      unsubscribeRefresh?.();
+      reloadBlockers.delete(blocksReload);
+      reloadRenders.delete(renderReload);
+      refreshReloadControls();
+      reload.removeEventListener("click", onReload);
+      source.removeEventListener("input", onSourceInput);
+      options.editor.off("destroy", shell.destroy);
       options.editor.view.dom.removeEventListener("keydown", onKeyDown);
       options.editor.view.dom.removeEventListener("keyup", onKeyUp);
       options.editor.view.dom.removeEventListener(TASK_CHIP_EVENT, onChip);
@@ -377,12 +452,16 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       imageEditor?.destroy();
       emoji.destroy();
       tableTools.destroy();
+      selectionMenu.destroy();
+      blockGate?.destroy();
       slash.destroy();
       window.removeEventListener(TEMPLATE_EVENT, onTemplate);
       options.editor.view.dom.removeEventListener("focusin", rememberFocus);
       if (focusedEditor === options.editor) focusedEditor = undefined;
     },
   };
+  options.editor.on("destroy", shell.destroy);
+  return shell;
 }
 
 interface MediaControls {
@@ -556,6 +635,10 @@ export function conflictMessage(count: number): string | undefined {
 
 export function connectionMessage(state: ConnectionState): string | undefined {
   const changes = `${state.pending} unsent ${state.pending === 1 ? "change" : "changes"}`;
+  if (state.refreshRequired === true) {
+    const pending = state.pending === 0 ? "" : ` ${changes} retained on this device; not sent.`;
+    return `Refresh required — this editor is incompatible with the server.${pending} Copy unsent Markdown and any open Source or link drafts before refreshing. Reload is unavailable while unsent changes or open drafts remain. No automatic reconnect or migration.`;
+  }
   if (!state.connected) {
     return state.pending === 0
       ? "Offline — you are editing alone"
@@ -570,7 +653,7 @@ export function connectionMessage(state: ConnectionState): string | undefined {
  * `role="group"` rather than a bare `div`: an `aria-label` on a generic element is dropped
  * by screen readers, so the label was previously decorative only (§8.4).
  */
-function mountPresence(panel: HTMLElement, awareness: Awareness, connection?: ConnectionStatus): PresenceHandle {
+function mountPresence(panel: HTMLElement, awareness: Awareness | undefined, connection?: ConnectionStatus): PresenceHandle {
   const header = document.createElement("div");
   header.className = "presence-header";
   header.setAttribute("role", "group");
@@ -583,7 +666,7 @@ function mountPresence(panel: HTMLElement, awareness: Awareness, connection?: Co
   status.className = "connection-status";
   status.setAttribute("role", "status");
   const unsubscribe = connection?.subscribe((state) => {
-    status.dataset["state"] = state.connected ? "online" : "offline";
+    status.dataset["state"] = state.refreshRequired === true ? "refresh-required" : state.connected ? "online" : "offline";
     const message = connectionMessage(state);
     status.textContent = message ?? "";
     status.hidden = message === undefined;
@@ -592,8 +675,8 @@ function mountPresence(panel: HTMLElement, awareness: Awareness, connection?: Co
 
   const render = (): void => {
     people.replaceChildren();
-    const present = [...awareness.getStates().entries()]
-      .filter(([client]) => client !== awareness.clientID)
+    const present = [...(awareness?.getStates().entries() ?? [])]
+      .filter(([client]) => client !== awareness?.clientID)
       .flatMap(([client, state]) => {
         const user = state["user"];
         return typeof user === "object" && user !== null && typeof user.name === "string" && typeof user.color === "string"
@@ -612,18 +695,18 @@ function mountPresence(panel: HTMLElement, awareness: Awareness, connection?: Co
       people.append(avatar);
     }
   };
-  awareness.on("change", render);
+  awareness?.on("change", render);
   render();
   panel.prepend(header);
 
   // Ages both the avatars here and the carets inside the editor, from one tick.
-  const idle = trackPresenceIdle({ awareness, root: panel });
+  const idle = awareness === undefined ? undefined : trackPresenceIdle({ awareness, root: panel });
 
   return {
     destroy: () => {
-      idle.destroy();
+      idle?.destroy();
       unsubscribe?.();
-      awareness.off("change", render);
+      awareness?.off("change", render);
       header.remove();
     },
   };

@@ -11,11 +11,13 @@ import {
   type CreateNoteCollaborationOptions,
   type NoteCollaboration,
 } from "./collaboration.js";
+import { allowsLocalTransaction, SchemaRefreshRequired } from "./schema-admission.js";
 import { conflictViews } from "./conflict-view.js";
 import { type EmbedContext, embedViews } from "./embed-view.js";
 import { loadMemberberryExtensions } from "./schema.js";
 import type { MediaRenderContext } from "./schema.js";
 import { memberberryInputRules } from "./commands.js";
+import { tableRowHandles } from "./table-tools.js";
 import { taskItemView } from "./task-view.js";
 import { pdfViews } from "./pdf-view.js";
 import { emojiInputRules } from "./commands.js";
@@ -85,7 +87,10 @@ export function placeCursorBelowTitle(editor: Editor): boolean {
   const body = editor.state.doc.child(1);
   if (body === undefined) return false;
   editor.commands.setTextSelection(title.nodeSize + 1);
-  editor.commands.focus();
+  // why: this can run late, on the first update after a body syncs, by which point the pane
+  // has restored the tab's scroll offset (§8.1). The caret sits just under the title, which
+  // a fresh note already shows, so scrolling to it would only throw that offset away.
+  editor.commands.focus(undefined, { scrollIntoView: false });
   return true;
 }
 
@@ -101,11 +106,20 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
     await collaboration.whenReady;
     const extensions = await (options.loadExtensions ?? (() => loadMemberberryExtensions(options.media)))();
     const catalog = await (options.loadEmojiCatalog ?? emojiCatalog)().catch(() => []);
+    // why: loading extensions/catalog yields; received state can change in that interval.
+    if (collaboration.connection?.state.refreshRequired === true) throw new SchemaRefreshRequired();
+    collaboration.admission.validate(collaboration.document);
     const createEditor = options.createEditor ?? defaultEditorFactory;
     const editor = createEditor({
       element: options.element,
       extensions: [
         ...extensions,
+        Extension.create({
+          name: "schemaAdmission",
+          // why: plugin filtering runs before state/view and ySync updates the live Y.Doc.
+          addProseMirrorPlugins: () => [new Plugin({ filterTransaction: (transaction) =>
+            collaboration.connection?.state.refreshRequired !== true && allowsLocalTransaction(transaction) })],
+        }),
         protectedTitleExtension,
         memberberryInputRules,
         emojiInputRules(catalog),
@@ -117,6 +131,7 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
           return answer.kind === "ok" ? answer.notes : [];
         })),
         taskItemView,
+        tableRowHandles,
         ...(options.embeds === undefined ? [] : [embedViews(options.embeds)]),
         ...(options.media === undefined ? [] : [pdfViews(options.media)]),
         ...(options.bridge === undefined

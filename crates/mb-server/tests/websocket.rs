@@ -8,6 +8,7 @@
 )]
 
 mod support;
+include!("support/schema_wire_corpus.rs");
 
 use std::sync::Arc;
 
@@ -21,6 +22,156 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use yrs::updates::decoder::Decode;
 use yrs::{ReadTxn, Transact};
+
+#[tokio::test]
+async fn schema_refresh_refuses_missing_invalid_old_future_before_content_or_sidecar() {
+    let dir = TempDir::new("schema-refusal");
+    dir.write("One.md", "KEEP PRIVATE BODY\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let vault = Vault::open(Slug::parse("personal").unwrap(), "Personal", dir.path()).unwrap();
+    let mut auth = mb_auth::AuthDb::open_in_memory().unwrap();
+    let user = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .unwrap();
+    let token = auth.create_session(user.id, 4_102_444_800).unwrap();
+    let cookie = auth.signed_session_cookie(&token).unwrap();
+    let server = Server::start(AppState::authenticated(vec![vault], auth).unwrap()).await;
+    let current = schema_revision();
+    for revision in [
+        None,
+        Some(serde_json::json!(null)),
+        Some(serde_json::json!("1")),
+        Some(serde_json::json!(current - 1)),
+        Some(serde_json::json!(current + 1)),
+        Some(serde_json::json!(-1)),
+        Some(serde_json::json!(1.5)),
+    ] {
+        let mut socket = server.connect(&cookie).await;
+        let mut frame = serde_json::json!({"type":"subscribe","vault":"personal","note":"One.md"});
+        if let Some(revision) = revision {
+            frame["schema_version"] = revision;
+        }
+        socket
+            .send(Message::Text(frame.to_string().into()))
+            .await
+            .unwrap();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(response, Message::Text(_)),
+            "refused client received content: {response:?}"
+        );
+        let Message::Text(text) = response else {
+            unreachable!()
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+            serde_json::json!({"type":"error","code":"schema_refresh_required"})
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("One.md")).unwrap(),
+            "KEEP PRIVATE BODY\n"
+        );
+        assert!(
+            !dir.path().join(".memberberry/crdt").exists(),
+            "refusal must not initialize disposable state"
+        );
+    }
+}
+
+#[tokio::test]
+async fn schema_refresh_blocks_unsubscribed_binary_json_update_and_awareness_without_mutation() {
+    let dir = TempDir::new("schema-bypass");
+    dir.write("One.md", "before\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let vault = Vault::open(Slug::parse("personal").unwrap(), "Personal", dir.path()).unwrap();
+    let mut auth = mb_auth::AuthDb::open_in_memory().unwrap();
+    let user = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .unwrap();
+    let token = auth.create_session(user.id, 4_102_444_800).unwrap();
+    let cookie = auth.signed_session_cookie(&token).unwrap();
+    let server = Server::start(AppState::authenticated(vec![vault], auth).unwrap()).await;
+    let mut reader = server.connect(&cookie).await;
+    reader.send(Message::Text(serde_json::json!({"type":"subscribe","vault":"personal","note":"One.md","schema_version":schema_revision()}).to_string().into())).await.unwrap();
+    assert_eq!(
+        next_json(&mut reader).await["schema_version"],
+        schema_revision()
+    );
+    let baseline = next_binary(&mut reader).await.3;
+    let edited = document_from_update_v1(&baseline).unwrap();
+    let vector = edited.transact().state_vector();
+    apply_external_markdown(&edited, "DESTROYED\n").unwrap();
+    let update = edited.transact().encode_state_as_update_v1(&vector);
+    let before = snapshot_files(dir.path());
+    let mut old = server.connect(&cookie).await;
+    for message in [
+        update_frame("personal", "One.md", &update),
+        Message::Text(serde_json::json!({"type":"update","vault":"personal","note":"One.md","update":update}).to_string().into()),
+        Message::Text(serde_json::json!({"type":"awareness","vault":"personal","note":"One.md","state":{"SECRET":"presence"},"clients":[17]}).to_string().into()),
+    ] {
+        old.send(message).await.unwrap();
+        assert_eq!(next_json(&mut old).await["code"], "schema_refresh_required");
+        assert_eq!(snapshot_files(dir.path()), before, "refused frame changed Markdown, sidecar, marker or history");
+    }
+    // A previously admitted session loses its admission on a mismatched resubscribe.
+    reader.send(Message::Text(serde_json::json!({"type":"subscribe","vault":"personal","note":"One.md","schema_version":schema_revision()+1}).to_string().into())).await.unwrap();
+    assert_eq!(
+        next_json(&mut reader).await["code"],
+        "schema_refresh_required"
+    );
+    reader
+        .send(update_frame("personal", "One.md", &update))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_json(&mut reader).await["code"],
+        "schema_refresh_required"
+    );
+    assert_eq!(snapshot_files(dir.path()), before);
+}
+
+fn snapshot_files(
+    path: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    fn visit(
+        path: &std::path::Path,
+        result: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(&path, result);
+            } else {
+                result.insert(path.clone(), std::fs::read(path).unwrap());
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    visit(path, &mut files);
+    files
+}
+
+fn schema_revision() -> u64 {
+    serde_json::from_str::<serde_json::Value>(include_str!("../../mb-core/schema.json")).unwrap()["version"].as_u64().unwrap()
+}
 
 struct Server {
     address: std::net::SocketAddr,
@@ -163,19 +314,27 @@ async fn websocket_authorizes_subscription_frame_and_awareness_per_document() {
     let mut bob_socket = server.connect(&bob_cookie).await;
     let mut charlie_socket = server.connect(&charlie_cookie).await;
 
-    let subscribe = r#"{"type":"subscribe","vault":"personal","note":"One.md"}"#;
+    let subscribe = serde_json::json!({"type":"subscribe","vault":"personal","note":"One.md","schema_version":schema_revision()}).to_string();
     alice_socket
-        .send(Message::Text(subscribe.into()))
+        .send(Message::Text(subscribe.clone().into()))
         .await
         .unwrap();
     bob_socket
-        .send(Message::Text(subscribe.into()))
+        .send(Message::Text(subscribe.clone().into()))
         .await
         .unwrap();
     charlie_socket
-        .send(Message::Text(subscribe.into()))
+        .send(Message::Text(subscribe.clone().into()))
         .await
         .unwrap();
+    assert_eq!(
+        next_json(&mut alice_socket).await["schema_version"],
+        schema_revision()
+    );
+    assert_eq!(
+        next_json(&mut bob_socket).await["schema_version"],
+        schema_revision()
+    );
     let (tag, _, _, baseline) = next_binary(&mut alice_socket).await;
     assert_eq!(tag, 0x01);
     assert_eq!(next_binary(&mut bob_socket).await.0, 0x01);
@@ -255,6 +414,7 @@ async fn sync_frames_never_reveal_whether_an_unreadable_note_exists() {
                         "vault": "personal",
                         "note": note,
                         "state": {},
+                        "schema_version": schema_revision(),
                     })
                     .to_string()
                     .into(),
@@ -275,6 +435,27 @@ async fn sync_frames_never_reveal_whether_an_unreadable_note_exists() {
         vec![serde_json::json!({ "type": "error", "code": "not_found" }); 8],
         "an existing unreadable note and an absent one must be indistinguishable"
     );
+    for revision in [
+        None,
+        Some(schema_revision() - 1),
+        Some(schema_revision() + 1),
+    ] {
+        for note in ["Secret.md", "AbsentFromTheVault.md"] {
+            let mut frame = serde_json::json!({"type":"subscribe","vault":"personal","note":note});
+            if let Some(revision) = revision {
+                frame["schema_version"] = revision.into();
+            }
+            socket
+                .send(Message::Text(frame.to_string().into()))
+                .await
+                .unwrap();
+            assert_eq!(
+                next_json(&mut socket).await,
+                serde_json::json!({"type":"error","code":"not_found"}),
+                "schema refusal must not distinguish hidden and nonexistent notes"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -334,12 +515,13 @@ async fn two_names_for_one_file_share_a_single_writer() {
 async fn subscribe(socket: &mut Socket, vault: &str, note: &str) -> Vec<u8> {
     socket
         .send(Message::Text(
-            serde_json::json!({"type":"subscribe","vault":vault,"note":note})
+            serde_json::json!({"type":"subscribe","vault":vault,"note":note,"schema_version":schema_revision()})
                 .to_string()
                 .into(),
         ))
         .await
         .unwrap();
+    assert_eq!(next_json(socket).await["schema_version"], schema_revision());
     let (tag, _, _, state) = next_binary(socket).await;
     assert_eq!(tag, 0x01, "subscribing answers with a full-state frame");
     state
@@ -391,12 +573,16 @@ async fn the_same_note_path_in_two_vaults_is_two_documents() {
     for slug in ["first", "second"] {
         socket
             .send(Message::Text(
-                serde_json::json!({"type":"subscribe","vault":slug,"note":"One.md"})
+                serde_json::json!({"type":"subscribe","vault":slug,"note":"One.md","schema_version":schema_revision()})
                     .to_string()
                     .into(),
             ))
             .await
             .unwrap();
+        assert_eq!(
+            next_json(&mut socket).await["schema_version"],
+            schema_revision()
+        );
         let (tag, served, _, bytes) = next_binary(&mut socket).await;
         assert_eq!(tag, 0x01);
         assert_eq!(served, slug, "each frame names the vault it came from");
@@ -505,7 +691,7 @@ async fn revoking_access_on_disk_takes_effect_without_a_restart() {
 
     socket
         .send(Message::Text(
-            r#"{"type":"subscribe","vault":"personal","note":"One.md"}"#.into(),
+            serde_json::json!({"type":"subscribe","vault":"personal","note":"One.md","schema_version":schema_revision()}).to_string().into(),
         ))
         .await
         .unwrap();
@@ -548,7 +734,7 @@ async fn a_malformed_access_file_denies_everyone_rather_than_keeping_the_old_pol
 
     socket
         .send(Message::Text(
-            r#"{"type":"subscribe","vault":"personal","note":"One.md"}"#.into(),
+            serde_json::json!({"type":"subscribe","vault":"personal","note":"One.md","schema_version":schema_revision()}).to_string().into(),
         ))
         .await
         .unwrap();
@@ -607,14 +793,14 @@ async fn an_api_token_syncs_only_its_own_vault_and_dies_with_its_revocation() {
     // and refused *neutrally* — nothing distinguishes it from a note that does not exist.
     socket
         .send(Message::Text(
-            r#"{"type":"subscribe","vault":"other","note":"One.md"}"#.into(),
+            serde_json::json!({"type":"subscribe","vault":"other","note":"One.md","schema_version":schema_revision()}).to_string().into(),
         ))
         .await
         .unwrap();
     assert_eq!(next_json(&mut socket).await["code"], "not_found");
     socket
         .send(Message::Text(
-            r#"{"type":"subscribe","vault":"other","note":"Absent.md"}"#.into(),
+            serde_json::json!({"type":"subscribe","vault":"other","note":"Absent.md","schema_version":schema_revision()}).to_string().into(),
         ))
         .await
         .unwrap();
@@ -624,7 +810,7 @@ async fn an_api_token_syncs_only_its_own_vault_and_dies_with_its_revocation() {
     state.revoke_api_token_for_test(&token);
     socket
         .send(Message::Text(
-            r#"{"type":"subscribe","vault":"scoped","note":"One.md"}"#.into(),
+            serde_json::json!({"type":"subscribe","vault":"scoped","note":"One.md","schema_version":schema_revision()}).to_string().into(),
         ))
         .await
         .unwrap();
@@ -668,7 +854,10 @@ type Socket =
 
 /// Reads the next control frame. CRDT payloads travel as binary; see [`next_binary`].
 async fn next_json(socket: &mut Socket) -> serde_json::Value {
-    match socket.next().await {
+    match tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+        .await
+        .expect("server must reply to the frame")
+    {
         Some(Ok(Message::Text(message))) => {
             serde_json::from_str(&message).expect("a control frame is JSON")
         }

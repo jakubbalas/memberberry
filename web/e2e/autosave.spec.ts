@@ -3,10 +3,12 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
+import { offlineDatabaseName } from "../src/offline/database-name.js";
 import { E2E_ORIGIN, E2E_VAULT } from "./environment.js";
 import { expect, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
+const SCHEMA = JSON.parse(readFileSync(join(import.meta.dirname, "../../crates/mb-core/schema.json"), "utf8")) as { version: number };
 
 async function showNavigation(page: Page): Promise<void> {
   const show = page.getByRole("button", { name: "Show Navigation", exact: true });
@@ -19,8 +21,8 @@ function disk(path: string): string {
 
 /** Reads the actual browser's eviction guard, not an in-memory transport status. */
 async function residentDirty(page: Page, note: string): Promise<boolean | undefined> {
-  return page.evaluate((path) => new Promise<boolean | undefined>((resolve, reject) => {
-    const open = indexedDB.open("memberberry:offline");
+  return page.evaluate(({ path, name }) => new Promise<boolean | undefined>((resolve, reject) => {
+    const open = indexedDB.open(name);
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
       const database = open.result;
@@ -34,7 +36,7 @@ async function residentDirty(page: Page, note: string): Promise<boolean | undefi
           ? value.dirty : undefined);
       };
     };
-  }), note);
+  }), { path: note, name: offlineDatabaseName(SCHEMA.version) });
 }
 
 test("a newly created note autosaves to Markdown and a clean independent device, including reconnect and reload", async ({ page, context, browser, failures }, info) => {
@@ -76,8 +78,14 @@ test("a newly created note autosaves to Markdown and a clean independent device,
     failures.allow(/console error: Failed to load resource/);
     await context.setOffline(true);
     await expect(page.locator(".connection-status")).toContainText("Offline");
-    await page.locator(`${EDITOR} p`).first().click();
-    await page.keyboard.press("ControlOrMeta+End");
+    // why: Chromium's isMobile emulation leaves Ctrl/Cmd+End inert (no app handler sees it
+    // prevented), so place the caret on the paragraph's last line and use plain End. The
+    // right edge avoids the other device's cursor label, which sits at the line start.
+    const paragraph = page.locator(`${EDITOR} p`).first();
+    const box = await paragraph.boundingBox();
+    if (!box) throw new Error("paragraph has no geometry");
+    await paragraph.click({ position: { x: box.width - 2, y: box.height - 2 } });
+    await page.keyboard.press("End");
     await page.keyboard.insertText(offline);
     await expect(page.locator(EDITOR)).toContainText(initial + offline);
     expect(disk(path)).not.toContain(offline);

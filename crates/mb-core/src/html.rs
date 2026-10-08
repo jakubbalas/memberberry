@@ -679,6 +679,13 @@ fn inline(i: &Inline, urls: &Urls<'_>, out: &mut String) {
         Inline::Strong(c) => wrap("strong", c, urls, out),
         Inline::Strikethrough(c) => wrap("del", c, urls, out),
         Inline::Highlight(c) => wrap("mark", c, urls, out),
+        Inline::MbStyle { property, content } => {
+            out.push_str("<span class=\"");
+            out.push_str(&property.class());
+            out.push_str("\">");
+            inlines(content, urls, out);
+            out.push_str("</span>");
+        }
         Inline::Code(c) => {
             out.push_str("<code>");
             escape_text(c, out);

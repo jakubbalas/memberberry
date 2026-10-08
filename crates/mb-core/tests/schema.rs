@@ -297,6 +297,7 @@ fn walk_inlines(inlines: &[Inline], nodes: &mut BTreeSet<Node>, marks: &mut BTre
             | Inline::Strong(c)
             | Inline::Strikethrough(c)
             | Inline::Highlight(c)
+            | Inline::MbStyle { content: c, .. }
             | Inline::Link { content: c, .. } => walk_inlines(c, nodes, marks),
             _ => {}
         }
@@ -308,7 +309,7 @@ fn walk_inlines(inlines: &[Inline], nodes: &mut BTreeSet<Node>, marks: &mut BTre
 /// Written as source rather than as a constructed `Document` so that it also proves the
 /// parser can *reach* each node — a node no parse can produce would be a node no note can
 /// contain.
-const EVERY_CONSTRUCT: &str = r"# Heading
+const EVERY_CONSTRUCT: &str = r#"# Heading
 
 paragraph with **strong**, *em*, ~~strike~~, ==highlight==, `code`, $x^2$,
 [link](https://example.com), [[Wiki|alias]], ![[Embed#^id]], #tag/nested, :shortcode:,
@@ -340,7 +341,9 @@ $$
 ***
 
 [^1]: note text
-";
+
+:mb-style[underline and color]{underline="true" color="red" background="yellow" size="large"}
+"#;
 
 #[test]
 fn the_model_can_reach_every_node_and_mark_in_the_schema() {
@@ -549,4 +552,35 @@ fn a_violation_renders_a_message_naming_the_place_and_the_problem() {
     }))]);
     let errors = schema::validate(&doc).unwrap_err();
     assert_eq!(errors[0].to_string(), "blocks[0]: list has no items");
+}
+
+#[test]
+fn namespace_inventory_and_revision_come_from_the_real_typed_contract() {
+    let json: serde_json::Value = serde_json::from_str(SCHEMA_JSON).expect("schema JSON");
+    assert_eq!(json["version"], mb_core::schema::VERSION);
+    let colors: Vec<_> = mb_core::model::MbPalette::ALL
+        .iter()
+        .map(|c| c.name())
+        .collect();
+    let sizes: Vec<_> = mb_core::model::MbSize::ALL
+        .iter()
+        .map(|s| s.name())
+        .collect();
+    for name in ["mb_color", "mb_background"] {
+        assert_eq!(
+            json["marks"][name]["attrs"]["value"]["values"],
+            serde_json::json!(colors)
+        );
+    }
+    assert_eq!(
+        json["marks"]["mb_size"]["attrs"]["value"]["values"],
+        serde_json::json!(sizes)
+    );
+    for name in ["mb_underline", "mb_color", "mb_background", "mb_size"] {
+        assert_eq!(json["marks"][name]["excludes"], format!("{name} code"));
+    }
+    assert_eq!(
+        json["marks"]["code"]["excludes"],
+        "code mb_underline mb_color mb_background mb_size"
+    );
 }

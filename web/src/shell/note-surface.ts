@@ -427,6 +427,7 @@ async function mountNoteSurface(
     document: collaboration.document,
     ...(collaboration.awareness === undefined ? {} : { awareness: collaboration.awareness }),
     ...(collaboration.connection === undefined ? {} : { connection: collaboration.connection }),
+    ...(bootstrap === undefined ? {} : { noteKey: JSON.stringify([bootstrap.vault, bootstrap.note]) }),
     panel,
     status,
     ...(bootstrap === undefined ? {} : { user: bootstrap.user, title: bootstrap.note }),

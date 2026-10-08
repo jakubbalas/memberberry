@@ -15,6 +15,9 @@
  * unreadable, and every caller would repeat the same four lines of `onsuccess`.
  */
 
+import { SCHEMA_VERSION } from "../editor/schema-revision.js";
+import { offlineDatabaseName } from "./database-name.js";
+
 /** One note's metadata, as `SPEC.md` §7.2's "always replicated" tier. */
 export interface ReplicatedTask {
   /** Optional source block anchor. */
@@ -146,7 +149,9 @@ export interface OfflineStore {
   close(): void;
 }
 
-const DATABASE = "memberberry:offline";
+// why: residency/dirty/merge-base records must never uncover an empty new-revision body.
+// Old databases are left untouched; a refreshed editor initializes from authorized sync.
+const DATABASE = offlineDatabaseName(SCHEMA_VERSION);
 /**
  * Version 2 adds the pin store (§7.2).
  *

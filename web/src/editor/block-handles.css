@@ -1,0 +1,51 @@
+/* Reserve real target space rather than cover editable text with a floating gutter. */
+.block-handles-host .ProseMirror {
+  padding-inline-start: calc(2 * var(--touch-target-min) + 4 * var(--space-1));
+}
+.block-handles,
+.block-move-menu {
+  position: fixed;
+  z-index: 100;
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  font-family: var(--font-ui);
+  padding: var(--space-1);
+}
+.block-handles { display: flex; gap: var(--space-1); }
+.block-move-menu { width: min(20rem, calc(100vw - 8px)); overflow: auto; }
+.block-handles[hidden],
+.block-move-menu[hidden],
+.block-drop-indicator[hidden] { display: none; }
+.block-handles button,
+.block-move-menu button {
+  min-width: var(--touch-target-min);
+  min-height: var(--touch-target-min);
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  font: inherit;
+  cursor: pointer;
+}
+.block-move-menu button { display: block; width: 100%; text-align: start; padding-inline: var(--space-3); }
+.block-handles button:hover,
+.block-move-menu button:hover { background: var(--surface-hover); }
+.block-handles button:focus-visible,
+.block-move-menu button:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+.block-move-menu button:disabled { color: var(--text-muted); cursor: default; }
+.block-move-menu p { margin: var(--space-2); color: var(--text-muted); font-size: var(--text-sm); }
+.block-handles button:first-child { cursor: grab; touch-action: none; }
+.block-drop-indicator {
+  position: fixed;
+  height: 3px;
+  background: var(--accent-primary);
+  z-index: 101;
+  pointer-events: none;
+}
+@media print {
+  .block-handles, .block-move-menu, .block-drop-indicator { display: none !important; }
+  .block-handles-host .ProseMirror { padding-inline-start: 0; }
+}

@@ -6,11 +6,14 @@
  */
 
 import { Extension } from "@tiptap/core";
-import type { Plugin } from "@tiptap/pm/state";
+import { Plugin } from "@tiptap/pm/state";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { Doc, type XmlFragment } from "yjs";
+import { Doc, type UndoManager, type XmlFragment } from "yjs";
 import { Awareness } from "y-protocols/awareness";
-import { redo, undo, yCursorPlugin, ySyncPlugin, yUndoPlugin } from "y-prosemirror";
+import { redo, undo, yCursorPlugin, ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey } from "y-prosemirror";
+
+import { SCHEMA_VERSION } from "./schema-revision.js";
+import { loadSchemaAdmission, SchemaRefreshRequired, type SchemaAdmission } from "./schema-admission.js";
 
 import { presenceCursorBuilder } from "./presence.js";
 import {
@@ -51,6 +54,8 @@ export interface NoteCollaboration {
   readonly document: Doc;
   readonly fragment: XmlFragment;
   readonly awareness: Awareness;
+  /** Available only after whenReady has admitted the restored replica. */
+  readonly admission: SchemaAdmission;
   readonly connection?: ConnectionStatus;
   /** Raised each time the server sends this note's whole state (§3.5). */
   readonly serverState: ServerStateSignal;
@@ -117,6 +122,7 @@ export function createConnectionStatus(): ConnectionStatus & { set(state: Connec
         next.connected === state.connected
         && next.pending === state.pending
         && next.synced === state.synced
+        && next.refreshRequired === state.refreshRequired
       ) {
         return;
       }
@@ -167,7 +173,10 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
   let remote: SyncProvider | undefined;
   const status = options.remoteSync === undefined ? undefined : createConnectionStatus();
   const serverState = createServerStateSignal();
-  const whenReady = persistence.whenSynced.then(() => {
+  let admission: SchemaAdmission | undefined;
+  const whenReady = persistence.whenSynced.then(async () => {
+    admission = await loadSchemaAdmission();
+    admission.validate(document);
     if (options.remoteSync !== undefined) {
       const createRemoteSync = options.createRemoteSync ?? defaultRemoteSync;
       remote = createRemoteSync(
@@ -185,6 +194,10 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
     document,
     fragment,
     awareness,
+    get admission(): SchemaAdmission {
+      if (admission === undefined) throw new SchemaRefreshRequired();
+      return admission;
+    },
     serverState,
     ...(status === undefined ? {} : { connection: status }),
     whenReady,
@@ -220,7 +233,43 @@ export function yjsPlugins(fragment: XmlFragment, awareness?: Awareness): Plugin
   const cursors = awareness === undefined
     ? []
     : [yCursorPlugin(awareness, { cursorBuilder: presenceCursorBuilder })];
-  return [ySyncPlugin(fragment), yUndoPlugin(), ...cursors];
+  return [ySyncPlugin(fragment), durableUndoPlugin(), ...cursors];
+}
+
+/** Keep undo history attached to the Y.Doc when ProseMirror rebuilds plugin views. */
+function durableUndoPlugin(): Plugin {
+  const plugin = yUndoPlugin();
+  // why: y-prosemirror destroys its UndoManager with the plugin view, but registering a
+  // later editor control rebuilds views while retaining plugin state. The next view then
+  // holds a destroyed manager and Ctrl+Z silently fails. The Y.Doc owns its lifetime:
+  // UndoManager already subscribes to doc.destroy, which closes it with the note session.
+  return new Plugin({
+    ...plugin.spec,
+    view: (view) => {
+      const manager = (yUndoPluginKey.getState(view.state) as { undoManager: UndoManager }).undoManager;
+      const onAdded = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }): void => {
+        const binding = (ySyncPluginKey.getState(view.state) as { binding?: object }).binding;
+        if (binding !== undefined) {
+          const state = yUndoPluginKey.getState(view.state) as { prevSel: unknown };
+          stackItem.meta.set(binding, state.prevSel);
+        }
+      };
+      const onPopped = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }): void => {
+        const binding = (ySyncPluginKey.getState(view.state) as {
+          binding?: { beforeTransactionSelection: unknown };
+        }).binding;
+        if (binding !== undefined) {
+          binding.beforeTransactionSelection = stackItem.meta.get(binding) || binding.beforeTransactionSelection;
+        }
+      };
+      manager.on("stack-item-added", onAdded);
+      manager.on("stack-item-popped", onPopped);
+      return { destroy: () => {
+        manager.off("stack-item-added", onAdded);
+        manager.off("stack-item-popped", onPopped);
+      } };
+    },
+  });
 }
 
 /** A collision-free IndexedDB database name for a vault-local note identity. */
@@ -228,7 +277,7 @@ export function persistenceName(vaultId: string, noteId: string): string {
   if (vaultId.length === 0 || noteId.length === 0) {
     throw new Error("vaultId and noteId must not be empty");
   }
-  return `memberberry:ydoc:${encodeURIComponent(vaultId)}:${encodeURIComponent(noteId)}`;
+  return `memberberry:schema:${SCHEMA_VERSION}:ydoc:${encodeURIComponent(vaultId)}:${encodeURIComponent(noteId)}`;
 }
 
 function defaultPersistence(name: string, document: Doc): LocalPersistence {

@@ -29,12 +29,28 @@ use crate::vault::CanonicalNote;
 use crate::watch::Changes;
 use crate::{Error as ServerError, Vault};
 
+/// The exact editor revision owned by the Rust schema; lib0 encoding stays v1.
+pub fn current_schema_version() -> Result<u64, SyncError> {
+    static REVISION: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    REVISION
+        .get_or_init(|| {
+            serde_json::from_str::<serde_json::Value>(include_str!("../../mb-core/schema.json"))
+                .ok()?
+                .get("version")?
+                .as_u64()
+                .filter(|version| *version > 0)
+        })
+        .ok_or(SyncError::SchemaRefreshRequired)
+}
+
 /// The quiet time before a CRDT document is materialized to Markdown.
 pub const MARKDOWN_WRITE_DEBOUNCE: Duration = Duration::from_millis(800);
 
 /// Fail-closed errors from the server's single-writer sync boundary.
 #[derive(Debug, Error)]
 pub enum SyncError {
+    #[error("editor schema refresh required")]
+    SchemaRefreshRequired,
     #[error("note path is unavailable: {0}")]
     Note(#[from] ServerError),
     #[error("reading Markdown at {path}: {source}")]
@@ -69,6 +85,9 @@ pub enum ClientFrame {
     Subscribe {
         vault: String,
         note: String,
+        /// Missing or malformed revisions identify unsupported cached editors.
+        #[serde(default)]
+        schema_version: serde_json::Value,
     },
     Update {
         vault: String,
@@ -95,6 +114,12 @@ pub enum ClientFrame {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame {
+    /// Admission precedes binary content so clients can fail closed on a stale server.
+    Admitted {
+        vault: String,
+        note: String,
+        schema_version: u64,
+    },
     Sync {
         vault: String,
         note: String,
@@ -251,6 +276,7 @@ impl ConnectionId {
 #[derive(Debug)]
 struct Peer {
     connection: ConnectionId,
+    schema_version: u64,
     /// The name this client subscribed under. A peer that reached the room through an
     /// alias is addressed by its own name, or its client-side note filter drops the frame.
     note: String,
@@ -259,6 +285,21 @@ struct Peer {
     /// Awareness client ids this peer has published into the room.
     presence: BTreeSet<u64>,
     outbound: mpsc::UnboundedSender<ServerFrame>,
+}
+
+/// One authenticated subscription, with the explicitly advertised editor revision.
+#[derive(Debug)]
+pub struct SchemaSubscription<'a> {
+    /// The caller's note spelling, retained for outbound frame addressing.
+    pub note: &'a str,
+    /// The authenticated server-owned identity.
+    pub user: &'a Username,
+    /// The exact socket being admitted.
+    pub connection: ConnectionId,
+    /// Missing/invalid revisions are unsupported, never implicitly current.
+    pub schema_version: Option<u64>,
+    /// The socket's ordered outbound queue.
+    pub outbound: mpsc::UnboundedSender<ServerFrame>,
 }
 
 /// One presence announcement from a connection the HTTP boundary has already authenticated.
@@ -297,7 +338,55 @@ impl SyncRegistry {
         connection: ConnectionId,
         outbound: mpsc::UnboundedSender<ServerFrame>,
     ) -> Result<ServerFrame, SyncError> {
+        self.subscribe_admitted(
+            vault,
+            canonical,
+            SchemaSubscription {
+                note,
+                user,
+                connection,
+                outbound,
+                schema_version: Some(current_schema_version()?),
+            },
+            false,
+        )
+    }
+
+    /// Admits a wire client before opening any note sidecar or delivering content.
+    pub fn subscribe_versioned(
+        &self,
+        vault: &Vault,
+        canonical: &CanonicalNote,
+        subscription: SchemaSubscription<'_>,
+    ) -> Result<(), SyncError> {
+        self.subscribe_admitted(vault, canonical, subscription, true)
+            .map(|_| ())
+    }
+
+    // why: native trusted callers receive their state directly, while wire subscribers
+    // need an ordered acknowledgement before being published to concurrent broadcasters.
+    fn subscribe_admitted(
+        &self,
+        vault: &Vault,
+        canonical: &CanonicalNote,
+        subscription: SchemaSubscription<'_>,
+        acknowledge: bool,
+    ) -> Result<ServerFrame, SyncError> {
+        let SchemaSubscription {
+            note,
+            user,
+            connection,
+            schema_version,
+            outbound,
+        } = subscription;
+        let current = current_schema_version()?;
         let mut rooms = self.rooms()?;
+        if schema_version != Some(current) {
+            if let Some(room) = rooms.get_mut(&room_key(vault, canonical)) {
+                drop(retract(room, connection, &vault.slug().to_string()));
+            }
+            return Err(SyncError::SchemaRefreshRequired);
+        }
         let room = match rooms.entry(room_key(vault, canonical)) {
             Entry::Occupied(room) => room.into_mut(),
             Entry::Vacant(slot) => slot.insert(Room {
@@ -309,18 +398,55 @@ impl SyncRegistry {
         // `subscribe` twice would otherwise receive every frame once per attempt.
         room.peers
             .retain(|peer| peer.connection != connection || peer.note != note);
+        let initial = ServerFrame::Sync {
+            vault: vault.slug().to_string(),
+            note: note.to_string(),
+            update: room.coordinator.full_update(),
+        };
+        if acknowledge {
+            outbound
+                .send(ServerFrame::Admitted {
+                    vault: vault.slug().to_string(),
+                    note: note.to_string(),
+                    schema_version: current,
+                })
+                .map_err(|_| SyncError::SchemaRefreshRequired)?;
+            // why: the initial state carries dependencies a concurrent increment needs.
+            // Queue both frames while publication is locked, never acknowledge then race
+            // the async HTTP response against room broadcasters.
+            outbound
+                .send(initial.clone())
+                .map_err(|_| SyncError::SchemaRefreshRequired)?;
+        }
         room.peers.push(Peer {
             connection,
+            schema_version: current,
             note: note.to_string(),
             user: user.clone(),
             presence: BTreeSet::new(),
             outbound,
         });
-        Ok(ServerFrame::Sync {
-            vault: vault.slug().to_string(),
-            note: note.to_string(),
-            update: room.coordinator.full_update(),
-        })
+        Ok(initial)
+    }
+
+    /// Requires a current-schema subscription for this exact socket and canonical note.
+    pub fn require_admitted(
+        &self,
+        vault: &Vault,
+        canonical: &CanonicalNote,
+        connection: ConnectionId,
+    ) -> Result<(), SyncError> {
+        let current = current_schema_version()?;
+        let rooms = self.rooms()?;
+        if rooms.get(&room_key(vault, canonical)).is_some_and(|room| {
+            room.peers
+                .iter()
+                .any(|peer| peer.connection == connection && peer.schema_version == current)
+        }) {
+            Ok(())
+        } else {
+            Err(SyncError::SchemaRefreshRequired)
+        }
     }
 
     /// Removes one connection from one document, releasing the room if it empties.
@@ -659,8 +785,16 @@ fn broadcast(
 ) {
     let (vault_slug, note_identity) = room;
     peers.retain(|peer| {
-        authorize(vault_slug, note_identity, &peer.user)
-            && peer.outbound.send(frame(&peer.note)).is_ok()
+        if !authorize(vault_slug, note_identity, &peer.user) {
+            return false;
+        }
+        if current_schema_version().ok() != Some(peer.schema_version) {
+            drop(peer.outbound.send(ServerFrame::Error {
+                code: "schema_refresh_required",
+            }));
+            return false;
+        }
+        peer.outbound.send(frame(&peer.note)).is_ok()
     });
 }
 
@@ -789,6 +923,11 @@ impl NoteCoordinator {
             .transact_mut()
             .apply_update(decode_update(update)?)
             .map_err(|error| SyncError::Update(error.to_string()))?;
+        if candidate.transact().has_missing_updates() {
+            return Err(SyncError::Update(
+                "unresolved CRDT dependencies".to_string(),
+            ));
+        }
         drop(document_from_yrs(&candidate)?);
         self.sidecar.append(update)?;
         self.doc
@@ -1030,4 +1169,91 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {
         drop(fs::remove_file(&temporary));
     }
     result
+}
+
+#[cfg(test)]
+mod schema_admission_tests {
+    use super::*;
+
+    #[test]
+    fn a_stale_already_subscribed_peer_is_refused_before_update_or_presence_delivery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        fs::write(directory.path().join("One.md"), "KEEP BODY\n")?;
+        let vault = Vault::open(crate::vault::Slug::parse("test")?, "Test", directory.path())?;
+        let canonical = vault.canonical_note("One.md")?;
+        let registry = SyncRegistry::default();
+        let connection = ConnectionId::issue();
+        let (outbound, mut inbox) = mpsc::unbounded_channel();
+        let user = Username::parse("alice")?;
+        registry.subscribe(&vault, &canonical, "One.md", &user, connection, outbound)?;
+        {
+            let mut rooms = registry.rooms()?;
+            let room = rooms
+                .get_mut(&room_key(&vault, &canonical))
+                .ok_or("missing fixture room")?;
+            let peer = room.peers.first_mut().ok_or("missing fixture peer")?;
+            // Synthetic historical session: current admission never creates this state.
+            peer.schema_version = current_schema_version()? - 1;
+        }
+        assert!(
+            registry
+                .require_admitted(&vault, &canonical, connection)
+                .is_err()
+        );
+        // Exercise both delivery channels independently. Restore the synthetic historical
+        // peer after the first broadcast evicts it; normal admission never creates it.
+        for presence in [false, true] {
+            let mut rooms = registry.rooms()?;
+            let room = rooms
+                .get_mut(&room_key(&vault, &canonical))
+                .ok_or("missing fixture room")?;
+            if room.peers.is_empty() {
+                let (outbound, receiver) = mpsc::unbounded_channel();
+                inbox = receiver;
+                room.peers.push(Peer {
+                    connection,
+                    schema_version: current_schema_version()? - 1,
+                    note: "One.md".to_string(),
+                    user: user.clone(),
+                    presence: BTreeSet::new(),
+                    outbound,
+                });
+            }
+            let update = room.coordinator.full_update();
+            broadcast(
+                &mut room.peers,
+                (vault.slug().as_str(), canonical.identity()),
+                &|_, _, _| true,
+                |note: &str| {
+                    if presence {
+                        ServerFrame::Awareness {
+                            vault: vault.slug().to_string(),
+                            note: note.to_string(),
+                            user: "alice".to_string(),
+                            state: serde_json::json!({"secret": "presence"}),
+                        }
+                    } else {
+                        ServerFrame::Update {
+                            vault: vault.slug().to_string(),
+                            note: note.to_string(),
+                            update: update.clone(),
+                        }
+                    }
+                },
+            );
+            assert!(matches!(
+                inbox.try_recv(),
+                Ok(ServerFrame::Error {
+                    code: "schema_refresh_required"
+                })
+            ));
+            assert!(inbox.try_recv().is_err());
+        }
+        assert_eq!(
+            fs::read_to_string(directory.path().join("One.md"))?,
+            "KEEP BODY\n"
+        );
+        Ok(())
+    }
 }

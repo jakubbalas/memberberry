@@ -7,7 +7,7 @@ test("reload returns to the note opened from Home and Home remains explicitly re
   const show = page.getByRole("button", { name: "Show Navigation", exact: true });
   if (await show.isVisible()) await show.click();
   const tree = page.getByRole("tree", { name: "Notes", exact: true });
-  await tree.getByRole("treeitem", { name: /^Welcome (?:Add|Remove) bookmark for Welcome$/ }).click();
+  await tree.getByRole("treeitem", { name: "Welcome", exact: true }).click();
   const editor = page.locator(".editor-surface .tiptap");
   await expect(editor).toContainText("A note that already exists");
   await page.reload();

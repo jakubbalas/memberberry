@@ -24,6 +24,42 @@ fn vault(dir: &TempDir) -> Vault {
 }
 
 #[test]
+fn schema_acknowledgement_is_enqueued_before_a_wire_subscriber_can_receive_broadcasts() {
+    let dir = TempDir::new("schema-ordering");
+    dir.write("notes/One.md", "before\n");
+    let vault = vault(&dir);
+    let canonical = vault.canonical_note("One.md").unwrap();
+    let registry = SyncRegistry::default();
+    let connection = ConnectionId::issue();
+    let (outbound, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let current = mb_server::sync::current_schema_version().unwrap();
+    registry
+        .subscribe_versioned(
+            &vault,
+            &canonical,
+            mb_server::sync::SchemaSubscription {
+                note: "One.md",
+                user: &Username::parse("alice").unwrap(),
+                connection,
+                outbound,
+                schema_version: Some(current),
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(inbox.try_recv(), Ok(ServerFrame::Admitted { schema_version, .. }) if schema_version == current)
+    );
+    // Bootstrap must also be queued before this subscriber becomes visible: a concurrent
+    // incremental update can otherwise arrive first with unresolved dependencies.
+    assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Sync { .. })));
+    assert!(
+        registry
+            .require_admitted(&vault, &canonical, connection)
+            .is_ok()
+    );
+}
+
+#[test]
 fn a_missing_external_note_does_not_starve_another_rooms_markdown_autosave() {
     let dir = TempDir::new("sync-missing-isolation");
     let missing = dir.write("notes/A-moved-externally.md", "old location\n");
@@ -66,7 +102,8 @@ fn a_missing_external_note_does_not_starve_another_rooms_markdown_autosave() {
         1,
         "the missing note is reported, not fatal to the tick"
     );
-    assert_eq!(flushed, vec![saved.clone()]);
+    // why: the registry reports real paths; macOS temp dirs sit behind a /var symlink.
+    assert_eq!(flushed, vec![saved.canonicalize().unwrap()]);
     assert_eq!(
         std::fs::read_to_string(saved).unwrap(),
         "# Z-new-note\n\nAutosaved despite another missing file.\n"
@@ -123,7 +160,8 @@ fn a_failed_last_subscriber_flush_retains_the_room_for_maintenance_retry() {
         &permit_all,
     );
     assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(flushed, vec![note.clone()]);
+    // why: the registry reports real paths; macOS temp dirs sit behind a /var symlink.
+    assert_eq!(flushed, vec![note.canonicalize().unwrap()]);
     assert_eq!(
         std::fs::read_to_string(note).unwrap(),
         "accepted and must become Markdown\n"
@@ -221,6 +259,43 @@ fn invalid_remote_structure_is_rejected_without_mutating_live_state() {
             .is_err()
     );
     assert_eq!(coordinator.full_update(), before);
+}
+
+#[test]
+fn unresolved_remote_dependencies_are_refused_before_state_or_log_mutation() {
+    let dir = TempDir::new("sync-unresolved");
+    dir.write("One.md", "before\n");
+    let vault = vault(&dir);
+    let mut coordinator =
+        NoteCoordinator::open(&vault, &vault.canonical_note("One.md").unwrap()).unwrap();
+    let remote = mb_crdt::document_to_yrs(&mb_core::parse("different root\n")).unwrap();
+    let vector = remote.transact().state_vector();
+    apply_external_markdown(&remote, "dependent content\n").unwrap();
+    let incomplete = remote.transact().encode_state_as_update_v1(&vector);
+    let before = coordinator.full_update();
+    let crdt_dir = dir.path().join(".memberberry/crdt");
+    let files = || {
+        std::fs::read_dir(&crdt_dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let saved = files();
+    assert!(
+        coordinator
+            .apply_remote_update(&incomplete, Instant::now())
+            .is_err()
+    );
+    assert_eq!(coordinator.full_update(), before);
+    assert_eq!(files(), saved);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("One.md")).unwrap(),
+        "before\n"
+    );
 }
 
 #[test]

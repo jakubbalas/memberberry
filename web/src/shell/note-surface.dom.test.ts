@@ -29,6 +29,7 @@ import { stubReplica } from "../offline/testing.js";
 import { openOfflineStore } from "../offline/db.js";
 import { createReplica, dropBodyWith } from "../offline/replica.js";
 import { createMemberberryExtensions } from "../editor/schema.js";
+import { SCHEMA_VERSION } from "../editor/schema-revision.js";
 import { load, markdownFromUpdate, updateFromMarkdown } from "../notes.js";
 import { LOCAL_ONLY, openNoteSurface } from "./note-surface.js";
 
@@ -914,6 +915,7 @@ describe("keeping §7.2's bookkeeping", () => {
       const connect = (): void => {
         socket.readyState = WebSocket.OPEN;
         socket.dispatchEvent(new Event("open"));
+      socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "admitted", vault: bootstrap.vault, note: bootstrap.note, schema_version: SCHEMA_VERSION }) }));
         socket.receive(0x01, encodeStateAsUpdate(server));
       };
       await store.putResident({ vault: bootstrap.vault, note: "Pinned.md", openedAt: 2_000, bytes: 0, dirty: false });
@@ -1025,6 +1027,7 @@ describe("keeping §7.2's bookkeeping", () => {
       expect(await replica.isResident(bootstrap.vault, bootstrap.note)).toBe(false);
       socket.readyState = WebSocket.OPEN;
       socket.dispatchEvent(new Event("open"));
+      socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "admitted", vault: bootstrap.vault, note: bootstrap.note, schema_version: SCHEMA_VERSION }) }));
       const restricted = await updateFromMarkdown("# Secret\n\nRestricted content.\n");
       socket.dispatchEvent(new MessageEvent("message", {
         data: encodeBinaryFrame(0x01, bootstrap.vault, bootstrap.note, restricted).buffer,
@@ -1376,6 +1379,7 @@ describe("reconciling §3.5's conflicts", () => {
     const connect = (): void => {
       socket.readyState = WebSocket.OPEN;
       socket.dispatchEvent(new Event("open"));
+      socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "admitted", vault: bootstrap.vault, note: bootstrap.note, schema_version: SCHEMA_VERSION }) }));
       socket.receive(0x01, encodeStateAsUpdate(server));
     };
     const accept = (): void => {

@@ -225,6 +225,13 @@ fn markdown_soup() -> impl Strategy<Value = String> {
         Just("![[Note#^block-id]] plus #tag/nested".to_string()),
         Just("**bold** _em_ ~~strike~~ ==highlight== `code` $x^2$".to_string()),
         Just(":shortcode: and 🎉 literal".to_string()),
+        Just(
+            ":mb-style[**bold** [[Wiki]] $x$ `code` #tag]{underline=\"true\" color=\"red\"}"
+                .to_string()
+        ),
+        Just(":mb-style[مرحبا 😀 a\\[b\\]]{size=\"large\" background=\"blue\"}".to_string()),
+        Just(":mb-style[KEEP]{unknown=\"evil\"} tail".to_string()),
+        Just(":mb-style[unfinished]{color=\"red\" tail".to_string()),
         Just("anchored paragraph ^my-anchor".to_string()),
         Just("![alt](media/ab/cd/hash.png)".to_string()),
         Just("[link](https://example.com)".to_string()),

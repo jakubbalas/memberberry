@@ -167,6 +167,7 @@ fn read_block<T: ReadTxn>(
     path: &str,
 ) -> Result<Block, CrdtError> {
     let tag = element.tag().as_ref();
+    validate_node_fields(element, txn, path)?;
     let kind = match tag {
         "paragraph" => BlockKind::Paragraph(read_inlines(element, txn, path)?),
         "heading" => {
@@ -221,6 +222,7 @@ fn read_list<T: ReadTxn>(
             let XmlOut::Element(item) = child else {
                 return Err(malformed(item_path, "list children must be elements"));
             };
+            validate_node_fields(&item, txn, &item_path)?;
             let task = match item.tag().as_ref() {
                 "list_item" => None,
                 "task_item" => Some(read_task(&item, txn, &item_path)?),
@@ -323,6 +325,7 @@ fn read_callout<T: ReadTxn>(
     if title.tag().as_ref() != "callout_title" {
         return Err(malformed(path, "callout must begin with callout_title"));
     }
+    validate_node_fields(&title, txn, &format!("{path}.title"))?;
     let title_content = read_inlines(&title, txn, &format!("{path}.title"))?;
     let mut content = Vec::new();
     for (index, child) in children {
@@ -389,6 +392,7 @@ fn read_table_row<T: ReadTxn>(
     if row.tag().as_ref() != "table_row" {
         return Err(malformed(path, "expected table_row"));
     }
+    validate_node_fields(&row, txn, path)?;
     row.children(txn)
         .enumerate()
         .map(|(index, child)| {
@@ -399,6 +403,7 @@ fn read_table_row<T: ReadTxn>(
             if cell.tag().as_ref() != "table_cell" {
                 return Err(malformed(cell_path, "expected table_cell"));
             }
+            validate_node_fields(&cell, txn, &cell_path)?;
             read_inlines(&cell, txn, &cell_path)
         })
         .collect()
@@ -472,9 +477,43 @@ fn apply_marks(value: String, attrs: Option<&Attrs>, path: &str) -> Result<Inlin
     for name in attrs.keys() {
         if !matches!(
             name.as_ref(),
-            "strong" | "em" | "strikethrough" | "highlight" | "code" | "link"
+            "strong"
+                | "em"
+                | "strikethrough"
+                | "highlight"
+                | "code"
+                | "link"
+                | "mb_underline"
+                | "mb_color"
+                | "mb_background"
+                | "mb_size"
         ) {
             return Err(malformed(path, format!("unknown mark `{name}`")));
+        }
+    }
+    for (name, value) in &attrs {
+        let Any::Map(fields) = value else {
+            return Err(malformed(
+                path,
+                format!("mark `{name}` attributes must be an object"),
+            ));
+        };
+        if !matches!(
+            name.as_ref(),
+            "link" | "mb_color" | "mb_background" | "mb_size"
+        ) && !fields.is_empty()
+        {
+            return Err(malformed(
+                path,
+                format!("mark `{name}` has unknown attributes"),
+            ));
+        }
+        if name.as_ref() == "link"
+            && fields
+                .keys()
+                .any(|field| !matches!(field.as_str(), "href" | "title"))
+        {
+            return Err(malformed(path, "link mark has unknown attributes"));
         }
     }
     let mut inline = if attrs.contains_key("code") {
@@ -509,6 +548,51 @@ fn apply_marks(value: String, attrs: Option<&Attrs>, path: &str) -> Result<Inlin
             _ => return Err(malformed(path, "unreachable mark")),
         };
     }
+    for name in ["mb_size", "mb_background", "mb_color", "mb_underline"] {
+        if let Some(mark) = attrs.get(name) {
+            let Any::Map(fields) = mark else {
+                return Err(malformed(
+                    path,
+                    format!("{name} attributes must be an object"),
+                ));
+            };
+            if attrs.contains_key("code") {
+                return Err(malformed(path, "namespace styles cannot coexist with code"));
+            }
+            let property = match name {
+                "mb_underline" if fields.is_empty() => mb_core::model::MbStyleProperty::Underline,
+                "mb_size" if fields.len() == 1 => {
+                    let value = fields
+                        .get("value")
+                        .cloned()
+                        .ok_or_else(|| malformed(path, "mb_size requires value"))?;
+                    let value = expect_string(value, path)?;
+                    let size = mb_core::model::MbSize::parse(&value)
+                        .ok_or_else(|| malformed(path, "invalid mb_size preset"))?;
+                    mb_core::model::MbStyleProperty::Size(size)
+                }
+                "mb_color" | "mb_background" if fields.len() == 1 => {
+                    let value = fields
+                        .get("value")
+                        .cloned()
+                        .ok_or_else(|| malformed(path, "palette mark requires value"))?;
+                    let value = expect_string(value, path)?;
+                    let color = mb_core::model::MbPalette::parse(&value)
+                        .ok_or_else(|| malformed(path, "invalid namespace palette"))?;
+                    if name == "mb_color" {
+                        mb_core::model::MbStyleProperty::Color(color)
+                    } else {
+                        mb_core::model::MbStyleProperty::Background(color)
+                    }
+                }
+                _ => return Err(malformed(path, format!("invalid {name} fields"))),
+            };
+            inline = Inline::MbStyle {
+                property,
+                content: vec![inline],
+            };
+        }
+    }
     Ok(inline)
 }
 
@@ -517,6 +601,7 @@ fn read_atom<T: ReadTxn>(
     txn: &T,
     path: &str,
 ) -> Result<Inline, CrdtError> {
+    validate_node_fields(element, txn, path)?;
     ensure_no_children(element, txn, path)?;
     match element.tag().as_ref() {
         "soft_break" => Ok(Inline::SoftBreak),
@@ -649,6 +734,32 @@ fn string_array_attr<T: ReadTxn>(
         return Ok(None);
     };
     expect_string_array(value, &format!("{path}.{key}")).map(Some)
+}
+
+fn validate_node_fields<T: ReadTxn>(
+    element: &XmlElementRef,
+    txn: &T,
+    path: &str,
+) -> Result<(), CrdtError> {
+    // why: materialization reads known fields only; admission must not discard raw
+    // fields that the bound editor would refuse. Rust's schema owns this vocabulary.
+    let Some(spec) = mb_core::schema::Node::ALL
+        .iter()
+        .map(|node| node.spec())
+        .find(|spec| spec.name == element.tag().as_ref())
+    else {
+        // Existing context-specific readers report unknown node names.
+        return Ok(());
+    };
+    for (name, _) in element.attributes(txn) {
+        if !spec.attrs.contains(&name) {
+            return Err(malformed(
+                format!("{path}.{name}"),
+                format!("undeclared attribute on `{}`", spec.name),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn any_attr<T: ReadTxn>(

@@ -60,6 +60,29 @@
   --state-danger: #a52016;
   --state-conflict: #6a3d9a;
 
+  /* Runtime-safe finite background picked by namespace classes; no background is default. */
+  --mb-note-background: transparent;
+
+  /* Finite Markdown namespace palette: default text is absence, never a tenth value. */
+  --note-color-gray: #62625f;
+  --note-background-gray: #e7e7e5;
+  --note-color-brown: #795548;
+  --note-background-brown: #f1e5df;
+  --note-color-orange: #9a4f0a;
+  --note-background-orange: #fae6d4;
+  --note-color-yellow: #806000;
+  --note-background-yellow: #f5edc9;
+  --note-color-green: #2f6b39;
+  --note-background-green: #e0efdf;
+  --note-color-blue: #305ca8;
+  --note-background-blue: #dde8f8;
+  --note-color-purple: #7042a0;
+  --note-background-purple: #ece2f6;
+  --note-color-pink: #953e70;
+  --note-background-pink: #f6e2ef;
+  --note-color-red: #a52016;
+  --note-background-red: #f8dfdb;
+
   /* ---------------------------------------------------------------- typography: families */
   --font-body: -apple-system, BlinkMacSystemFont, Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-title: Charter, "Bitstream Charter", Georgia, serif;
@@ -71,6 +94,9 @@
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-md: 1rem;
+  /* Inline namespace sizes scale native headings as well as paragraph text. */
+  --note-size-small: 0.875em;
+  --note-size-large: 1.15em;
   /* The two steps between body text and the largest heading a note uses. They arrived with
      the editor's heading scale: a note is read in a pane that may be half a split wide, so
      its headings are sized from here rather than from `--text-display`. */
@@ -254,6 +280,24 @@
     --series-3: #dfa54a;
     --series-4: #7cc98a;
     --series-5: #e58ab9;
+    --note-color-gray: #b5b5b0;
+    --note-background-gray: #353537;
+    --note-color-brown: #d6ac91;
+    --note-background-brown: #493a33;
+    --note-color-orange: #f0ae72;
+    --note-background-orange: #4d3729;
+    --note-color-yellow: #dec974;
+    --note-background-yellow: #454025;
+    --note-color-green: #91c79a;
+    --note-background-green: #2f4134;
+    --note-color-blue: #a2bdf2;
+    --note-background-blue: #2d3a50;
+    --note-color-purple: #c4a2ef;
+    --note-background-purple: #3e3151;
+    --note-color-pink: #e5a8ce;
+    --note-background-pink: #4b3143;
+    --note-color-red: #f2a09a;
+    --note-background-red: #4c3230;
     --presence-label: #19191c;
   }
 }
@@ -279,6 +323,24 @@
   --series-3: #8a5107;
   --series-4: #2f6b39;
   --series-5: #8f3468;
+  --note-color-gray: #62625f;
+  --note-background-gray: #e7e7e5;
+  --note-color-brown: #795548;
+  --note-background-brown: #f1e5df;
+  --note-color-orange: #9a4f0a;
+  --note-background-orange: #fae6d4;
+  --note-color-yellow: #806000;
+  --note-background-yellow: #f5edc9;
+  --note-color-green: #2f6b39;
+  --note-background-green: #e0efdf;
+  --note-color-blue: #305ca8;
+  --note-background-blue: #dde8f8;
+  --note-color-purple: #7042a0;
+  --note-background-purple: #ece2f6;
+  --note-color-pink: #953e70;
+  --note-background-pink: #f6e2ef;
+  --note-color-red: #a52016;
+  --note-background-red: #f8dfdb;
   --presence-label: #ffffff;
 }
 
@@ -302,6 +364,24 @@
   --series-3: #dfa54a;
   --series-4: #7cc98a;
   --series-5: #e58ab9;
+  --note-color-gray: #b5b5b0;
+  --note-background-gray: #353537;
+  --note-color-brown: #d6ac91;
+  --note-background-brown: #493a33;
+  --note-color-orange: #f0ae72;
+  --note-background-orange: #4d3729;
+  --note-color-yellow: #dec974;
+  --note-background-yellow: #454025;
+  --note-color-green: #91c79a;
+  --note-background-green: #2f4134;
+  --note-color-blue: #a2bdf2;
+  --note-background-blue: #2d3a50;
+  --note-color-purple: #c4a2ef;
+  --note-background-purple: #3e3151;
+  --note-color-pink: #e5a8ce;
+  --note-background-pink: #4b3143;
+  --note-color-red: #f2a09a;
+  --note-background-red: #4c3230;
   --presence-label: #19191c;
 }
 
@@ -325,5 +405,23 @@
   --series-3: #fab387;
   --series-4: #a6e3a1;
   --series-5: #f5c2e7;
+  --note-color-gray: #bac2de;
+  --note-background-gray: #36394e;
+  --note-color-brown: #e7c2aa;
+  --note-background-brown: #4a3b37;
+  --note-color-orange: #fab387;
+  --note-background-orange: #4c3a35;
+  --note-color-yellow: #f9e2af;
+  --note-background-yellow: #484333;
+  --note-color-green: #a6e3a1;
+  --note-background-green: #344237;
+  --note-color-blue: #89b4fa;
+  --note-background-blue: #303c54;
+  --note-color-purple: #cba6f7;
+  --note-background-purple: #423552;
+  --note-color-pink: #f5c2e7;
+  --note-background-pink: #49374b;
+  --note-color-red: #f38ba8;
+  --note-background-red: #4b3542;
   --presence-label: #11111b;
 }

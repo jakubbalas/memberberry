@@ -1,10 +1,35 @@
-import type { Editor } from "@tiptap/core";
+import { Extension, type Editor } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { addTableColumn, addTableRow, backspaceInTable, deleteTableRow, moveTableRow, newlineInTable, selectedTable, selectTableCell } from "./tables.js";
 
-/** Mounts contextual table tools and row handles; all listeners are released on teardown. */
+const tableRowHandlesKey = new PluginKey("tableRowHandles");
+const mountedTableTools = new WeakMap<Editor, () => DecorationSet | null>();
+
+/** Install at editor construction, before any bound plugin views mount. */
+export const tableRowHandles = Extension.create({
+  name: "tableRowHandles",
+  addProseMirrorPlugins() {
+    const editor = this.editor;
+    return [new Plugin({
+      key: tableRowHandlesKey,
+      props: { decorations: () => mountedTableTools.get(editor)?.() ?? null },
+    })];
+  },
+});
+
+/** Refuse an incomplete constructor or duplicate UI without reconfiguring live history. */
+export function assertTableToolsReady(editor: Editor): void {
+  if (tableRowHandlesKey.get(editor.state) === undefined) {
+    throw new Error("Table tools require tableRowHandles in the initial editor extensions");
+  }
+  if (mountedTableTools.has(editor)) throw new Error("Table tools are already mounted for this editor");
+}
+
+/** Mounts table UI only; requires the initial tableRowHandles extension. */
 export function mountTableTools(editor: Editor, parent: HTMLElement): { destroy(): void } {
+  assertTableToolsReady(editor);
+  let destroyed = false;
   const element = document.createElement("div");
   element.className = "table-tools";
   element.setAttribute("role", "group");
@@ -25,7 +50,7 @@ export function mountTableTools(editor: Editor, parent: HTMLElement): { destroy(
       button.title = "Add row below (Cmd+Enter / Ctrl+Enter)";
       button.setAttribute("aria-keyshortcuts", "Meta+Enter Control+Enter");
     }
-    button.addEventListener("click", () => { action(); editor.view.focus(); });
+    button.addEventListener("click", () => { if (destroyed) return; action(); editor.view.focus(); });
     element.append(button);
     return button;
   });
@@ -43,7 +68,7 @@ export function mountTableTools(editor: Editor, parent: HTMLElement): { destroy(
   };
   const openRowMenu = (anchor: HTMLButtonElement, row: number): void => {
     closeRowMenu();
-    if (!editor.isEditable || !selectTableCell(editor, row)) return;
+    if (destroyed || !editor.isEditable || !selectTableCell(editor, row)) return;
     menuAnchor = anchor;
     menuDocument = editor.state.doc;
     menuRow = row;
@@ -63,6 +88,7 @@ export function mountTableTools(editor: Editor, parent: HTMLElement): { destroy(
       button.className = "editor-control";
       button.textContent = label;
       button.addEventListener("click", () => {
+        if (destroyed) return;
         const current = selectedTable(editor);
         if (editor.state.doc === menuDocument && current?.row === menuRow && current?.position === menuTable) action();
         closeRowMenu();
@@ -92,53 +118,49 @@ export function mountTableTools(editor: Editor, parent: HTMLElement): { destroy(
   let dragging: { row: number; table: number; document: typeof editor.state.doc } | undefined;
   let touchPointer: number | undefined;
   let dropTarget: Element | null = null;
-  const key = new PluginKey("tableRowHandles");
-  editor.registerPlugin(new Plugin({
-    key,
-    props: {
-      decorations: () => {
-        const table = selectedTable(editor);
-        if (!editor.isEditable || table === undefined) return null;
-        const decorations: Decoration[] = [];
-        let position = table.position + 1;
-        table.node.forEach((row, _offset, index) => {
-          if (index > 0) decorations.push(Decoration.widget(position + 2, () => {
-            const handle = document.createElement("button");
-            handle.type = "button";
-            handle.className = "table-row-handle";
-            handle.textContent = "⠿";
-            handle.draggable = true;
-            handle.contentEditable = "false";
-            handle.setAttribute("aria-label", `Move table row ${index}`);
-            handle.title = "Row actions · drag to move";
-            handle.setAttribute("aria-haspopup", "dialog");
-            handle.setAttribute("aria-expanded", "false");
-            handle.addEventListener("click", () => { openRowMenu(handle, index); });
-            handle.addEventListener("pointerdown", (event) => {
-              if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
-              event.preventDefault();
-              event.stopPropagation();
-              closeRowMenu();
-              selectTableCell(editor, index);
-              touchPointer = event.pointerId;
-              dragging = { row: index, table: table.position, document: editor.state.doc };
-            });
-            handle.addEventListener("dragstart", (event) => {
-              event.stopPropagation();
-              closeRowMenu();
-              selectTableCell(editor, index);
-              dragging = { row: index, table: table.position, document: editor.state.doc };
-              event.dataTransfer?.setData("text/plain", "");
-              if (event.dataTransfer !== null) event.dataTransfer.effectAllowed = "move";
-            });
-            return handle;
-          }, { key: `${table.position}:${index}`, side: -1, stopEvent: () => true }));
-          position += row.nodeSize;
+  const decorations = (): DecorationSet | null => {
+    const table = selectedTable(editor);
+    if (destroyed || !editor.isEditable || table === undefined) return null;
+    const decorations: Decoration[] = [];
+    let position = table.position + 1;
+    table.node.forEach((row, _offset, index) => {
+      if (index > 0) decorations.push(Decoration.widget(position + 2, () => {
+        const handle = document.createElement("button");
+        handle.type = "button";
+        handle.className = "table-row-handle";
+        handle.textContent = "⠿";
+        handle.draggable = true;
+        handle.contentEditable = "false";
+        handle.setAttribute("aria-label", `Move table row ${index}`);
+        handle.title = "Row actions · drag to move";
+        handle.setAttribute("aria-haspopup", "dialog");
+        handle.setAttribute("aria-expanded", "false");
+        handle.addEventListener("click", () => { openRowMenu(handle, index); });
+        handle.addEventListener("pointerdown", (event) => {
+          if (destroyed) return;
+          if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+          event.preventDefault();
+          event.stopPropagation();
+          closeRowMenu();
+          selectTableCell(editor, index);
+          touchPointer = event.pointerId;
+          dragging = { row: index, table: table.position, document: editor.state.doc };
         });
-        return DecorationSet.create(editor.state.doc, decorations);
-      },
-    },
-  }));
+        handle.addEventListener("dragstart", (event) => {
+          if (destroyed) return;
+          event.stopPropagation();
+          closeRowMenu();
+          selectTableCell(editor, index);
+          dragging = { row: index, table: table.position, document: editor.state.doc };
+          event.dataTransfer?.setData("text/plain", "");
+          if (event.dataTransfer !== null) event.dataTransfer.effectAllowed = "move";
+        });
+        return handle;
+      }, { key: `${table.position}:${index}`, side: -1, stopEvent: () => true }));
+      position += row.nodeSize;
+    });
+    return DecorationSet.create(editor.state.doc, decorations);
+  };
   const targetRow = (element: EventTarget | null): number | undefined => {
     dropTarget?.classList.remove("table-drop-target");
     dropTarget = null;
@@ -250,8 +272,13 @@ export function mountTableTools(editor: Editor, parent: HTMLElement): { destroy(
   editor.view.dom.addEventListener("dragover", onDragOver, true);
   editor.view.dom.addEventListener("drop", onDrop, true);
   editor.view.dom.addEventListener("dragend", onDragEnd);
+  mountedTableTools.set(editor, decorations);
+  // why: same state/plugin list refreshes widgets without destroying any binding views.
+  editor.view.updateState(editor.state);
   refresh();
   return { destroy: () => {
+    if (destroyed) return;
+    destroyed = true;
     editor.off("transaction", refresh);
     editor.off("update", refresh);
     editor.view.dom.removeEventListener("click", onEmptyCellClick);
@@ -269,7 +296,8 @@ export function mountTableTools(editor: Editor, parent: HTMLElement): { destroy(
     editor.view.dom.removeEventListener("dragover", onDragOver, true);
     editor.view.dom.removeEventListener("drop", onDrop, true);
     editor.view.dom.removeEventListener("dragend", onDragEnd);
-    editor.unregisterPlugin(key);
+    mountedTableTools.delete(editor);
+    if (!editor.isDestroyed) editor.view.updateState(editor.state);
     element.remove();
   } };
 }

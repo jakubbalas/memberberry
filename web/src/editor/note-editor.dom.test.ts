@@ -2,6 +2,9 @@
 
 import { Editor, type Extensions } from "@tiptap/core";
 import { readFileSync } from "node:fs";
+import { beforeAll } from "vitest";
+import { load } from "../notes.js";
+beforeAll(async () => { await load(readFileSync(`${process.cwd()}/src/wasm/mb_bg.wasm`)); });
 import { fileURLToPath } from "node:url";
 import { yXmlFragmentToProsemirrorJSON } from "y-prosemirror";
 import { describe, expect, it } from "vitest";
@@ -62,6 +65,26 @@ describe("mounted note editor", () => {
     if (title === null) throw new Error("title missing");
     expect(editor.state.selection.from).toBe(title.nodeSize + 1);
     expect(editor.state.selection.$from.parent.type.name).toBe("paragraph");
+    editor.destroy();
+    element.remove();
+  });
+
+  it("places the initial caret without scrolling, so a restored tab scroll offset survives a late body", async () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const editor = new Editor({
+      element,
+      extensions: [...createMemberberryExtensions(fullContract), protectedTitleExtension],
+      content: { type: "doc", content: [{ type: "heading", attrs: { level: 1 }, content: [{ type: "text", text: "Title" }] }, { type: "paragraph" }] },
+    });
+    const scrolled: boolean[] = [];
+    editor.on("transaction", ({ transaction }) => { scrolled.push(transaction.scrolledIntoView); });
+
+    placeCursorBelowTitle(editor);
+    // why: Tiptap's focus command scrolls in a deferred animation frame, not synchronously.
+    await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
+
+    expect(scrolled.filter(Boolean)).toEqual([]);
     editor.destroy();
     element.remove();
   });

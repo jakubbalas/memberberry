@@ -423,7 +423,8 @@ fn dollar_count(items: &[Inline]) -> usize {
             Inline::Emphasis(c)
             | Inline::Strong(c)
             | Inline::Strikethrough(c)
-            | Inline::Highlight(c) => dollar_count(c),
+            | Inline::Highlight(c)
+            | Inline::MbStyle { content: c, .. } => dollar_count(c),
             Inline::Link { content, dest, .. } => dollar_count(content) + dest.matches('$').count(),
             _ => 0,
         })
@@ -434,7 +435,7 @@ fn dollar_count(items: &[Inline]) -> usize {
 fn leading_char(item: &Inline) -> Option<char> {
     match item {
         Inline::Text(t) => t.chars().next(),
-        Inline::Emoji(_) => Some(':'),
+        Inline::Emoji(_) | Inline::MbStyle { .. } => Some(':'),
         Inline::Math(_) => Some('$'),
         Inline::Code(_) => Some('`'),
         Inline::Highlight(_) => Some('='),
@@ -517,6 +518,28 @@ fn inline(item: &Inline, ctx: Ctx, prev_star: bool, next_star: bool) -> String {
             format!(
                 "=={}==",
                 guard_edges(&inlines_in(c, ctx.nested(), Some('='), false), '=')
+            )
+        }
+        Inline::MbStyle { property, content } => {
+            let mut properties = vec![*property];
+            let mut children = content.as_slice();
+            while let [Inline::MbStyle { property, content }] = children {
+                properties.push(*property);
+                children = content;
+            }
+            let attributes = properties
+                .iter()
+                .map(|p| p.attribute())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let label_ctx = Ctx {
+                emphasis_delim: None,
+                at_line_start: false,
+                ..ctx
+            };
+            format!(
+                ":mb-style[{}]{{{attributes}}}",
+                inlines_in(children, label_ctx, Some('['), false)
             )
         }
         Inline::Code(c) => escape::code_span(c),

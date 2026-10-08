@@ -1,7 +1,15 @@
+import type { Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, signIn, test } from "./fixtures.js";
 import { E2E_VAULT, scratchNote } from "./environment.js";
+
+
+/** Insertion actions live under the editor's More menu since the selection popup (SPEC §8.4). */
+async function insertTable(page: Page): Promise<void> {
+  await page.locator(".editor-more > summary").click();
+  await page.getByRole("button", { name: "Insert table block", exact: true }).click();
+}
 
 test("Enter adds durable lines within an empty table cell", async ({ page }, info) => {
   await signIn(page);
@@ -10,7 +18,7 @@ test("Enter adds durable lines within an empty table cell", async ({ page }, inf
   const editor = page.locator(".editor-surface .tiptap");
   await expect(editor).toContainText("A note this test may edit");
   await editor.getByText("A note this test may edit.", { exact: true }).click();
-  await page.getByRole("button", { name: "Insert table block", exact: true }).click();
+  await insertTable(page);
   const table = editor.locator("table");
   const cell = table.locator("tr").nth(1).locator("td").nth(1);
   await cell.click();
@@ -41,7 +49,7 @@ test("table columns stay stable as empty cells gain long text", async ({ page },
   const editor = page.locator(".editor-surface .tiptap");
   await expect(editor).toContainText("A note this test may edit");
   await editor.getByText("A note this test may edit.", { exact: true }).click();
-  await page.getByRole("button", { name: "Insert table block", exact: true }).click();
+  await insertTable(page);
   const table = editor.locator("table");
   const widths = await table.locator("tr").first().locator("td").evaluateAll((cells) => cells.map((cell) => cell.getBoundingClientRect().width));
   await table.locator("tr").nth(1).locator("td").nth(1).click();
@@ -107,7 +115,7 @@ test("visual tables edit headers, grow, reorder and persist as Markdown", async 
   const editor = page.locator(".editor-surface .tiptap");
   await expect(editor).toContainText("A note this test may edit");
   await editor.getByText("A note this test may edit.", { exact: true }).click();
-  await page.getByRole("button", { name: "Insert table block", exact: true }).click();
+  await insertTable(page);
   const table = editor.locator("table");
   await expect(table.locator("tr")).toHaveCount(3);
   await table.locator("td").first().click();

@@ -15,8 +15,11 @@ export async function editorMarkdown(document: Doc): Promise<string> {
 }
 
 /** Parses source Markdown through WASM and replaces the editor content with the result. */
-export async function applySourceMarkdown(editor: Editor, markdown: string): Promise<void> {
-  applySourceMarkdownWith(await noteBridge(), editor.view, markdown);
+export async function applySourceMarkdown(editor: Editor, markdown: string, canApply: () => boolean = () => true): Promise<void> {
+  const bridge = await noteBridge();
+  // why: a terminal refusal can arrive while the codec loads; no draft may be applied then.
+  if (!canApply() || editor.isDestroyed) return;
+  applySourceMarkdownWith(bridge, editor.view, markdown);
 }
 
 /**

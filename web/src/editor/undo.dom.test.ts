@@ -2,6 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { Editor } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { afterEach, describe, expect, it } from "vitest";
 import { Doc } from "yjs";
 import { undo } from "y-prosemirror";
@@ -28,6 +29,22 @@ describe("collaborative editor undo shortcuts", () => {
   it("undoes a local text edit with Mod-z", () => {
     const editor = open();
     editor.commands.insertContent("Hello 🌍");
+    editor.commands.keyboardShortcut("Mod-z");
+    expect(editor.getText()).toBe("");
+  });
+
+  it("undoes a local text edit after another editor plugin is registered", () => {
+    const editor = open();
+    editor.registerPlugin(new Plugin({ key: new PluginKey("lateControls") }));
+    editor.commands.insertContent("Edited after mount");
+    editor.commands.keyboardShortcut("Mod-z");
+    expect(editor.getText()).toBe("");
+  });
+
+  it("retains undo history when editor plugins are registered after typing", () => {
+    const editor = open();
+    editor.commands.insertContent("Keep this undoable");
+    editor.registerPlugin(new Plugin({ key: new PluginKey("laterControl") }));
     editor.commands.keyboardShortcut("Mod-z");
     expect(editor.getText()).toBe("");
   });

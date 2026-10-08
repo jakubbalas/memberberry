@@ -1,8 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { Extensions } from "@tiptap/core";
 
 import type { LocalPersistence } from "./collaboration.js";
+import { load } from "../notes.js";
 import { startNoteEditor } from "./note-editor.js";
 
 function deferred<T>() {
@@ -18,6 +21,10 @@ function persistence(whenSynced: Promise<unknown>): LocalPersistence & { destroy
 }
 
 const element = {} as HTMLElement;
+
+// why: schema admission validates every replica with the real codec before binding; Node has
+// no fetch for the bundled module, so hand it the bytes as the other editor suites do.
+beforeAll(async () => { await load(readFileSync("src/wasm/mb_bg.wasm")); });
 
 describe("startNoteEditor", () => {
   it("waits for IndexedDB before mounting Tiptap with the generated extensions and Yjs binding", async () => {
@@ -44,7 +51,10 @@ describe("startNoteEditor", () => {
     expect(loadExtensions).toHaveBeenCalledOnce();
     expect(createEditor).toHaveBeenCalledWith({
       element,
-      extensions: expect.arrayContaining([expect.objectContaining({ name: "memberberryYjs" })]),
+      extensions: expect.arrayContaining([
+        expect.objectContaining({ name: "memberberryYjs" }),
+        expect.objectContaining({ name: "tableRowHandles" }),
+      ]),
       editable: true,
     });
     await session.destroy();

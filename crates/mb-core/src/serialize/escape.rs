@@ -157,6 +157,8 @@ fn needs_escape(
         // so even a lone `~` can pair with another one later in the block.
         '\\' | '`' | '*' | '[' | ']' | '<' | '~' => true,
 
+        ':' if rest.starts_with("mb-style[") => true,
+
         // Emphasis with `_` only fires at a word boundary, so `snake_case` stays clean.
         '_' => !is_word(prev) || !is_word(next),
 

@@ -149,7 +149,11 @@ fn build(
         });
     }
     copy_media(vault, destination, media, runtime)?;
-    write_text(&destination.join("site.css"), SITE_CSS)?;
+    // why: portable output has no app bundle; embed the canonical tokens and fixed rules.
+    write_text(
+        &destination.join("site.css"),
+        &format!("{NOTE_TOKENS}\n{SITE_CSS}\n{NOTE_FORMAT}"),
+    )?;
     write_text(&destination.join("site.js"), SITE_JS)?;
     let json = serde_json::to_string(&data).map_err(|error| error.to_string())?;
     write_text(
@@ -269,6 +273,9 @@ fn write_text(path: &Path, contents: &str) -> Result<(), String> {
     }
     fs::write(path, contents).map_err(|error| format!("writing {}: {error}", path.display()))
 }
+
+const NOTE_TOKENS: &str = include_str!("../../../web/src/shell/tokens.css");
+const NOTE_FORMAT: &str = include_str!("../../../web/src/editor/note-format.css");
 
 const SITE_CSS: &str = r#":root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:72rem;margin:auto;padding:1rem;line-height:1.6}header{display:flex;gap:1rem;align-items:center;flex-wrap:wrap;border-bottom:1px solid;padding-bottom:1rem}main{max-width:48rem}img{max-width:100%;height:auto}pre{overflow:auto;padding:1rem;background:CanvasText;color:Canvas}table{border-collapse:collapse}th,td{border:1px solid;padding:.4rem}a{color:LinkText}[data-search-results]:empty{display:none}"#;
 

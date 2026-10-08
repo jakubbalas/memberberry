@@ -13,8 +13,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { beforeAll, describe, expect, it } from "vitest";
+import { applyUpdate, Doc, encodeStateAsUpdate, XmlElement, XmlText } from "yjs";
 
-import { extract, load, normalize, periodicPath, schema, title, toHtml, validateSearchSegment } from "./notes.js";
+import { extract, load, normalize, periodicPath, schema, title, toHtml, validateSearchSegment, updateFromMarkdown, markdownFromUpdate } from "./notes.js";
 
 beforeAll(async () => {
   // Node cannot fetch a relative URL, so the bytes are handed in directly.
@@ -30,6 +31,53 @@ describe("normalize", () => {
   it("converges in one pass", async () => {
     const once = await normalize("# Title\n\n1) a\n2) b\n");
     expect(await normalize(once)).toBe(once);
+  });
+});
+
+describe("bounded namespace WASM boundary", () => {
+  it("canonicalizes four independent dimensions and preserves native labels and protected atoms", async () => {
+    const source = ':mb-style[مرحبا 😀 **bold** [link](https://example.test/a]b) [[Wiki]] #tag :berry: $x[y]$ `code]`]{size="large" background="yellow" color="red" underline="true"}';
+    const canonical = await normalize(source);
+    expect(await normalize(canonical)).toBe(canonical);
+    expect(await markdownFromUpdate(await updateFromMarkdown(canonical))).toBe(canonical);
+    const html = await toHtml(canonical, { note: "", media: "" });
+    for (const name of ["mb-underline", "mb-color-red", "mb-background-yellow", "mb-size-large"]) expect(html).toContain(`class="${name}"`);
+    expect(html).toContain("<strong>bold</strong>");
+    expect(html).not.toContain("style=");
+    const facts = await extract(canonical);
+    expect(facts.links.map(link => link.target)).toEqual(["Wiki"]);
+    expect(facts.tags).toEqual(["tag"]);
+  });
+
+  it("keeps rejected declarations literal across the actual compiled boundary", async () => {
+    for (const attrs of ['color="Red"', 'underline="false"', 'size="normal"', 'color="red" color="blue"', 'onclick="evil"']) {
+      const source = `:mb-style[KEEP 彩色]{${attrs}} SENTINEL tail`;
+      const html = await toHtml(source, { note: "", media: "" });
+      expect(html).toContain(source);
+      expect(html).not.toContain('<span class="mb-');
+      const canonical = await normalize(source);
+      expect(await markdownFromUpdate(await updateFromMarkdown(canonical))).toBe(canonical);
+    }
+  });
+
+  it("rejects malformed constructed Yjs mark attributes without modifying that candidate", async () => {
+    for (const [key, value] of Object.entries({
+      mb_underline: { value: "true" }, mb_color: { value: "#ff0000" },
+      mb_background: { value: "yellow", onclick: "evil" }, mb_size: { value: "normal" },
+    })) {
+      const doc = new Doc();
+      try {
+        applyUpdate(doc, await updateFromMarkdown("text"));
+        const paragraph = doc.getXmlFragment("prosemirror").get(0);
+        if (!(paragraph instanceof XmlElement)) throw new Error("actual paragraph required");
+        const text = paragraph.get(0);
+        if (!(text instanceof XmlText)) throw new Error("actual text required");
+        text.format(0, text.length, { [key]: value });
+        const before = encodeStateAsUpdate(doc);
+        await expect(markdownFromUpdate(before)).rejects.toThrow();
+        expect(encodeStateAsUpdate(doc)).toEqual(before);
+      } finally { doc.destroy(); }
+    }
   });
 });
 

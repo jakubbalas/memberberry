@@ -92,7 +92,7 @@ function createMarkExtension(name: string, definition: MarkDefinition) {
     ...(definition.excludes === undefined ? {} : { excludes: definition.excludes }),
     ...(definition.code === undefined ? {} : { code: definition.code }),
     ...(attributes === undefined ? {} : { addAttributes: () => attributesFor(attributes) }),
-    renderHTML: (props) => renderMark(name, props.HTMLAttributes),
+    renderHTML: (props) => renderMark(name, props.HTMLAttributes, definition),
   });
 }
 
@@ -197,8 +197,19 @@ function mediaSource(destination: string, media: MediaRenderContext | undefined)
   return `/api/v1/vaults/${encodeURIComponent(media.vault)}/media/${destination}`;
 }
 
-function renderMark(name: string, htmlAttributes: Readonly<Record<string, unknown>>): DOMOutputSpec {
+function renderMark(name: string, htmlAttributes: Readonly<Record<string, unknown>>, definition: MarkDefinition): DOMOutputSpec {
   switch (name) {
+    case "mb_color":
+    case "mb_background":
+    case "mb_size": {
+      const value = htmlAttributes["value"];
+      if (typeof value !== "string" || definition.attrs?.["value"]?.values?.includes(value) !== true) {
+        throw new Error(`Invalid ${name} value`);
+      }
+      return ["span", { class: `mb-${name.slice(3).replaceAll("_", "-")}-${value}` }, 0];
+    }
+    case "mb_underline":
+      return ["span", { class: "mb-underline" }, 0];
     case "strong":
       return ["strong", htmlAttributes, 0];
     case "em":

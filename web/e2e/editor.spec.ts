@@ -28,7 +28,7 @@ test("opening a note loads the bundle and mounts an editable surface", async ({ 
   const showNavigation = page.getByRole("button", { name: "Show Navigation", exact: true });
   if (await showNavigation.isVisible()) await showNavigation.click();
   await page.getByRole("tree", { name: "Notes", exact: true })
-    .getByRole("treeitem", { name: /^Welcome (?:Add|Remove) bookmark for Welcome$/ }).click();
+    .getByRole("treeitem", { name: "Welcome", exact: true }).click();
 
   const editor = page.locator(EDITOR);
   await expect(editor).toBeVisible();

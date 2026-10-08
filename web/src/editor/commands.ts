@@ -1,7 +1,8 @@
 /** Generated-schema-safe editor commands and Markdown input rules. */
 
-import { Extension, InputRule, textblockTypeInputRule, wrappingInputRule, type Editor } from "@tiptap/core";
+import { Extension, InputRule, markInputRule, textblockTypeInputRule, wrappingInputRule, type Editor } from "@tiptap/core";
 import { Fragment } from "@tiptap/pm/model";
+import { liftListItem, sinkListItem, splitListItem } from "@tiptap/pm/schema-list";
 import { parseNaturalDate, toggledTaskAttributes, type TaskPriority } from "./task-metadata.js";
 import type { EmojiEntry } from "../notes.js";
 import { insertTable } from "./tables.js";
@@ -19,6 +20,7 @@ export const memberberryInputRules = Extension.create({
   name: "memberberryInputRules",
   addInputRules() {
     const { heading, bullet_list, blockquote } = this.editor.schema.nodes;
+    const code = this.editor.schema.marks["code"];
     if (heading === undefined || bullet_list === undefined || blockquote === undefined) return [];
     return [
       textblockTypeInputRule({ find: /^(#{1,6})\s$/, type: heading, getAttributes: (match) => ({ level: match[1]?.length ?? 1 }) }),
@@ -26,7 +28,34 @@ export const memberberryInputRules = Extension.create({
       wrappingInputRule({ find: /^>\s$/, type: blockquote }),
       codeFenceRule(),
       taskRule(),
+      ...(code === undefined ? [] : [markInputRule({
+        find: /(?<![\\`])`([^`\n]+)(?<!\\)`$/u, type: code,
+      })]),
     ];
+  },
+  addKeyboardShortcuts() {
+    const item = this.editor.schema.nodes["list_item"];
+    const inBullet = (): boolean => {
+      const { $from } = this.editor.state.selection;
+      for (let depth = $from.depth; depth > 1; depth -= 1) {
+        if ($from.node(depth).type === item && $from.node(depth - 1).type.name === "bullet_list") return true;
+      }
+      return false;
+    };
+    const apply = (command: ReturnType<typeof splitListItem>): boolean =>
+      this.editor.isEditable && command(this.editor.state, this.editor.view.dispatch);
+    return {
+      Enter: () => {
+        if (item === undefined || !inBullet()) return false;
+        const { $from } = this.editor.state.selection;
+        // why: the list schema permits block*; generic splitBlock inserts a second
+        // paragraph *inside* the item rather than a new sibling.
+        if ($from.parent.content.size === 0) return apply(liftListItem(item));
+        return apply(splitListItem(item));
+      },
+      Tab: () => item !== undefined && inBullet() && apply(sinkListItem(item)),
+      "Shift-Tab": () => item !== undefined && inBullet() && apply(liftListItem(item)),
+    };
   },
 });
 

@@ -1,5 +1,8 @@
 import type { Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, signIn, test } from "./fixtures.js";
+import { E2E_VAULT } from "./environment.js";
 
 const EDITOR = ".editor-surface .tiptap";
 
@@ -117,8 +120,13 @@ test("[[ lookup shows title and path and accepts keyboard or touch selection", a
   if (info.project.name === "mobile") await option.tap();
   else await page.keyboard.press("Enter");
   await expect(suggestions).toBeHidden();
-  const inserted = editor.locator('[data-wikilink][data-target="Projects/Roadmap"]');
+  const inserted = editor.getByRole("link", { name: "Roadmap", exact: true });
   await expect(inserted).toBeVisible();
+  await expect(inserted).toHaveAttribute("href", "Projects/Roadmap.md");
+  await expect.poll(() => readFileSync(join(E2E_VAULT, source), "utf8"), { timeout: 15_000 })
+    .toContain("[Roadmap](Projects/Roadmap.md)");
+  await page.reload();
+  await expect(inserted).toHaveAttribute("href", "Projects/Roadmap.md");
   await inserted.click();
   await expect(page.locator(EDITOR).getByRole("heading", { name: "Roadmap", exact: true })).toBeVisible();
 });

@@ -10,6 +10,11 @@ import {
   type LocalPersistence,
 } from "./collaboration.js";
 import type { ConnectionState } from "./sync.js";
+import { SCHEMA_VERSION } from "./schema-admission.js";
+import { beforeAll } from "vitest";
+import { readFileSync } from "node:fs";
+import { load } from "../notes.js";
+beforeAll(async () => { await load(readFileSync(new URL("../wasm/mb_bg.wasm", import.meta.url))); });
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
@@ -20,9 +25,13 @@ function deferred<T>() {
 }
 
 describe("persistenceName", () => {
+  it("isolates the current schema body from the old unversioned replica", () => {
+    expect(persistenceName("vault", "note")).not.toBe("memberberry:ydoc:vault:note");
+    expect(persistenceName("vault", "note")).toContain(`schema:${SCHEMA_VERSION}:`);
+  });
   it("keeps vault and note identities unambiguous", () => {
     expect(persistenceName("personal/work", "a:b")).not.toBe(persistenceName("personal", "work/a:b"));
-    expect(persistenceName("personal/work", "a:b")).toBe("memberberry:ydoc:personal%2Fwork:a%3Ab");
+    expect(persistenceName("personal/work", "a:b")).toBe(`memberberry:schema:${SCHEMA_VERSION}:ydoc:personal%2Fwork:a%3Ab`);
   });
 
   it("rejects an incomplete local identity", () => {
@@ -48,7 +57,7 @@ describe("createNoteCollaboration", () => {
     });
     await Promise.resolve();
 
-    expect(createPersistence).toHaveBeenCalledWith("memberberry:ydoc:vault:note", collaboration.document);
+    expect(createPersistence).toHaveBeenCalledWith(persistenceName("vault", "note"), collaboration.document);
     expect(collaboration.fragment).toBe(collaboration.document.getXmlFragment(PROSEMIRROR_ROOT));
     expect(ready).toBe(false);
 

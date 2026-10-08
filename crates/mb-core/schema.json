@@ -18,7 +18,7 @@
     "  string | boolean | integer | enum | date | string[] | enum[]",
     "`optional: true` means the attribute's default is null."
   ],
-  "version": 1,
+  "version": 3,
   "topNode": "doc",
 
   "nodes": {
@@ -249,10 +249,10 @@
     "strikethrough": { "markdown": "~~x~~" },
     "highlight": { "markdown": "==x==" },
     "code": {
-      "excludes": "_",
+      "excludes": "code mb_underline mb_color mb_background mb_size",
       "code": true,
       "markdown": "`x`",
-      "$comment": "Excludes every other mark: a code span's content is literal, so emphasis inside it has no Markdown rendering."
+      "$comment": "Self-exclusion keeps the native Y.Text code key stable. Ordinary native wrappers around literal Code are supported; namespace properties are mutually exclusive with Code."
     },
     "link": {
       "attrs": {
@@ -260,6 +260,22 @@
         "title": { "type": "string", "optional": true }
       },
       "markdown": "[text](href) or [text](href \"title\")"
+    },
+    "mb_underline": { "excludes": "mb_underline code", "markdown": ":mb-style[text]{underline=\"true\"}" },
+    "mb_color": {
+      "excludes": "mb_color code",
+      "attrs": { "value": { "type": "enum", "values": ["gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red"], "default": "gray" } },
+      "markdown": ":mb-style[text]{color=\"value\"}"
+    },
+    "mb_background": {
+      "excludes": "mb_background code",
+      "attrs": { "value": { "type": "enum", "values": ["gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red"], "default": "gray" } },
+      "markdown": ":mb-style[text]{background=\"value\"}"
+    },
+    "mb_size": {
+      "excludes": "mb_size code",
+      "attrs": { "value": { "type": "enum", "values": ["small", "large"], "default": "small" } },
+      "markdown": ":mb-style[text]{size=\"value\"}"
     }
   }
 }

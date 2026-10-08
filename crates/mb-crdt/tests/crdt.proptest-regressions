@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 538c6562ed5104792c62bdb798d268d44f0bb1a34e41ead8a473666a5fea78fd # shrinks to doc = Document { frontmatter: Frontmatter { id: None, created: None, updated: None, tags: [], aliases: [], icon: None, extra: {} }, blocks: [Block { kind: Blockquote([Block { kind: Heading { level: HeadingLevel(1), content: [Strikethrough([Image { dest: "media/ab/cd/a.png", alt: "a" }])] }, anchor: None }]), anchor: None }] }
+cc 8ddf6633c843d83bd43b44c7ec9a3945968eea2c0b36fbbd8e9e8da45224bab3 # shrinks to inline = Link { dest: "https://example.test", title: None, content: [Text("0"), Text("'")] }
+cc 944a72e8742e3f89a70279e7d417fc1cd039b2d1eeeb911075d8378bdb690c47 # shrinks to inline = Link { dest: "https://example.test/0", title: None, content: [MbStyle { property: Underline, content: [Text("<")] }, Text("A")] }
+cc 1a72e66ceafb2b4cce425310d42f6268ac638d4f0faf37ff6269455205cac827 # shrinks to inline = Strong([Link { dest: "https://example.test/0", title: None, content: [Text("A"), Strikethrough([Text("<")])] }, Text("a")])

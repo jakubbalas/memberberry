@@ -213,7 +213,8 @@ fn walk_inlines(items: &[Inline], out: &mut Extracted) {
             Inline::Emphasis(c)
             | Inline::Strong(c)
             | Inline::Strikethrough(c)
-            | Inline::Highlight(c) => walk_inlines(c, out),
+            | Inline::Highlight(c)
+            | Inline::MbStyle { content: c, .. } => walk_inlines(c, out),
             Inline::Link { dest, content, .. } => {
                 record_media(dest, &plain_text(content), out);
                 walk_inlines(content, out);
@@ -289,7 +290,8 @@ pub fn plain_text(items: &[Inline]) -> String {
             Inline::Emphasis(c)
             | Inline::Strong(c)
             | Inline::Strikethrough(c)
-            | Inline::Highlight(c) => out.push_str(&plain_text(c)),
+            | Inline::Highlight(c)
+            | Inline::MbStyle { content: c, .. } => out.push_str(&plain_text(c)),
             Inline::Link { content, .. } => out.push_str(&plain_text(content)),
             Inline::Image { alt, .. } => out.push_str(alt),
             Inline::WikiLink(w) => {

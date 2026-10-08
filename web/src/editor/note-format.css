@@ -1,0 +1,29 @@
+/* Fixed Rust/PM namespace classes. Shared by editor and standalone note output.
+ * Parent integration includes this after the existing note rules. No authored CSS.
+ */
+.mb-underline { text-decoration-line: underline; }
+.mb-size-small { font-size: var(--note-size-small); }
+.mb-size-large { font-size: var(--note-size-large); }
+
+.mb-color-gray, .mb-color-gray a { color: var(--note-color-gray); }
+.mb-background-gray { --mb-note-background: var(--note-background-gray); background-color: var(--mb-note-background); }
+.mb-color-brown, .mb-color-brown a { color: var(--note-color-brown); }
+.mb-background-brown { --mb-note-background: var(--note-background-brown); background-color: var(--mb-note-background); }
+.mb-color-orange, .mb-color-orange a { color: var(--note-color-orange); }
+.mb-background-orange { --mb-note-background: var(--note-background-orange); background-color: var(--mb-note-background); }
+.mb-color-yellow, .mb-color-yellow a { color: var(--note-color-yellow); }
+.mb-background-yellow { --mb-note-background: var(--note-background-yellow); background-color: var(--mb-note-background); }
+.mb-color-green, .mb-color-green a { color: var(--note-color-green); }
+.mb-background-green { --mb-note-background: var(--note-background-green); background-color: var(--mb-note-background); }
+.mb-color-blue, .mb-color-blue a { color: var(--note-color-blue); }
+.mb-background-blue { --mb-note-background: var(--note-background-blue); background-color: var(--mb-note-background); }
+.mb-color-purple, .mb-color-purple a { color: var(--note-color-purple); }
+.mb-background-purple { --mb-note-background: var(--note-background-purple); background-color: var(--mb-note-background); }
+.mb-color-pink, .mb-color-pink a { color: var(--note-color-pink); }
+.mb-background-pink { --mb-note-background: var(--note-background-pink); background-color: var(--mb-note-background); }
+.mb-color-red, .mb-color-red a { color: var(--note-color-red); }
+.mb-background-red { --mb-note-background: var(--note-background-red); background-color: var(--mb-note-background); }
+
+/* why: native highlight stays in the model/wire, while an explicit namespace background
+ * wins visually whether the generated schema puts <mark> inside or outside its span. */
+[class*="mb-background-"] mark { background-color: var(--mb-note-background); color: inherit; }

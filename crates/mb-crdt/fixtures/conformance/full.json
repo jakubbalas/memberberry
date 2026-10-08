@@ -564,9 +564,44 @@
           }
         ],
         "type": "table"
+      },
+      {
+        "attrs": {
+          "anchor": null
+        },
+        "content": [
+          {
+            "marks": [
+              {
+                "attrs": {
+                  "value": "yellow"
+                },
+                "type": "mb_background"
+              },
+              {
+                "attrs": {
+                  "value": "red"
+                },
+                "type": "mb_color"
+              },
+              {
+                "attrs": {
+                  "value": "large"
+                },
+                "type": "mb_size"
+              },
+              {
+                "type": "mb_underline"
+              }
+            ],
+            "text": "underline and color",
+            "type": "text"
+          }
+        ],
+        "type": "paragraph"
       }
     ],
     "type": "doc"
   },
-  "version": 1
+  "version": 3
 }

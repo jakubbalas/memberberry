@@ -8,6 +8,7 @@
  */
 
 import { IDBFactory } from "fake-indexeddb";
+import { persistenceName } from "../editor/collaboration.js";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { openOfflineStore, type OfflineStore } from "./db.js";
@@ -466,7 +467,7 @@ describe("dropping a body", () => {
     // readable offline after it was revoked.
     const factory = new IDBFactory();
     await new Promise<void>((resolve) => {
-      const open = factory.open("memberberry:ydoc:personal:One.md", 1);
+      const open = factory.open(persistenceName("personal", "One.md"), 1);
       open.onupgradeneeded = (): void => {
         open.result.createObjectStore("updates");
       };
@@ -479,7 +480,7 @@ describe("dropping a body", () => {
     await dropBodyWith(factory)("personal", "One.md");
 
     const names = await factory.databases();
-    expect(names.map((entry) => entry.name)).not.toContain("memberberry:ydoc:personal:One.md");
+    expect(names.map((entry) => entry.name)).not.toContain(persistenceName("personal", "One.md"));
   });
 
   it("resolves even when the database is not there", async () => {
