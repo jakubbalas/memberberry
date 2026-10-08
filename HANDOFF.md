@@ -139,6 +139,13 @@ Its open items: the four-job CI gate on its exact head had not all passed (`perf
 out before the harness change); jsdom benchmarks are not device evidence; no broader
 concurrent/remote undo browser tests. Only `HANDOFF.md` conflicted textually.
 
+Joint verification on the integration branch: web unit suite 2045/2045, typecheck clean,
+browser specs editor-input / undo / document-links / selection-menu / tables / editor 54/54
+(desktop + mobile), style-host acceptance pass. One semantic overlap needed a test change:
+undo history is now owned by the session's Y.Doc (PR #3) — our lifecycle tests observed
+closure through an instance spy that cannot see `doc.destroy`; they now spy the prototype
+(separate commit). Not run here: `make check`, full `make e2e`.
+
 
 - Push `feat/editor-styling-r3` and open a PR when the user asks.
 - Conversion slice 2: list / task / quote / callout targets. Peer-text loss for these was
