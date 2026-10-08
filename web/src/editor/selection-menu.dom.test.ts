@@ -34,6 +34,9 @@ async function open(markdown = "# Title\n\nFirst body\n\nLater words\n", routed:
     ...createMemberberryExtensions(await schema()), tableRowHandles, protectedTitleExtension,
     createYjsBinding(ydoc.getXmlFragment(PROSEMIRROR_ROOT)),
   ] });
+  // jsdom has no layout; Alt-F10 places the popup synchronously, which needs coordinates.
+  // Geometry tests override this with their own values.
+  vi.spyOn(editor.view, "coordsAtPos").mockReturnValue({ left: 10, right: 20, top: 100, bottom: 120 });
   const shell = mountEditorShell({ editor, document: ydoc, panel, status, ...routed });
   cleanups.push(() => { shell.destroy(); editor.destroy(); ydoc.destroy(); panel.remove(); });
   const select = (text: string) => {
@@ -498,7 +501,7 @@ it("closes the More menu after inserting a block so it does not cover the new co
 });
 
 it("keeps the More menu open after Move so a block can be moved repeatedly", async () => {
-  const f = await open();
+  const f = await open(undefined, { noteKey: "more-move", connection: synced() });
   f.select("Later");
   const more = f.panel.querySelector<HTMLDetailsElement>(".editor-more");
   if (!more) throw new Error("missing More");
@@ -555,4 +558,41 @@ it("turns the selected paragraph into a bulleted list through the popup", async 
   f.select("Later");
   choose(turnInto(f), "bullet_list");
   expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\n- Later words\n");
+});
+
+it("leaves Alt-Shift-F10 to the block handles instead of opening formatting", async () => {
+  const f = await open(undefined, { noteKey: "alt-shift-f10", connection: synced() });
+  f.select("Later");
+  f.editor.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", altKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+  expect(f.menu()?.contains(document.activeElement)).toBe(false);
+});
+
+it("mounts block handles for a routed note and moves through the gate from More", async () => {
+  const peerDoc = new Doc();
+  const awareness = new Awareness(peerDoc);
+  cleanups.push(() => { awareness.destroy(); peerDoc.destroy(); });
+  const f = await open("# Title\n\nFirst body\n\nLater words\n", { noteKey: "routed-move", connection: synced(), awareness });
+  expect(document.querySelector(".block-handles")).not.toBeNull();
+  f.select("Later");
+  const up = f.panel.querySelector<HTMLButtonElement>(".editor-more [aria-label='Move block up']");
+  awareness.states.set(77, { user: { name: "peer" } });
+  up?.click();
+  expect(await editorMarkdown(f.ydoc), "a known peer refuses the move").toBe("# Title\n\nFirst body\n\nLater words\n");
+  awareness.states.delete(77);
+  up?.click();
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nLater words\n\nFirst body\n");
+});
+
+it("offers no movement in a local-only editor without a routed note identity", async () => {
+  const f = await open();
+  expect(document.querySelector(".block-handles")).toBeNull();
+  expect(f.panel.querySelector<HTMLButtonElement>(".editor-more [aria-label='Move block up']")?.hidden ?? true).toBe(true);
+});
+
+it("places the popup before Alt-F10 focuses it, since a still-invisible control cannot take focus", async () => {
+  const f = await open();
+  vi.spyOn(f.editor.view, "coordsAtPos").mockReturnValue({ left: 10, right: 20, top: 100, bottom: 120 });
+  f.select("Later");
+  f.editor.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", altKey: true, bubbles: true, cancelable: true }));
+  expect(f.menu()?.style.visibility).toBe("");
 });

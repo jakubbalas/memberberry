@@ -1,7 +1,6 @@
 /** Generated-schema-safe editor commands and Markdown input rules. */
 
 import { Extension, InputRule, markInputRule, textblockTypeInputRule, wrappingInputRule, type Editor } from "@tiptap/core";
-import { Fragment } from "@tiptap/pm/model";
 import { liftListItem, sinkListItem, splitListItem } from "@tiptap/pm/schema-list";
 import { parseNaturalDate, toggledTaskAttributes, type TaskPriority } from "./task-metadata.js";
 import type { EmojiEntry } from "../notes.js";
@@ -159,25 +158,6 @@ export function toggleTask(editor: Editor, now?: Date): boolean {
   // Shared with the inline checkbox in `task-view.ts`: two ways to complete a task that
   // disagreed about the `✅` date would be two different documents on disk.
   return editor.chain().focus().updateAttributes("task_item", toggledTaskAttributes(editor.getAttributes("task_item"), now)).run();
-}
-
-/** Moves the selected top-level block one position, preserving its generated node shape. */
-export function moveCurrentBlock(editor: Editor, direction: "up" | "down"): boolean {
-  const { $from } = editor.state.selection;
-  const index = $from.index(0);
-  const current = editor.state.doc.child(index);
-  const siblingIndex = direction === "up" ? index - 1 : index + 1;
-  if (siblingIndex < 0 || siblingIndex >= editor.state.doc.childCount) return false;
-  const sibling = editor.state.doc.child(siblingIndex);
-  let start = 0;
-  for (let position = 0; position < Math.min(index, siblingIndex); position += 1) {
-    start += editor.state.doc.child(position).nodeSize;
-  }
-  const end = start + current.nodeSize + sibling.nodeSize;
-  const content = direction === "up" ? [current, sibling] : [sibling, current];
-  const transaction = editor.state.tr.replaceWith(start, end, Fragment.fromArray(content));
-  editor.view.dispatch(transaction.scrollIntoView());
-  return true;
 }
 
 /** Commands exposed by the slash menu. */

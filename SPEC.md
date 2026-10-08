@@ -1953,6 +1953,16 @@ in this iteration or relabel the failing partition probes as successes.
   serialized content. Parent integration, rebuilt desktop/mobile browser saves/reopen and
   independent review are required before declaring this slice verified.
 
+**Implemented: movement wired (2026-10-08).** Routed notes mount the block handles
+(hover/focus grip, `⋯` menu with Move up/down and the visible single-editor limit, pointer
+drag with an insertion indicator; Alt-Shift-F10 opens the menu — plain Alt-F10 stays with
+the formatting popup). More's Move up/down use the same gated mover; the old ungated
+adjacent swap is removed, and local-only editors show no movement. A node selection on an
+atom inside the moved root follows it, and undo/redo return the selection to the moved
+root (its offset is recorded on the undo stack item, since a move is delete + insert and
+y-prosemirror's relative positions would land in a neighbour). Not yet: an independent
+review and a physical-phone pass of drag.
+
 **Structural-conversion scope decision, 2026-10-04.** Held peer typing survives ordinary
 edits but can disappear during heading/list/quote/callout conversions through the current
 binding, even when replicas converge; local undo does not recover that intent. After this

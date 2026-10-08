@@ -352,6 +352,10 @@ export function mountSelectionMenu(options: SelectionMenuOptions): SelectionMenu
     handoff();
     if (!token) return false;
     reveal();
+    // why: `reveal` keeps the popup visibility:hidden until placed, and a hidden control
+    // cannot take focus. An explicit keyboard request places it now instead of next frame.
+    if (frame !== undefined) window.cancelAnimationFrame(frame);
+    position();
     controls.find((control) => !control.disabled)?.focus({ preventScroll: true });
     schedule();
     return true;
@@ -438,7 +442,8 @@ export function mountSelectionMenu(options: SelectionMenuOptions): SelectionMenu
   };
   const onKey = (event: KeyboardEvent): void => {
     if (dom.contains(event.target as Node) && (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key) || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a"))) beginSelectionIntent(event);
-    if (event.altKey && event.key === "F10" && dom.contains(event.target as Node)) {
+    // why: Alt-Shift-F10 belongs to the block handles; only plain Alt-F10 opens formatting.
+    if (event.altKey && !event.shiftKey && event.key === "F10" && dom.contains(event.target as Node)) {
       if (focus()) event.preventDefault();
     } else if (controls.includes(event.target as HTMLButtonElement) && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
       event.preventDefault();

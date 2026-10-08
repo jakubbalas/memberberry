@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { createMemberberryExtensions } from "./schema.js";
 import { emojiAutocomplete, emojiSuggestions } from "./emoji-autocomplete.js";
-import { insertBlock, memberberryInputRules, moveCurrentBlock, resolveEmojiInput, resolveEmojiShortcode, setTaskDue, setTaskPriority, toggleTask } from "./commands.js";
+import { insertBlock, memberberryInputRules, resolveEmojiInput, resolveEmojiShortcode, setTaskDue, setTaskPriority, toggleTask } from "./commands.js";
 
 const CONTRACT = {
   version: 1,
@@ -85,18 +85,6 @@ describe("editor commands", () => {
     expect(JSON.stringify(view.getJSON())).toContain('"due":"2026-09-02"');
     expect(JSON.stringify(view.getJSON())).toContain('"priority":"high"');
     expect(JSON.stringify(view.getJSON())).toContain('"done":"2026-09-01"');
-    view.destroy();
-  });
-
-  it("moves the selected top-level block for keyboard and touch toolbar reordering", () => {
-    const view = editor();
-    view.commands.setContent({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "First" }] }, { type: "paragraph", content: [{ type: "text", text: "Second" }] }] });
-    view.commands.setTextSelection(8);
-
-    expect(moveCurrentBlock(view, "up")).toBe(true);
-    expect(JSON.stringify(view.getJSON())).toContain('"text":"Second"');
-    view.commands.setTextSelection(2);
-    expect(moveCurrentBlock(view, "up")).toBe(false);
     view.destroy();
   });
 });

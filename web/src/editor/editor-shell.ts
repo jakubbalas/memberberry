@@ -10,7 +10,7 @@ import type { ConnectionStatus } from "./collaboration.js";
 import type { ConnectionState } from "./sync.js";
 import { PRESENCE_CLIENT_ATTRIBUTE, trackPresenceIdle } from "./presence.js";
 
-import { insertBlock, moveCurrentBlock, runTaskSlashCommand, setHeading, setTaskDue, setTaskPriority, slashCommands, toggleTask } from "./commands.js";
+import { insertBlock, runTaskSlashCommand, setHeading, setTaskDue, setTaskPriority, slashCommands, toggleTask } from "./commands.js";
 import { CONFLICT_EVENT, mountConflicts, type ConflictDetail } from "./conflict-view.js";
 import { mountOutline } from "./outline.js";
 import { applySourceMarkdown, copyMarkdown, editorMarkdown, longNoteMode, setLongNoteMode } from "./source.js";
@@ -25,6 +25,9 @@ import type { MediaRenderContext } from "./schema.js";
 import { assertTableToolsReady, mountTableTools } from "./table-tools.js";
 import { mountSelectionMenu } from "./selection-menu.js";
 import { createSingleEditorGate } from "./single-editor.js";
+import { createBlockMover, type BlockMover } from "./block-move.js";
+import { mountBlockHandles } from "./block-handles.js";
+import "./block-handles.css";
 import "./selection-menu.css";
 
 export interface EditorShell {
@@ -94,6 +97,13 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   let latestMarkdown = "";
   let committedTitle = options.editor.state.doc.firstChild?.textContent.trim() ?? "";
 
+  // why: the old adjacent swap bypassed the single-editor gate (SPEC §8.4); More's Move
+  // actions go through the same gated mover as the block handles.
+  let mover: BlockMover | undefined;
+  const moveSelectedBlock = (direction: "up" | "down"): boolean => {
+    const token = mover?.capture(options.editor.state.selection.from);
+    return token !== undefined && mover !== undefined && mover.move(token, direction);
+  };
   for (const [label, action] of [
     ["Text", () => insertBlock(options.editor, "paragraph")],
     ["H1", () => setHeading(options.editor, 1)],
@@ -105,13 +115,15 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     ["Callout", () => insertBlock(options.editor, "callout")],
     ["Code", () => insertBlock(options.editor, "code_block")],
     ["Rule", () => insertBlock(options.editor, "divider")],
-    ["Move up", () => moveCurrentBlock(options.editor, "up")],
-    ["Move down", () => moveCurrentBlock(options.editor, "down")],
+    ["Move up", () => moveSelectedBlock("up")],
+    ["Move down", () => moveSelectedBlock("down")],
   ] as const) {
     const control = button(label, label.startsWith("Move") ? `Move block ${label.slice(5)}` : `Insert ${label.toLowerCase()} block`);
     // why: an open menu covers the block it just inserted. Moves keep it open so a block
     // can be stepped several places without reopening the menu.
     const closes = !label.startsWith("Move");
+    // why: movement needs the single-editor gate, which needs a routed note identity.
+    if (!closes && options.noteKey === undefined) control.hidden = true;
     control.addEventListener("click", () => { action(); if (closes) more.open = false; });
     secondary.append(control);
   }
@@ -177,6 +189,14 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     ...(options.awareness === undefined ? {} : { awareness: options.awareness }),
     ...(options.connection === undefined ? {} : { connection: options.connection }),
   });
+  const movement = options.noteKey === undefined ? undefined : {
+    editor: options.editor, document: options.document, noteKey: options.noteKey,
+    ...(options.awareness === undefined ? {} : { awareness: options.awareness }),
+    ...(options.connection === undefined ? {} : { connection: options.connection }),
+    canInteract: () => !sourceVisible && !sourcePending && !shellDestroyed && !terminal(),
+  };
+  mover = movement === undefined ? undefined : createBlockMover(movement);
+  const blockHandles = movement === undefined ? undefined : mountBlockHandles({ ...movement, panel: options.panel });
   const selectionMenu = mountSelectionMenu({ editor: options.editor, panel: options.panel,
     canInteract: () => !sourceVisible && !sourcePending && !shellDestroyed && !terminal(),
     onDraftStateChange: refreshReloadControls,
@@ -453,6 +473,8 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       emoji.destroy();
       tableTools.destroy();
       selectionMenu.destroy();
+      blockHandles?.destroy();
+      mover?.destroy();
       blockGate?.destroy();
       slash.destroy();
       window.removeEventListener(TEMPLATE_EVENT, onTemplate);
