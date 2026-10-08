@@ -224,6 +224,14 @@ export function mountSelectionMenu(options: SelectionMenuOptions): SelectionMenu
     popup.style.left = `${Math.max(left + 8, Math.min(x, right - rect.width - 8))}px`;
     popup.style.top = `${Math.max(top + 8, Math.min(y, bottom - rect.height - 8))}px`;
     popup.style.maxWidth = `${Math.max(0, right - left - 16)}px`;
+    popup.style.visibility = "";
+  };
+  // why: unhiding paints before the scheduled placement runs, so the first frame showed the
+  // popup at its previous (or no) position. It stays invisible until `position` places it.
+  const reveal = (): void => {
+    if (!popup.hidden) return;
+    popup.style.visibility = "hidden";
+    popup.hidden = false;
   };
   const schedule = (): void => {
     if (!popup.hidden && frame === undefined) frame = window.requestAnimationFrame(position);
@@ -314,7 +322,7 @@ export function mountSelectionMenu(options: SelectionMenuOptions): SelectionMenu
     }
     token = captureFormatSelection(editor, canInteract, intended ?? visible ?? editor.state.selection);
     if (!token) { hide(); return; }
-    popup.hidden = false;
+    reveal();
     syncControls();
     schedule();
   };
@@ -341,7 +349,7 @@ export function mountSelectionMenu(options: SelectionMenuOptions): SelectionMenu
   const focus = (): boolean => {
     handoff();
     if (!token) return false;
-    popup.hidden = false;
+    reveal();
     controls.find((control) => !control.disabled)?.focus({ preventScroll: true });
     schedule();
     return true;

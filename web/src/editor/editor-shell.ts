@@ -108,7 +108,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     ["Move up", () => moveCurrentBlock(options.editor, "up")],
     ["Move down", () => moveCurrentBlock(options.editor, "down")],
   ] as const) {
-    const control = button(label, `Insert ${label.toLowerCase()} block`);
+    const control = button(label, label.startsWith("Move") ? `Move block ${label.slice(5)}` : `Insert ${label.toLowerCase()} block`);
     // why: an open menu covers the block it just inserted. Moves keep it open so a block
     // can be stepped several places without reopening the menu.
     const closes = !label.startsWith("Move");

@@ -503,7 +503,9 @@ it("keeps the More menu open after Move so a block can be moved repeatedly", asy
   const more = f.panel.querySelector<HTMLDetailsElement>(".editor-more");
   if (!more) throw new Error("missing More");
   more.open = true;
-  f.panel.querySelector<HTMLButtonElement>(".editor-more [aria-label='Insert move up block']")?.click();
+  const moveUp = f.panel.querySelector<HTMLButtonElement>(".editor-more [aria-label='Move block up']");
+  expect(moveUp, "Move up is announced as a move, not an insertion").toBeInstanceOf(HTMLButtonElement);
+  moveUp?.click();
   expect(more.open).toBe(true);
 });
 
@@ -535,4 +537,15 @@ it("does not disable the style choices when a write turns pending mid-apply", as
   connection.subscribe(() => { seen.push(red.disabled); });
   red.click();
   expect(seen).not.toContain(true);
+});
+
+it("stays invisible until its first placement so it never paints at a stale position", async () => {
+  const f = await open();
+  // jsdom has no layout; placement only needs coordinates to finish.
+  vi.spyOn(f.editor.view, "coordsAtPos").mockReturnValue({ left: 10, right: 20, top: 100, bottom: 120 });
+  f.select("Later");
+  const popup = f.menu();
+  const before = popup?.style.visibility;
+  await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
+  expect([before, popup?.style.visibility]).toEqual(["hidden", ""]);
 });

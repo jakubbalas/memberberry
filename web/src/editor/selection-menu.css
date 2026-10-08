@@ -70,7 +70,9 @@
 }
 /* why: "no background" needs an outline to read as a swatch rather than a missing one. */
 .selection-style-choice[aria-label="No background"] > span:first-child {
-  outline: 1px dashed var(--border-subtle);
+  /* --border-subtle vanished against the raised surface on desktop. */
+  outline: 1px dashed var(--text-muted);
+  outline-offset: -1px;
 }
 .selection-link-editor {
   display: flex;
