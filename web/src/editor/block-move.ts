@@ -39,6 +39,12 @@ export interface BlockMover {
   destroy(): void;
 }
 interface Capture { doc: PMNode; node: PMNode; generation: number }
+/** Where the selection sat inside a moved root, relative to that root's start. */
+interface MovedSelection { readonly node: PMNode; readonly before: number; readonly after: number; readonly anchor: number; readonly head: number; readonly kind: "text" | "node" }
+// why: a move is a delete plus an insert, so the root becomes new Yjs items and
+// y-prosemirror's relative positions resolve into a neighbour on undo/redo. The undo stack
+// item carries the logical position instead, keyed privately on its metadata map.
+const MOVED_SELECTION = Symbol("memberberry-moved-selection");
 function title(doc: PMNode): PMNode | undefined {
   return doc.firstChild?.type.name === "heading" && doc.firstChild.attrs["level"] === 1 ? doc.firstChild : undefined;
 }
@@ -105,19 +111,57 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     tr.insert(insertion, saved.node);
     const originalTitle = title(saved.doc);
     if (originalTitle ? !tr.doc.firstChild?.eq(originalTitle) : title(tr.doc) !== undefined) return false;
-    const relocate = (pos: number) => pos > token.start && pos < token.start + saved.node.nodeSize ? insertion + pos - token.start : tr.mapping.map(pos);
+    const inside = (pos: number) => pos > token.start && pos < token.start + saved.node.nodeSize;
+    const relocate = (pos: number) => inside(pos) ? insertion + pos - token.start : tr.mapping.map(pos);
     if (selection instanceof TextSelection) tr.setSelection(TextSelection.create(tr.doc, relocate(selection.anchor), relocate(selection.head)));
     else if (selection instanceof NodeSelection && selection.from === token.start) tr.setSelection(NodeSelection.create(tr.doc, insertion));
+    // A nested atom (an image inside the moved paragraph) keeps its own node selection.
+    else if (selection instanceof NodeSelection && inside(selection.from)) tr.setSelection(NodeSelection.create(tr.doc, relocate(selection.from)));
     tr.setStoredMarks(editor.state.storedMarks);
     const manager = (yUndoPluginKey.getState(editor.state) as { undoManager: UndoManager } | undefined)?.undoManager;
     manager?.stopCapturing();
     try { editor.view.dispatch(tr); } finally { manager?.stopCapturing(); }
-    return editor.state.doc.eq(tr.doc);
+    const applied = editor.state.doc.eq(tr.doc);
+    const end = token.start + saved.node.nodeSize;
+    if (applied && selection.anchor >= token.start && selection.anchor <= end && selection.head >= token.start && selection.head <= end) {
+      manager?.undoStack[manager.undoStack.length - 1]?.meta.set(MOVED_SELECTION, {
+        node: saved.node, before: token.index, after: tr.doc.resolve(insertion).index(0),
+        anchor: selection.anchor - token.start, head: selection.head - token.start,
+        kind: selection instanceof NodeSelection ? "node" : "text",
+      } satisfies MovedSelection);
+    }
+    return applied;
   };
+  const history = (yUndoPluginKey.getState(editor.state) as { undoManager: UndoManager } | undefined)?.undoManager;
+  /** Puts the selection back inside the moved root once undo or redo has restored it. */
+  const restoreMovedSelection = ({ stackItem, type }: { stackItem: { meta: Map<unknown, unknown> }; type: "undo" | "redo" }): void => {
+    const moved = stackItem.meta.get(MOVED_SELECTION) as MovedSelection | undefined;
+    if (moved === undefined || destroyed || editor.isDestroyed || history === undefined) return;
+    // why: undoing creates the redo item (and vice versa); it must remember the same block.
+    const counterpart = type === "undo" ? history.redoStack[history.redoStack.length - 1] : history.undoStack[history.undoStack.length - 1];
+    counterpart?.meta.set(MOVED_SELECTION, moved);
+    const target = type === "undo" ? moved.before : moved.after;
+    let found: { index: number; start: number } | undefined;
+    editor.state.doc.forEach((node, start, index) => {
+      if (node.eq(moved.node) && (found === undefined || Math.abs(index - target) < Math.abs(found.index - target))) found = { index, start };
+    });
+    if (found === undefined) return;
+    const doc = editor.state.doc;
+    try {
+      const selection = moved.kind === "node"
+        ? NodeSelection.create(doc, found.start + moved.anchor)
+        : TextSelection.create(doc, found.start + moved.anchor, found.start + moved.head);
+      editor.view.dispatch(editor.state.tr.setSelection(selection));
+    } catch {
+      // why: the restored root no longer has that position; keep y-prosemirror's selection.
+    }
+  };
+  history?.on("stack-item-popped", restoreMovedSelection);
   const move = (token: BlockMoveToken, direction: "up" | "down"): boolean => drop(token, direction === "up" ? token.index - 1 : token.index + 2);
   const destroy = (): void => {
     if (destroyed) return;
     destroyed = true;
+    history?.off("stack-item-popped", restoreMovedSelection);
     editor.off("destroy", destroy);
     options.document.off("update", updated);
     options.document.off("destroy", destroy);

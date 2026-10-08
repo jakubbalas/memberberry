@@ -7,7 +7,7 @@ import { Editor } from "@tiptap/core";
 import { NodeSelection } from "@tiptap/pm/state";
 import { afterEach, beforeAll, expect, it } from "vitest";
 import { applyUpdate, Doc, encodeStateAsUpdate } from "yjs";
-import { undo } from "y-prosemirror";
+import { redo, undo } from "y-prosemirror";
 import { Awareness } from "y-protocols/awareness";
 import { load, schema, updateFromMarkdown, markdownFromUpdate } from "../notes.js";
 import { createConnectionStatus, createYjsBinding, PROSEMIRROR_ROOT } from "./collaboration.js";
@@ -247,3 +247,28 @@ for (const [kind, source, expectedLabel] of [
     expect(undo(f.editor.state)).toBe(true); expect(f.editor.state.doc.child(1).toJSON()).toEqual(root.toJSON());
   });
 }
+
+const ATOM_NOTE = "# Title\n\nAlpha ![a](media/a.png)\n\nBeta\n\nGamma\n\nDelta\n";
+function selectImage(f: Awaited<ReturnType<typeof open>>): void {
+  let image = -1;
+  f.editor.state.doc.descendants((node, pos) => { if (node.type.name === "image") image = pos; });
+  f.editor.view.dispatch(f.editor.state.tr.setSelection(NodeSelection.create(f.editor.state.doc, image)));
+}
+it("keeps a nested atom's node selection on that atom after its root moves", async () => {
+  const f = await open(ATOM_NOTE); const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "nested-atom" }); cleanups.push(mover.destroy);
+  selectImage(f);
+  const token = mover.capture(f.start(1) + 1); if (!token) throw new Error("capture missing");
+  expect(mover.move(token, "down")).toBe(true);
+  const selection = f.editor.state.selection;
+  expect(selection instanceof NodeSelection ? selection.node.type.name : selection.constructor.name).toBe("image");
+});
+it("returns the caret to the moved block on undo and on redo", async () => {
+  const f = await open(ATOM_NOTE); const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "undo-caret" }); cleanups.push(mover.destroy);
+  f.editor.commands.setTextSelection(f.start(1) + 3);
+  const token = mover.capture(f.start(1) + 1); if (!token) throw new Error("capture missing");
+  expect(mover.move(token, "down")).toBe(true);
+  const caret = () => { const { $head } = f.editor.state.selection; return [f.editor.state.doc.child($head.index(0)).textContent, $head.parentOffset]; };
+  expect(undo(f.editor.state)).toBe(true); const afterUndo = caret();
+  expect(redo(f.editor.state)).toBe(true); const afterRedo = caret();
+  expect([afterUndo, afterRedo]).toEqual([["Alpha ", 2], ["Alpha ", 2]]);
+});
