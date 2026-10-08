@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { Editor } from "@tiptap/core";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { applyUpdate, Doc, encodeStateAsUpdate } from "yjs";
+import { applyUpdate, Doc, encodeStateAsUpdate, UndoManager } from "yjs";
 import { createYjsBinding, PROSEMIRROR_ROOT } from "./collaboration.js";
 import { mountTableTools, tableRowHandles } from "./table-tools.js";
 import { selectTableCell } from "./tables.js";
@@ -16,8 +16,18 @@ import { mountEditorShell } from "./editor-shell.js";
 const contract: unknown = JSON.parse(readFileSync("../crates/mb-core/schema.json", "utf8"));
 beforeAll(async () => { await load(readFileSync("src/wasm/mb_bg.wasm")); });
 
+/**
+ * Counts real history closures. UndoManager binds `destroy` in its constructor and hands that
+ * copy to `doc.on("destroy")`, so an instance spy installed later never sees a session close.
+ */
+function trackHistoryClosure(): { closed(manager: UndoManager): number; restore(): void } {
+  const spy = vi.spyOn(UndoManager.prototype, "destroy");
+  return { closed: (manager) => spy.mock.contexts.filter((context) => context === manager).length, restore: () => { spy.mockRestore(); } };
+}
+
 describe("table UI and note-session undo ownership", () => {
   it("remounts usable handles without duplicate plugins or leaked table listeners", async () => {
+    const history = trackHistoryClosure();
     const ydoc = new Doc();
     const surface = document.createElement("div");
     const parent = document.createElement("div");
@@ -30,7 +40,7 @@ describe("table UI and note-session undo ownership", () => {
     applyUpdate(ydoc, await updateFromMarkdown("| Header |\n| --- |\n| Alpha |\n| Beta |\n"));
     const undoState = yUndoPluginKey.getState(editor.state);
     if (undoState === undefined) throw new Error("undo plugin missing");
-    const historyDestroy = vi.spyOn(undoState.undoManager, "destroy");
+    const manager = undoState.undoManager;
     const addWindow = vi.spyOn(window, "addEventListener");
     const removeWindow = vi.spyOn(window, "removeEventListener");
     const addSurface = vi.spyOn(editor.view.dom, "addEventListener");
@@ -72,11 +82,16 @@ describe("table UI and note-session undo ownership", () => {
           expect(removed.mock.calls.filter(call => call[0] === type && call[1] === listener)).toHaveLength(1);
         }
       }
-      expect(historyDestroy).not.toHaveBeenCalled();
-      expect(yUndoPluginKey.getState(editor.state)?.undoManager).toBe(undoState.undoManager);
+      expect(history.closed(manager)).toBe(0);
+      expect(yUndoPluginKey.getState(editor.state)?.undoManager).toBe(manager);
+      // SPEC §8.4: the stack lasts for the note session, which owns the Y.Doc; a view
+      // rebuild or editor teardown alone does not end it, the document's teardown does.
       editor.destroy();
-      expect(historyDestroy).toHaveBeenCalledTimes(1);
+      expect(history.closed(manager)).toBe(0);
+      ydoc.destroy();
+      expect(history.closed(manager)).toBe(1);
     } finally {
+      history.restore();
       tools?.destroy(); editor.destroy(); ydoc.destroy();
       addWindow.mockRestore(); removeWindow.mockRestore(); addSurface.mockRestore(); removeSurface.mockRestore();
       surface.remove(); parent.remove();
@@ -109,6 +124,7 @@ describe("table UI and note-session undo ownership", () => {
     document.body.append(panel);
     let editor: Editor | undefined;
     const persistenceDestroyed = vi.fn(async () => undefined);
+    const history = trackHistoryClosure();
     const session = await startNoteEditor({
       element: surface, vaultId: "lifecycle-fixture", noteId: "note",
       createPersistence: () => ({ whenSynced: Promise.resolve(), destroy: persistenceDestroyed }),
@@ -121,7 +137,6 @@ describe("table UI and note-session undo ownership", () => {
     const undoState = yUndoPluginKey.getState(actual.state);
     if (undoState === undefined) throw new Error("undo plugin missing");
     const manager = undoState.undoManager;
-    const destroyHistory = vi.spyOn(manager, "destroy");
     const plugins = actual.state.plugins;
     let shell: ReturnType<typeof mountEditorShell> | undefined;
     const canonical = async (): Promise<string> => (await noteBridge()).markdownFromUpdate(encodeStateAsUpdate(session.collaboration.document));
@@ -131,12 +146,12 @@ describe("table UI and note-session undo ownership", () => {
       actual.commands.insertContentAt(8, "First ");
       expect(manager.undoStack).toHaveLength(1);
       expect(await canonical()).toBe("# Title\n\nFirst Body\n");
-      expect(destroyHistory).not.toHaveBeenCalled();
+      expect(history.closed(manager)).toBe(0);
       for (let index = 0; index < 3; index += 1) {
         shell.destroy(); shell.destroy();
         expect(actual.state.plugins).toBe(plugins);
         expect(yUndoPluginKey.getState(actual.state)?.undoManager).toBe(manager);
-        expect(destroyHistory).not.toHaveBeenCalled();
+        expect(history.closed(manager)).toBe(0);
         expect(persistenceDestroyed).not.toHaveBeenCalled();
         expect(panel.querySelectorAll(".editor-controls")).toHaveLength(0);
         shell = mountEditorShell({ editor: actual, document: session.collaboration.document, panel, status });
@@ -148,11 +163,12 @@ describe("table UI and note-session undo ownership", () => {
       actual.commands.keyboardShortcut("Mod-Shift-z");
       expect(await canonical()).toBe("# Title\n\nFirst Body\n");
       shell.destroy();
-      expect(destroyHistory).not.toHaveBeenCalled();
+      expect(history.closed(manager)).toBe(0);
       await session.destroy(); await session.destroy();
-      expect(destroyHistory).toHaveBeenCalledTimes(1);
+      expect(history.closed(manager)).toBe(1);
       expect(persistenceDestroyed).toHaveBeenCalledTimes(1);
     } finally {
+      history.restore();
       shell?.destroy();
       await session.destroy();
       panel.remove();
