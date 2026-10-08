@@ -15,6 +15,7 @@ import { conflictMessage, connectionMessage, mountEditorShell } from "./editor-s
 import { PRESENCE_CLIENT_ATTRIBUTE } from "./presence.js";
 import { pdfViews } from "./pdf-view.js";
 import { createMemberberryExtensions } from "./schema.js";
+import { tableRowHandles } from "./table-tools.js";
 import { taskItemView } from "./task-view.js";
 
 const contractPath = resolve(process.cwd(), "../crates/mb-core/schema.json");
@@ -33,7 +34,7 @@ describe("editor shell", () => {
     panel.append(surface);
     const ydoc = new Doc();
     const editor = new Editor({ element: surface, extensions: [
-      ...createMemberberryExtensions(contract),
+      ...createMemberberryExtensions(contract), tableRowHandles,
       createYjsBinding(ydoc.getXmlFragment(PROSEMIRROR_ROOT)),
     ] });
     const onTitleChange = vi.fn();
@@ -61,7 +62,7 @@ describe("editor shell", () => {
     const status = document.createElement("p");
     panel.append(surface);
     document.body.append(panel, status);
-    const editor = new Editor({ element: surface, extensions: createMemberberryExtensions(contract) });
+    const editor = new Editor({ element: surface, extensions: [...createMemberberryExtensions(contract), tableRowHandles] });
     const ydoc = new Doc();
     applyUpdate(ydoc, await updateFromMarkdown("# Initial\n\nText\n"));
     const onTitleChange = vi.fn();
@@ -114,7 +115,7 @@ describe("editor shell", () => {
     document.body.append(panel, status);
     const editor = new Editor({
       element: surface,
-      extensions: createMemberberryExtensions(contract, { vault: "personal" }),
+      extensions: [...createMemberberryExtensions(contract, { vault: "personal" }), tableRowHandles],
     });
     const ydoc = new Doc();
     applyUpdate(ydoc, await updateFromMarkdown("# Initial\n"));
@@ -211,7 +212,7 @@ describe("editor shell", () => {
     const status = document.createElement("p");
     panel.append(surface);
     document.body.append(panel, status);
-    const editor = new Editor({ element: surface, extensions: createMemberberryExtensions(contract) });
+    const editor = new Editor({ element: surface, extensions: [...createMemberberryExtensions(contract), tableRowHandles] });
     const ydoc = new Doc();
     applyUpdate(ydoc, await updateFromMarkdown("# Initial\n"));
     let resolvePending: ((result: { path: string }) => void) | undefined;
@@ -258,7 +259,7 @@ describe("editor shell", () => {
     const editor = new Editor({
       element: surface,
       extensions: [
-        ...createMemberberryExtensions(contract),
+        ...createMemberberryExtensions(contract), tableRowHandles,
         pdfViews({ vault: "personal" }),
       ],
     });
@@ -308,7 +309,7 @@ describe("editor shell presence", () => {
     const status = document.createElement("p");
     panel.append(surface);
     document.body.append(panel, status);
-    const editor = new Editor({ element: surface, extensions: createMemberberryExtensions(contract) });
+    const editor = new Editor({ element: surface, extensions: [...createMemberberryExtensions(contract), tableRowHandles] });
     const ydoc = new Doc();
     applyUpdate(ydoc, await updateFromMarkdown("# Initial\n"));
     const awareness = new Awareness(ydoc);
@@ -475,7 +476,7 @@ describe("the toolbar above the virtual keyboard", () => {
     document.body.append(panel, status);
     const editor = new Editor({
       element: surface,
-      extensions: createMemberberryExtensions(contract),
+      extensions: [...createMemberberryExtensions(contract), tableRowHandles],
     });
     const ydoc = new Doc();
     applyUpdate(ydoc, await updateFromMarkdown("# Note\n"));
@@ -604,7 +605,7 @@ describe("what the control strip shows, and when", () => {
     document.body.append(panel, status);
     const editor = new Editor({
       element: surface,
-      extensions: [...createMemberberryExtensions(contract), taskItemView],
+      extensions: [...createMemberberryExtensions(contract), tableRowHandles, taskItemView],
     });
     const ydoc = new Doc();
     applyUpdate(ydoc, await updateFromMarkdown(markdown));
@@ -883,7 +884,7 @@ describe("the conflict count in the note header (SPEC 3.5)", () => {
     const editor = new Editor({
       element: surface,
       extensions: [
-        ...createMemberberryExtensions(contract),
+        ...createMemberberryExtensions(contract), tableRowHandles,
         conflictViews({ document: ydoc, bridge }),
         createYjsBinding(ydoc.getXmlFragment(PROSEMIRROR_ROOT)),
       ],

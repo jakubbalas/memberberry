@@ -218,7 +218,11 @@ test("native inline marks and safe link dialog retain selection on desktop and t
   await selectLater(page);
   await page.keyboard.press("Alt+F10");
   await page.keyboard.press("Home");
-  for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await expect(popup.getByRole("button", { name: "Italic", exact: true })).toBeFocused();
+  // why: Link sits immediately before Clear; counting from Home broke when Underline was added.
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowLeft");
   await expect(popup.getByRole("button", { name: "Link", exact: true })).toBeFocused();
   await page.keyboard.press("Enter");
   const input = popup.getByRole("textbox", { name: "Link destination", exact: true });
@@ -246,7 +250,10 @@ test("native inline marks and safe link dialog retain selection on desktop and t
   await expect.poll(disk, { timeout: 15_000 }).toBe(initial);
   await selectLater(page);
   await activate("Bold");
-  await expect(popup.getByRole("button", { name: "Inline code", exact: true })).toBeDisabled();
+  // SPEC §4.4: native wrappers may surround Code; only the mb- styles exclude it.
+  await activate("Inline code");
+  await expect.poll(disk, { timeout: 15_000 }).toBe(initial.replace("Later words", "**`Later words`**"));
+  await expect(popup.getByRole("button", { name: "Underline", exact: true })).toBeDisabled();
   await activate("Clear formatting");
   await selectLater(page);
   await page.getByRole("button", { name: "Toggle Markdown source view" }).click();
@@ -259,4 +266,69 @@ test("native inline marks and safe link dialog retain selection on desktop and t
   await page.keyboard.press("Shift+End");
   await expect(popup).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("Turn into converts the selected block to a heading, saves it, undoes in one step and reopens", async ({ page, browser }, info) => {
+  await signIn(page);
+  const path = `Turn into ${info.project.name} ${randomUUID()}.md`;
+  const initial = "# Title\n\nFirst body\n\nLater words\n";
+  expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path, content: initial } })).ok()).toBe(true);
+  await page.goto(`/v/personal/${encodeURIComponent(path)}`);
+  const editor = page.locator(EDITOR);
+  await expect(editor).toContainText("Later words");
+  const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
+  await selectLater(page);
+  const popup = page.getByRole("toolbar", { name: "Selected text formatting" });
+  const turnInto = popup.getByRole("combobox", { name: "Turn into", exact: true });
+  await expect(turnInto).toHaveValue("text");
+  await expect(turnInto).toBeEnabled();
+  await expect(popup).toBeInViewport();
+  await page.screenshot({ path: info.outputPath("turn-into.png") });
+  await turnInto.selectOption("h2");
+  await expect(editor.locator("h2")).toHaveText("Later words");
+  await expect.poll(disk, { timeout: 15_000 }).toBe(initial.replace("Later words", "## Later words"));
+  await expect(turnInto).toHaveValue("h2");
+  await editor.focus();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect.poll(disk, { timeout: 15_000 }).toBe(initial);
+  await selectLater(page);
+  await turnInto.selectOption("h3");
+  await expect.poll(disk, { timeout: 15_000 }).toBe(initial.replace("Later words", "### Later words"));
+  const fresh = await browser.newContext();
+  try {
+    const other = await fresh.newPage();
+    await signIn(other);
+    await other.goto(`/v/personal/${encodeURIComponent(path)}`);
+    await expect(other.locator(`${EDITOR} h3`)).toHaveText("Later words");
+  } finally { await fresh.close(); }
+});
+
+test("one A control opens labelled colour, background and size choices that apply and show what is set", async ({ page }, info) => {
+  await signIn(page);
+  const path = `Style panel ${info.project.name} ${randomUUID()}.md`;
+  const initial = "# Title\n\nFirst body\n\nLater words\n";
+  expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path, content: initial } })).ok()).toBe(true);
+  await page.goto(`/v/personal/${encodeURIComponent(path)}`);
+  const editor = page.locator(EDITOR);
+  await expect(editor).toContainText("Later words");
+  const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
+  await selectLater(page);
+  const popup = page.getByRole("toolbar", { name: "Selected text formatting" });
+  const toggle = popup.getByRole("button", { name: "Text color, background and size", exact: true });
+  await toggle.click();
+  const panel = popup.getByRole("dialog", { name: "Text color, background and size", exact: true });
+  await expect(panel.getByRole("group", { name: "Text color", exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Default text color", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await panel.getByRole("button", { name: "Red text", exact: true }).click();
+  await expect.poll(disk, { timeout: 15_000 }).toBe(initial.replace("Later words", ':mb-style[Later words]{color="red"}'));
+  await panel.getByRole("button", { name: "Yellow background", exact: true }).click();
+  await panel.getByRole("button", { name: "Large text size", exact: true }).click();
+  await expect.poll(disk, { timeout: 15_000 }).toBe(initial.replace("Later words", ':mb-style[Later words]{color="red" background="yellow" size="large"}'));
+  await expect(panel.getByRole("button", { name: "Red text", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(toggle.locator("span")).toHaveClass("mb-color-red mb-background-yellow");
+  await expect(popup).toBeInViewport();
+  await page.screenshot({ path: info.outputPath("style-panel.png") });
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+  await expect(toggle).toBeFocused();
 });

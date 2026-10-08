@@ -206,11 +206,18 @@ fn list_item(item: ListItem) -> ListItem {
 /// Flattens degenerate nesting, merges what renders identically, and recurses.
 #[must_use]
 pub fn inlines(items: Vec<Inline>) -> Vec<Inline> {
+    let styled = items.iter().any(crate::style::has_style);
+    let items = crate::style::normalize(items);
     let mut out: Vec<Inline> = Vec::with_capacity(items.len());
     for item in items {
         push(&mut out, canonical_inline(item));
     }
-    settle(out, None, None, false)
+    let out = settle(out, None, None, false);
+    if styled {
+        settle(crate::style::join_links(out), None, None, false)
+    } else {
+        out
+    }
 }
 
 /// Runs [`drop_unexpressible_marks`] to a fixpoint, at this level and inside every mark.
@@ -255,6 +262,10 @@ fn settle_children(item: Inline, inside_emphasis: bool) -> Inline {
         Inline::Strong(c) => Inline::Strong(settle(c, Some('*'), Some('*'), e)),
         Inline::Strikethrough(c) => Inline::Strikethrough(settle(c, Some('~'), Some('~'), e)),
         Inline::Highlight(c) => Inline::Highlight(settle(c, Some('='), Some('='), e)),
+        Inline::MbStyle { property, content } => Inline::MbStyle {
+            property,
+            content: settle(content, Some('['), Some(']'), false),
+        },
         Inline::Link {
             dest,
             title,
@@ -441,6 +452,10 @@ fn canonical_inline(item: Inline) -> Inline {
         Inline::Strong(c) => Inline::Strong(finish(c, Same::Strong, '*')),
         Inline::Strikethrough(c) => Inline::Strikethrough(finish(c, Same::Strikethrough, '~')),
         Inline::Highlight(c) => Inline::Highlight(finish(c, Same::Highlight, '=')),
+        Inline::MbStyle { property, content } => Inline::MbStyle {
+            property,
+            content: inlines(content),
+        },
         Inline::Link {
             dest,
             title,
@@ -560,6 +575,20 @@ pub(crate) fn push(out: &mut Vec<Inline>, item: Inline) {
         }
     }
     match (out.last_mut(), item) {
+        (
+            Some(Inline::MbStyle {
+                property: p,
+                content: prev,
+            }),
+            Inline::MbStyle {
+                property: q,
+                content: next,
+            },
+        ) if *p == q => {
+            for child in next {
+                push(prev, child);
+            }
+        }
         (Some(Inline::Text(prev)), Inline::Text(next)) => prev.push_str(&next),
         // Two adjacent code spans fuse: `` `a``a` `` is one span whose content is ``a``a``,
         // not two spans. Merging is the only expressible form.
@@ -593,6 +622,10 @@ pub(crate) fn flatten_breaks(content: Vec<Inline>) -> Vec<Inline> {
             Inline::Strong(c) => Inline::Strong(flatten_breaks(c)),
             Inline::Strikethrough(c) => Inline::Strikethrough(flatten_breaks(c)),
             Inline::Highlight(c) => Inline::Highlight(flatten_breaks(c)),
+            Inline::MbStyle { property, content } => Inline::MbStyle {
+                property,
+                content: flatten_breaks(content),
+            },
             Inline::Link {
                 dest,
                 title,

@@ -790,7 +790,11 @@ fn handle_sync_frame(
     outbound: tokio::sync::mpsc::UnboundedSender<ServerFrame>,
 ) -> Option<ServerFrame> {
     match frame {
-        ClientFrame::Subscribe { vault, note } => {
+        ClientFrame::Subscribe {
+            vault,
+            note,
+            schema_version,
+        } => {
             let Some(user) = state.websocket_user(auth, &vault) else {
                 return Some(SYNC_DENIED);
             };
@@ -798,13 +802,24 @@ fn handle_sync_frame(
                 Ok(target) => target,
                 Err(denial) => return Some(denial),
             };
-            Some(
-                state
-                    .security
-                    .sync
-                    .subscribe(&vault, &canonical, &note, &user, connection, outbound)
-                    .unwrap_or(SYNC_DENIED),
-            )
+            state
+                .security
+                .sync
+                .subscribe_versioned(
+                    &vault,
+                    &canonical,
+                    crate::sync::SchemaSubscription {
+                        note: &note,
+                        user: &user,
+                        connection,
+                        outbound,
+                        schema_version: schema_version.as_u64(),
+                    },
+                )
+                .err()
+                .map(|_| ServerFrame::Error {
+                    code: "schema_refresh_required",
+                })
         }
         ClientFrame::Update {
             vault,
@@ -818,6 +833,16 @@ fn handle_sync_frame(
                 Ok(target) => target,
                 Err(denial) => return Some(denial),
             };
+            if state
+                .security
+                .sync
+                .require_admitted(&vault, &canonical, connection)
+                .is_err()
+            {
+                return Some(ServerFrame::Error {
+                    code: "schema_refresh_required",
+                });
+            }
             if !matches!(role, mb_core::Role::Owner | mb_core::Role::Editor) {
                 return Some(ServerFrame::Error { code: "read_only" });
             }
@@ -864,6 +889,16 @@ fn handle_sync_frame(
                 Ok(target) => target,
                 Err(denial) => return Some(denial),
             };
+            if state
+                .security
+                .sync
+                .require_admitted(&vault, &canonical, connection)
+                .is_err()
+            {
+                return Some(ServerFrame::Error {
+                    code: "schema_refresh_required",
+                });
+            }
             state.security.sync.broadcast_awareness(
                 &vault,
                 &canonical,
@@ -5728,6 +5763,8 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
     out.push_str(" · Memberberry</title>\n<style>");
     out.push_str(TOKENS);
     out.push_str(STYLE);
+    // why: the asset-free fallback/public host must render the same fixed note marks.
+    out.push_str(NOTE_FORMAT);
     out.push_str("</style>\n</head>\n<body");
     // why: a class per page kind rather than a stylesheet per page. Sign-in and onboarding
     // are one decision each and are centred; the library is a listing and is not. Both are
@@ -5959,6 +5996,9 @@ async fn shutdown() {
 /// them, so the two cannot drift apart. The cost is a few KB of inline CSS per page, which
 /// is the right trade for a read-only fallback that must render with no network round trips.
 const TOKENS: &str = include_str!("../../../web/src/shell/tokens.css");
+
+/// Fixed namespace rules shared with the rich editor and portable note exports.
+const NOTE_FORMAT: &str = include_str!("../../../web/src/editor/note-format.css");
 
 /// The product lockup in every server-rendered header.
 ///

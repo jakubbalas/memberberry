@@ -10,13 +10,22 @@
 //! task `[-]` versus a literal `\[-\]`, or a callout header versus a quoted `\[!note\]`.
 //! Without the source, those two cases are indistinguishable and one of them must corrupt.
 
+// why: observations belong to the actual parser, never to oracle/reparse calls.
+macro_rules! observe {
+    ($field:ident, $value:expr) => {
+        #[cfg(test)]
+        $crate::parse::contract_checks::observe(|o| o.$field += $value);
+    };
+}
 pub mod inline;
 pub mod math;
+mod style;
 
 use core::ops::Range;
+use std::collections::HashSet;
 
 use pulldown_cmark::{
-    CodeBlockKind, Event, HeadingLevel as CmarkHeading, Options, Parser, Tag, TagEnd,
+    CodeBlockKind, Event, HeadingLevel as CmarkHeading, LinkType, Options, Parser, Tag, TagEnd,
 };
 
 use crate::frontmatter;
@@ -26,6 +35,10 @@ use crate::model::{
 };
 use crate::syntax;
 use crate::task::{self, TaskStatus};
+
+#[cfg(test)]
+#[path = "parser_contract_checks.rs"]
+mod contract_checks;
 
 /// Parses a complete note, frontmatter included.
 #[must_use]
@@ -56,6 +69,60 @@ pub fn options() -> Options {
     options
 }
 
+/// Original-source namespace ownership for the separate surgical rename policy.
+pub(crate) struct StyleRewriteScope {
+    pub(crate) whole: Range<usize>,
+    pub(crate) label: Option<Range<usize>>,
+    pub(crate) literal_gaps: Vec<Range<usize>>,
+}
+
+/// Reuses whole-note accepted native usage ownership, never a local reference resolver.
+pub(crate) fn style_rewrite_scopes(src: &str, options: Options) -> Vec<StyleRewriteScope> {
+    let scopes = style::rewrite_scopes(src, options);
+    if scopes.is_empty() {
+        return Vec::new();
+    }
+    let context = ParseContext::new(src, options);
+    scopes
+        .into_iter()
+        .map(|(whole, mut label)| {
+            let start = context
+                .owner_max_ends
+                .partition_point(|end| *end <= whole.start);
+            let end = context
+                .owners
+                .partition_point(|owner| owner.usage.bytes.start < whole.end);
+            let mut at = whole.start;
+            let mut literal_gaps = Vec::new();
+            for owner in context.owners.get(start..end).unwrap_or(&[]) {
+                let usage = &owner.usage.bytes;
+                if usage.start < whole.start || usage.end > whole.end {
+                    label = None; // why: an enclosing/cross-boundary owner is not literal Text.
+                    break;
+                }
+                if at < usage.start {
+                    literal_gaps.push(at..usage.start);
+                }
+                at = at.max(usage.end);
+            }
+            if at < whole.end {
+                literal_gaps.push(at..whole.end);
+            }
+            StyleRewriteScope {
+                whole,
+                label,
+                literal_gaps,
+            }
+        })
+        .collect()
+}
+
+/// Exact directive metadata source spans, shared with surgical rename scanning.
+#[must_use]
+pub fn style_metadata_spans(src: &str, options: Options) -> Vec<Range<usize>> {
+    style::metadata_spans(src, options)
+}
+
 /// Parses note body Markdown, without frontmatter.
 #[must_use]
 pub fn blocks(body: &str) -> Vec<Block> {
@@ -75,31 +142,1425 @@ pub fn blocks(body: &str) -> Vec<Block> {
     // inline scanner never looks, so that one span is dropped and the parse repeated. Each
     // round removes a span, so this terminates; in practice it never runs twice. It makes
     // the masker's correctness a performance question rather than a data-loss one.
+    let context = ParseContext::new(body, options);
     let mut skip: Vec<usize> = Vec::new();
     loop {
-        let (masked, math) = math::mask_except(body, options, &skip);
-        if math.is_empty() {
-            return parse_events(body, options, &math::Table::default());
-        }
-        let blocks = parse_events(&masked, options, &math);
+        let math = math::table_from_ranges(
+            body,
+            &context.math_ranges,
+            &skip,
+            format!("{}m:", context.token_prefix),
+        );
+        let Some(blocks) = context.parse_round(&math, &skip) else {
+            return context.raw_blocks();
+        };
         match blocks.iter().find_map(|b| leaked_start(b, &math)) {
-            Some(start) => skip.push(start),
+            Some(start) if !skip.contains(&start) => skip.push(start),
+            Some(_) => return context.raw_blocks(),
             None => return blocks,
         }
     }
 }
 
-fn parse_events(body: &str, options: Options, math: &math::Table) -> Vec<Block> {
-    let events: Vec<(Event<'_>, Range<usize>)> =
-        Parser::new_ext(body, options).into_offset_iter().collect();
-    let mut p = Cursor {
-        src: body,
-        ev: events,
-        i: 0,
-        math: math.clone(),
-        in_table_cell: false,
+// Original-body authority: later views cannot consume reference fuel again.
+type OwnedEvent = (Event<'static>, Range<usize>);
+#[derive(Clone)]
+struct ContextId(std::rc::Rc<()>);
+impl std::fmt::Debug for ContextId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ContextId({:p})", std::rc::Rc::as_ptr(&self.0))
+    }
+}
+impl PartialEq for ContextId {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for ContextId {}
+#[derive(Clone, Debug)]
+struct OriginalRange {
+    context: ContextId,
+    bytes: Range<usize>,
+}
+#[derive(Clone, Debug)]
+enum AtomKind {
+    Math(usize),
+    Style(usize),
+    Native(usize),
+}
+#[derive(Clone, Debug)]
+enum GuardEdge {
+    Open,
+    Close,
+}
+#[derive(Clone, Debug)]
+enum ViewOrigin {
+    Source(OriginalRange),
+    Atom(OriginalRange, AtomKind),
+    Guard(usize, GuardEdge),
+}
+#[derive(Clone, Debug)]
+struct ViewPiece {
+    view: Range<usize>,
+    origin: ViewOrigin,
+}
+#[derive(Debug)]
+struct SourceView {
+    context: ContextId,
+    text: String,
+    pieces: Vec<ViewPiece>,
+}
+impl SourceView {
+    fn tracked(self) -> Self {
+        #[cfg(test)]
+        contract_checks::observe(|o| {
+            o.map_segments += self.pieces.len();
+            o.live_view_bytes += self.text.capacity();
+            o.live_map_bytes += self.pieces.capacity() * std::mem::size_of::<ViewPiece>();
+            o.peak_view_bytes = o.peak_view_bytes.max(o.live_view_bytes);
+            o.peak_map_bytes = o.peak_map_bytes.max(o.live_map_bytes);
+        });
+        self
+    }
+    fn valid(&self, context: &ParseContext<'_>) -> bool {
+        if self.context != context.id() {
+            return false;
+        }
+        let mut cursor = 0;
+        for piece in &self.pieces {
+            if piece.view.start != cursor
+                || piece.view.end < cursor
+                || self.text.get(piece.view.clone()).is_none()
+            {
+                return false;
+            }
+            match &piece.origin {
+                ViewOrigin::Source(r) | ViewOrigin::Atom(r, _)
+                    if r.context != self.context || context.body.get(r.bytes.clone()).is_none() =>
+                {
+                    return false;
+                }
+                ViewOrigin::Source(r) if r.bytes.len() != piece.view.len() => return false,
+                ViewOrigin::Atom(r, kind) if !context.checked_atom(r, kind) => return false,
+                ViewOrigin::Guard(id, edge)
+                    if self.text.get(piece.view.clone())
+                        != Some(context.guard_token(*id, edge).as_str()) =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+            cursor = piece.view.end;
+        }
+        cursor == self.text.len()
+    }
+    fn identity(context: &ParseContext<'_>, range: Range<usize>) -> Option<Self> {
+        let source = context.original_range(range)?;
+        let text = context.body.get(source.bytes.clone())?.to_string();
+        let piece = ViewPiece {
+            view: 0..text.len(),
+            origin: ViewOrigin::Source(source),
+        };
+        Some(
+            Self {
+                context: context.id(),
+                text,
+                pieces: vec![piece],
+            }
+            .tracked(),
+        )
+    }
+    fn original_scope(
+        &self,
+        context: &ParseContext<'_>,
+        range: Range<usize>,
+    ) -> Option<OriginalRange> {
+        if !self.valid(context)
+            || range.start > range.end
+            || !self.text.is_char_boundary(range.start)
+            || !self.text.is_char_boundary(range.end)
+        {
+            return None;
+        }
+        let boundary = |at, ending| {
+            self.pieces.iter().find_map(|piece| {
+                if at < piece.view.start
+                    || at > piece.view.end
+                    || (ending && at == piece.view.start && at != piece.view.end)
+                {
+                    return None;
+                }
+                match &piece.origin {
+                    ViewOrigin::Source(original) => {
+                        Some(original.bytes.start + at - piece.view.start)
+                    }
+                    ViewOrigin::Atom(original, _) if at == piece.view.start => {
+                        Some(original.bytes.start)
+                    }
+                    ViewOrigin::Atom(original, _) if at == piece.view.end => {
+                        Some(original.bytes.end)
+                    }
+                    _ => None,
+                }
+            })
+        };
+        context.original_range(boundary(range.start, false)?..boundary(range.end, true)?)
+    }
+    fn exact_source(
+        &self,
+        context: &ParseContext<'_>,
+        range: Range<usize>,
+    ) -> Option<OriginalRange> {
+        let original = self.original_scope(context, range.clone())?;
+        let mut cursor = range.start;
+        let mut source_cursor = original.bytes.start;
+        for piece in self
+            .pieces
+            .iter()
+            .filter(|p| p.view.start < range.end && p.view.end > range.start)
+        {
+            let ViewOrigin::Source(source) = &piece.origin else {
+                return None;
+            };
+            let start = range.start.max(piece.view.start);
+            let end = range.end.min(piece.view.end);
+            if start != cursor || source.bytes.start + start - piece.view.start != source_cursor {
+                return None;
+            }
+            cursor = end;
+            source_cursor += end - start;
+        }
+        (cursor == range.end && source_cursor == original.bytes.end).then_some(original)
+    }
+    fn replace(
+        &self,
+        context: &ParseContext<'_>,
+        edits: &[(Range<usize>, String, AtomKind)],
+    ) -> Option<Self> {
+        let mut text = String::new();
+        let mut pieces = Vec::new();
+        let mut cursor = 0;
+        let append = |range: Range<usize>,
+                      text: &mut String,
+                      pieces: &mut Vec<ViewPiece>|
+         -> Option<()> {
+            let base = text.len();
+            text.push_str(self.text.get(range.clone())?);
+            for piece in self
+                .pieces
+                .iter()
+                .filter(|p| p.view.start < range.end && p.view.end > range.start)
+            {
+                let start = range.start.max(piece.view.start);
+                let end = range.end.min(piece.view.end);
+                let origin = match &piece.origin {
+                    ViewOrigin::Source(r) => ViewOrigin::Source(context.original_range(
+                        r.bytes.start + start - piece.view.start
+                            ..r.bytes.start + end - piece.view.start,
+                    )?),
+                    other if start == piece.view.start && end == piece.view.end => other.clone(),
+                    _ => return None,
+                };
+                pieces.push(ViewPiece {
+                    view: base + start - range.start..base + end - range.start,
+                    origin,
+                });
+            }
+            Some(())
+        };
+        for (range, token, kind) in edits {
+            if range.start < cursor {
+                return None;
+            }
+            append(cursor..range.start, &mut text, &mut pieces)?;
+            let original = self.original_scope(context, range.clone())?;
+            let start = text.len();
+            text.push_str(token);
+            pieces.push(ViewPiece {
+                view: start..text.len(),
+                origin: ViewOrigin::Atom(original, kind.clone()),
+            });
+            cursor = range.end;
+        }
+        append(cursor..self.text.len(), &mut text, &mut pieces)?;
+        let result = Self {
+            context: self.context.clone(),
+            text,
+            pieces,
+        }
+        .tracked();
+        result.valid(context).then_some(result)
+    }
+    fn guarded(&self, context: &ParseContext<'_>) -> (Self, String, String) {
+        let id = context.next_scope.get();
+        context.next_scope.set(id + 1);
+        let open = context.guard_token(id, &GuardEdge::Open);
+        let close = context.guard_token(id, &GuardEdge::Close);
+        let mut pieces = vec![ViewPiece {
+            view: 0..open.len(),
+            origin: ViewOrigin::Guard(id, GuardEdge::Open),
+        }];
+        pieces.extend(self.pieces.iter().map(|p| ViewPiece {
+            view: p.view.start + open.len()..p.view.end + open.len(),
+            origin: p.origin.clone(),
+        }));
+        let end = open.len() + self.text.len();
+        pieces.push(ViewPiece {
+            view: end..end + close.len(),
+            origin: ViewOrigin::Guard(id, GuardEdge::Close),
+        });
+        (
+            Self {
+                context: self.context.clone(),
+                text: format!("{open}{}{close}", self.text),
+                pieces,
+            }
+            .tracked(),
+            open,
+            close,
+        )
+    }
+}
+#[cfg(test)]
+impl Drop for SourceView {
+    fn drop(&mut self) {
+        contract_checks::observe(|o| {
+            o.live_view_bytes -= self.text.capacity();
+            o.live_map_bytes -= self.pieces.capacity() * std::mem::size_of::<ViewPiece>();
+        });
+    }
+}
+struct DefinitionSnapshot {
+    span: Range<usize>,
+}
+struct AcceptedOwner {
+    event_range: OriginalRange,
+    usage: OriginalRange,
+    content: Option<OriginalRange>,
+    first: usize,
+    last: usize,
+    title: Option<String>,
+}
+struct ParseContext<'a> {
+    identity: std::rc::Rc<()>,
+    body: &'a str,
+    options: Options,
+    events: Vec<OwnedEvent>,
+    owners: Vec<AcceptedOwner>,
+    empty_titles: HashSet<usize>,
+    math_ranges: Vec<Range<usize>>,
+    candidates: Vec<style::Candidate>,
+    refused_styles: Vec<Range<usize>>,
+    token_prefix: String,
+    next_scope: std::cell::Cell<usize>,
+    definitions: Vec<DefinitionSnapshot>,
+    owner_max_ends: Vec<usize>,
+    owner_by_event: Vec<Option<usize>>,
+    inline_events: Vec<usize>,
+    inline_max_ends: Vec<usize>,
+    content_cache: ContentCache,
+}
+/// An owner's first event, nesting depth, whether styles apply, and the skip-list length.
+type ContentKey = (usize, usize, bool, usize);
+/// Materialized inline content per [`ContentKey`], reset when a parse round's skips change.
+type ContentCache = std::cell::RefCell<std::collections::HashMap<ContentKey, Vec<Inline>>>;
+impl<'a> ParseContext<'a> {
+    fn id(&self) -> ContextId {
+        ContextId(std::rc::Rc::clone(&self.identity))
+    }
+    fn guard_token(&self, id: usize, edge: &GuardEdge) -> String {
+        format!(
+            "{}g{id}{}%",
+            self.token_prefix,
+            match edge {
+                GuardEdge::Open => "o",
+                GuardEdge::Close => "c",
+            }
+        )
+    }
+    fn checked_atom(&self, r: &OriginalRange, kind: &AtomKind) -> bool {
+        if r.context != self.id() {
+            return false;
+        }
+        match kind {
+            AtomKind::Math(start) => {
+                let i = self.math_ranges.partition_point(|r| r.start < *start);
+                self.math_ranges.get(i) == Some(&r.bytes)
+            }
+            AtomKind::Style(start) => {
+                let i = self.candidates.partition_point(|c| c.start < *start);
+                self.candidates
+                    .get(i)
+                    .is_some_and(|c| c.start == r.bytes.start && c.end == r.bytes.end)
+            }
+            AtomKind::Native(first) => {
+                self.events.get(*first).is_some_and(|(e, bytes)| {
+                    matches!(e, Event::Start(Tag::Link { .. } | Tag::Image { .. }))
+                        && bytes.start == r.bytes.start
+                }) && self
+                    .owner_by_event
+                    .get(*first)
+                    .copied()
+                    .flatten()
+                    .and_then(|i| self.owners.get(i))
+                    .is_some_and(|o| o.usage.bytes == r.bytes)
+            }
+        }
+    }
+    fn original_range(&self, bytes: Range<usize>) -> Option<OriginalRange> {
+        (bytes.start <= bytes.end && self.body.get(bytes.clone()).is_some()).then(|| {
+            OriginalRange {
+                context: self.id(),
+                bytes,
+            }
+        })
+    }
+    fn new(body: &'a str, options: Options) -> Self {
+        observe!(contexts, 1);
+        observe!(authority_passes, 1);
+        observe!(authority_bytes, body.len());
+        let mut parser = Parser::new_ext(body, options).into_offset_iter();
+        let events: Vec<OwnedEvent> = parser.by_ref().map(|(e, r)| (e.into_static(), r)).collect();
+        observe!(authority_events, events.len());
+        let mut empty_titles = empty_inline_titles(body, &events, options);
+        let definitions: Vec<_> = parser
+            .reference_definitions()
+            .iter()
+            .map(|(_, d)| DefinitionSnapshot {
+                span: d.span.clone(),
+            })
+            .collect();
+        observe!(
+            definition_snapshot_bytes,
+            definitions.capacity() * std::mem::size_of::<DefinitionSnapshot>()
+        );
+        observe!(definition_destination_bytes, 0); // span-only snapshot has no URL payload to retain.
+        for (i, (event, _)) in events.iter().enumerate() {
+            if let Event::Start(Tag::Link {
+                link_type,
+                title,
+                id,
+                ..
+            }) = event
+                && title.is_empty()
+                && matches!(
+                    link_type,
+                    LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut
+                )
+                && parser
+                    .reference_definitions()
+                    .get(id)
+                    .is_some_and(|d| d.title.is_some())
+            {
+                empty_titles.insert(i);
+            }
+        }
+        let math_ranges = math::spans_from_events(body, &events);
+        // why: entities/escapes can split a generated-looking prefix over adjacent
+        // Text events. Inspect the joined decoded authority as well as raw bytes once.
+        let decoded = events
+            .iter()
+            .filter_map(|(e, _)| match e {
+                Event::Text(t) | Event::Code(t) | Event::Html(t) | Event::InlineHtml(t) => {
+                    Some(t.as_ref())
+                }
+                _ => None,
+            })
+            .collect::<String>();
+        let base = "%\u{2}mbregistry";
+        let mut used = std::collections::BTreeSet::<usize>::new();
+        for source in [body, decoded.as_str()] {
+            for (at, _) in source.match_indices(base) {
+                if let Some(rest) = source.get(at + base.len()..) {
+                    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+                    if rest.as_bytes().get(digits) == Some(&b'q')
+                        && let Some(id) = rest.get(..digits).and_then(|s| s.parse().ok())
+                    {
+                        used.insert(id);
+                    }
+                }
+            }
+        }
+        let mut id = 0;
+        while used.contains(&id) {
+            id += 1;
+        }
+        let token_prefix = format!("{base}{id}q");
+        observe!(prefix_builds, 1);
+        let mut context = Self {
+            identity: std::rc::Rc::new(()),
+            body,
+            options,
+            events,
+            owners: Vec::new(),
+            empty_titles,
+            math_ranges,
+            candidates: Vec::new(),
+            refused_styles: Vec::new(),
+            token_prefix,
+            next_scope: std::cell::Cell::new(0),
+            definitions,
+            owner_max_ends: Vec::new(),
+            owner_by_event: Vec::new(),
+            inline_events: Vec::new(),
+            inline_max_ends: Vec::new(),
+            content_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+        };
+        let mut stack = Vec::<(usize, TagEnd)>::new();
+        for (index, (event, range)) in context.events.iter().enumerate() {
+            match event {
+                Event::Start(tag) => stack.push((index, tag.to_end())),
+                Event::End(end) => {
+                    let Some((first, expected)) = stack.pop() else {
+                        continue;
+                    };
+                    if expected != *end {
+                        continue;
+                    }
+                    let Some((start, event_bytes)) = context.events.get(first) else {
+                        continue;
+                    };
+                    let (kind, title, id) = match start {
+                        Event::Start(
+                            Tag::Link {
+                                link_type,
+                                title,
+                                id,
+                                ..
+                            }
+                            | Tag::Image {
+                                link_type,
+                                title,
+                                id,
+                                ..
+                            },
+                        ) => (*link_type, title, id),
+                        _ => continue,
+                    };
+                    if range != event_bytes {
+                        continue;
+                    }
+                    let Some(event_range) = context.original_range(event_bytes.clone()) else {
+                        continue;
+                    };
+                    let mut usage = event_range.clone();
+                    if kind == LinkType::Collapsed
+                        && let Some(end) = usage
+                            .bytes
+                            .end
+                            .checked_add(2)
+                            .filter(|e| body.get(usage.bytes.end..*e) == Some("[]"))
+                    {
+                        usage.bytes.end = end;
+                    }
+                    let mut content_usage = usage.bytes.clone();
+                    if matches!(start, Event::Start(Tag::Image { .. })) {
+                        content_usage.start += 1;
+                    }
+                    let content = context
+                        .events
+                        .get(first + 1..index)
+                        .and_then(|children| {
+                            checked_link_content(body, &content_usage, kind, children)
+                        })
+                        .and_then(|r| context.original_range(r));
+                    let title = if matches!(
+                        kind,
+                        LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut
+                    ) {
+                        parser
+                            .reference_definitions()
+                            .get(id)
+                            .and_then(|d| d.title.as_ref())
+                            .map(ToString::to_string)
+                    } else {
+                        (!title.is_empty() || context.empty_titles.contains(&first))
+                            .then(|| title.to_string())
+                    };
+                    context.owners.push(AcceptedOwner {
+                        event_range,
+                        usage,
+                        content,
+                        first,
+                        last: index,
+                        title,
+                    });
+                }
+                _ => {}
+            }
+        }
+        context.owners.sort_by_key(|o| o.usage.bytes.start);
+        let mut max_end = 0;
+        context.owner_max_ends = context
+            .owners
+            .iter()
+            .map(|o| {
+                max_end = max_end.max(o.usage.bytes.end);
+                max_end
+            })
+            .collect();
+        context.owner_by_event = vec![None; context.events.len()];
+        for (index, owner) in context.owners.iter().enumerate() {
+            if let Some(slot) = context.owner_by_event.get_mut(owner.first) {
+                *slot = Some(index);
+            }
+        }
+        context.inline_events = context
+            .events
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (e, _))| {
+                matches!(
+                    e,
+                    Event::Text(_)
+                        | Event::Code(_)
+                        | Event::InlineHtml(_)
+                        | Event::SoftBreak
+                        | Event::HardBreak
+                        | Event::Start(Tag::Emphasis | Tag::Strong | Tag::Strikethrough)
+                        | Event::End(TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough)
+                )
+                .then_some(i)
+            })
+            .collect();
+        context
+            .inline_events
+            .sort_by_key(|i| context.events.get(*i).map(|(_, r)| r.start));
+        let mut max_end = 0;
+        context.inline_max_ends = context
+            .inline_events
+            .iter()
+            .filter_map(|i| context.events.get(*i))
+            .map(|(_, r)| {
+                max_end = max_end.max(r.end);
+                max_end
+            })
+            .collect();
+        let (candidates, mut refused) = style::context_candidates(&context);
+        // why: establish original-coordinate refusal domains BEFORE owner-content
+        // recursion; a skipped overlapping declaration must not admit descendants.
+        for candidate in &candidates {
+            let start = context
+                .owner_max_ends
+                .partition_point(|end| *end <= candidate.start);
+            let end = context
+                .owners
+                .partition_point(|o| o.usage.bytes.start < candidate.end);
+            if context
+                .owners
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .any(|o| {
+                    o.usage.bytes.start < candidate.end
+                        && o.usage.bytes.end > candidate.start
+                        && !(o.usage.bytes.start >= candidate.label.start
+                            && o.usage.bytes.end <= candidate.label.end)
+                        && !o.content.as_ref().is_some_and(|r| {
+                            candidate.start >= r.bytes.start && candidate.end <= r.bytes.end
+                        })
+                })
+            {
+                refused.push(candidate.start..candidate.end);
+            }
+        }
+        refused.sort_by_key(|r| r.start);
+        for range in refused {
+            if let Some(last) = context
+                .refused_styles
+                .last_mut()
+                .filter(|last| range.start <= last.end)
+            {
+                last.end = last.end.max(range.end);
+            } else {
+                context.refused_styles.push(range);
+            }
+        }
+        context.candidates = candidates;
+        observe!(
+            retained_destination_bytes,
+            context
+                .events
+                .iter()
+                .filter_map(|(e, _)| match e {
+                    Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) =>
+                        Some(dest_url.len()),
+                    _ => None,
+                })
+                .sum::<usize>()
+        );
+        context
+    }
+    // why: structured ambiguity refuses namespace composition using the immutable
+    // authority stream. It never grants new masked/local acceptance or reruns titles.
+    fn raw_blocks(&self) -> Vec<Block> {
+        let mut cursor = Cursor {
+            empty_link_titles: self.empty_titles.clone(),
+            src: self.body,
+            ev: self
+                .events
+                .iter()
+                .map(|(e, r)| (borrow_event(e), r.clone()))
+                .collect(),
+            i: 0,
+            math: math::Table::default(),
+            styles: style::Table::default(),
+            in_table_cell: false,
+        };
+        cursor.blocks(None)
+    }
+    fn original_owner(
+        &self,
+        view: &SourceView,
+        event: &Event<'_>,
+        range: Range<usize>,
+    ) -> Option<&AcceptedOwner> {
+        let mapped = view.exact_source(self, range)?;
+        let (kind, dest, image) = match event {
+            Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            }) => (*link_type, dest_url, false),
+            Event::Start(Tag::Image {
+                link_type,
+                dest_url,
+                ..
+            }) => (*link_type, dest_url, true),
+            _ => return None,
+        };
+        let at = self
+            .owners
+            .partition_point(|o| o.event_range.bytes.start < mapped.bytes.start);
+        self.owners
+            .iter()
+            .skip(at)
+            .take_while(|o| o.event_range.bytes.start == mapped.bytes.start)
+            .find(|o| {
+                o.event_range.bytes == mapped.bytes
+                    && match &self.events.get(o.first).map(|x| &x.0) {
+                        Some(Event::Start(Tag::Link {
+                            link_type,
+                            dest_url,
+                            ..
+                        })) => !image && *link_type == kind && dest_url == dest,
+                        Some(Event::Start(Tag::Image {
+                            link_type,
+                            dest_url,
+                            ..
+                        })) => image && *link_type == kind && dest_url == dest,
+                        _ => false,
+                    }
+            })
+    }
+    // why: a fresh parser may recognize a reference the raw engine refused. Restore
+    // the original bounded inline events, not its fresh destination/child interpretation.
+    fn gate_events<'b>(
+        &'b self,
+        view: &'b SourceView,
+        events: Vec<(Event<'b>, Range<usize>)>,
+    ) -> Option<Vec<(Event<'b>, Range<usize>)>> {
+        let mut ends = vec![None; events.len()];
+        let mut stack = Vec::new();
+        for (i, (event, _)) in events.iter().enumerate() {
+            match event {
+                Event::Start(tag) => stack.push((i, tag.to_end())),
+                Event::End(end) => {
+                    let (first, expected) = stack.pop()?;
+                    if expected != *end {
+                        return None;
+                    }
+                    *ends.get_mut(first)? = Some(i);
+                }
+                _ => {}
+            }
+        }
+        if !stack.is_empty() {
+            return None;
+        }
+        let mut out = Vec::new();
+        let mut i = 0;
+        while let Some((event, range)) = events.get(i) {
+            if matches!(event, Event::Start(Tag::Link { .. } | Tag::Image { .. }))
+                && self.original_owner(view, event, range.clone()).is_none()
+            {
+                let original = view.exact_source(self, range.clone())?;
+                let mut restored = Vec::new();
+                let start = self
+                    .inline_max_ends
+                    .partition_point(|end| *end <= original.bytes.start);
+                let end = self.inline_events.partition_point(|i| {
+                    self.events
+                        .get(*i)
+                        .is_some_and(|(_, r)| r.start < original.bytes.end)
+                });
+                let mut hits = self.inline_events.get(start..end)?.to_vec();
+                hits.sort_unstable();
+                observe!(owner_queries, 1);
+                for index in hits {
+                    let (raw, r) = self.events.get(index)?;
+                    if r.end <= original.bytes.start || r.start >= original.bytes.end {
+                        continue;
+                    }
+                    if !matches!(
+                        raw,
+                        Event::Text(_)
+                            | Event::Code(_)
+                            | Event::InlineHtml(_)
+                            | Event::SoftBreak
+                            | Event::HardBreak
+                            | Event::Start(Tag::Emphasis | Tag::Strong | Tag::Strikethrough)
+                            | Event::End(TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough)
+                    ) {
+                        continue;
+                    }
+                    let a = r.start.max(original.bytes.start);
+                    let b = r.end.min(original.bytes.end);
+                    let event = if a == r.start && b == r.end {
+                        borrow_event(raw)
+                    } else {
+                        let Event::Text(decoded) = raw else {
+                            return None;
+                        };
+                        if self.body.get(r.clone())? != decoded.as_ref() {
+                            return None;
+                        }
+                        Event::Text(pulldown_cmark::CowStr::Borrowed(self.body.get(a..b)?))
+                    };
+                    restored.push((
+                        event,
+                        range.start + a - original.bytes.start
+                            ..range.start + b - original.bytes.start,
+                    ));
+                }
+                if restored.is_empty() {
+                    return None;
+                }
+                let mut balance = Vec::new();
+                for (event, _) in &restored {
+                    match event {
+                        Event::Start(tag) => balance.push(tag.to_end()),
+                        Event::End(end) if balance.pop() != Some(*end) => return None,
+                        _ => {}
+                    }
+                }
+                if !balance.is_empty() {
+                    return None;
+                }
+                out.extend(restored);
+                i = ends.get(i).copied().flatten()?.checked_add(1)?;
+            } else {
+                out.push((event.clone(), range.clone()));
+                i += 1;
+            }
+        }
+        Some(out)
+    }
+    fn mapped_titles(
+        &self,
+        view: &SourceView,
+        events: &[(Event<'_>, Range<usize>)],
+    ) -> HashSet<usize> {
+        events
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (e, r))| {
+                self.original_owner(view, e, r.clone())
+                    .filter(|o| {
+                        matches!(e, Event::Start(Tag::Link { .. }))
+                            && o.title.as_deref() == Some("")
+                    })
+                    .map(|_| i)
+            })
+            .collect()
+    }
+}
+// Verify label/suffix boundaries only for an already accepted native usage.
+fn checked_link_content(
+    body: &str,
+    usage: &Range<usize>,
+    kind: LinkType,
+    children: &[OwnedEvent],
+) -> Option<Range<usize>> {
+    let source = body.get(usage.clone())?;
+    if matches!(kind, LinkType::Autolink | LinkType::Email) {
+        return source
+            .strip_prefix('<')?
+            .strip_suffix('>')
+            .map(|_| usage.start + 1..usage.end - 1);
+    }
+    source.strip_prefix('[')?;
+    let mut found = None;
+    for (at, ch) in source.char_indices() {
+        if ch != ']' || style::escaped(source, at) {
+            continue;
+        }
+        let tail = source.get(at + 1..)?;
+        let valid = match kind {
+            LinkType::Inline => checked_inline_suffix(tail),
+            LinkType::Shortcut => tail.is_empty(),
+            LinkType::Collapsed => tail == "[]",
+            LinkType::Reference => tail
+                .strip_prefix('[')
+                .and_then(|s| s.strip_suffix(']'))
+                .is_some_and(|inside| {
+                    !inside
+                        .char_indices()
+                        .any(|(i, c)| c == ']' && !style::escaped(inside, i))
+                }),
+            _ => false,
+        };
+        let content = usage.start + 1..usage.start + at;
+        if valid
+            && children
+                .iter()
+                .all(|(_, r)| r.start >= content.start && r.end <= content.end)
+        {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(content);
+        }
+    }
+    found
+}
+fn checked_inline_suffix(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    if bytes.first() != Some(&b'(') {
+        return false;
+    }
+    let mut i = 1;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    if bytes.get(i) == Some(&b'<') {
+        i += 1;
+        loop {
+            match bytes.get(i) {
+                Some(b'\\') => i += 2,
+                Some(b'>') => {
+                    i += 1;
+                    break;
+                }
+                Some(b'\n' | b'\r' | b'<') | None => return false,
+                _ => i += 1,
+            }
+        }
+    } else {
+        let mut depth = 0;
+        loop {
+            match bytes.get(i) {
+                Some(b'\\') => i += 2,
+                Some(b'(') => {
+                    depth += 1;
+                    i += 1;
+                }
+                Some(b')') if depth > 0 => {
+                    depth -= 1;
+                    i += 1;
+                }
+                Some(b')') | None => break,
+                Some(b) if b.is_ascii_whitespace() => break,
+                _ => i += 1,
+            }
+        }
+        if depth != 0 {
+            return false;
+        }
+    }
+    let at = i;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    if bytes.get(i) == Some(&b')') {
+        return i + 1 == bytes.len();
+    }
+    if i == at {
+        return false;
+    }
+    let close = match bytes.get(i) {
+        Some(b'"') => b'"',
+        Some(b'\'') => b'\'',
+        Some(b'(') => b')',
+        _ => return false,
     };
-    p.blocks(None)
+    i += 1;
+    loop {
+        match bytes.get(i) {
+            Some(b'\\') => i += 2,
+            Some(b) if *b == close => {
+                i += 1;
+                break;
+            }
+            None => return false,
+            _ => i += 1,
+        }
+    }
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    bytes.get(i) == Some(&b')') && i + 1 == bytes.len()
+}
+// why: immutable authority payloads are borrowed; only final models own URL copies.
+fn borrow_event<'a>(event: &'a Event<'static>) -> Event<'a> {
+    use pulldown_cmark::CowStr;
+    match event {
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Link {
+            link_type: *link_type,
+            dest_url: CowStr::Borrowed(dest_url),
+            title: CowStr::Borrowed(title),
+            id: CowStr::Borrowed(id),
+        }),
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Image {
+            link_type: *link_type,
+            dest_url: CowStr::Borrowed(dest_url),
+            title: CowStr::Borrowed(title),
+            id: CowStr::Borrowed(id),
+        }),
+        Event::Text(t) => Event::Text(CowStr::Borrowed(t)),
+        Event::Code(t) => Event::Code(CowStr::Borrowed(t)),
+        Event::Html(t) => Event::Html(CowStr::Borrowed(t)),
+        Event::InlineHtml(t) => Event::InlineHtml(CowStr::Borrowed(t)),
+        other => other.clone(),
+    }
+}
+impl ParseContext<'_> {
+    fn style_refusal_at(&self, at: usize) -> Option<&Range<usize>> {
+        let end = self.refused_styles.partition_point(|r| r.start <= at);
+        end.checked_sub(1)
+            .and_then(|i| self.refused_styles.get(i))
+            .filter(|r| r.contains(&at))
+    }
+    fn model_from_original(&self, owner: &AcceptedOwner) -> Vec<Inline> {
+        let ev = self
+            .events
+            .get(owner.first..=owner.last)
+            .unwrap_or(&[])
+            .iter()
+            .map(|(e, r)| (borrow_event(e), r.clone()))
+            .collect::<Vec<_>>();
+        let empty_link_titles = ev
+            .iter()
+            .enumerate()
+            .filter_map(|(i, _)| self.empty_titles.contains(&(i + owner.first)).then_some(i))
+            .collect();
+        let mut cursor = Cursor {
+            empty_link_titles,
+            src: self.body,
+            ev,
+            i: 0,
+            math: math::Table::default(),
+            styles: style::Table::default(),
+            in_table_cell: false,
+        };
+        let mut model = cursor.inlines_until(None);
+        if let Some(Inline::Link { title, .. }) = model.first_mut() {
+            *title = owner.title.clone();
+        }
+        model
+    }
+    fn owner_model(
+        &self,
+        owner: &AcceptedOwner,
+        math: &math::Table,
+        skip: &[usize],
+        depth: usize,
+        styles_enabled: bool,
+    ) -> Vec<Inline> {
+        let Some((Event::Start(Tag::Link { dest_url, .. }), _)) = self.events.get(owner.first)
+        else {
+            return self.model_from_original(owner);
+        };
+        let key = (owner.first, depth, styles_enabled, skip.len());
+        let cached = self.content_cache.borrow().get(&key).cloned();
+        let content = if let Some(content) = cached {
+            observe!(cache_hits, 1);
+            content
+        } else {
+            observe!(cache_misses, 1);
+            let content = owner
+                .content
+                .as_ref()
+                .and_then(|range| {
+                    if self
+                        .style_refusal_at(range.bytes.start)
+                        .is_some_and(|r| range.bytes.end <= r.end)
+                    {
+                        Some(self.readable_scope(range.bytes.clone(), math, skip, depth))
+                    } else {
+                        self.inline_scope(range.bytes.clone(), math, skip, depth, styles_enabled)
+                    }
+                })
+                .unwrap_or_else(|| {
+                    let mut raw = self.model_from_original(owner);
+                    match raw.pop() {
+                        Some(Inline::Link { content, .. }) => content,
+                        _ => Vec::new(),
+                    }
+                });
+            self.content_cache.borrow_mut().insert(key, content.clone());
+            content
+        };
+        observe!(model_destination_bytes, dest_url.len());
+        vec![Inline::Link {
+            dest: dest_url.to_string(),
+            title: owner.title.clone(),
+            content,
+        }]
+    }
+    fn readable_scope(
+        &self,
+        scope: Range<usize>,
+        math: &math::Table,
+        skip: &[usize],
+        depth: usize,
+    ) -> Vec<Inline> {
+        let mut out = Vec::new();
+        let mut cursor = scope.start;
+        let start = self
+            .owners
+            .partition_point(|owner| owner.usage.bytes.start < scope.start);
+        for owner in self
+            .owners
+            .iter()
+            .skip(start)
+            .take_while(|owner| owner.usage.bytes.start < scope.end)
+        {
+            if owner.usage.bytes.start < cursor || owner.usage.bytes.end > scope.end {
+                continue;
+            }
+            if let Some(gap) = self.body.get(cursor..owner.usage.bytes.start) {
+                merge_push(&mut out, Inline::Text(gap.to_string()));
+            }
+            for item in self.owner_model(owner, math, skip, depth, false) {
+                merge_push(&mut out, item);
+            }
+            cursor = owner.usage.bytes.end;
+        }
+        if let Some(gap) = self.body.get(cursor..scope.end) {
+            merge_push(&mut out, Inline::Text(gap.to_string()));
+        }
+        out.retain(|i| !matches!(i, Inline::Text(t) if t.is_empty()));
+        out
+    }
+    fn prepared_scope(
+        &self,
+        scope: Range<usize>,
+        math: &math::Table,
+        skip: &[usize],
+        depth: usize,
+        enabled: bool,
+    ) -> Option<(SourceView, style::Table)> {
+        let view = SourceView::identity(self, scope.clone())?;
+        let serial = self.next_scope.get();
+        self.next_scope.set(serial + 1);
+        let mut table = style::Table::from_prefix(format!("{}s{serial}:", self.token_prefix));
+        let mut edits = Vec::<(Range<usize>, String, AtomKind)>::new();
+        let candidates = if enabled {
+            self.candidates.as_slice()
+        } else {
+            &[]
+        };
+        let mut cursor = scope.start;
+        while cursor < scope.end {
+            let mut candidate_start = candidates.partition_point(|c| c.start < cursor);
+            while let Some(refused) = candidates
+                .get(candidate_start)
+                .and_then(|c| self.style_refusal_at(c.start))
+            {
+                candidate_start = candidates.partition_point(|c| c.start < refused.end);
+            }
+            let directive = candidates
+                .get(candidate_start)
+                .filter(|c| c.end <= scope.end);
+            observe!(owner_queries, 1);
+            let owner_start = self
+                .owners
+                .partition_point(|o| o.usage.bytes.start < cursor);
+            let owner = self
+                .owners
+                .get(owner_start)
+                .filter(|o| o.usage.bytes.end <= scope.end);
+            let math_start = self.math_ranges.partition_point(|r| r.start < cursor);
+            let math_span = self
+                .math_ranges
+                .iter()
+                .skip(math_start)
+                .take_while(|r| r.end <= scope.end)
+                .find(|r| !skip.contains(&r.start));
+            let next = directive
+                .map(|d| d.start)
+                .into_iter()
+                .chain(owner.map(|o| o.usage.bytes.start))
+                .chain(math_span.map(|r| r.start))
+                .min();
+            let Some(next) = next else {
+                break;
+            };
+            if let Some(range) = math_span.filter(|r| r.start == next) {
+                let token = math.token_at(range.start)?;
+                edits.push((
+                    range.start - scope.start..range.end - scope.start,
+                    token,
+                    AtomKind::Math(range.start),
+                ));
+                cursor = range.end;
+                continue;
+            }
+            if let Some(candidate) = directive.filter(|d| d.start == next) {
+                let declaration = candidate.start..candidate.end;
+                // why: preflight ORIGINAL owners, before a guarded view can clip them.
+                let overlap_start = self
+                    .owner_max_ends
+                    .partition_point(|end| *end <= candidate.start);
+                let overlap_end = self
+                    .owners
+                    .partition_point(|o| o.usage.bytes.start < candidate.end);
+                observe!(owner_queries, 1);
+                let overlapping = self
+                    .owners
+                    .get(overlap_start..overlap_end)
+                    .unwrap_or(&[])
+                    .iter()
+                    .any(|o| {
+                        o.usage.bytes.start < candidate.end
+                            && o.usage.bytes.end > candidate.start
+                            && !(o.usage.bytes.start >= candidate.label.start
+                                && o.usage.bytes.end <= candidate.label.end)
+                            && !o.content.as_ref().is_some_and(|r| {
+                                candidate.start >= r.bytes.start && candidate.end <= r.bytes.end
+                            })
+                    });
+                if overlapping {
+                    cursor = candidate.start + 1;
+                    continue;
+                }
+                let attributes = self
+                    .body
+                    .get(candidate.metadata.clone())
+                    .filter(|m| m.len() <= 256)
+                    .and_then(style::attributes);
+                let content = if candidate.over_budget
+                    || depth >= crate::schema::MAX_STYLE_DEPTH
+                    || attributes.is_none()
+                {
+                    self.readable_scope(declaration.clone(), math, skip, depth)
+                } else {
+                    match self.inline_scope(candidate.label.clone(), math, skip, depth + 1, true) {
+                        Some(mut content) => {
+                            for property in attributes.into_iter().flatten().rev() {
+                                content = vec![Inline::MbStyle { property, content }];
+                            }
+                            content
+                        }
+                        None => self.readable_scope(declaration.clone(), math, skip, depth),
+                    }
+                };
+                let token = table.insert(content);
+                edits.push((
+                    declaration.start - scope.start..declaration.end - scope.start,
+                    token,
+                    AtomKind::Style(candidate.start),
+                ));
+                cursor = declaration.end;
+                continue;
+            }
+            if let Some(owner) = owner.filter(|o| o.usage.bytes.start == next) {
+                observe!(owner_hits, 1);
+                let content = self.owner_model(owner, math, skip, depth, enabled);
+                let token = table.insert(content);
+                edits.push((
+                    owner.usage.bytes.start - scope.start..owner.usage.bytes.end - scope.start,
+                    token,
+                    AtomKind::Native(owner.first),
+                ));
+                cursor = owner.usage.bytes.end;
+                continue;
+            }
+            cursor = next + 1;
+        }
+        let view = view.replace(self, &edits)?;
+        Some((view, table))
+    }
+    fn inline_scope(
+        &self,
+        scope: Range<usize>,
+        math: &math::Table,
+        skip: &[usize],
+        depth: usize,
+        enabled: bool,
+    ) -> Option<Vec<Inline>> {
+        let (view, styles) = self.prepared_scope(scope, math, skip, depth, enabled)?;
+        let (guarded, open, close) = view.guarded(self);
+        observe!(local_parses, 1);
+        observe!(local_bytes, guarded.text.len());
+        let events: Vec<_> = Parser::new_ext(&guarded.text, self.options)
+            .into_offset_iter()
+            .filter(|(e, _)| {
+                !matches!(
+                    e,
+                    Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph)
+                )
+            })
+            .collect();
+        observe!(local_events, events.len());
+        if !styles.validate_events(&guarded.text, &events) {
+            return None;
+        }
+        // No local acceptance: fresh native events require exact original authority.
+        let events = self.gate_events(&guarded, events)?;
+        let empty_link_titles = self.mapped_titles(&guarded, &events);
+        let mut cursor = Cursor {
+            empty_link_titles,
+            src: &guarded.text,
+            ev: events,
+            i: 0,
+            math: math.clone(),
+            styles,
+            in_table_cell: false,
+        };
+        let mut items = cursor.inlines_until(None);
+        if cursor.i != cursor.ev.len() {
+            return None;
+        }
+        if let Some(Inline::Text(t)) = items.first_mut() {
+            *t = t.strip_prefix(&open)?.to_string();
+        } else {
+            return None;
+        }
+        if let Some(Inline::Text(t)) = items.last_mut() {
+            *t = t.strip_suffix(&close)?.to_string();
+        } else {
+            return None;
+        }
+        items.retain(|i| !matches!(i, Inline::Text(t) if t.is_empty()));
+        Some(items)
+    }
+    fn parse_round(&self, math: &math::Table, skip: &[usize]) -> Option<Vec<Block>> {
+        self.content_cache
+            .borrow_mut()
+            .retain(|key, _| key.3 == skip.len());
+        #[cfg(test)]
+        contract_checks::observe(|o| {
+            o.exclusions.push(skip.to_vec());
+            o.context_ids.push(self.id());
+        });
+        let (view, styles) = self.prepared_scope(0..self.body.len(), math, skip, 0, true)?;
+        observe!(structural_parses, 1);
+        observe!(structural_bytes, view.text.len());
+        let events: Vec<_> = Parser::new_ext(&view.text, self.options)
+            .into_offset_iter()
+            .collect();
+        observe!(structural_events, events.len());
+        if !styles.validate_events(&view.text, &events) {
+            return None;
+        }
+        let events = self.gate_events(&view, events)?;
+        let empty_link_titles = self.mapped_titles(&view, &events);
+        let mut cursor = Cursor {
+            empty_link_titles,
+            src: &view.text,
+            ev: events,
+            i: 0,
+            math: math.clone(),
+            styles,
+            in_table_cell: false,
+        };
+        Some(cursor.blocks(None))
+    }
+}
+
+/// Probe all candidate pairs in one full-context CommonMark replay. The original parser
+/// remains the authority for link spans/destinations; the replay only recovers presence.
+fn empty_inline_titles(
+    body: &str,
+    events: &[(Event<'_>, Range<usize>)],
+    options: Options,
+) -> HashSet<usize> {
+    let mut candidates = Vec::new();
+    for (index, (event, range)) in events.iter().enumerate() {
+        if let Event::Start(Tag::Link {
+            link_type: LinkType::Inline,
+            dest_url,
+            title,
+            ..
+        }) = event
+        {
+            if !title.is_empty() {
+                continue;
+            }
+            let Some(source) = body.get(range.clone()).and_then(|s| s.strip_suffix(')')) else {
+                continue;
+            };
+            if let Some(pair) = ["\"\"", "''", "()"]
+                .iter()
+                .filter_map(|pair| source.rfind(pair))
+                .max()
+            {
+                candidates.push((index, range, dest_url, range.start + pair + 1));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return HashSet::new();
+    }
+    let mut inserts: Vec<usize> = candidates.iter().map(|(_, _, _, insert)| *insert).collect();
+    inserts.sort_unstable();
+    inserts.dedup();
+    // why: inserting only plain letters/hyphens preserves delimiter balance, container
+    // prefixes and link-label brackets. Destination pairs may change destinations, but
+    // cannot pass the exact original-destination/title/range checks below. No authored
+    // metadata is stripped or replaced, and no probe result becomes document content.
+    let marker = "mb-title-presence";
+    let mut probe = String::new();
+    let mut previous = 0;
+    for insert in &inserts {
+        if let Some(part) = body.get(previous..*insert) {
+            probe.push_str(part);
+            probe.push_str(marker);
+            previous = *insert;
+        }
+    }
+    if let Some(part) = body.get(previous..) {
+        probe.push_str(part);
+    }
+    let expected: std::collections::HashMap<_, _> = candidates
+        .iter()
+        .map(|(index, range, dest, _)| {
+            let start = range.start
+                + inserts.partition_point(|insert| *insert <= range.start) * marker.len();
+            let end =
+                range.end + inserts.partition_point(|insert| *insert < range.end) * marker.len();
+            ((start, end), (*index, dest.as_ref()))
+        })
+        .collect();
+    #[cfg(test)]
+    title_probe_tests::REPLAYS.with(|count| count.set(count.get() + 1));
+    Parser::new_ext(&probe, options)
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            let (index, dest) = expected.get(&(range.start, range.end))?;
+            match event {
+                Event::Start(Tag::Link {
+                    link_type: LinkType::Inline,
+                    dest_url,
+                    title,
+                    ..
+                }) if dest_url.as_ref() == *dest && title.as_ref() == marker => Some(*index),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// Source offset of a placeholder that survived into the model, if any.
@@ -136,16 +1597,19 @@ fn leaked_in_inlines(items: &[Inline], table: &math::Table) -> Option<usize> {
         | Inline::Strong(c)
         | Inline::Strikethrough(c)
         | Inline::Highlight(c)
+        | Inline::MbStyle { content: c, .. }
         | Inline::Link { content: c, .. } => leaked_in_inlines(c, table),
         _ => None,
     })
 }
 
 struct Cursor<'a> {
+    empty_link_titles: HashSet<usize>,
     src: &'a str,
     ev: Vec<(Event<'a>, Range<usize>)>,
     i: usize,
     math: math::Table,
+    styles: style::Table,
     in_table_cell: bool,
 }
 
@@ -483,7 +1947,13 @@ impl<'a> Cursor<'a> {
                 break;
             }
             if !matches!(event, Event::Text(_)) && !pending.is_empty() {
-                push_text(&mut out, &pending, &pending_escapes, &self.math);
+                push_text(
+                    &mut out,
+                    &pending,
+                    &pending_escapes,
+                    &self.math,
+                    &self.styles,
+                );
                 pending.clear();
                 pending_escapes = inline::Escapes::none();
             }
@@ -556,7 +2026,8 @@ impl<'a> Cursor<'a> {
                     dest_url, title, ..
                 }) => {
                     let dest = dest_url.to_string();
-                    let title = (!title.is_empty()).then(|| title.to_string());
+                    let title = (!title.is_empty() || self.empty_link_titles.contains(&self.i))
+                        .then(|| title.to_string());
                     self.bump();
                     let content = self.inlines_until(Some(TagEnd::Link));
                     out.push(item(Inline::Link {
@@ -578,7 +2049,13 @@ impl<'a> Cursor<'a> {
             }
         }
         if !pending.is_empty() {
-            push_text(&mut out, &pending, &pending_escapes, &self.math);
+            push_text(
+                &mut out,
+                &pending,
+                &pending_escapes,
+                &self.math,
+                &self.styles,
+            );
         }
         out
     }
@@ -754,6 +2231,7 @@ fn push_text(
     text: &str,
     escapes: &inline::Escapes,
     math: &math::Table,
+    styles: &style::Table,
 ) {
     // No `Text` inline may hold a raw line ending: on the way out it would become a real
     // line break and change the document's structure. Raw-HTML blocks are the path that
@@ -764,7 +2242,7 @@ fn push_text(
         }
         return;
     }
-    out.extend(inline::scan(text, escapes, math));
+    out.extend(inline::scan_with_styles(text, escapes, math, styles));
 }
 
 /// Appends an inline, merging it into the previous one when the two are indistinguishable
@@ -834,6 +2312,7 @@ fn alt_text(items: &[Inline]) -> String {
             | Inline::Strong(c)
             | Inline::Strikethrough(c)
             | Inline::Highlight(c)
+            | Inline::MbStyle { content: c, .. }
             | Inline::Link { content: c, .. } => out.push_str(&alt_text(c)),
             // An alt is one line, so a break is a space; a nested image or wikilink has no
             // alt-text rendering at all and CommonMark would not have produced one here.
@@ -1217,3 +2696,71 @@ fn extract_task_meta(content: &mut [Block]) -> task::TaskMeta {
     }
     meta
 }
+
+#[cfg(test)]
+mod title_probe_tests {
+    use super::*;
+    use std::cell::Cell;
+    thread_local! { pub(super) static REPLAYS: Cell<usize> = const { Cell::new(0) }; }
+
+    #[test]
+    fn empty_titles_use_at_most_one_commonmark_replay_per_note() {
+        for n in [100, 500, 1000] {
+            let links = vec!["[`literal`](https://example.org \"\")"; n];
+            for source in [
+                links.join(" "),
+                links
+                    .iter()
+                    .map(|s| format!("> {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                links
+                    .iter()
+                    .map(|s| format!("- {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ] {
+                REPLAYS.with(|count| count.set(0));
+                let parsed = document(&source);
+                let markdown = crate::to_markdown(&parsed);
+                assert_eq!(markdown.matches("https://example.org \"\"").count(), n);
+                assert_eq!(markdown.matches("`literal`").count(), n);
+                let replays = REPLAYS.with(Cell::get);
+                assert!(
+                    replays <= 1,
+                    "{n} links required {replays} CommonMark title replays"
+                );
+            }
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 128,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x435055303031),
+            ..proptest::test_runner::Config::default()
+        })]
+        #[test]
+        fn batched_title_presence_preserves_mixed_link_models(
+            states in proptest::collection::vec((0usize..4, 0usize..4, proptest::bool::ANY), 1..32)
+        ) {
+            let mut content = Vec::new();
+            for (state, destination, code) in states {
+                if !content.is_empty() { content.push(Inline::Text(" ".into())); }
+                let title = match state { 0 => None, 1 => Some(String::new()), 2 => Some("mb-title-presence".into()), _ => Some("quoted \"'()🦀".into()) };
+                let dest = match destination { 0 => "https://example.org", 1 => "u()", 2 => "u\"\"", _ => "u''" };
+                content.push(Inline::Link {
+                    dest: dest.into(), title,
+                    content: vec![if code { Inline::Code("literal () \"\" ''".into()) } else { Inline::Text("literal () \"\" ''".into()) }],
+                });
+            }
+            let expected = crate::canonical::document(Document::new(vec![Block::new(BlockKind::Paragraph(content))]));
+            let markdown = crate::to_markdown(&expected);
+            proptest::prop_assert_eq!(document(&markdown), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "styled_gate_tests.rs"]
+mod styled_gate_tests;

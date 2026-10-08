@@ -3,6 +3,9 @@
 use mb_search::{AclHash, Change, Note, NoteId, Segment, ZoneId};
 
 #[test]
+// why: building a 10k-note index takes ~2 s optimized but >15 min in a debug build. The
+// ceiling is still enforced: `make test-release` (part of `make check`) and CI run it.
+#[cfg_attr(debug_assertions, ignore = "release-only; run by `make test-release`")]
 fn ten_thousand_representative_notes_stay_under_the_hard_ceiling() {
     let zone = ZoneId::from_hex(&"01".repeat(32)).expect("zone");
     let acl = AclHash::from_hex(&"02".repeat(32)).expect("ACL");

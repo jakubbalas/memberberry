@@ -90,8 +90,8 @@ test("draws the vault, with area on screen and pixels in it", async ({ page }) =
   // that deleted the node draw call demonstrated. With both edge kinds filtered off, anything
   // still on the canvas is a node.
   await page.locator(GRAPH).getByRole("button", { name: /^Filters/ }).click();
-  await page.getByLabel("Links", { exact: true }).uncheck();
-  await page.getByLabel("Embeds", { exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "Links", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "Embeds", exact: true }).uncheck();
   await expect
     .poll(async () => pixelsDrawn(page), {
       message: "with the edges hidden, no node was drawn",

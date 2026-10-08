@@ -32,6 +32,46 @@
 .selection-menu button:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
 .selection-menu button:disabled { color: var(--text-muted); cursor: default; }
 .selection-menu [hidden] { display: none; }
+.selection-menu select {
+  min-height: var(--touch-target-min);
+  /* why: a refused Turn into shows its reason as option text; cap it rather than widen the popup. */
+  max-width: 16rem;
+  text-overflow: ellipsis;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font: inherit;
+}
+.selection-menu select:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+.selection-menu select:disabled { color: var(--text-muted); }
+.selection-style-toggle > span,
+.selection-style-choice > span:first-child {
+  display: inline-block;
+  min-width: 1.25em;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.selection-style-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+.selection-style-heading { color: var(--text-muted); font-size: var(--text-sm); }
+.selection-style-choices { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.selection-menu .selection-style-choice[aria-pressed="true"] {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -2px;
+}
+/* why: "no background" needs an outline to read as a swatch rather than a missing one. */
+.selection-style-choice[aria-label="No background"] > span:first-child {
+  outline: 1px dashed var(--border-subtle);
+}
 .selection-link-editor {
   display: flex;
   flex-wrap: wrap;

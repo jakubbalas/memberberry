@@ -10,6 +10,7 @@
  */
 
 @import "./tokens.css";
+@import "../editor/note-format.css";
 
 * { box-sizing: border-box; }
 

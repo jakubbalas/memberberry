@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { Awareness, encodeAwarenessUpdate } from "y-protocols/awareness";
+import { SCHEMA_VERSION } from "./schema-revision.js";
+// These fixtures test transport/durability over a generic Y.Text, not the note codec.
+// Real schema/WASM/binding refusal controls are in schema-admission*.test.ts.
+const transportAdmission = { version: SCHEMA_VERSION, validate: (_document: Doc): void => {}, validateIncoming: (_document: Doc, _update: Uint8Array): void => {} };
 
 import {
   PRESENCE_COLOR_TOKENS,
@@ -48,6 +52,7 @@ class FakeSocket implements Pick<WebSocket, "readyState" | "send" | "close" | "b
     if (type === "open") this.readyState = WebSocket.OPEN;
     if (type === "close") this.readyState = WebSocket.CLOSED;
     for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event);
+    if (type === "open") this.emit("message", { data: JSON.stringify({ type: "admitted", vault: "personal", note: "One.md", schema_version: SCHEMA_VERSION }) });
   }
 
   /** How many listeners are still attached, so teardown can be asserted rather than assumed. */
@@ -81,6 +86,7 @@ function provider(overrides: Partial<Parameters<typeof createSyncProvider>[0]> =
   const document = new Doc();
   const awareness = new Awareness(document);
   const sync = createSyncProvider({
+    admission: transportAdmission,
     endpoint: "ws://localhost/api/v1/sync",
     vault: "personal",
     note: "One.md",
@@ -273,7 +279,7 @@ describe("createSyncProvider", () => {
 
     expect(sync.connected).toBe(true);
     expect(changes).toEqual([{ connected: true, pending: 0, synced: false }]);
-    expect(socket.json()[0]).toEqual({ type: "subscribe", vault: "personal", note: "One.md" });
+    expect(socket.json()[0]).toEqual({ type: "subscribe", vault: "personal", note: "One.md", schema_version: SCHEMA_VERSION });
     sync.destroy();
   });
 
@@ -777,6 +783,7 @@ describe("reconnecting (SPEC §7.4)", () => {
       const sockets = [new FakeSocket()];
       const document = new Doc();
       const sync = createSyncProvider({
+        admission: transportAdmission,
         endpoint: "ws://localhost/api/v1/sync",
         vault: "personal",
         note: "One.md",
@@ -797,7 +804,7 @@ describe("reconnecting (SPEC §7.4)", () => {
       expect(sockets).toHaveLength(3);
       const second = sockets.at(-1);
       second?.emit("open", {});
-      expect(second?.json()[0]).toEqual({ type: "subscribe", vault: "personal", note: "One.md" });
+      expect(second?.json()[0]).toEqual({ type: "subscribe", vault: "personal", note: "One.md", schema_version: SCHEMA_VERSION });
       sync.destroy();
     } finally {
       vi.useRealTimers();
@@ -812,6 +819,7 @@ describe("reconnecting (SPEC §7.4)", () => {
       let opened = 0;
       const socket = new FakeSocket();
       const sync = createSyncProvider({
+        admission: transportAdmission,
         endpoint: "ws://localhost/api/v1/sync",
         vault: "personal",
         note: "One.md",
@@ -890,6 +898,7 @@ describe("coming back online (SPEC §7.4)", () => {
       let opened = 0;
       const sockets: FakeSocket[] = [];
       const sync = createSyncProvider({
+        admission: transportAdmission,
         endpoint: "ws://localhost/api/v1/sync",
         vault: "personal",
         note: "One.md",
@@ -923,6 +932,7 @@ describe("coming back online (SPEC §7.4)", () => {
     let opened = 0;
     const socket = new FakeSocket();
     const sync = createSyncProvider({
+      admission: transportAdmission,
       endpoint: "ws://localhost/api/v1/sync",
       vault: "personal",
       note: "One.md",
@@ -946,6 +956,7 @@ describe("coming back online (SPEC §7.4)", () => {
     const network = fakeNetwork();
     const socket = new FakeSocket();
     const sync = createSyncProvider({
+      admission: transportAdmission,
       endpoint: "ws://localhost/api/v1/sync",
       vault: "personal",
       note: "One.md",
@@ -970,6 +981,7 @@ describe("coming back online (SPEC §7.4)", () => {
       const socket = new FakeSocket();
       const document = new Doc();
       const sync = createSyncProvider({
+        admission: transportAdmission,
         endpoint: "ws://localhost/api/v1/sync",
         vault: "personal",
         note: "One.md",
@@ -996,6 +1008,7 @@ describe("coming back online (SPEC §7.4)", () => {
     const network = fakeNetwork();
     const socket = new FakeSocket();
     const sync = createSyncProvider({
+      admission: transportAdmission,
       endpoint: "ws://localhost/api/v1/sync",
       vault: "personal",
       note: "One.md",

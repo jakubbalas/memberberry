@@ -1,5 +1,20 @@
 # Memberberry — Implementation Specification
 
+> Scratch contract decision, October 7, 2026: rejected `:mb-style` declarations
+> remain complete readable literal wrappers, with no styling semantics. The user's
+> explicit choice is: **allow surgical tag/wiki-link renames inside rejected directive
+> labels, never their metadata**. Rename eligibility is established from the existing
+> Rust scanner's original UTF-8 complete label boundaries, not presentation text.
+> Each requested label splice must pass the unchanged tag/wiki semantic verifier on
+> that label, and complete literal-wrapper model ownership plus the final full-note
+> semantic oracle must agree. Metadata, delimiters, aliases, anchors, native link
+> destinations/Option titles and unrelated source bytes remain unchanged. Unknown or
+> malformed attribute values do not themselves prevent an otherwise checked complete
+> label rename. Unclosed, ambiguous, nested-literal or over-budget ownership is
+> fail-closed/no write; no inferred delimiters, generic Text rename, parser promotion
+> or metadata migration is authorized. This decision is recorded in this scratch
+> candidate only; main integration remains separately gated.
+
 > Status: **v0.3 — architecture locked, scope agreed.**
 > Requirements: `PROJECT.md` + the decision log in §24.
 > Audience: the implementing agent. Decisions carry rationale so they are not
@@ -391,6 +406,16 @@ range of text and an atom does not:
   `code` (`` `x` ``), `link` — which carries an optional `title`, written back in the
   canonical double-quoted form whichever of CommonMark's three the author used. Named for ProseMirror's convention rather than
   `bold`/`italic`, since the schema *is* a ProseMirror schema.
+Native Code is self-excluding, not exclusive of all marks. Strong, Emphasis,
+Strikethrough, Highlight and Link may wrap its exact literal text; Code never parses
+formatting inside that text. Retain link destination and optional authored title.
+An explicitly authored empty title is present (`Some("")`) and stays `""` through
+Markdown/native/WASM reopen; an absent title or native null/default remains absent.
+This applies to inline and resolved reference links with plain or Code content.
+The native schema correction is revision 2, with the same six marks and lib0 encoding;
+this does not integrate the pending namespace/admission package. Unknown or hashed
+mark keys and invalid mark attributes remain invalid, never stripped on write.
+
 - Atom nodes: `wikilink`, `image`, `tag` (`#tag`, `#nested/tag`), `emoji` (`:name:`),
   `inline_math` (`$x$`), `footnote_ref`, `soft_break`, `hard_break`.
 
@@ -426,8 +451,11 @@ Normal formatting stays ordinary Markdown. The new inline source form is
 - Use one typed style-property family in the core and independent schema/CRDT marks
   `mb_underline`, `mb_color`, `mb_background`, `mb_size`; each excludes itself. Colour,
   background and size have validated enum `value` attributes. Separate properties must
-  not compete by overwriting a compound style object in one Y.Text key. Existing code
-  exclusion, native mark conventions and ordinary Markdown representation remain intact.
+  not compete by overwriting a compound style object in one Y.Text key. Each future
+  namespace mark must exclude Code, and Code must explicitly exclude itself plus
+  `mb_underline mb_color mb_background mb_size` once those marks are declared. Native
+  Strong/Emphasis/Strike/Highlight/Link wrappers around Code remain supported. Namespace
+  styles do not apply to literal Code; native mark conventions remain ordinary Markdown.
 - Native and WASM parsing/serialization, CRDT materialization, schema-conformance fixtures,
   extraction, links/rename/anchors/conflicts and rendering must agree. No TypeScript
   Markdown parser is introduced. Require canonical-model/source convergence, property
@@ -442,7 +470,9 @@ The proposed later block extension is a `:::mb-toggle` container with a readable
 text/ATX-heading summary and Markdown body, an explicit closer and view-only disclosure.
 Its exact nesting/anchor grammar and schema are not implemented or certified by the
 inline-style slice. Do not declare placeholder toggle types to pretend it is supported.
-The upcoming actual schema revision is 2; the compatibility prerequisite and user's
+The current native-Code contract correction is schema revision 2. A later namespace
+integration must take a separate coordinated revision; it must not reuse revision 2
+for a different node/mark declaration. The compatibility prerequisite and user's
 refresh-only decision are in §8.4. This section records the requested contract, not a
 claim that the current deployed editor already supports it.
 
@@ -654,6 +684,14 @@ values use those same native values. Raw YAML blocks use the JSON envelope
 `{ "$memberberry": "raw", "lines": [...] }`, preserving every source line without putting
 frontmatter into the prose schema. This root pair is part of the cross-language contract.
 
+**Honest limit: adjacent identical links join.** A link is a Y.Text mark, and two adjacent
+runs with one destination and title are one mark run. `[a](u)[b](u)` therefore reads back
+from the CRDT as `[ab](u)`, styled or not; Markdown alone keeps them apart. Inside `mb-`
+styles, canonicalization rejoins such links itself, because style distribution copies each
+link onto every leaf and must agree with what materialization reads back
+(`style::join_links`, after canonical settling). Pinned by
+`adjacent_identical_links_join_into_one_link` in `mb-crdt/tests/crdt.rs`.
+
 **Rust side, as built in M1.** `mb_core::schema` holds the vocabulary as types (`Node`,
 `Mark`) and maps the block model onto it with exhaustive matches, so a new `BlockKind` or
 `Inline` variant stops compiling until it is given a schema node. `mb_core::schema::validate`
@@ -815,7 +853,11 @@ frames/second, because awareness carries opaque client JSON that is rebroadcast 
 room. A room is released — coordinator flushed and dropped — when its last subscriber
 leaves, so a note nobody has open costs no memory and no file watching.
 
-**Requested schema-2 admission contract (development upgrade; not a claim of deployment).**
+**Requested coordinated admission contract (development upgrade; not a claim of deployment).**
+The private native-Code revision-2 correction does not integrate the separate historical
+schema-2 namespace/admission candidate. Revision handshake, all-node attribute validation,
+pending-state refusal and prospective browser-cache admission remain prerequisites for
+that later package; keep its guards intact and rebind them to its actual schema revision.
 E2 must check the actual Rust-owned editor schema revision after note authorization and
 before opening/publishing CRDT bootstrap; a mismatched editor requires refresh without
 receiving note state. E3 must validate the complete prospective merged document before
@@ -1929,6 +1971,36 @@ this iteration or relabel the retained concurrent-intent failures as successes.
 - This is the approved target contract, not integration or runtime certification. Warning,
   guard machinery, routed wiring, actual schema-2 union, browser/server/disk reopen and
   independent review are required before enabling the resulting controls.
+
+**Implemented, first conversion slice (2026-10-08): Text ↔ Heading 1–4 via "Turn into".**
+The selection popup's first control is a `Turn into` select. It converts every complete root
+textblock the selection touches between paragraph and H1–H4, in one isolated undo step;
+imported H5/H6 show as their active state. H1 is refused at the first root (title
+protection). Selections inside lists, quotes, tables or other containers hide the control
+rather than flatten them. List/task/quote/callout/code/math conversions remain pending.
+
+- **Single-editor gate (`single-editor.ts`).** Shared with block movement. Refuses, at both
+  display and invocation: a different mounted editor for the same note key, any known
+  awareness peer, a disconnected or unsynced transport, and unsent writes. Several gated
+  controllers on one editor are one mount. The note key is `[vault, note path]`, so two
+  editors only collide on the same path; it is not a lock and cannot see hidden offline
+  replicas.
+- **Fails closed without routing.** A local-only editor (no bootstrap) has no note key and
+  renders no `Turn into` control.
+- **Visible warning and refusal.** The choices sit in an option group labelled with the
+  single-editor warning, shown wherever the list opens. A refused control is disabled and
+  its visible text names the reason (e.g. "Text · Someone else has this note open").
+
+**Style control (2026-10-08): one "A" button, not three selects.** Three unlabelled selects
+that all read "Default" did not say what they changed. The popup has one `Text color,
+background and size` button whose "A" is drawn in the selection's own colour and background.
+It opens a panel with visible headings — Text color, Background, Size — whose choices are
+rendered with the note's own `mb-` classes (Default + nine colours; Small / Normal / Large).
+The current value is pressed; a mixed selection says `· Mixed` in the heading and presses
+none. A choice applies at once and the panel stays open, so several dimensions can be set in
+one visit; the applied range is the action's own result and becomes the new capture. Escape
+closes the panel and returns focus to the "A". All choices disabled (e.g. literal Code)
+disables the button.
 
 **Compatibility decision, 2026-10-04.** Asked whether the upgrade may require editor
 refreshes instead of retaining old-cache editing compatibility, the user answered:

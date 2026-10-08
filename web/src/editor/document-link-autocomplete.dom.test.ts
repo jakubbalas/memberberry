@@ -2,6 +2,9 @@
 
 import { Editor } from "@tiptap/core";
 import { readFileSync } from "node:fs";
+import { beforeAll } from "vitest";
+import { load } from "../notes.js";
+beforeAll(async () => { await load(readFileSync(`${process.cwd()}/src/wasm/mb_bg.wasm`)); });
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startNoteEditor, type NoteEditor } from "./note-editor.js";
 import { createMemberberryExtensions } from "./schema.js";

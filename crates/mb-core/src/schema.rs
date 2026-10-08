@@ -26,6 +26,11 @@
 
 use crate::model::{Block, BlockKind, Document, Inline, List, ListItem, Table};
 
+/// Editor schema revision (distinct from lib0 v1 update encoding).
+pub const VERSION: u32 = 3;
+/// Maximum nesting of authored namespace labels or noncanonical constructed wrappers.
+pub const MAX_STYLE_DEPTH: usize = 16;
+
 /// A node type in the ProseMirror schema.
 ///
 /// The names are `snake_case` to match `schema.json` and ProseMirror's own basic schema.
@@ -67,6 +72,10 @@ pub enum Mark {
     Highlight,
     Code,
     Link,
+    MbUnderline,
+    MbColor,
+    MbBackground,
+    MbSize,
 }
 
 /// The schema group a node belongs to, if any.
@@ -248,6 +257,10 @@ impl Mark {
         Self::Highlight,
         Self::Code,
         Self::Link,
+        Self::MbUnderline,
+        Self::MbColor,
+        Self::MbBackground,
+        Self::MbSize,
     ];
 
     #[must_use]
@@ -259,6 +272,10 @@ impl Mark {
             Self::Highlight => ("highlight", &[]),
             Self::Code => ("code", &[]),
             Self::Link => ("link", &["href", "title"]),
+            Self::MbUnderline => ("mb_underline", &[]),
+            Self::MbColor => ("mb_color", &["value"]),
+            Self::MbBackground => ("mb_background", &["value"]),
+            Self::MbSize => ("mb_size", &["value"]),
         };
         MarkSpec {
             mark: self,
@@ -332,6 +349,12 @@ pub const fn inline_shape(inline: &Inline) -> InlineShape {
         Inline::Strong(_) => InlineShape::Mark(Mark::Strong),
         Inline::Strikethrough(_) => InlineShape::Mark(Mark::Strikethrough),
         Inline::Highlight(_) => InlineShape::Mark(Mark::Highlight),
+        Inline::MbStyle { property, .. } => InlineShape::Mark(match property {
+            crate::model::MbStyleProperty::Underline => Mark::MbUnderline,
+            crate::model::MbStyleProperty::Color(_) => Mark::MbColor,
+            crate::model::MbStyleProperty::Background(_) => Mark::MbBackground,
+            crate::model::MbStyleProperty::Size(_) => Mark::MbSize,
+        }),
         // why: a code span is text carrying the `code` mark, not an atom. That is what makes
         // two adjacent code spans merge on a round trip — a documented normalization, not a
         // bug: ProseMirror cannot represent a boundary between two identically marked runs.
@@ -358,6 +381,10 @@ pub struct SchemaError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Violation {
+    /// Namespace depth cannot exceed the source parser budget.
+    StyleTooDeep,
+    /// Atoms, inline code and breaks have no namespace text-mark representation.
+    StyleOnNonText,
     /// `bullet_list` and `ordered_list` are `(list_item | task_item)+`, and an empty list
     /// serializes to nothing, so it would vanish on the next parse.
     EmptyList,
@@ -383,6 +410,8 @@ impl core::fmt::Display for SchemaError {
 impl core::fmt::Display for Violation {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::StyleTooDeep => f.write_str("namespace style nesting exceeds budget"),
+            Self::StyleOnNonText => f.write_str("namespace styles apply only to eligible text"),
             Self::EmptyList => f.write_str("list has no items"),
             Self::UnorderedListWithStart { start } => {
                 write!(f, "unordered list carries start = {start}")
@@ -442,12 +471,48 @@ fn validate_block(b: &Block, path: &str, errors: &mut Vec<SchemaError>) {
         BlockKind::List(l) => validate_list(l, path, errors),
         BlockKind::Table(t) => validate_table(t, path, errors),
         BlockKind::Blockquote(inner) => validate_blocks(inner, &format!("{path}.content"), errors),
-        BlockKind::Callout(c) => validate_blocks(&c.content, &format!("{path}.content"), errors),
-        BlockKind::Paragraph(_)
-        | BlockKind::Heading { .. }
-        | BlockKind::CodeBlock { .. }
-        | BlockKind::Divider
-        | BlockKind::MathBlock(_) => {}
+        BlockKind::Callout(c) => {
+            validate_inlines(&c.title, path, 0, errors);
+            validate_blocks(&c.content, &format!("{path}.content"), errors);
+        }
+        BlockKind::Paragraph(c) | BlockKind::Heading { content: c, .. } => {
+            validate_inlines(c, path, 0, errors)
+        }
+        BlockKind::CodeBlock { .. } | BlockKind::Divider | BlockKind::MathBlock(_) => {}
+    }
+}
+
+fn validate_inlines(
+    items: &[Inline],
+    path: &str,
+    style_depth: usize,
+    errors: &mut Vec<SchemaError>,
+) {
+    for (i, item) in items.iter().enumerate() {
+        let path = format!("{path}.inline[{i}]");
+        match item {
+            Inline::MbStyle { content, .. } => {
+                if style_depth >= MAX_STYLE_DEPTH {
+                    errors.push(SchemaError {
+                        path,
+                        violation: Violation::StyleTooDeep,
+                    });
+                } else {
+                    validate_inlines(content, &path, style_depth + 1, errors);
+                }
+            }
+            Inline::Emphasis(c)
+            | Inline::Strong(c)
+            | Inline::Strikethrough(c)
+            | Inline::Highlight(c)
+            | Inline::Link { content: c, .. } => validate_inlines(c, &path, style_depth, errors),
+            Inline::Text(_) => {}
+            _ if style_depth > 0 => errors.push(SchemaError {
+                path,
+                violation: Violation::StyleOnNonText,
+            }),
+            _ => {}
+        }
     }
 }
 
@@ -480,6 +545,9 @@ fn validate_list(l: &List, path: &str, errors: &mut Vec<SchemaError>) {
 
 fn validate_table(t: &Table, path: &str, errors: &mut Vec<SchemaError>) {
     let cols = t.alignments.len();
+    for cell in t.head.iter().chain(t.rows.iter().flatten()) {
+        validate_inlines(cell, path, 0, errors);
+    }
     if cols == 0 {
         errors.push(SchemaError {
             path: path.to_string(),

@@ -150,7 +150,6 @@ pub fn rename_link_target(
     if keys.is_empty() {
         return Ok(Rewrite::unchanged(source));
     }
-    let expected = retargeted(source, &keys, to);
     let (body, base, scan) = scannable(source);
     let mut edits: Vec<(Range<usize>, String)> = Vec::new();
     walk(body, &scan, |target, name| {
@@ -158,7 +157,7 @@ pub fn rename_link_target(
             edits.push((base + target.start..base + target.end, to.to_string()));
         }
     });
-    finish(source, edits, &expected)
+    finish_rename(source, edits, |text| retargeted(text, &keys, to))
 }
 
 /// Repoints several link targets simultaneously, without cascading replacements.
@@ -181,14 +180,17 @@ pub fn rename_link_targets(
             return Err(RewriteError::Unverified);
         }
     }
-    let mut expected = crate::parse(source);
-    map_blocks(&mut expected.blocks, &mut |inline| {
-        if let Inline::WikiLink(link) = inline
-            && let Some(to) = folded.get(&names::fold_name(&link.target))
-        {
-            link.target = (*to).clone();
-        }
-    });
+    let semantic = |text: &str| {
+        let mut expected = crate::parse(text);
+        map_blocks(&mut expected.blocks, &mut |inline| {
+            if let Inline::WikiLink(link) = inline
+                && let Some(to) = folded.get(&names::fold_name(&link.target))
+            {
+                link.target = (*to).clone();
+            }
+        });
+        crate::canonicalize(expected)
+    };
     let (body, base, scan) = scannable(source);
     let mut edits = Vec::new();
     walk(body, &scan, |target, name| {
@@ -196,7 +198,7 @@ pub fn rename_link_targets(
             edits.push((base + target.start..base + target.end, (*to).clone()));
         }
     });
-    finish(source, edits, &crate::canonicalize(expected))
+    finish_rename(source, edits, semantic)
 }
 
 /// Renames a tag and every tag nested under it, and changes nothing else (§9.3).
@@ -220,7 +222,6 @@ pub fn rename_tag(source: &str, from: &str, to: &str) -> Result<Rewrite, Rewrite
     if names::fold_tag(from).is_empty() {
         return Ok(Rewrite::unchanged(source));
     }
-    let expected = retagged(source, from, to);
     let (body, base, scan) = scannable(source);
     let mut edits: Vec<(Range<usize>, String)> = frontmatter_tag_edits(source, from, to);
     walk_tags(body, &scan, |tag, name| {
@@ -229,7 +230,7 @@ pub fn rename_tag(source: &str, from: &str, to: &str) -> Result<Rewrite, Rewrite
         }
     });
     edits.sort_by_key(|(range, _)| range.start);
-    finish(source, edits, &expected)
+    finish_rename(source, edits, |text| retagged(text, from, to))
 }
 
 /// Makes the first line of a note its non-empty level-one title.
@@ -269,6 +270,145 @@ pub fn rename_title(source: &str, title: &str) -> Result<Rewrite, RewriteError> 
             end: base,
         }],
     })
+}
+
+/// Adds only independently model-verified, original-source label edits to the oracle.
+/// Rejected wrappers remain literal in the public model; metadata is never projected.
+fn finish_rename(
+    source: &str,
+    edits: Vec<(Range<usize>, String)>,
+    semantic: impl Fn(&str) -> Document,
+) -> Result<Rewrite, RewriteError> {
+    let (body, base, scan) = scannable(source);
+    let scopes = parse::style_rewrite_scopes(body, parse::options());
+    // why: unmatched/escaped delimiter ownership cannot be inferred from a displayed
+    // wrapper. Refuse the whole surgical write, including neighboring targets.
+    if !edits.is_empty()
+        && body.match_indices(":mb-style[").any(|(start, opener)| {
+            scan.all(start..start + opener.len())
+                && !scan.escaped.contains(&start)
+                && !scopes.iter().any(|scope| scope.whole.start == start)
+        })
+    {
+        return Err(RewriteError::Unverified);
+    }
+    let mut projected = Vec::new();
+    let mut literal_proofs = Vec::new();
+    for scope in scopes {
+        let Some(label) = scope.label else {
+            continue;
+        };
+        let absolute = base + label.start..base + label.end;
+        let mut local = Vec::new();
+        for (range, replacement) in &edits {
+            if range.start < absolute.end && absolute.start < range.end {
+                if range.start < absolute.start || range.end > absolute.end {
+                    return Err(RewriteError::Unverified);
+                }
+                local.push((
+                    range.start - absolute.start..range.end - absolute.start,
+                    replacement.clone(),
+                ));
+            }
+        }
+        if local.is_empty() {
+            continue;
+        }
+        let original = source
+            .get(absolute.clone())
+            .ok_or(RewriteError::Unverified)?;
+        // This is the unchanged semantic verifier, not permission for arbitrary Text
+        // changes. It checks the complete local tag/wiki delta, Code/math/escapes,
+        // target spelling, anchors and aliases before any literal-source projection.
+        finish(original, local.clone(), &semantic(original))?;
+        // Native accepted owners partition literal presentation into source gaps.
+        // Only changed gaps become Text proofs; native destinations/titles stay under
+        // the ordinary whole-model oracle, with no local reference resolution.
+        let mut covered = 0;
+        for gap in scope.literal_gaps {
+            let mut gap_edits = Vec::new();
+            for (range, replacement) in &local {
+                let start = label.start + range.start;
+                let end = label.start + range.end;
+                if start >= gap.start && end <= gap.end {
+                    gap_edits.push((start - gap.start..end - gap.start, replacement.clone()));
+                    covered += 1;
+                }
+            }
+            if gap_edits.is_empty() {
+                continue;
+            }
+            let original_gap = body.get(gap).ok_or(RewriteError::Unverified)?;
+            literal_proofs.push((
+                original_gap.to_string(),
+                splice(original_gap, gap_edits).text,
+            ));
+        }
+        if covered != local.len() {
+            return Err(RewriteError::Unverified);
+        }
+        for (range, replacement) in local {
+            projected.push((
+                absolute.start + range.start..absolute.start + range.end,
+                replacement,
+            ));
+        }
+    }
+    projected.sort_by_key(|(range, _)| range.start);
+    let approved_source = splice(source, projected);
+    verify_literal_projection(source, approved_source.text(), literal_proofs)?;
+    finish(source, edits, &semantic(approved_source.text()))
+}
+
+/// Bind every literal-model delta to a complete source wrapper with checked label edits.
+/// Ambiguous/missing Text ownership is refusal, never a generic text-diff allowance.
+fn verify_literal_projection(
+    source: &str,
+    projected: &str,
+    proofs: Vec<(String, String)>,
+) -> Result<(), RewriteError> {
+    let mut expected = crate::parse(source);
+    let mut wrappers: BTreeMap<String, (String, usize, usize)> = BTreeMap::new();
+    for (old, new) in proofs {
+        let row = wrappers.entry(old).or_insert_with(|| (new.clone(), 0, 0));
+        if row.0 != new {
+            return Err(RewriteError::Unverified);
+        }
+        row.1 += 1;
+    }
+    map_blocks(&mut expected.blocks, &mut |inline| {
+        let Inline::Text(text) = inline else {
+            return;
+        };
+        let mut at = 0;
+        let mut output = String::new();
+        while let Some((offset, old)) = wrappers
+            .keys()
+            .filter_map(|old| {
+                text.get(at..)?
+                    .find(old)
+                    .map(|offset| (at + offset, old.clone()))
+            })
+            .min_by_key(|(offset, _)| *offset)
+        {
+            output.push_str(text.get(at..offset).unwrap_or(""));
+            if let Some((new, _, seen)) = wrappers.get_mut(&old) {
+                output.push_str(new);
+                *seen += 1;
+            }
+            at = offset + old.len();
+        }
+        if at != 0 {
+            output.push_str(text.get(at..).unwrap_or(""));
+            *text = output;
+        }
+    });
+    if wrappers.values().any(|(_, count, seen)| count != seen)
+        || crate::parse(projected) != expected
+    {
+        return Err(RewriteError::Unverified);
+    }
+    Ok(())
 }
 
 /// Splices the edits and refuses the result unless it parses back to `expected`.
@@ -432,6 +572,7 @@ fn map_inlines(items: &mut [Inline], f: &mut impl FnMut(&mut Inline)) {
             | Inline::Strong(content)
             | Inline::Strikethrough(content)
             | Inline::Highlight(content)
+            | Inline::MbStyle { content, .. }
             | Inline::Link { content, .. } => map_inlines(content, f),
             _ => {}
         }
@@ -490,7 +631,10 @@ fn scannable(source: &str) -> (&str, usize, Scan) {
             _ => {}
         }
     }
-    for span in parse::math::spans(body, options) {
+    for span in parse::math::spans(body, options)
+        .into_iter()
+        .chain(parse::style_metadata_spans(body, options))
+    {
         if let Some(flags) = inside.get_mut(span) {
             flags.fill(false);
         }

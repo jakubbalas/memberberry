@@ -1,13 +1,24 @@
 /** Measures the per-edit transport/acknowledgement cost, excluding network and disk latency. */
 import { afterAll, bench } from "vitest";
-import { Doc } from "yjs";
+import { Doc, XmlElement, XmlText, applyUpdate } from "yjs";
+import { readFileSync } from "node:fs";
+import { load, noteBridge } from "../notes.js";
+import { SCHEMA_VERSION } from "./schema-revision.js";
+await load(readFileSync(`${process.cwd()}/src/wasm/mb_bg.wasm`));
+const bridge = await noteBridge();
 import { createSyncProvider } from "./sync.js";
 
 class EchoSocket extends EventTarget {
   readonly readyState = WebSocket.OPEN;
   binaryType: BinaryType = "arraybuffer";
   send(data: string | Uint8Array): void {
-    if (typeof data === "string") return;
+    if (typeof data === "string") {
+      const frame = JSON.parse(data) as { type: string };
+      if (frame.type === "subscribe") this.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ type: "admitted", vault: "benchmark", note: "Note.md", schema_version: SCHEMA_VERSION }),
+      }));
+      return;
+    }
     this.dispatchEvent(new MessageEvent("message", {
       data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
     }));
@@ -17,8 +28,10 @@ class EchoSocket extends EventTarget {
 
 const local = new Doc();
 const replicated = new Doc();
-const localText = local.getText("body");
-const replicatedText = replicated.getText("body");
+applyUpdate(local, bridge.updateFromMarkdown("benchmark\n"));
+applyUpdate(replicated, bridge.updateFromMarkdown("benchmark\n"));
+const localText = (local.getXmlFragment("prosemirror").get(0) as XmlElement).get(0) as XmlText;
+const replicatedText = (replicated.getXmlFragment("prosemirror").get(0) as XmlElement).get(0) as XmlText;
 const socket = new EchoSocket();
 const provider = createSyncProvider({
   endpoint: "ws://localhost/benchmark",

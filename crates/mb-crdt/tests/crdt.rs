@@ -1,5 +1,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+// why: reuse the real recursive block/inline generator, including namespace marks,
+// rather than asserting only a text-only surrogate for the Markdown wire contract.
+#[path = "../../mb-core/tests/support/mod.rs"]
+mod support;
+
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -341,6 +346,21 @@ fn concurrent_xml_and_frontmatter_edits_converge() {
     );
 }
 
+#[test]
+fn adjacent_identical_links_join_into_one_link() {
+    let link = |text: &str| Inline::Link {
+        dest: "https://example.test".into(),
+        title: None,
+        content: vec![Inline::Text(text.into())],
+    };
+    let doc = mb_core::canonicalize(Document::new(vec![Block::new(BlockKind::Paragraph(vec![
+        link("a"),
+        link("b"),
+    ]))]));
+    let back = document_from_yrs(&document_to_yrs(&doc).unwrap()).unwrap();
+    assert_eq!(mb_core::to_markdown(&back), "[ab](https://example.test)\n");
+}
+
 fn append_paragraph_and_metadata(doc: &Doc, value: &str, key: &str) {
     let mut txn = doc.transact_mut();
     let fragment = txn.get_or_insert_xml_fragment(PROSEMIRROR_ROOT);
@@ -365,6 +385,18 @@ fn node_doc(tag: &str) -> Doc {
 }
 
 proptest! {
+    #[test]
+    fn recursive_marked_text_materializes_and_reopens(inline in support::marked_text_inline()) {
+        // why: on the input, never the output — a normalizer that splits one link must stay
+        // visible. SPEC §5.6 limit pinned by `adjacent_identical_links_join_into_one_link`.
+        prop_assume!(support::link_destinations_are_distinct(&inline));
+        let doc = mb_core::canonicalize(Document::new(vec![Block::new(BlockKind::Paragraph(vec![Inline::MbStyle { property: mb_core::model::MbStyleProperty::Underline, content: vec![inline] }]))]));
+        let encoded = document_to_yrs(&doc).expect("recursive canonical document encodes");
+        prop_assert_eq!(document_from_yrs(&encoded).expect("materialize"), doc.clone());
+        let reopened = document_from_update_v1(&encode_update_v1(&encoded)).expect("reopen");
+        prop_assert_eq!(document_from_yrs(&reopened).expect("reopened materialization"), doc);
+    }
+
     #[test]
     fn plain_text_materialization_is_total_and_round_trips(
         value in proptest::collection::vec(any::<char>().prop_filter(

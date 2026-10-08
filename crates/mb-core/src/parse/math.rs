@@ -51,13 +51,15 @@ const PREFIX: &str = "%\u{1}";
 /// Spans lifted out of the source, looked up while scanning inlines.
 #[derive(Debug, Clone, Default)]
 pub struct Table {
-    spans: Vec<Span>,
+    context_prefix: Option<String>,
+    spans: std::sync::Arc<Vec<Span>>,
 }
 
 #[derive(Debug, Clone)]
 struct Span {
     /// Where the span sat in the source, so a misplaced one can be skipped on a retry.
     start: usize,
+    end: usize,
     content: String,
 }
 
@@ -65,7 +67,11 @@ impl Table {
     /// Reads a placeholder at the start of `text`: its byte length and original content.
     #[must_use]
     pub fn take(&self, text: &str) -> Option<(usize, &str)> {
-        let rest = text.strip_prefix(EDGE)?.strip_prefix(MARK)?;
+        let rest = if let Some(prefix) = &self.context_prefix {
+            text.strip_prefix(prefix)?
+        } else {
+            text.strip_prefix(EDGE)?.strip_prefix(MARK)?
+        };
         let digits: String = rest
             .chars()
             .take_while(char::is_ascii_alphanumeric)
@@ -74,7 +80,8 @@ impl Table {
         let index = usize::from_str_radix(&digits, 36).ok()?;
         let span = self.spans.get(index)?;
         // Edge, marker, index, edge.
-        closed.then_some((digits.len() + 3, span.content.as_str()))
+        let prefix_len = self.context_prefix.as_ref().map_or(2, String::len);
+        closed.then_some((digits.len() + prefix_len + 1, span.content.as_str()))
     }
 
     #[must_use]
@@ -85,8 +92,9 @@ impl Table {
     /// Source offset of the span behind a leaked placeholder, for [`mask_except`].
     #[must_use]
     pub fn leaked_start(&self, text: &str) -> Option<usize> {
-        let at = text.find(PREFIX)?;
-        let rest = text.get(at + PREFIX.len()..)?;
+        let prefix = self.context_prefix.as_deref().unwrap_or(PREFIX);
+        let at = text.find(prefix)?;
+        let rest = text.get(at + prefix.len()..)?;
         let digits: String = rest
             .chars()
             .take_while(char::is_ascii_alphanumeric)
@@ -148,8 +156,9 @@ pub fn mask_except(src: &str, options: Options, skip: &[usize]) -> (String, Tabl
             continue;
         };
         let index = table.spans.len();
-        table.spans.push(Span {
+        std::sync::Arc::make_mut(&mut table.spans).push(Span {
             start: range.start,
+            end: range.end,
             content: content.to_string(),
         });
         out.push_str(src.get(cursor..range.start).unwrap_or(""));
@@ -207,15 +216,35 @@ impl Structure {
                 _ => {}
             }
         }
+        out.normalize();
         out
+    }
+    fn normalize(&mut self) {
+        self.code.sort_by_key(|r| r.start);
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for range in self.code.drain(..) {
+            if let Some(last) = merged.last_mut().filter(|last| range.start <= last.end) {
+                last.end = last.end.max(range.end);
+            } else {
+                merged.push(range);
+            }
+        }
+        self.code = merged;
+        self.rows.sort_by_key(|r| r.start);
     }
 
     fn in_code(&self, at: usize) -> bool {
-        self.code.iter().any(|r| r.contains(&at))
+        let i = self.code.partition_point(|r| r.start <= at);
+        i.checked_sub(1)
+            .and_then(|i| self.code.get(i))
+            .is_some_and(|r| r.contains(&at))
     }
 
     fn row_at(&self, at: usize) -> Option<&Range<usize>> {
-        self.rows.iter().find(|r| r.contains(&at))
+        let i = self.rows.partition_point(|r| r.start <= at);
+        i.checked_sub(1)
+            .and_then(|i| self.rows.get(i))
+            .filter(|r| r.contains(&at))
     }
 }
 
@@ -295,4 +324,65 @@ fn is_math_body(inner: &str) -> bool {
         && !inner.starts_with(char::is_whitespace)
         && !inner.ends_with(char::is_whitespace)
         && !inner.contains(['\n', '\r', '`'])
+}
+
+/// Body-private discovery reuses the actual original authority stream.
+pub(super) fn spans_from_events(src: &str, events: &[super::OwnedEvent]) -> Vec<Range<usize>> {
+    if !src.contains('$') {
+        return Vec::new();
+    }
+    let mut structure = Structure::default();
+    let mut block_start = None;
+    for (event, range) in events {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => block_start = Some(range.start),
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = block_start.take() {
+                    structure.code.push(start..range.end);
+                }
+            }
+            Event::Code(_) => structure.code.push(range.clone()),
+            Event::Start(Tag::TableRow | Tag::TableHead) => structure.rows.push(range.clone()),
+            _ => {}
+        }
+    }
+    structure.normalize();
+    find_spans(src, &structure)
+}
+pub(super) fn table_from_ranges(
+    src: &str,
+    ranges: &[Range<usize>],
+    skip: &[usize],
+    prefix: String,
+) -> Table {
+    let spans = ranges
+        .iter()
+        .filter(|r| !skip.contains(&r.start))
+        .filter_map(|range| {
+            let content = src.get(range.start + 1..range.end.checked_sub(1)?)?;
+            Some(Span {
+                start: range.start,
+                end: range.end,
+                content: content.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Table {
+        context_prefix: Some(prefix),
+        spans: std::sync::Arc::new(spans),
+    }
+}
+impl Table {
+    pub(super) fn token_at(&self, start: usize) -> Option<String> {
+        let index = self.spans.partition_point(|span| span.start < start);
+        let span = self.spans.get(index)?;
+        if span.start != start || span.end <= start {
+            return None;
+        }
+        Some(format!(
+            "{}{}%",
+            self.context_prefix.as_deref().unwrap_or(PREFIX),
+            to_base36(index)
+        ))
+    }
 }

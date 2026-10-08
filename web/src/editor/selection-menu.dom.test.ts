@@ -5,19 +5,23 @@ import { Editor } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { applyUpdate, Doc, encodeStateAsUpdate } from "yjs";
+import { undo } from "y-prosemirror";
+import { Awareness } from "y-protocols/awareness";
 import { load, schema, updateFromMarkdown } from "../notes.js";
-import { createYjsBinding, PROSEMIRROR_ROOT } from "./collaboration.js";
-import { mountEditorShell } from "./editor-shell.js";
+import { createConnectionStatus, createYjsBinding, PROSEMIRROR_ROOT } from "./collaboration.js";
+import { mountEditorShell, type MountEditorShellOptions } from "./editor-shell.js";
 import { protectedTitleExtension } from "./note-editor.js";
 import { createMemberberryExtensions } from "./schema.js";
+import { tableRowHandles } from "./table-tools.js";
 import { editorMarkdown } from "./source.js";
-import { mountSelectionMenu } from "./selection-menu.js";
+import { mountSelectionMenu, SINGLE_EDITOR_WARNING } from "./selection-menu.js";
 
 const cleanups: (() => void)[] = [];
 beforeAll(async () => { await load(readFileSync("src/wasm/mb_bg.wasm")); });
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
 
-async function open(markdown = "# Title\n\nFirst body\n\nLater words\n") {
+type Routed = Pick<MountEditorShellOptions, "noteKey" | "awareness" | "connection">;
+async function open(markdown = "# Title\n\nFirst body\n\nLater words\n", routed: Routed = {}) {
   const panel = document.createElement("section");
   panel.className = "note-pane";
   const surface = document.createElement("div");
@@ -27,10 +31,10 @@ async function open(markdown = "# Title\n\nFirst body\n\nLater words\n") {
   const ydoc = new Doc();
   applyUpdate(ydoc, await updateFromMarkdown(markdown));
   const editor = new Editor({ element: surface, extensions: [
-    ...createMemberberryExtensions(await schema()), protectedTitleExtension,
+    ...createMemberberryExtensions(await schema()), tableRowHandles, protectedTitleExtension,
     createYjsBinding(ydoc.getXmlFragment(PROSEMIRROR_ROOT)),
   ] });
-  const shell = mountEditorShell({ editor, document: ydoc, panel, status });
+  const shell = mountEditorShell({ editor, document: ydoc, panel, status, ...routed });
   cleanups.push(() => { shell.destroy(); editor.destroy(); ydoc.destroy(); panel.remove(); });
   const select = (text: string) => {
     let from = -1;
@@ -217,7 +221,7 @@ it("remote Yjs updates invalidate the link workflow and cannot mint a mapped act
   applyUpdate(remote, encodeStateAsUpdate(f.ydoc));
   const surface = document.createElement("div");
   document.body.append(surface);
-  const peer = new Editor({ element: surface, extensions: [...createMemberberryExtensions(await schema()), createYjsBinding(remote.getXmlFragment(PROSEMIRROR_ROOT))] });
+  const peer = new Editor({ element: surface, extensions: [...createMemberberryExtensions(await schema()), tableRowHandles, createYjsBinding(remote.getXmlFragment(PROSEMIRROR_ROOT))] });
   cleanups.push(() => { peer.destroy(); remote.destroy(); surface.remove(); });
   const updates: Uint8Array[] = [];
   remote.on("update", (update: Uint8Array) => { updates.push(update); });
@@ -377,4 +381,158 @@ it("restores a pending native range even when Clear changes no marks", async () 
   expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\nLater words\n");
 });
 
+// Chrome delivers selectionchange as a later task. Focus leaving the editor first dispatches
+// Tiptap's blur transaction, so the menu refreshes before ProseMirror reads the native range.
+function extendNativeBeforeBlur(f: Awaited<ReturnType<typeof open>>, model: { readonly from: number; readonly to: number }): void {
+  f.editor.commands.setTextSelection(model);
+  const text = f.editor.view.dom.querySelectorAll("p")[1]?.firstChild;
+  if (!text) throw new Error("missing later paragraph");
+  document.getSelection()?.setBaseAndExtent(text, 0, text, "Later words".length);
+  f.editor.view.dispatch(f.editor.state.tr.setMeta("blur", { event: new FocusEvent("blur") }));
+}
 
+it("formats the visible native range when a blur refresh runs before the lagging model catches up", async () => {
+  const f = await open();
+  const { from, to } = f.select("Later words");
+  extendNativeBeforeBlur(f, { from, to: to - 1 });
+  f.control("Underline").click();
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\n:mb-style[Later words]{underline=\"true\"}\n");
+});
+
+it("keeps the menu for a visible native range when the lagging model is still collapsed", async () => {
+  const f = await open();
+  const { from } = f.select("Later words");
+  extendNativeBeforeBlur(f, { from, to: from });
+  expect(f.menu()?.hidden).toBe(false);
+});
+
+function synced() {
+  const connection = createConnectionStatus();
+  connection.set({ connected: true, synced: true, pending: 0 });
+  return connection;
+}
+function turnInto(f: Awaited<ReturnType<typeof open>>): HTMLSelectElement {
+  const found = f.menu()?.querySelector<HTMLSelectElement>("select[aria-label='Turn into']");
+  if (!found) throw new Error("missing Turn into");
+  return found;
+}
+function choose(select: HTMLSelectElement, value: string): void {
+  select.value = value;
+  select.dispatchEvent(new Event("change"));
+}
+
+it("turns the selected paragraph into a heading through the popup and undoes it in one step", async () => {
+  const f = await open(undefined, { noteKey: "turn-into", connection: synced() });
+  f.select("Later");
+  choose(turnInto(f), "h2");
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\n## Later words\n");
+  expect(turnInto(f).value).toBe("h2");
+  expect(undo(f.editor.state)).toBe(true);
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\nLater words\n");
+});
+
+it("lists the single-editor warning with the block choices it governs", async () => {
+  const f = await open(undefined, { noteKey: "warning", connection: synced() });
+  f.select("Later");
+  expect(turnInto(f).querySelector("optgroup")?.label).toBe(SINGLE_EDITOR_WARNING);
+});
+
+it("offers no block conversion in a local-only editor without a routed note identity", async () => {
+  const f = await open();
+  f.select("Later");
+  expect(f.menu()?.querySelector("select[aria-label='Turn into']")).toBeNull();
+});
+
+it("shows why conversion is refused while a known peer is present and writes nothing", async () => {
+  const peerDoc = new Doc();
+  const awareness = new Awareness(peerDoc);
+  cleanups.push(() => { awareness.destroy(); peerDoc.destroy(); });
+  const f = await open(undefined, { noteKey: "peer", connection: synced(), awareness });
+  f.select("Later");
+  awareness.states.set(4242, { user: { name: "peer" } });
+  awareness.emit("change", [{ added: [4242], updated: [], removed: [] }, "test"]);
+  const control = turnInto(f);
+  expect(control.disabled).toBe(true);
+  expect(control.selectedOptions[0]?.textContent).toBe("Text · Someone else has this note open");
+  choose(control, "h2");
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\nLater words\n");
+});
+
+it("refuses conversion while offline or with unsent writes, and re-enables once synced", async () => {
+  const connection = synced();
+  const f = await open(undefined, { noteKey: "transport", connection });
+  f.select("Later");
+  connection.set({ connected: true, synced: true, pending: 1 });
+  expect(turnInto(f).disabled).toBe(true);
+  choose(turnInto(f), "h3");
+  connection.set({ connected: false, synced: false, pending: 0 });
+  expect(turnInto(f).disabled).toBe(true);
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\nLater words\n");
+  connection.set({ connected: true, synced: true, pending: 0 });
+  expect(turnInto(f).disabled).toBe(false);
+});
+
+it("refuses conversion while a second editor has the same note mounted", async () => {
+  const f = await open(undefined, { noteKey: "same-note", connection: synced() });
+  const g = await open(undefined, { noteKey: "same-note", connection: synced() });
+  f.select("Later");
+  expect(turnInto(f).disabled).toBe(true);
+  g.shell.destroy();
+  expect(turnInto(f).disabled).toBe(false);
+});
+
+it("hides block conversion for text nested in a list rather than flattening it", async () => {
+  const f = await open("# Title\n\n- Later words\n", { noteKey: "nested", connection: synced() });
+  f.select("Later");
+  expect(f.menu()?.hidden).toBe(false);
+  expect(turnInto(f).hidden).toBe(true);
+});
+
+it("closes the More menu after inserting a block so it does not cover the new content", async () => {
+  const f = await open();
+  const more = f.panel.querySelector<HTMLDetailsElement>(".editor-more");
+  if (!more) throw new Error("missing More");
+  more.open = true;
+  f.panel.querySelector<HTMLButtonElement>(".editor-more [aria-label='Insert table block']")?.click();
+  expect(more.open).toBe(false);
+});
+
+it("keeps the More menu open after Move so a block can be moved repeatedly", async () => {
+  const f = await open();
+  f.select("Later");
+  const more = f.panel.querySelector<HTMLDetailsElement>(".editor-more");
+  if (!more) throw new Error("missing More");
+  more.open = true;
+  f.panel.querySelector<HTMLButtonElement>(".editor-more [aria-label='Insert move up block']")?.click();
+  expect(more.open).toBe(true);
+});
+
+function styleChoice(f: Awaited<ReturnType<typeof open>>, label: string): HTMLButtonElement {
+  const found = f.menu()?.querySelector<HTMLButtonElement>(`.selection-style-panel [aria-label='${label}']`);
+  if (!found) throw new Error(`missing ${label}`);
+  return found;
+}
+
+it("applies colour, background and size in one visit to the style panel", async () => {
+  const f = await open();
+  f.select("Later words");
+  f.control("Text color, background and size").click();
+  for (const label of ["Red text", "Yellow background", "Large text size"]) styleChoice(f, label).click();
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\n:mb-style[Later words]{color=\"red\" background=\"yellow\" size=\"large\"}\n");
+});
+
+it("does not disable the style choices when a write turns pending mid-apply", async () => {
+  const connection = synced();
+  const f = await open(undefined, { noteKey: "pending-mid-apply", connection });
+  // Like the sync provider: the local write becomes pending during the editor dispatch.
+  f.editor.on("transaction", ({ transaction }) => {
+    if (transaction.docChanged) connection.set({ connected: true, synced: true, pending: 1 });
+  });
+  f.select("Later words");
+  f.control("Text color, background and size").click();
+  const red = styleChoice(f, "Red text");
+  const seen: boolean[] = [];
+  connection.subscribe(() => { seen.push(red.disabled); });
+  red.click();
+  expect(seen).not.toContain(true);
+});

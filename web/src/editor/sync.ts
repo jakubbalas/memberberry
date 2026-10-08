@@ -1,5 +1,7 @@
 /** Permission-aware WebSocket transport for a single persisted Yjs note. */
 
+import { createLoadedSchemaAdmission, type SchemaAdmission } from "./schema-admission.js";
+
 import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVectorFromUpdate, snapshot, snapshotContainsUpdate } from "yjs";
 import {
   Awareness,
@@ -44,6 +46,8 @@ export interface SyncProvider {
   readonly pending: number;
   /** Whether the server has sent this note's state at least once (§7.2). */
   readonly synced: boolean;
+  /** Terminal schema refusal; refresh rather than reconnecting or claiming saved. */
+  readonly refreshRequired?: boolean;
   sendAwareness(state: unknown): void;
   destroy(): void;
 }
@@ -53,6 +57,8 @@ export interface CreateSyncProviderOptions {
   readonly vault: string;
   readonly note: string;
   readonly document: Doc;
+  /** Already loaded shared-codec validator; defaults to the real WASM admission. */
+  readonly admission?: SchemaAdmission;
   readonly awareness?: Awareness;
   /**
    * Opens a socket. Called again for every reconnection, which is why this is a factory and
@@ -110,9 +116,12 @@ export interface ConnectionState {
    * online tells you nothing about whether this note's body ever came.
    */
   readonly synced: boolean;
+  /** Terminal schema refusal; refresh rather than reconnecting or claiming saved. */
+  readonly refreshRequired?: boolean;
 }
 
 type ControlFrame =
+  | { readonly type: "admitted"; readonly vault: string; readonly note: string; readonly schema_version: unknown }
   | { readonly type: "awareness"; readonly vault: string; readonly note: string; readonly user: string; readonly state: unknown }
   | { readonly type: "departed"; readonly vault: string; readonly note: string; readonly clients: number[] }
   | { readonly type: "error"; readonly code: string };
@@ -126,12 +135,16 @@ interface BinaryFrame {
 
 /** Opens a server-authorized sync session. The server remains the permission boundary. */
 export function createSyncProvider(options: CreateSyncProviderOptions): SyncProvider {
+  const admission = options.admission ?? createLoadedSchemaAdmission();
+  admission.validate(options.document);
   const openSocket = options.connect ?? ((): WebSocket => new WebSocket(options.endpoint));
   const network = options.network ?? defaultNetwork();
   let socket: WebSocket | undefined;
   let connected = false;
   let pending = 0;
   let synced = false;
+  let admitted = false;
+  let refreshRequired = false;
   // why: WebSocket.send only queues bytes locally. The server echoes updates after fsync;
   // that echo, not a successful send, is the existing protocol's durability acknowledgement.
   let inFlight: Array<{ readonly update: Uint8Array; readonly count: number }> = [];
@@ -146,7 +159,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   let retry: ReturnType<typeof setTimeout> | undefined;
 
   const announce = (): void => {
-    options.onConnectionChange?.({ connected, pending, synced });
+    options.onConnectionChange?.({ connected, pending, synced, ...(refreshRequired ? { refreshRequired: true } : {}) });
   };
   const setConnected = (next: boolean): void => {
     if (connected === next) return;
@@ -159,7 +172,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     announce();
   };
   const isOpen = (): boolean =>
-    !destroyed && socket !== undefined && socket.readyState === WebSocket.OPEN;
+    !destroyed && !refreshRequired && socket !== undefined && socket.readyState === WebSocket.OPEN;
   const send = (frame: unknown): void => {
     if (isOpen()) socket?.send(JSON.stringify(frame));
   };
@@ -176,7 +189,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
       lastPresence = performance.now();
       const queued = pendingPresence as { state: unknown; clients: number[] } | undefined;
       pendingPresence = undefined;
-      if (queued === undefined) return;
+      if (queued === undefined || !admitted) return;
       send({
         type: "awareness",
         vault: options.vault,
@@ -189,7 +202,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   const sendUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === REMOTE_SYNC_ORIGIN) return;
     setPending(pending + 1);
-    if (!isOpen()) {
+    if (!isOpen() || !admitted) {
       // why: counted rather than queued. The document itself is the queue — every one of
       // these is already in the Y doc and, a moment later, in IndexedDB — so keeping the
       // bytes as well would be a second copy that can disagree with the first. What
@@ -233,21 +246,30 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   const onOpen = (): void => {
     attempts = 0;
     setConnected(true);
-    send({ type: "subscribe", vault: options.vault, note: options.note });
+    send({ type: "subscribe", vault: options.vault, note: options.note, schema_version: admission.version });
   };
   const onMessage = (event: MessageEvent<unknown>): void => {
     if (event.data instanceof ArrayBuffer) {
       const frame = decodeBinaryFrame(new Uint8Array(event.data));
       if (frame === null || frame.vault !== options.vault || frame.note !== options.note) return;
+      if (frame.tag !== FRAME_UPDATE && frame.tag !== FRAME_SYNC) return;
+      if (!admitted) { terminateForRefresh(); return; }
       if (frame.tag === FRAME_UPDATE) {
-        applyUpdate(options.document, frame.payload, REMOTE_SYNC_ORIGIN);
         const acknowledged = inFlight.findIndex(({ update }) =>
           update.length === frame.payload.length
           && update.every((byte, index) => byte === frame.payload[index]));
         if (acknowledged !== -1) {
+          // why: these exact bytes are already in the live document. An fsynced echo
+          // acknowledges them; reapplying/cloning the whole note per key adds no safety.
           const [accepted] = inFlight.splice(acknowledged, 1);
           if (accepted !== undefined) setPending(Math.max(0, pending - accepted.count));
+          return;
         }
+      }
+      try { admission.validateIncoming(options.document, frame.payload); }
+      catch { terminateForRefresh(); return; }
+      if (frame.tag === FRAME_UPDATE) {
+        applyUpdate(options.document, frame.payload, REMOTE_SYNC_ORIGIN);
         return;
       }
       if (frame.tag !== FRAME_SYNC) return;
@@ -289,10 +311,17 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
       // Rejected edits remain in the durable local doc and must never look saved. Close
       // this subscription, so its successor reconciles the missing state rather than
       // continuing to send dependent increments after a rejected update.
-      onOffline();
+      if (frame.code === "schema_refresh_required") terminateForRefresh();
+      else onOffline();
       return;
     }
     if (frame.vault !== options.vault || frame.note !== options.note) return;
+    if (frame.type === "admitted") {
+      if (frame.schema_version !== admission.version) { terminateForRefresh(); return; }
+      admitted = true;
+      return;
+    }
+    if (!admitted) { terminateForRefresh(); return; }
     if (frame.type === "awareness") applyRemoteAwareness(frame.user, frame.state);
     // why: §7.5 requires a disconnected client's cursor to disappear on socket close. The
     // server names the awareness clients that left, so the removal is immediate rather than
@@ -307,7 +336,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     scheduleReconnect();
   };
   const attach = (): void => {
-    if (destroyed) return;
+    if (destroyed || refreshRequired) return;
     const next = openSocket();
     next.binaryType = "arraybuffer";
     socket = next;
@@ -321,7 +350,19 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     socket?.removeEventListener("message", onMessage);
     socket?.removeEventListener("close", onClose);
     socket = undefined;
+    admitted = false;
     inFlight = [];
+  };
+  const terminateForRefresh = (): void => {
+    refreshRequired = true;
+    synced = false;
+    if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+    if (retry !== undefined) { clearTimeout(retry); retry = undefined; }
+    const closing = socket;
+    detach();
+    closing?.close();
+    connected = false;
+    announce();
   };
   /**
    * Gives up the socket when the browser says the network has gone.
@@ -355,7 +396,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
    * governs a server that is refusing connections, which is the case it exists for.
    */
   const onOnline = (): void => {
-    if (destroyed || connected) return;
+    if (destroyed || refreshRequired || connected) return;
     if (retry !== undefined) {
       clearTimeout(retry);
       retry = undefined;
@@ -364,7 +405,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     attach();
   };
   const scheduleReconnect = (): void => {
-    if (destroyed || retry !== undefined) return;
+    if (destroyed || refreshRequired || retry !== undefined) return;
     const delay = reconnectDelay(attempts, Math.random);
     attempts += 1;
     retry = setTimeout(() => {
@@ -402,6 +443,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     get connected(): boolean { return connected; },
     get pending(): number { return pending; },
     get synced(): boolean { return synced; },
+    get refreshRequired(): boolean { return refreshRequired; },
     sendAwareness: (state: unknown): void => { sendAwareness(state); },
     destroy: (): void => {
       if (destroyed) return;
@@ -530,7 +572,10 @@ export function parseControlFrame(value: string): ControlFrame | null {
     return null;
   }
   if (typeof frame !== "object" || frame === null) return null;
-  const typed = frame as { type?: unknown; vault?: unknown; note?: unknown; user?: unknown; state?: unknown; clients?: unknown; code?: unknown };
+  const typed = frame as { type?: unknown; vault?: unknown; note?: unknown; user?: unknown; state?: unknown; clients?: unknown; code?: unknown; schema_version?: unknown };
+  if (typed.type === "admitted" && typeof typed.vault === "string" && typeof typed.note === "string") {
+    return { type: "admitted", vault: typed.vault, note: typed.note, schema_version: typed.schema_version };
+  }
   if (
     typed.type === "awareness"
     && typeof typed.vault === "string"

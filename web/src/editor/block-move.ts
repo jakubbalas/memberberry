@@ -2,10 +2,11 @@
 import type { Editor } from "@tiptap/core";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { NodeSelection, TextSelection } from "@tiptap/pm/state";
-import { ySyncPluginKey, yUndoPluginKey } from "y-prosemirror";
+import { yUndoPluginKey } from "y-prosemirror";
 import type { Doc, UndoManager } from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import type { ConnectionStatus } from "./collaboration.js";
+import { createSingleEditorGate } from "./single-editor.js";
 
 /** One note/editor lifetime. noteKey must include vault identity, not a title/path label. */
 export interface BlockMoveOptions {
@@ -38,7 +39,6 @@ export interface BlockMover {
   destroy(): void;
 }
 interface Capture { doc: PMNode; node: PMNode; generation: number }
-const mounted = new Map<string, Set<() => void>>();
 function title(doc: PMNode): PMNode | undefined {
   return doc.firstChild?.type.name === "heading" && doc.firstChild.attrs["level"] === 1 ? doc.firstChild : undefined;
 }
@@ -64,19 +64,10 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
   let generation = 0;
   const listeners = new Set<(change: BlockMoveChange) => void>();
   const changed = (change: BlockMoveChange): void => { if (!destroyed) for (const listener of listeners) listener(change); };
-  const safetyChanged = (): void => { changed("safety"); };
-  const registration = safetyChanged;
-  const registrations = mounted.get(options.noteKey) ?? new Set<() => void>();
-  registrations.add(registration); mounted.set(options.noteKey, registrations);
-  const allowed = (): boolean => {
-    if (destroyed || editor.isDestroyed || !editor.isEditable || !editor.view.editable || editor.view.composing || !(options.canInteract?.() ?? true)) return false;
-    const sync = ySyncPluginKey.getState(editor.state) as { doc: Doc } | undefined;
-    if (options.noteKey.length === 0 || sync?.doc !== options.document || !yUndoPluginKey.getState(editor.state) || options.document.isDestroyed || registrations.size > 1) return false;
-    const state = options.connection?.state;
-    if (state && (!state.connected || !state.synced || state.pending !== 0)) return false;
-    if (options.awareness) for (const [client, state] of options.awareness.getStates()) if (client !== options.awareness.clientID && state !== null) return false;
-    return true;
-  };
+  const gate = createSingleEditorGate(options);
+  const allowed = (): boolean =>
+    !destroyed && !editor.isDestroyed && editor.isEditable && editor.view.editable && !editor.view.composing
+    && (options.canInteract?.() ?? true) && gate.refusal() === undefined;
   const capture = (pos: number): BlockMoveToken | undefined => {
     if (!allowed()) return undefined;
     const doc = editor.state.doc;
@@ -127,23 +118,18 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
   const destroy = (): void => {
     if (destroyed) return;
     destroyed = true;
-    registrations.delete(registration);
-    if (registrations.size === 0) mounted.delete(options.noteKey);
     editor.off("destroy", destroy);
     options.document.off("update", updated);
     options.document.off("destroy", destroy);
-    options.awareness?.off("change", safetyChanged);
-    unsubscribeConnection?.();
+    unsubscribeSafety();
     listeners.clear();
-    for (const notify of registrations) notify();
+    gate.destroy();
   };
   const updated = (): void => { generation++; changed("document"); };
-  const unsubscribeConnection = options.connection?.subscribe(safetyChanged);
-  options.awareness?.on("change", safetyChanged);
+  const unsubscribeSafety = gate.subscribe(() => { changed("safety"); });
   options.document.on("update", updated);
   options.document.on("destroy", destroy);
   editor.on("destroy", destroy);
-  for (const notify of registrations) notify();
   const subscribe = (listener: (change: BlockMoveChange) => void): (() => void) => {
     if (!destroyed) listeners.add(listener);
     return () => { listeners.delete(listener); };

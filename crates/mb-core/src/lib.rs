@@ -37,6 +37,7 @@ pub mod permissions;
 pub mod rewrite;
 pub mod schema;
 pub mod serialize;
+mod style;
 pub mod syntax;
 pub mod task;
 pub mod template;

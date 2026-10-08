@@ -9,7 +9,7 @@ import { load, schema, updateFromMarkdown } from "../notes.js";
 import { createYjsBinding, PROSEMIRROR_ROOT } from "./collaboration.js";
 import { createMemberberryExtensions } from "./schema.js";
 import { editorMarkdown } from "./source.js";
-import { applyInlineFormat, captureFormatSelection, inlineFormatState } from "./selection-format.js";
+import { applyInlineFormat, canApplyInlineFormat, captureFormatSelection, inlineFormatState } from "./selection-format.js";
 
 const cleanups: (() => void)[] = [];
 beforeAll(async () => { await load(readFileSync("src/wasm/mb_bg.wasm")); });
@@ -42,12 +42,12 @@ it("refuses a TextSelection whose resolved document belongs to a different edito
   expect(captureFormatSelection(a.editor, () => true, b.editor.state.selection)).toBeUndefined();
 });
 
-it("refuses Strong on existing literal inline code instead of reporting a successful partial edit", async () => {
+it("applies Strong around literal inline Code without removing Code", async () => {
   const f = await open("# Title\n\nBody `literal` words\n");
   const token = f.select("literal");
-  const before = await editorMarkdown(f.ydoc);
-  expect(applyInlineFormat(f.editor, token, "strong")).toBe("refused");
-  expect(await editorMarkdown(f.ydoc)).toBe(before);
+  expect(canApplyInlineFormat(f.editor, token, "strong")).toBe(true);
+  expect(applyInlineFormat(f.editor, token, "strong")).toBe("applied");
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nBody **`literal`** words\n");
 });
 
 it("refuses title ranges, AllSelection, NodeSelection and atom-only selections", async () => {
@@ -146,10 +146,12 @@ it("Clear removes marks only, retaining task metadata, atoms, anchors and table 
   expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
 });
 
-it("refuses a lossy code mark over rich text or inline math and allows code removal", async () => {
+it("preserves rich native wrappers when adding Code, refuses inline math and allows code removal", async () => {
   const f = await open("# Title\n\n**Body** $x$ words\n");
   const token = f.select("Body");
-  expect(applyInlineFormat(f.editor, token, "code")).toBe("refused");
+  expect(canApplyInlineFormat(f.editor, token, "code")).toBe(true);
+  expect(applyInlineFormat(f.editor, token, "code")).toBe("applied");
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\n**`Body`** $x$ words\n");
   f.editor.commands.setTextSelection({ from: f.editor.state.selection.from, to: f.editor.state.doc.content.size - 1 });
   const all = captureFormatSelection(f.editor);
   if (!all) throw new Error("missing capture");

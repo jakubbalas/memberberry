@@ -53,7 +53,22 @@ prod-build: web-build ## Build the production web bundle and optimised server bi
 	@echo "Binary: target/release/memberberry"
 
 .PHONY: check
-check: fmt-check lint test coverage-gate token-check deployment-check dev-check web-check ## THE GATE: fmt + clippy + tests + coverage + tokens
+CHECK_LOG_DIR ?= local/debug
+
+# why: the gate's output runs to thousands of lines across a dozen tools; keeping a copy
+# under the gitignored local/debug/ inbox means a failure can be read back, or handed over,
+# after the terminal has scrolled. pipefail keeps the gate's own exit status, not tee's.
+check: ## THE GATE: fmt + clippy + tests + coverage + tokens (log: local/debug/make-check-*.log)
+	@mkdir -p $(CHECK_LOG_DIR)
+	@log="$(CHECK_LOG_DIR)/make-check-$$(date +%Y%m%d-%H%M%S).log"; \
+	set -o pipefail; \
+	$(MAKE) --no-print-directory check-gate 2>&1 | tee "$$log"; status=$$?; \
+	ln -sf "$$(basename "$$log")" "$(CHECK_LOG_DIR)/make-check-latest.log"; \
+	echo "make check: exit $$status, full log in $$log" | tee -a "$$log"; \
+	exit $$status
+
+.PHONY: check-gate
+check-gate: fmt-check lint test test-release coverage-gate token-check deployment-check dev-check web-check ## The gate itself, without saving a log
 
 .PHONY: full-test
 full-test: ## Build WASM, run the full check gate, then desktop/mobile E2E
@@ -78,6 +93,10 @@ lint: ## Clippy with warnings denied
 .PHONY: test
 test: ## All tests
 	$(CARGO) test --workspace
+
+.PHONY: test-release
+test-release: ## Tests too slow for a debug build (ignored there), run optimized
+	$(CARGO) test --release -p mb-search --test size
 
 .PHONY: test-fast
 test-fast: ## Behavioural tests only — the inner loop

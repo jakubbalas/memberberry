@@ -46,3 +46,5 @@ $$
 | Left | Right |
 | :-- | --: |
 | a | b |
+
+:mb-style[underline and color]{underline="true" color="red" background="yellow" size="large"}

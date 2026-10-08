@@ -64,7 +64,7 @@ fn fixture_json(doc: &Doc) -> Value {
         .get_map(FRONTMATTER_ROOT)
         .expect("fixture has a frontmatter root");
     json!({
-        "version": 1,
+        "version": mb_core::schema::VERSION,
         "prosemirror": {
             "type": "doc",
             "content": xml_children(&fragment, &txn),

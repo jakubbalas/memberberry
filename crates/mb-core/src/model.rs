@@ -176,6 +176,11 @@ pub enum Inline {
     Strikethrough(Vec<Inline>),
     /// `==highlight==`
     Highlight(Vec<Inline>),
+    /// A finite namespace property, applied only to eligible text.
+    MbStyle {
+        property: MbStyleProperty,
+        content: Vec<Inline>,
+    },
     Code(String),
     /// `$x$`
     Math(String),
@@ -202,6 +207,124 @@ pub enum Inline {
     FootnoteRef(String),
     SoftBreak,
     HardBreak,
+}
+
+/// The entire note-format palette; raw color strings are not model values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MbPalette {
+    Gray,
+    Brown,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Pink,
+    Red,
+}
+impl MbPalette {
+    /// Every supported palette value, in menu order.
+    pub const ALL: &'static [Self] = &[
+        Self::Gray,
+        Self::Brown,
+        Self::Orange,
+        Self::Yellow,
+        Self::Green,
+        Self::Blue,
+        Self::Purple,
+        Self::Pink,
+        Self::Red,
+    ];
+    /// Canonical source spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Gray => "gray",
+            Self::Brown => "brown",
+            Self::Orange => "orange",
+            Self::Yellow => "yellow",
+            Self::Green => "green",
+            Self::Blue => "blue",
+            Self::Purple => "purple",
+            Self::Pink => "pink",
+            Self::Red => "red",
+        }
+    }
+    /// Exact allowlist admission (no case folding or CSS parsing).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|c| c.name() == value)
+    }
+}
+
+/// Relative note-text size; normal size is the absence of a mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MbSize {
+    Small,
+    Large,
+}
+impl MbSize {
+    /// All supported presets.
+    pub const ALL: &'static [Self] = &[Self::Small, Self::Large];
+    /// Canonical source spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Large => "large",
+        }
+    }
+    /// Exact preset admission.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|s| s.name() == value)
+    }
+}
+
+/// A typed property in the Markdown namespace (never authored CSS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MbStyleProperty {
+    /// Underline; absence, rather than `false`, represents the default.
+    Underline,
+    /// Finite text palette.
+    Color(MbPalette),
+    /// Finite background palette, independent of native highlight.
+    Background(MbPalette),
+    /// Relative finite font-size preset.
+    Size(MbSize),
+}
+
+impl MbStyleProperty {
+    /// The independent Y.Text/ProseMirror mark key.
+    #[must_use]
+    pub const fn mark_name(self) -> &'static str {
+        match self {
+            Self::Underline => "mb_underline",
+            Self::Color(_) => "mb_color",
+            Self::Background(_) => "mb_background",
+            Self::Size(_) => "mb_size",
+        }
+    }
+    /// Canonical source attribute.
+    #[must_use]
+    pub fn attribute(self) -> String {
+        match self {
+            Self::Underline => "underline=\"true\"".into(),
+            Self::Color(c) => format!("color=\"{}\"", c.name()),
+            Self::Background(c) => format!("background=\"{}\"", c.name()),
+            Self::Size(s) => format!("size=\"{}\"", s.name()),
+        }
+    }
+    /// The fixed HTML class; no arbitrary CSS enters this mapping.
+    #[must_use]
+    pub fn class(self) -> String {
+        match self {
+            Self::Underline => "mb-underline".into(),
+            Self::Color(c) => format!("mb-color-{}", c.name()),
+            Self::Background(c) => format!("mb-background-{}", c.name()),
+            Self::Size(s) => format!("mb-size-{}", s.name()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

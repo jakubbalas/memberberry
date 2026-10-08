@@ -12,6 +12,9 @@ import { Doc, type XmlFragment } from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import { redo, undo, yCursorPlugin, ySyncPlugin, yUndoPlugin } from "y-prosemirror";
 
+import { SCHEMA_VERSION } from "./schema-revision.js";
+import { loadSchemaAdmission, SchemaRefreshRequired, type SchemaAdmission } from "./schema-admission.js";
+
 import { presenceCursorBuilder } from "./presence.js";
 import {
   createSyncProvider,
@@ -51,6 +54,8 @@ export interface NoteCollaboration {
   readonly document: Doc;
   readonly fragment: XmlFragment;
   readonly awareness: Awareness;
+  /** Available only after whenReady has admitted the restored replica. */
+  readonly admission: SchemaAdmission;
   readonly connection?: ConnectionStatus;
   /** Raised each time the server sends this note's whole state (§3.5). */
   readonly serverState: ServerStateSignal;
@@ -117,6 +122,7 @@ export function createConnectionStatus(): ConnectionStatus & { set(state: Connec
         next.connected === state.connected
         && next.pending === state.pending
         && next.synced === state.synced
+        && next.refreshRequired === state.refreshRequired
       ) {
         return;
       }
@@ -167,7 +173,10 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
   let remote: SyncProvider | undefined;
   const status = options.remoteSync === undefined ? undefined : createConnectionStatus();
   const serverState = createServerStateSignal();
-  const whenReady = persistence.whenSynced.then(() => {
+  let admission: SchemaAdmission | undefined;
+  const whenReady = persistence.whenSynced.then(async () => {
+    admission = await loadSchemaAdmission();
+    admission.validate(document);
     if (options.remoteSync !== undefined) {
       const createRemoteSync = options.createRemoteSync ?? defaultRemoteSync;
       remote = createRemoteSync(
@@ -185,6 +194,10 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
     document,
     fragment,
     awareness,
+    get admission(): SchemaAdmission {
+      if (admission === undefined) throw new SchemaRefreshRequired();
+      return admission;
+    },
     serverState,
     ...(status === undefined ? {} : { connection: status }),
     whenReady,
@@ -228,7 +241,7 @@ export function persistenceName(vaultId: string, noteId: string): string {
   if (vaultId.length === 0 || noteId.length === 0) {
     throw new Error("vaultId and noteId must not be empty");
   }
-  return `memberberry:ydoc:${encodeURIComponent(vaultId)}:${encodeURIComponent(noteId)}`;
+  return `memberberry:schema:${SCHEMA_VERSION}:ydoc:${encodeURIComponent(vaultId)}:${encodeURIComponent(noteId)}`;
 }
 
 function defaultPersistence(name: string, document: Doc): LocalPersistence {

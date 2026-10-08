@@ -81,12 +81,29 @@ pub enum ScanItem {
 /// Expands one text run, splitting out Memberberry's extended syntax.
 #[must_use]
 pub fn scan(text: &str, escapes: &Escapes, math: &super::math::Table) -> Vec<ScanItem> {
+    scan_with_styles(text, escapes, math, &super::style::Table::default())
+}
+
+pub(super) fn scan_with_styles(
+    text: &str,
+    escapes: &Escapes,
+    math: &super::math::Table,
+    styles: &super::style::Table,
+) -> Vec<ScanItem> {
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut pos = 0usize;
 
     while pos < text.len() {
         let rest = text.get(pos..).unwrap_or("");
+        if let Some((consumed, content)) = styles.take(rest) {
+            if !buf.is_empty() {
+                out.push(ScanItem::Inline(Inline::Text(std::mem::take(&mut buf))));
+            }
+            out.extend(content.iter().cloned().map(ScanItem::Inline));
+            pos += consumed;
+            continue;
+        }
         // A masked span comes back first and verbatim: it was lifted out of the source
         // before CommonMark ran, so nothing here may reinterpret it (`parse::math`).
         if let Some((consumed, content)) = math.take(rest) {

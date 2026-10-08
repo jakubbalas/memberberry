@@ -985,6 +985,65 @@ fn e2_e3_e4_sync_denials_are_indistinguishable() {
     }
 }
 
+/// E2: an unsupported editor receives no body and cannot initialize disposable state.
+/// Authentication/invisibility counterparts exercise real sockets in websocket.rs.
+#[test]
+fn e2_schema_refresh_withholds_content_before_note_state_is_opened() {
+    use mb_server::sync::{SchemaSubscription, ServerFrame, SyncRegistry, current_schema_version};
+    let dir = TempDir::new("leak-schema-admission");
+    dir.write("Private.md", "KEEP PRIVATE BODY\n");
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let canonical = vault.canonical_note("Private.md").expect("canonical");
+    let registry = SyncRegistry::default();
+    let user = Username::parse("reader").expect("user");
+    let current = current_schema_version().expect("schema revision");
+    for schema_version in [None, Some(current - 1), Some(current + 1)] {
+        let (outbound, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+        let result = registry.subscribe_versioned(
+            &vault,
+            &canonical,
+            SchemaSubscription {
+                note: "Private.md",
+                user: &user,
+                connection: ConnectionId::issue(),
+                schema_version,
+                outbound,
+            },
+        );
+        assert!(result.is_err());
+        assert!(inbox.try_recv().is_err(), "no metadata or body on refusal");
+        assert!(
+            !dir.path().join(".memberberry/crdt").exists(),
+            "refusal must precede sidecar creation"
+        );
+    }
+    let (outbound, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    registry
+        .subscribe_versioned(
+            &vault,
+            &canonical,
+            SchemaSubscription {
+                note: "Private.md",
+                user: &user,
+                connection: ConnectionId::issue(),
+                schema_version: Some(current),
+                outbound,
+            },
+        )
+        .expect("current editor admitted");
+    assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Admitted { .. })));
+    assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Sync { .. })));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Private.md")).expect("source"),
+        "KEEP PRIVATE BODY\n"
+    );
+}
+
 /// E4: presence is data. A room only ever holds readers, and re-checks on every frame.
 #[test]
 fn e4_awareness_reaches_only_current_readers() {

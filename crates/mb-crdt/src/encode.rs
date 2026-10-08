@@ -267,8 +267,19 @@ fn write_inlines<P: XmlFragment>(
     inlines: &[Inline],
     attrs: Attrs,
 ) {
+    let mut tail = None;
+    write_inline_region(parent, txn, inlines, attrs, &mut tail);
+}
+
+fn write_inline_region<P: XmlFragment>(
+    parent: &P,
+    txn: &mut yrs::TransactionMut<'_>,
+    inlines: &[Inline],
+    attrs: Attrs,
+    tail: &mut Option<yrs::XmlTextRef>,
+) {
     for inline in inlines {
-        write_inline(parent, txn, inline, attrs.clone());
+        write_inline(parent, txn, inline, attrs.clone(), tail);
     }
 }
 
@@ -277,28 +288,58 @@ fn write_inline<P: XmlFragment>(
     txn: &mut yrs::TransactionMut<'_>,
     inline: &Inline,
     mut attrs: Attrs,
+    tail: &mut Option<yrs::XmlTextRef>,
 ) {
+    // why: marks change runs, not binding text identities; only atoms end a region.
+    if !matches!(
+        inline,
+        Inline::Text(_)
+            | Inline::Code(_)
+            | Inline::Emphasis(_)
+            | Inline::Strong(_)
+            | Inline::Strikethrough(_)
+            | Inline::Highlight(_)
+            | Inline::MbStyle { .. }
+            | Inline::Link { .. }
+    ) {
+        *tail = None;
+    }
     match inline {
-        Inline::Text(value) => write_marked_text(parent, txn, value, attrs),
+        Inline::Text(value) => write_marked_text(parent, txn, value, attrs, tail),
         Inline::Emphasis(content) => {
             attrs.insert("em".into(), empty_object());
-            write_inlines(parent, txn, content, attrs);
+            write_inline_region(parent, txn, content, attrs, tail);
         }
         Inline::Strong(content) => {
             attrs.insert("strong".into(), empty_object());
-            write_inlines(parent, txn, content, attrs);
+            write_inline_region(parent, txn, content, attrs, tail);
         }
         Inline::Strikethrough(content) => {
             attrs.insert("strikethrough".into(), empty_object());
-            write_inlines(parent, txn, content, attrs);
+            write_inline_region(parent, txn, content, attrs, tail);
         }
         Inline::Highlight(content) => {
             attrs.insert("highlight".into(), empty_object());
-            write_inlines(parent, txn, content, attrs);
+            write_inline_region(parent, txn, content, attrs, tail);
+        }
+        Inline::MbStyle { property, content } => {
+            let value = match property {
+                mb_core::model::MbStyleProperty::Underline => empty_object(),
+                mb_core::model::MbStyleProperty::Color(c)
+                | mb_core::model::MbStyleProperty::Background(c) => Any::Map(Arc::new(
+                    HashMap::from([("value".to_string(), Any::from(c.name()))]),
+                )),
+                mb_core::model::MbStyleProperty::Size(s) => Any::Map(Arc::new(HashMap::from([(
+                    "value".to_string(),
+                    Any::from(s.name()),
+                )]))),
+            };
+            attrs.insert(property.mark_name().into(), value);
+            write_inline_region(parent, txn, content, attrs, tail);
         }
         Inline::Code(value) => {
             attrs.insert("code".into(), empty_object());
-            write_marked_text(parent, txn, value, attrs);
+            write_marked_text(parent, txn, value, attrs, tail);
         }
         Inline::Link {
             dest,
@@ -313,7 +354,7 @@ fn write_inline<P: XmlFragment>(
                 ),
             ]);
             attrs.insert("link".into(), Any::Map(Arc::new(fields)));
-            write_inlines(parent, txn, content, attrs);
+            write_inline_region(parent, txn, content, attrs, tail);
         }
         Inline::Math(value) => write_atom(
             parent,
@@ -354,16 +395,15 @@ fn write_marked_text<P: XmlFragment>(
     txn: &mut yrs::TransactionMut<'_>,
     value: &str,
     attrs: Attrs,
+    tail: &mut Option<yrs::XmlTextRef>,
 ) {
     if value.is_empty() {
         return;
     }
-    let text = parent.push_back(txn, XmlTextPrelim::new(""));
-    if attrs.is_empty() {
-        text.push(txn, value);
-    } else {
-        text.insert_with_attributes(txn, 0, value, attrs);
-    }
+    let text = tail.get_or_insert_with(|| parent.push_back(txn, XmlTextPrelim::new("")));
+    // why: len uses this document's offset kind (including UTF-16), never UTF-8 bytes.
+    // Complete attributes, even empty, prevent inheritance from the preceding run.
+    text.insert_with_attributes(txn, text.len(txn), value, attrs);
 }
 
 fn empty_object() -> Any {

@@ -63,13 +63,116 @@ pub fn inline_leaf() -> impl Strategy<Value = Inline> {
     ]
 }
 
+/// Eligible text-mark trees shared by native/WASM-wire tests. Atoms and code have
+/// no namespace mark representation; mixed atom cases remain in `inline()` below.
+/// Whether every generated link has its own destination; shrinking can make two collide.
+pub fn link_destinations_are_distinct(inline: &Inline) -> bool {
+    fn collect<'a>(item: &'a Inline, out: &mut Vec<&'a str>) {
+        match item {
+            Inline::Link { dest, content, .. } => {
+                out.push(dest);
+                content.iter().for_each(|c| collect(c, out));
+            }
+            Inline::Emphasis(c)
+            | Inline::Strong(c)
+            | Inline::Strikethrough(c)
+            | Inline::Highlight(c)
+            | Inline::MbStyle { content: c, .. } => c.iter().for_each(|c| collect(c, out)),
+            _ => {}
+        }
+    }
+    let mut dests = Vec::new();
+    collect(inline, &mut dests);
+    let total = dests.len();
+    dests.sort_unstable();
+    dests.dedup();
+    dests.len() == total
+}
+
+pub fn marked_text_inline() -> impl Strategy<Value = Inline> {
+    text_run()
+        .prop_map(Inline::Text)
+        .prop_recursive(4, 24, 3, |inner| {
+            let children = prop::collection::vec(inner, 1..4);
+            prop_oneof![
+                children.clone().prop_map(Inline::Emphasis),
+                children.clone().prop_map(Inline::Strong),
+                children.clone().prop_map(Inline::Strikethrough),
+                children.clone().prop_map(Inline::Highlight),
+                // why: distinct destinations. Two adjacent links sharing one are a single
+                // Y.Text mark run (SPEC §5.6), which no round trip can preserve.
+                (any::<u64>(), children.clone()).prop_map(|(id, content)| Inline::Link {
+                    dest: format!("https://example.test/{id}"),
+                    title: None,
+                    content
+                }),
+                children.clone().prop_map(|content| Inline::MbStyle {
+                    property: mb_core::model::MbStyleProperty::Underline,
+                    content
+                }),
+                (
+                    prop::sample::select(mb_core::model::MbPalette::ALL.to_vec()),
+                    children.clone()
+                )
+                    .prop_map(|(color, content)| Inline::MbStyle {
+                        property: mb_core::model::MbStyleProperty::Color(color),
+                        content
+                    }),
+                (
+                    prop::sample::select(mb_core::model::MbPalette::ALL.to_vec()),
+                    children.clone()
+                )
+                    .prop_map(|(color, content)| Inline::MbStyle {
+                        property: mb_core::model::MbStyleProperty::Background(color),
+                        content
+                    }),
+                (
+                    prop::sample::select(mb_core::model::MbSize::ALL.to_vec()),
+                    children
+                )
+                    .prop_map(|(size, content)| Inline::MbStyle {
+                        property: mb_core::model::MbStyleProperty::Size(size),
+                        content
+                    }),
+            ]
+        })
+}
+
 pub fn inline() -> impl Strategy<Value = Inline> {
     inline_leaf().prop_recursive(2, 8, 2, |inner| {
         prop_oneof![
             inner.clone().prop_map(|i| Inline::Emphasis(vec![i])),
             inner.clone().prop_map(|i| Inline::Strong(vec![i])),
             inner.clone().prop_map(|i| Inline::Strikethrough(vec![i])),
-            inner.prop_map(|i| Inline::Highlight(vec![i])),
+            inner.clone().prop_map(|i| Inline::Highlight(vec![i])),
+            inner.clone().prop_map(|i| Inline::MbStyle {
+                property: mb_core::model::MbStyleProperty::Underline,
+                content: vec![i]
+            }),
+            (
+                prop::sample::select(mb_core::model::MbPalette::ALL.to_vec()),
+                inner.clone()
+            )
+                .prop_map(|(color, i)| Inline::MbStyle {
+                    property: mb_core::model::MbStyleProperty::Color(color),
+                    content: vec![i]
+                }),
+            (
+                prop::sample::select(mb_core::model::MbPalette::ALL.to_vec()),
+                inner.clone()
+            )
+                .prop_map(|(color, i)| Inline::MbStyle {
+                    property: mb_core::model::MbStyleProperty::Background(color),
+                    content: vec![i]
+                }),
+            (
+                prop::sample::select(mb_core::model::MbSize::ALL.to_vec()),
+                inner
+            )
+                .prop_map(|(size, i)| Inline::MbStyle {
+                    property: mb_core::model::MbStyleProperty::Size(size),
+                    content: vec![i]
+                }),
         ]
     })
 }

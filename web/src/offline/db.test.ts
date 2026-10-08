@@ -21,6 +21,30 @@ beforeEach(async () => {
 });
 
 describe("the metadata replica", () => {
+  it("leaves legacy residency, dirty/base records and pins untouched but unavailable to the new body namespace", async () => {
+    const factory = new IDBFactory();
+    const open = factory.open("memberberry:offline", 3);
+    open.onupgradeneeded = () => {
+      const database = open.result;
+      database.createObjectStore("notes", { keyPath: "vault" });
+      database.createObjectStore("bodies", { keyPath: ["vault", "note"] }).createIndex("by-vault", "vault");
+      database.createObjectStore("pins", { keyPath: ["vault", "note"] }).createIndex("by-vault", "vault");
+    };
+    const legacy = await new Promise<IDBDatabase>((resolve, reject) => { open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error); });
+    const oldBody = { vault: "v", note: "One.md", openedAt: 1, bytes: 9, dirty: true, base: "OLD PENDING SOURCE" };
+    const write = legacy.transaction(["notes", "bodies", "pins"], "readwrite");
+    write.objectStore("notes").put({ vault: "v", notes: [{ path: "One.md", title: "OLD", conflicts: 0 }] });
+    write.objectStore("bodies").put(oldBody); write.objectStore("pins").put({ vault: "v", note: "One.md" });
+    await new Promise<void>((resolve) => { write.oncomplete = () => resolve(); });
+    const current = await openOfflineStore(factory);
+    expect(await current.getNotes("v")).toBeUndefined();
+    expect(await current.residents("v")).toEqual([]);
+    expect(await current.getResident("v", "One.md")).toBeUndefined();
+    expect(await current.pins("v")).toEqual([]);
+    const read = legacy.transaction("bodies", "readonly").objectStore("bodies").get(["v", "One.md"]);
+    expect(await new Promise<unknown>((resolve) => { read.onsuccess = () => resolve(read.result); })).toEqual(oldBody);
+    current.close(); legacy.close();
+  });
   it("has nothing before anything was stored", async () => {
     // `undefined`, not an empty list: "this device has never held a copy" and "this vault
     // has no readable notes" are different answers, and only the first one means fall back.

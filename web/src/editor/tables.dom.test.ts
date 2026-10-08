@@ -6,7 +6,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import fc from "fast-check";
 import { createMemberberryExtensions } from "./schema.js";
 import { addTableColumn, addTableRow, backspaceInTable, deleteTableRow, insertTable, moveTableRow, newlineInTable, selectedTable, selectTableCell } from "./tables.js";
-import { mountTableTools } from "./table-tools.js";
+import { mountTableTools, tableRowHandles } from "./table-tools.js";
 import { standaloneHtml } from "./export.js";
 import { applySourceMarkdownWith } from "./source.js";
 import { load, noteBridge, type NoteBridge } from "../notes.js";
@@ -21,7 +21,7 @@ beforeAll(async () => {
 afterEach(() => { for (const editor of editors.splice(0)) editor.destroy(); document.body.replaceChildren(); });
 
 function mounted(rows = ["Header", "Alpha", "Beta"]): Editor {
-  const editor = new Editor({ element: document.createElement("div"), extensions: createMemberberryExtensions(contract) });
+  const editor = new Editor({ element: document.createElement("div"), extensions: [...createMemberberryExtensions(contract), tableRowHandles] });
   document.body.append(editor.view.dom);
   editor.commands.setContent({ type: "doc", content: [{ type: "table", attrs: { alignments: ["left", "right"] }, content: rows.map((text) => ({
     type: "table_row", content: [{ type: "table_cell", content: [{ type: "text", text, marks: [{ type: "strong" }] }] }, { type: "table_cell" }],
