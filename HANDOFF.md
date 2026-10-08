@@ -124,7 +124,7 @@ The log now ends with a `make check: exit N` line.
 - Verified directly: fmt, clippy, all Rust crates' tests except `size.rs` in debug (0
   failures), `size.rs` in release, web unit suite 2028/2028, `make wasm-check`.
 
-## Integration branch `integration/r3-with-pr3` — Paul's PR #3 merged in for joint testing
+## Integration branch `feat/editor-r3-with-pr3` — Paul's PR #3 merged in for joint testing
 
 PR #3 (`origin/pr/3`, Paul Hopgood, 2026-10-07, not merged upstream) adds, per its handoff:
 - Enter/Tab/Shift-Tab list behaviour (new sibling, leave on empty, nest, outdent).
@@ -147,7 +147,7 @@ closure through an instance spy that cannot see `doc.destroy`; they now spy the 
 (separate commit). Not run here: `make check`, full `make e2e`.
 
 
-- Push `feat/editor-styling-r3` and open a PR when the user asks.
+- PR from `feat/editor-r3-with-pr3` (r3 + Paul's PR #3) into `main`: wait for all four CI jobs, then merge with **"Create a merge commit"** so PR #3 auto-closes as merged. Not squash/rebase.
 - Conversion slice 2: list / task / quote / callout targets. Peer-text loss for these was
   characterized (SPEC §8.4), so the gate is the safety story; container shapes need new
   `block-format.ts` prepare logic (the earlier scratch candidate is gone).
