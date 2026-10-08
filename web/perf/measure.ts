@@ -121,15 +121,15 @@ const INSTRUMENT = `
   }).observe({ type: "event", buffered: true, durationThreshold: 0 });
 `;
 
-/**
- * How long any single in-page measurement may take before it is called a failure.
- *
- * why: every scenario here waits on a DOM condition inside the page, and a condition that
- * never becomes true is a promise that never settles — the harness then hangs forever with
- * no output, which is exactly how the first mobile run went. Playwright's own timeouts do not
- * cover an `evaluate` that resolves on its own schedule, so the deadline has to be inside it.
- */
+/** The deadline for one measured interaction, not its performance budget. */
 const IN_PAGE_TIMEOUT_MS = 30_000;
+/**
+ * Give an untimed load enough room under 4x mobile throttling before declaring it broken.
+ * why: a 30-second cutoff can discard an editor that becomes ready later, rather than
+ * recording its actual slow startup against the unchanged performance budget. Keep the
+ * interaction deadline short so an unmeasurable quick-switcher still fails promptly.
+ */
+const READINESS_TIMEOUT_MS = 90_000;
 
 /** Reads a number array the instrumentation left on `window`. */
 async function readNumbers(page: Page, name: "__mbLongTasks" | "__mbInteractions" | "__mbKeys") {
@@ -291,7 +291,7 @@ export async function timeToEditor(page: Page, url: string): Promise<number> {
         });
         observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
       }),
-    [EDITOR, IN_PAGE_TIMEOUT_MS] as const,
+    [EDITOR, READINESS_TIMEOUT_MS] as const,
   );
 }
 
@@ -540,9 +540,30 @@ export async function timeSwitch(
  */
 async function openNote(page: Page, tabs: TabSwitch): Promise<number[]> {
   await page.goto(`/v/${PERF_SLUG}/${NOTES[0].path}`, { waitUntil: "domcontentloaded" });
-  await page.locator(EDITOR).first().waitFor({ timeout: IN_PAGE_TIMEOUT_MS });
+  try {
+    await page.locator(EDITOR).first().waitFor({ timeout: READINESS_TIMEOUT_MS });
+  } catch (cause) {
+    // why: the mobile run can reach a page without an editor after earlier warm-cache loads.
+    // Record structural state rather than note content so the failure can be diagnosed.
+    const state = await page.evaluate((selector) => ({
+      path: location.pathname,
+      readyState: document.readyState,
+      editorCount: document.querySelectorAll(selector).length,
+      panels: [...document.querySelectorAll(".editor-panel")].map((panel) => ({
+        loading: panel.getAttribute("data-editor"),
+        body: panel.getAttribute("data-body"),
+        visible: panel.checkVisibility({ checkVisibilityCSS: true }),
+      })),
+      alerts: [...document.querySelectorAll("[role=alert], .offline-status")]
+        .map((element) => element.textContent?.slice(0, 200)),
+    }), EDITOR);
+    throw new Error(`Editor did not open: ${JSON.stringify(state)}; browser problems: ${JSON.stringify(problems)}`, { cause });
+  }
   await openViaSwitcher(page, NOTES[1].title);
-  await page.locator(EDITOR).first().filter({ hasText: NOTES[1].marker }).waitFor();
+  // why: preparing a second resident note is not the measured tab-switch; under the 4x
+  // mobile throttle its initial materialization can exceed the 10-second interaction wait.
+  await page.locator(EDITOR).first().filter({ hasText: NOTES[1].marker })
+    .waitFor({ timeout: READINESS_TIMEOUT_MS });
 
   const samples: number[] = [];
   for (let attempt = 0; attempt < REPEATS.openNote; attempt += 1) {

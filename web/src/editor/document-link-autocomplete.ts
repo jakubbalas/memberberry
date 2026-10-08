@@ -203,12 +203,16 @@ class LinkMenu {
   private choose(index: number): void {
     const note = this.items[index];
     const query = this.query;
-    const type = this.view.state.schema.nodes["wikilink"];
-    if (note === undefined || query === undefined || type === undefined) return;
-    const node = type.create({ target: note.path.replace(/\.md$/, ""), embed: false,
-      alias: query.alias, anchor_kind: query.anchor_kind, anchor_text: query.anchor_text });
+    const link = this.view.state.schema.marks["link"];
+    if (note === undefined || query === undefined || link === undefined) return;
+    const suffix = query.anchor_kind === "none" ? "" : `#${query.anchor_kind === "block" ? "^" : ""}${query.anchor_text ?? ""}`;
+    const label = query.alias || note.title || note.path.split("/").pop()?.replace(/\.md$/, "") || note.path;
+    // why: the chooser is an input affordance; existing handwritten wikilinks keep their
+    // own node shape, while the approved selection produces a normal Markdown link mark.
+    const node = this.view.state.schema.text(label, [link.create({ href: `${note.path}${suffix}`, title: null })]);
     const transaction = this.view.state.tr.replaceWith(query.from, query.to, node);
     transaction.setSelection(TextSelection.near(transaction.doc.resolve(query.from + node.nodeSize)));
+    transaction.setStoredMarks([]);
     this.close();
     this.view.dispatch(transaction);
     this.view.focus();

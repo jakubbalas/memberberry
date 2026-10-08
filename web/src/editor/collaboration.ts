@@ -6,11 +6,11 @@
  */
 
 import { Extension } from "@tiptap/core";
-import type { Plugin } from "@tiptap/pm/state";
+import { Plugin } from "@tiptap/pm/state";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { Doc, type XmlFragment } from "yjs";
+import { Doc, type UndoManager, type XmlFragment } from "yjs";
 import { Awareness } from "y-protocols/awareness";
-import { redo, undo, yCursorPlugin, ySyncPlugin, yUndoPlugin } from "y-prosemirror";
+import { redo, undo, yCursorPlugin, ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey } from "y-prosemirror";
 
 import { SCHEMA_VERSION } from "./schema-revision.js";
 import { loadSchemaAdmission, SchemaRefreshRequired, type SchemaAdmission } from "./schema-admission.js";
@@ -233,7 +233,43 @@ export function yjsPlugins(fragment: XmlFragment, awareness?: Awareness): Plugin
   const cursors = awareness === undefined
     ? []
     : [yCursorPlugin(awareness, { cursorBuilder: presenceCursorBuilder })];
-  return [ySyncPlugin(fragment), yUndoPlugin(), ...cursors];
+  return [ySyncPlugin(fragment), durableUndoPlugin(), ...cursors];
+}
+
+/** Keep undo history attached to the Y.Doc when ProseMirror rebuilds plugin views. */
+function durableUndoPlugin(): Plugin {
+  const plugin = yUndoPlugin();
+  // why: y-prosemirror destroys its UndoManager with the plugin view, but registering a
+  // later editor control rebuilds views while retaining plugin state. The next view then
+  // holds a destroyed manager and Ctrl+Z silently fails. The Y.Doc owns its lifetime:
+  // UndoManager already subscribes to doc.destroy, which closes it with the note session.
+  return new Plugin({
+    ...plugin.spec,
+    view: (view) => {
+      const manager = (yUndoPluginKey.getState(view.state) as { undoManager: UndoManager }).undoManager;
+      const onAdded = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }): void => {
+        const binding = (ySyncPluginKey.getState(view.state) as { binding?: object }).binding;
+        if (binding !== undefined) {
+          const state = yUndoPluginKey.getState(view.state) as { prevSel: unknown };
+          stackItem.meta.set(binding, state.prevSel);
+        }
+      };
+      const onPopped = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }): void => {
+        const binding = (ySyncPluginKey.getState(view.state) as {
+          binding?: { beforeTransactionSelection: unknown };
+        }).binding;
+        if (binding !== undefined) {
+          binding.beforeTransactionSelection = stackItem.meta.get(binding) || binding.beforeTransactionSelection;
+        }
+      };
+      manager.on("stack-item-added", onAdded);
+      manager.on("stack-item-popped", onPopped);
+      return { destroy: () => {
+        manager.off("stack-item-added", onAdded);
+        manager.off("stack-item-popped", onPopped);
+      } };
+    },
+  });
 }
 
 /** A collision-free IndexedDB database name for a vault-local note identity. */

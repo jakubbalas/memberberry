@@ -124,7 +124,21 @@ The log now ends with a `make check: exit N` line.
 - Verified directly: fmt, clippy, all Rust crates' tests except `size.rs` in debug (0
   failures), `size.rs` in release, web unit suite 2028/2028, `make wasm-check`.
 
-## Next
+## Integration branch `integration/r3-with-pr3` — Paul's PR #3 merged in for joint testing
+
+PR #3 (`origin/pr/3`, Paul Hopgood, 2026-10-07, not merged upstream) adds, per its handoff:
+- Enter/Tab/Shift-Tab list behaviour (new sibling, leave on empty, nest, outdent).
+- Paired single backticks typed in a paragraph become inline `code` (SPEC §8.4).
+- Yjs undo survives ProseMirror plugin-view reconfiguration: the undo manager now lives
+  for the Y.Doc lifetime. Overlaps our fix (table plugin installed at construction) — both
+  are kept; re-verify undo with both in place.
+- Choosing a `[[` suggestion inserts a Markdown link `[Title](path.md)` (SPEC §8.2).
+- Perf harness: bounded 90 s readiness wait for slow throttled mobile setup, unchanged
+  budgets and 30 s interaction deadline.
+Its open items: the four-job CI gate on its exact head had not all passed (`perf` had timed
+out before the harness change); jsdom benchmarks are not device evidence; no broader
+concurrent/remote undo browser tests. Only `HANDOFF.md` conflicted textually.
+
 
 - Push `feat/editor-styling-r3` and open a PR when the user asks.
 - Conversion slice 2: list / task / quote / callout targets. Peer-text loss for these was
