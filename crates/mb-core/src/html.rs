@@ -74,6 +74,22 @@ fn parse_html(source: &str) -> Element {
         };
         append_text(stack.last_mut(), &rest[..start]);
         rest = &rest[start + 1..];
+        // why: as in a browser, `<` opens markup only before a tag name, `/`, `!` or `?`.
+        // Otherwise `a < b and c > d` read `< b and c >` as a bold tag and lost the text.
+        let opens = |c: char| c.is_ascii_alphabetic() || c == '!' || c == '?';
+        if rest.starts_with("/>") {
+            rest = &rest[2..];
+            continue;
+        }
+        let markup = match rest.chars().next() {
+            Some('/') => rest.chars().nth(1).is_some_and(|c| c.is_ascii_alphabetic()),
+            Some(c) => opens(c),
+            None => false,
+        };
+        if !markup {
+            append_text(stack.last_mut(), "<");
+            continue;
+        }
         if rest.starts_with("!--") {
             if let Some(end) = rest.find("-->") {
                 rest = &rest[end + 3..];

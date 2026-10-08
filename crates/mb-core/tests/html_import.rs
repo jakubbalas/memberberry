@@ -78,3 +78,86 @@ fn tolerates_unclosed_tags_and_decodes_numeric_entities() {
     let document = from_html("<p>broken &copy; &#x1F600;");
     assert_eq!(to_markdown(&document), "broken &copy; 😀\n");
 }
+
+fn imported(html: &str) -> String {
+    to_markdown(&from_html(html))
+}
+
+#[test]
+fn a_less_than_sign_not_followed_by_a_tag_name_is_text() {
+    assert_eq!(
+        imported("<p>a < b and c > d</p>"),
+        imported("<p>a &lt; b and c &gt; d</p>")
+    );
+}
+
+#[test]
+fn an_empty_tag_is_text_and_an_empty_end_tag_is_ignored() {
+    assert_eq!(
+        imported("<p><>empty tag</></p>"),
+        imported("<p>&lt;&gt;empty tag</p>")
+    );
+}
+
+#[test]
+fn comments_doctypes_and_processing_instructions_leave_no_trace() {
+    assert_eq!(
+        imported("<!DOCTYPE html><?xml version=\"1.0\"?><p>keep<!-- hidden --> me</p>"),
+        "keep me\n"
+    );
+}
+
+#[test]
+fn an_unterminated_comment_ends_the_import_without_inventing_content() {
+    assert_eq!(
+        imported("<p>before</p><!-- never closed <p>after</p>"),
+        "before\n"
+    );
+}
+
+#[test]
+fn script_style_and_template_contents_are_never_imported() {
+    assert_eq!(
+        imported(
+            "<p>x<script>alert('<p>no</p>')</script>y</p><style>p{}</style><template><p>t</p></template>"
+        ),
+        "xy\n"
+    );
+    assert_eq!(imported("<p>a<script>unterminated <p>gone</p>"), "a\n");
+}
+
+#[test]
+fn unclosed_and_stray_tags_keep_their_text() {
+    assert_eq!(
+        imported("<p>open <em>never closed"),
+        "open *never closed*\n"
+    );
+    assert_eq!(imported("<p>stray</div> text</p>"), "stray text\n");
+}
+
+#[test]
+fn unquoted_single_quoted_and_valueless_attributes_are_read() {
+    assert_eq!(
+        imported("<p><a href=https://example.com/x>unquoted</a></p>"),
+        "[unquoted](https://example.com/x)\n"
+    );
+    assert_eq!(
+        imported("<p><a href='single'>single</a></p>"),
+        "[single](single)\n"
+    );
+    // A bare attribute is the empty string in HTML; an explicit empty title is kept (§4.2).
+    assert_eq!(
+        imported("<p><a href=x title>bare</a></p>"),
+        "[bare](x \"\")\n"
+    );
+}
+
+#[test]
+fn preformatted_rules_and_quotes_become_blocks_and_empty_quotes_vanish() {
+    assert_eq!(
+        imported(
+            "<pre>let x = 1;\n  y</pre><hr><blockquote><p>quoted</p></blockquote><blockquote></blockquote>"
+        ),
+        "```\nlet x = 1;\n  y\n```\n\n***\n\n> quoted\n"
+    );
+}
