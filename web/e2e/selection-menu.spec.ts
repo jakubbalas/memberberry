@@ -292,6 +292,13 @@ test("Turn into converts the selected block to a heading, saves it, undoes in on
   await page.keyboard.press("ControlOrMeta+z");
   await expect.poll(disk, { timeout: 15_000 }).toBe(initial);
   await selectLater(page);
+  await turnInto.selectOption("bullet_list");
+  await expect(editor.locator("ul li")).toHaveText("Later words");
+  await expect.poll(disk, { timeout: 15_000 }).toBe(initial.replace("Later words", "- Later words"));
+  await editor.focus();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect.poll(disk, { timeout: 15_000 }).toBe(initial);
+  await selectLater(page);
   await turnInto.selectOption("h3");
   await expect.poll(disk, { timeout: 15_000 }).toBe(initial.replace("Later words", "### Later words"));
   const fresh = await browser.newContext();

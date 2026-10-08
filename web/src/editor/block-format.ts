@@ -65,12 +65,74 @@ export function captureBlockSelection(editor: Editor, canInteract: () => boolean
 function active(node: Node): string {
   return node.type.name === "heading" ? `h${String(node.attrs["level"])}` : node.type.name === "paragraph" ? "text" : node.type.name;
 }
+/** Builds the replacement for a container target, or a refusal reason. */
+function container(editor: Editor, units: readonly Unit[], format: BlockFormat): Node | string {
+  const nodes = editor.state.schema.nodes;
+  const blocks = units.map(({ node }) => node);
+  try {
+    switch (format) {
+      // why: list items, quotes and callouts hold whole blocks, so each selected block moves
+      // in unchanged — headings stay headings, and marks and `^anchors` come along.
+      case "bullet_list":
+      case "ordered_list": {
+        const item = nodes["list_item"];
+        const list = nodes[format];
+        if (!item || !list) return "unsupported";
+        return list.createChecked(format === "ordered_list" ? { start: 1 } : null, blocks.map((block) => item.createChecked(null, block)));
+      }
+      case "task_item": {
+        const task = nodes["task_item"];
+        const list = nodes["bullet_list"];
+        if (!task || !list) return "unsupported";
+        return list.createChecked(null, blocks.map((block) => task.createChecked({ status: "todo", unknown: [] }, block)));
+      }
+      case "blockquote": {
+        const quote = nodes["blockquote"];
+        return quote ? quote.createChecked(null, blocks) : "unsupported";
+      }
+      case "callout": {
+        const callout = nodes["callout"];
+        const title = nodes["callout_title"];
+        if (!callout || !title) return "unsupported";
+        return callout.createChecked({ kind: "note", fold: "none" }, [title.createChecked(), ...blocks]);
+      }
+      case "code_block":
+      case "math_block": {
+        const type = nodes[format];
+        if (!type) return "unsupported";
+        // why: code holds no marks, links or atoms. Converting formatted text would drop
+        // them silently, so only plain text converts (SPEC §8.4: preserve marks/atoms).
+        if (blocks.some((block) => !block.content.content.every((child) => child.isText && child.marks.length === 0))) return "formatted";
+        const anchors = blocks.flatMap((block) => typeof block.attrs["anchor"] === "string" ? [block.attrs["anchor"]] : []);
+        if (anchors.length > 1) return "anchored";
+        const text = blocks.map((block) => block.textContent).join("\n");
+        return type.createChecked(anchors[0] === undefined ? null : { anchor: anchors[0] }, text.length === 0 ? null : editor.state.schema.text(text));
+      }
+      default:
+        return "unsupported";
+    }
+  } catch {
+    // why: createChecked throws on a shape the schema rejects; refuse rather than write it.
+    return "unsupported";
+  }
+}
 function prepare(editor: Editor, capture: Capture, format: BlockFormat): Transaction | string {
   if (!choices.some(([name]) => name === format)) return "unsupported";
   if (format === "h1" && capture.units[0]?.index === 0) return "title";
+  if (capture.units.some(({ node }) => !["paragraph", "heading"].includes(node.type.name))) return "unsupported";
+  const first = capture.units[0];
+  const last = capture.units[capture.units.length - 1];
+  if (!first || !last) return "unsupported";
   const level = { h1: 1, h2: 2, h3: 3, h4: 4 }[format as "h1" | "h2" | "h3" | "h4"];
-  const type = editor.state.schema.nodes[format === "text" ? "paragraph" : level ? "heading" : "unsupported"];
-  if (!type || capture.units.some(({ node }) => !["paragraph", "heading"].includes(node.type.name))) return "unsupported";
+  if (format !== "text" && !level) {
+    const replacement = container(editor, capture.units, format);
+    if (typeof replacement === "string") return replacement;
+    const tr = editor.state.tr.replaceWith(first.pos, last.pos + last.node.nodeSize, replacement);
+    // why: the old range was replaced wholesale; keep the converted text selected.
+    return tr.setSelection(TextSelection.between(tr.doc.resolve(first.pos), tr.doc.resolve(first.pos + replacement.nodeSize)));
+  }
+  const type = editor.state.schema.nodes[format === "text" ? "paragraph" : "heading"];
+  if (!type) return "unsupported";
   const tr = editor.state.tr.setSelection(capture.bookmark.resolve(editor.state.doc));
   for (const { pos, node } of capture.units) {
     const attrs = { ...node.attrs, ...(level ? { level } : {}) };

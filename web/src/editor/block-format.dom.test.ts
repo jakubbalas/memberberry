@@ -5,7 +5,7 @@ import { TextSelection } from "@tiptap/pm/state";
 import { afterEach, beforeAll, expect, it } from "vitest";
 import { applyUpdate, Doc, encodeStateAsUpdate } from "yjs";
 import { redo, undo } from "y-prosemirror";
-import { load, schema, updateFromMarkdown } from "../notes.js";
+import { load, normalize, schema, updateFromMarkdown } from "../notes.js";
 import { createYjsBinding, PROSEMIRROR_ROOT } from "./collaboration.js";
 import { createMemberberryExtensions } from "./schema.js";
 import { protectedTitleExtension } from "./note-editor.js";
@@ -167,3 +167,59 @@ it("accepts the opaque inline-menu handoff and rejects forged captures and unsup
   expect(applyBlockFormat(f.editor, f.select("Body"), "toggle" as BlockFormat)).toEqual({ status: "refused", reason: "unsupported" });
   expect(encodeStateAsUpdate(f.ydoc)).toEqual(before);
 });
+
+// Slice 2: root text blocks wrap into containers. Expected text is the WASM canonical form.
+const wraps: readonly (readonly [BlockFormat, string])[] = [
+  ["bullet_list", "- Alpha ^a\n- **Beta**\n"],
+  ["ordered_list", "1. Alpha ^a\n2. **Beta**\n"],
+  ["task_item", "- [ ] Alpha ^a\n- [ ] **Beta**\n"],
+  ["blockquote", "> Alpha ^a\n>\n> **Beta**\n"],
+  ["callout", "> [!note]\n> Alpha ^a\n>\n> **Beta**\n"],
+];
+for (const [format, body] of wraps) {
+  it(`wraps the selected blocks into ${format} with their marks and anchors, undone in one step`, async () => {
+    const f = await open("# Title\n\nAlpha ^a\n\n**Beta**\n\nUntouched\n");
+    const { from } = f.range("Alpha");
+    const { to } = f.range("Beta");
+    f.editor.commands.setTextSelection({ from, to });
+    const token = captureBlockSelection(f.editor);
+    if (!token) throw new Error("missing capture");
+    expect(applyBlockFormat(f.editor, token, format)).toEqual({ status: "applied" });
+    expect(await roundtrip(f)).toBe(await normalize(`# Title\n\n${body}\nUntouched\n`));
+    expect(undo(f.editor.state)).toBe(true);
+    expect(await editorMarkdown(f.ydoc)).toBe(await normalize("# Title\n\nAlpha ^a\n\n**Beta**\n\nUntouched\n"));
+  });
+}
+
+it("keeps a heading a heading inside a quote", async () => {
+  const f = await open("# Title\n\n## Part\n\nBody\n");
+  const { from } = f.range("Part");
+  const { to } = f.range("Body");
+  f.editor.commands.setTextSelection({ from, to });
+  const token = captureBlockSelection(f.editor);
+  if (!token) throw new Error("missing capture");
+  expect(applyBlockFormat(f.editor, token, "blockquote")).toEqual({ status: "applied" });
+  expect(await editorMarkdown(f.ydoc)).toBe(await normalize("# Title\n\n> ## Part\n>\n> Body\n"));
+});
+
+for (const [format, fence] of [["code_block", "```"], ["math_block", "$$"]] as const) {
+  it(`turns plain text blocks into one ${format}, one line per block`, async () => {
+    const f = await open("# Title\n\nfirst line\n\nsecond line\n");
+    const { from } = f.range("first");
+    const { to } = f.range("second line");
+    f.editor.commands.setTextSelection({ from, to });
+    const token = captureBlockSelection(f.editor);
+    if (!token) throw new Error("missing capture");
+    expect(applyBlockFormat(f.editor, token, format)).toEqual({ status: "applied" });
+    expect(await roundtrip(f)).toBe(await normalize(`# Title\n\n${fence}\nfirst line\nsecond line\n${fence}\n`));
+  });
+
+  it(`refuses ${format} for formatted text rather than silently dropping its marks`, async () => {
+    const f = await open("# Title\n\nplain **bold**\n");
+    const token = f.select("plain");
+    const before = encodeStateAsUpdate(f.ydoc);
+    expect(applyBlockFormat(f.editor, token, format)).toEqual({ status: "refused", reason: "formatted" });
+    expect(blockFormatState(f.editor, token).choices.find((choice) => choice.format === format)).toMatchObject({ enabled: false, reason: "formatted" });
+    expect(encodeStateAsUpdate(f.ydoc)).toEqual(before);
+  });
+}

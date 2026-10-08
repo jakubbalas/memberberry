@@ -1982,12 +1982,19 @@ this iteration or relabel the retained concurrent-intent failures as successes.
   guard machinery, routed wiring, actual schema-2 union, browser/server/disk reopen and
   independent review are required before enabling the resulting controls.
 
-**Implemented, first conversion slice (2026-10-08): Text ↔ Heading 1–4 via "Turn into".**
-The selection popup's first control is a `Turn into` select. It converts every complete root
-textblock the selection touches between paragraph and H1–H4, in one isolated undo step;
-imported H5/H6 show as their active state. H1 is refused at the first root (title
-protection). Selections inside lists, quotes, tables or other containers hide the control
-rather than flatten them. List/task/quote/callout/code/math conversions remain pending.
+**Implemented: "Turn into" (2026-10-08).** The selection popup's first control is a
+`Turn into` select. It acts on every complete root textblock the selection touches, in one
+isolated undo step:
+- Text ↔ Heading 1–4 (imported H5/H6 show as their active state). H1 is refused at the first
+  root (title protection).
+- Wrap into Bulleted list, Numbered list or To-do list (one item per block), Quote, or a Note
+  Callout with an empty title. Each block moves in unchanged — headings stay headings, and
+  marks and `^anchors` are kept.
+- Code and Block equation join the blocks' text with newlines. Only plain text converts:
+  marks, links or atoms are refused as `formatted` rather than silently dropped, and more
+  than one block anchor is refused as `anchored` (a code block holds one).
+Selections inside lists, quotes, tables or other containers hide the control rather than
+flatten them; unwrapping a container back to Text is not implemented yet.
 
 - **Single-editor gate (`single-editor.ts`).** Shared with block movement. Refuses, at both
   display and invocation: a different mounted editor for the same note key, any known

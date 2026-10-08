@@ -549,3 +549,10 @@ it("stays invisible until its first placement so it never paints at a stale posi
   await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
   expect([before, popup?.style.visibility]).toEqual(["hidden", ""]);
 });
+
+it("turns the selected paragraph into a bulleted list through the popup", async () => {
+  const f = await open(undefined, { noteKey: "turn-into-list", connection: synced() });
+  f.select("Later");
+  choose(turnInto(f), "bullet_list");
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\n- Later words\n");
+});

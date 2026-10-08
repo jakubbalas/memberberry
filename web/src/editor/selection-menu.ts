@@ -37,6 +37,8 @@ function styleChoiceLabel(property: StyleProperty, value: string | null): string
 export const SINGLE_EDITOR_WARNING = "Only while nobody edits this note elsewhere";
 const blockChoices: readonly (readonly [BlockFormat, string])[] = [
   ["text", "Text"], ["h1", "Heading 1"], ["h2", "Heading 2"], ["h3", "Heading 3"], ["h4", "Heading 4"],
+  ["bullet_list", "Bulleted list"], ["ordered_list", "Numbered list"], ["task_item", "To-do list"],
+  ["blockquote", "Quote"], ["callout", "Callout"], ["code_block", "Code"], ["math_block", "Block equation"],
 ];
 /** An editor-lifetime controller with idempotent teardown. Alt-F10 is the keyboard entry. */
 export interface SelectionMenu {
