@@ -8,7 +8,7 @@ import { resolveFormatSelection, type FormatSelection } from "./selection-format
 /** Opaque editor-local selection capture. Raw positions are not accepted as tokens. */
 export interface BlockSelection { readonly kind: "memberberry-block-selection" }
 /** Native Markdown choices only; imported H5/H6 remain visible as active state. */
-export type BlockFormat = "text" | "h1" | "h2" | "h3" | "h4" | "bullet_list" | "ordered_list" | "task_item" | "blockquote" | "callout" | "code_block" | "math_block";
+export type BlockFormat = "text" | "h1" | "h2" | "h3" | "h4" | "bullet_list" | "ordered_list" | "task_item" | "blockquote" | "callout" | "toggle" | "code_block" | "math_block";
 /** Explicit refusal; callers must not treat a filtered dispatch as applied. */
 export type BlockFormatResult = { readonly status: "applied" | "unchanged" } | { readonly status: "refused"; readonly reason: string };
 /** Menu capability, shared with the handler's preflight. */
@@ -22,6 +22,7 @@ const choices: readonly (readonly [BlockFormat, string])[] = [
   ["text", "Text"], ["h1", "Heading 1"], ["h2", "Heading 2"], ["h3", "Heading 3"], ["h4", "Heading 4"],
   ["bullet_list", "Bulleted list"], ["ordered_list", "Numbered list"], ["task_item", "To-do list"],
   ["code_block", "Code"], ["blockquote", "Quote"], ["callout", "Callout (Note)"], ["math_block", "Block equation"],
+  ["toggle", "Toggle"],
 ];
 function guard(editor: Editor, canInteract: () => boolean): string | undefined {
   if (editor.isDestroyed) return "destroyed";
@@ -96,6 +97,20 @@ function container(editor: Editor, units: readonly Unit[], format: BlockFormat):
         if (!callout || !title) return "unsupported";
         return callout.createChecked({ kind: "note", fold: "none" }, [title.createChecked(), ...blocks]);
       }
+      // A toggle is a foldable callout (`> [!note]+ Summary`, SPEC §8.4): the first block's
+      // inline content is the summary, the rest its body, and its anchor moves to the toggle.
+      case "toggle": {
+        const callout = nodes["callout"];
+        const title = nodes["callout_title"];
+        const paragraph = nodes["paragraph"];
+        const [summary, ...body] = blocks;
+        if (!callout || !title || !paragraph || !summary) return "unsupported";
+        const anchor = summary.attrs["anchor"];
+        return callout.createChecked(
+          { kind: "note", fold: "expanded", ...(typeof anchor === "string" ? { anchor } : {}) },
+          [title.createChecked(null, summary.content), ...(body.length > 0 ? body : [paragraph.createChecked()])],
+        );
+      }
       case "code_block":
       case "math_block": {
         const type = nodes[format];
@@ -128,6 +143,12 @@ function prepare(editor: Editor, capture: Capture, format: BlockFormat): Transac
     const replacement = container(editor, capture.units, format);
     if (typeof replacement === "string") return replacement;
     const tr = editor.state.tr.replaceWith(first.pos, last.pos + last.node.nodeSize, replacement);
+    const summary = replacement.firstChild;
+    // why: a fresh single-block toggle has an empty body to fill, as in Notion; leaving the
+    // summary selected meant the next keystroke replaced it.
+    if (format === "toggle" && capture.units.length === 1 && summary !== null) {
+      return tr.setSelection(TextSelection.create(tr.doc, first.pos + 1 + summary.nodeSize + 1));
+    }
     // why: the old range was replaced wholesale; keep the converted text selected.
     return tr.setSelection(TextSelection.between(tr.doc.resolve(first.pos), tr.doc.resolve(first.pos + replacement.nodeSize)));
   }

@@ -241,6 +241,19 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
    until the feature that tints them arrives (§20). */
 aside[data-callout] { display: block; margin: var(--editor-block-gap) 0; padding: var(--space-4) var(--space-5); border: 1px solid var(--border-subtle); border-left: var(--divider-thickness) solid var(--text-muted); border-radius: var(--radius-md); background: var(--surface-raised); }
 aside[data-callout] > :first-child, .callout-body > :first-child { margin-top: 0; }
+/* Toggles (§8.4): a foldable callout. Folding hides the body in this view only. */
+aside[data-callout].mb-folded > :not([data-callout-title]) { display: none; }
+aside[data-callout] .mb-fold-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: var(--control-height); min-height: var(--control-height); margin-inline-end: var(--space-1); padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: var(--text-md)/1 var(--font-ui); cursor: pointer; vertical-align: middle; }
+aside[data-callout] .mb-fold-toggle::before { content: "▸"; }
+aside[data-callout] .mb-fold-toggle[aria-expanded="true"]::before { content: "▾"; }
+aside[data-callout] .mb-fold-toggle:hover { background: var(--surface-hover); }
+aside[data-callout] .mb-fold-toggle:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+@media (pointer: coarse) { aside[data-callout] .mb-fold-toggle { min-width: var(--touch-target-min); min-height: var(--touch-target-min); } }
+/* A note-kind foldable callout is a plain toggle: summary as ordinary text, no callout box.
+   Foldable warnings, tips and the rest keep their callout look and gain only the arrow. */
+aside[data-callout="note"]:is(.mb-folded, .mb-unfolded) { padding: 0; border: 0; background: transparent; }
+aside[data-callout="note"]:is(.mb-folded, .mb-unfolded) > [data-callout-title] { color: var(--text-primary); font: inherit; letter-spacing: normal; text-transform: none; }
+aside[data-callout="note"]:is(.mb-folded, .mb-unfolded) > :not([data-callout-title]) { margin-inline-start: calc(var(--control-height) + var(--space-1)); }
 aside[data-callout] > :last-child, .callout-body > :last-child { margin-bottom: 0; }
 [data-callout-title] { color: var(--text-muted); font: var(--weight-bold) var(--text-xs)/var(--leading-snug) var(--font-ui); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
 

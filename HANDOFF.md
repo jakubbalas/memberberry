@@ -34,9 +34,9 @@ tests; block handles wired with gated More moves, compact desktop gutter, none o
 block-move + editor specs single-worker on both layouts, mb-core / clipper Rust tests,
 clippy, wasm-check. Not run on this branch: `make check`, full `make e2e`.
 
-- **Toggles:** need the user's choice of Markdown form. Proposed: reuse foldable callouts
-  (`> [!note]-` collapsed / `> [!note]+` expanded, already parsed) as a "Toggle" Turn-into
-  target; alternative `<details>` needs new raw-HTML parser support.
+- **Toggles: done** as foldable callouts (user's choice, SPEC §8.4). Open questions left:
+  folding is per-view and not remembered across reloads; no UI to change a toggle's `+`/`-`
+  default (edit source); arrow glyph size may want tuning.
 - **Unwrap** containers (list/quote/callout → Text) in Turn into: not implemented.
 - **Long-press handles on touch** (§8.2): not implemented; touch uses More → Move.
 - **Coverage:** `mb-core` was 95.13% vs a 95% floor before the clipper tests; re-measure.

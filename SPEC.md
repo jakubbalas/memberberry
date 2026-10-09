@@ -2009,6 +2009,24 @@ isolated undo step:
 Selections inside lists, quotes, tables or other containers hide the control rather than
 flatten them; unwrapping a container back to Text is not implemented yet.
 
+**Toggles (decided 2026-10-09: foldable callouts).** The user chose Obsidian's foldable
+callout as the toggle's Markdown — `> [!note]+ Summary` (starts open) / `> [!note]- Summary`
+(starts folded) — over HTML `<details>` (new raw-HTML parser support) or no toggles. No new
+syntax: callouts already parse and round-trip their fold.
+- Turn into → Toggle makes the first selected block the summary (its inline content, its
+  `^anchor` moved to the toggle) and the rest the body; a single block gets an empty body
+  with the caret in it. New toggles are written `+`.
+- In the editor every foldable callout gets a ▸/▾ button (`aria-expanded`), and Mod-Enter
+  inside it folds; outside a toggle Mod-Enter keeps Tiptap's default. The file's `+`/`-` is
+  only the default: folding changes the reader's own view, never the note — no edit, no
+  sync, works read-only — so a fold is not shared and is not remembered across reloads. To
+  change the default, edit `+`/`-` in source. A caret inside a body being folded moves to
+  the summary. The arrow is CSS, so the summary's text stays the file's.
+- `note`-kind foldable callouts render as plain toggles (ordinary summary text, no callout
+  box); foldable warnings, tips etc. keep the callout look and gain the arrow.
+- Shares and exports render foldable callouts as `<details>`/`<summary>` (`open` for `+`),
+  so they fold without script; plain callouts stay `<div>`.
+
 - **Single-editor gate (`single-editor.ts`).** Shared with block movement. Refuses, at both
   display and invocation: a different mounted editor for the same note key, any known
   awareness peer, a disconnected or unsynced transport, and unsent writes. Several gated

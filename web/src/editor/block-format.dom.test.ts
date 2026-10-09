@@ -138,7 +138,7 @@ it("converts all complete containing root textblocks for a partial cross-block s
   const token = captureBlockSelection(f.editor, () => true, selection);
   if (!token) throw new Error("missing multi-block capture");
   expect(blockFormatState(f.editor, token).active).toBe("mixed");
-  expect(blockFormatState(f.editor, token).choices.map((choice) => choice.format)).toEqual(["text", "h1", "h2", "h3", "h4", "bullet_list", "ordered_list", "task_item", "code_block", "blockquote", "callout", "math_block"]);
+  expect(blockFormatState(f.editor, token).choices.map((choice) => choice.format)).toEqual(["text", "h1", "h2", "h3", "h4", "bullet_list", "ordered_list", "task_item", "code_block", "blockquote", "callout", "math_block", "toggle"]);
   for (const format of ["h1", "h3", "h4"] as const) {
     const current = captureBlockSelection(f.editor, () => true, TextSelection.create(f.editor.state.doc, to, from));
     if (!current) throw new Error("missing updated capture");
@@ -164,7 +164,7 @@ it("accepts the opaque inline-menu handoff and rejects forged captures and unsup
   expect(f.editor.state.doc.child(1).attrs["level"]).toBe(4);
   const before = encodeStateAsUpdate(f.ydoc);
   expect(applyBlockFormat(f.editor, { kind: "memberberry-block-selection" }, "h2").status).toBe("refused");
-  expect(applyBlockFormat(f.editor, f.select("Body"), "toggle" as BlockFormat)).toEqual({ status: "refused", reason: "unsupported" });
+  expect(applyBlockFormat(f.editor, f.select("Body"), "columns" as BlockFormat)).toEqual({ status: "refused", reason: "unsupported" });
   expect(encodeStateAsUpdate(f.ydoc)).toEqual(before);
 });
 
@@ -223,3 +223,26 @@ for (const [format, fence] of [["code_block", "```"], ["math_block", "$$"]] as c
     expect(encodeStateAsUpdate(f.ydoc)).toEqual(before);
   });
 }
+
+it("turns the first selected block into a toggle's summary and the rest into its body", async () => {
+  const f = await open("# Title\n\nMeeting notes\n\nShip on **Friday** ^ship\n\nUntouched\n");
+  const { from } = f.range("Meeting");
+  const { to } = f.range("Friday");
+  f.editor.commands.setTextSelection({ from, to });
+  const token = captureBlockSelection(f.editor);
+  if (!token) throw new Error("missing capture");
+  expect(applyBlockFormat(f.editor, token, "toggle")).toEqual({ status: "applied" });
+  expect(await roundtrip(f)).toBe(await normalize("# Title\n\n> [!note]+ Meeting notes\n> Ship on **Friday** ^ship\n\nUntouched\n"));
+  expect(undo(f.editor.state)).toBe(true);
+  expect(await editorMarkdown(f.ydoc)).toBe(await normalize("# Title\n\nMeeting notes\n\nShip on **Friday** ^ship\n\nUntouched\n"));
+});
+
+it("gives a single-block toggle an empty body to type into", async () => {
+  const f = await open("# Title\n\nJust a summary\n");
+  expect(applyBlockFormat(f.editor, f.select("summary"), "toggle")).toEqual({ status: "applied" });
+  const toggle = f.editor.state.doc.child(1);
+  expect([toggle.type.name, toggle.attrs["fold"], toggle.child(0).textContent, toggle.childCount]).toEqual(["callout", "expanded", "Just a summary", 2]);
+  // Ready to type the body, as in Notion — not with the summary selected, where typing replaces it.
+  const { $head, empty } = f.editor.state.selection;
+  expect([empty, $head.parent.type.name, $head.node(1).type.name]).toEqual([true, "paragraph", "callout"]);
+});

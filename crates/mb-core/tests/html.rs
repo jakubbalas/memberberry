@@ -137,10 +137,41 @@ fn a_callout_carries_its_kind_fold_and_title() {
     assert!(out.contains("mb-callout-warning"), "{out}");
     assert!(out.contains("data-fold=\"collapsed\""), "{out}");
     assert!(
-        out.contains("<div class=\"mb-callout-title\">Careful</div>"),
+        out.contains("<summary class=\"mb-callout-title\">Careful</summary>"),
         "{out}"
     );
     assert!(out.contains("body"), "{out}");
+}
+
+#[test]
+fn a_collapsed_toggle_is_a_closed_details_element() {
+    let out = h("> [!note]- Summary\n> body\n");
+    assert!(
+        out.starts_with("<details class=\"mb-callout mb-callout-note\" data-fold=\"collapsed\">"),
+        "{out}"
+    );
+    assert!(out.trim_end().ends_with("</details>"), "{out}");
+}
+
+#[test]
+fn an_expanded_toggle_is_an_open_details_element() {
+    let out = h("> [!note]+ Summary\n> body\n");
+    assert!(
+        out.starts_with(
+            "<details class=\"mb-callout mb-callout-note\" data-fold=\"expanded\" open>"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_callout_that_does_not_fold_stays_a_plain_block() {
+    let out = h("> [!note] Title\n> body\n");
+    assert!(
+        out.starts_with("<div class=\"mb-callout mb-callout-note\">"),
+        "{out}"
+    );
+    assert!(!out.contains("<summary"), "{out}");
 }
 
 #[test]

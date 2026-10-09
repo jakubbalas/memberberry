@@ -616,32 +616,46 @@ fn list_item(item: &ListItem, urls: &Urls<'_>, out: &mut String) {
 }
 
 fn callout(c: &Callout, urls: &Urls<'_>, anchor: Option<&str>, out: &mut String) {
-    out.push_str("<div class=\"mb-callout mb-callout-");
+    // why: a foldable callout is a toggle (SPEC §8.4). <details> folds natively, with no
+    // script, in shares and exports; the file's `-`/`+` decides whether it starts open.
+    let toggle = c.fold != Fold::None;
+    let (element, heading) = if toggle {
+        ("details", "summary")
+    } else {
+        ("div", "div")
+    };
+    out.push('<');
+    out.push_str(element);
+    out.push_str(" class=\"mb-callout mb-callout-");
     escape_attr(&c.kind.to_lowercase(), out);
     out.push('"');
     push_anchor(out, anchor);
-    if c.fold != Fold::None {
-        out.push_str(" data-fold=\"");
+    if toggle {
         out.push_str(match c.fold {
-            Fold::Collapsed => "collapsed",
-            _ => "expanded",
+            Fold::Collapsed => " data-fold=\"collapsed\"",
+            _ => " data-fold=\"expanded\" open",
         });
-        out.push('"');
     }
-    out.push_str(">\n<div class=\"mb-callout-title\">");
+    out.push_str(">\n<");
+    out.push_str(heading);
+    out.push_str(" class=\"mb-callout-title\">");
     if c.title.is_empty() {
         // Obsidian titles an untitled callout with its kind.
         escape_text(&c.kind, out);
     } else {
         inlines(&c.title, urls, out);
     }
-    out.push_str("</div>\n");
+    out.push_str("</");
+    out.push_str(heading);
+    out.push_str(">\n");
     if !c.content.is_empty() {
         out.push_str("<div class=\"mb-callout-body\">\n");
         blocks(&c.content, urls, out);
         out.push_str("</div>\n");
     }
-    out.push_str("</div>");
+    out.push_str("</");
+    out.push_str(element);
+    out.push('>');
 }
 
 fn table(t: &Table, urls: &Urls<'_>, anchor: Option<&str>, out: &mut String) {
