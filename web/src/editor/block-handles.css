@@ -1,6 +1,9 @@
-/* Reserve real target space rather than cover editable text with a floating gutter. */
+/* Reserve real target space rather than cover editable text with a floating gutter.
+ * why: two 44px targets side by side indented every note by ~96px and took a quarter of a
+ * phone. The grip and ⋯ now stack at the 32px desktop control size (§8.3); touch moves
+ * blocks through More → Move up/down, so it reserves nothing. */
 .block-handles-host .ProseMirror {
-  padding-inline-start: calc(2 * var(--touch-target-min) + 4 * var(--space-1));
+  padding-inline-start: calc(var(--control-height) + 3 * var(--space-1));
 }
 .block-handles,
 .block-move-menu {
@@ -14,15 +17,14 @@
   font-family: var(--font-ui);
   padding: var(--space-1);
 }
-.block-handles { display: flex; gap: var(--space-1); }
+.block-handles { display: flex; flex-direction: column; gap: var(--space-1); }
 .block-move-menu { width: min(20rem, calc(100vw - 8px)); overflow: auto; }
 .block-handles[hidden],
 .block-move-menu[hidden],
 .block-drop-indicator[hidden] { display: none; }
+.block-handles button { min-width: var(--control-height); min-height: var(--control-height); }
 .block-handles button,
 .block-move-menu button {
-  min-width: var(--touch-target-min);
-  min-height: var(--touch-target-min);
   border: 0;
   border-radius: var(--radius-sm);
   color: var(--text-primary);
@@ -30,7 +32,13 @@
   font: inherit;
   cursor: pointer;
 }
-.block-move-menu button { display: block; width: 100%; text-align: start; padding-inline: var(--space-3); }
+.block-move-menu button {
+  display: block;
+  width: 100%;
+  min-height: var(--touch-target-min);
+  text-align: start;
+  padding-inline: var(--space-3);
+}
 .block-handles button:hover,
 .block-move-menu button:hover { background: var(--surface-hover); }
 .block-handles button:focus-visible,
@@ -44,6 +52,10 @@
   background: var(--accent-primary);
   z-index: 101;
   pointer-events: none;
+}
+@media (pointer: coarse) {
+  .block-handles, .block-drop-indicator { display: none !important; }
+  .block-handles-host .ProseMirror { padding-inline-start: 0; }
 }
 @media print {
   .block-handles, .block-move-menu, .block-drop-indicator { display: none !important; }

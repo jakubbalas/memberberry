@@ -1956,7 +1956,10 @@ in this iteration or relabel the failing partition probes as successes.
 **Implemented: movement wired (2026-10-08).** Routed notes mount the block handles
 (hover/focus grip, `⋯` menu with Move up/down and the visible single-editor limit, pointer
 drag with an insertion indicator; Alt-Shift-F10 opens the menu — plain Alt-F10 stays with
-the formatting popup). More's Move up/down use the same gated mover; the old ungated
+the formatting popup). On fine pointers the grip and `⋯` stack at the 32px desktop control
+size in a ~40px reserved gutter. Coarse pointers reserve no gutter and show no floating
+handles; touch moves blocks through More → Move up/down. The long-press handles of §8.2
+are not implemented. More's Move up/down use the same gated mover; the old ungated
 adjacent swap is removed, and local-only editors show no movement. A node selection on an
 atom inside the moved root follows it, and undo/redo return the selection to the moved
 root (its offset is recorded on the undo stack item, since a move is delete + insert and

@@ -26,20 +26,23 @@ performance. GitHub CI results on PR #4 were not checked from here.
 
 ## Next
 
-- **Full `make e2e` on `main`.** `backlinks` (mobile) and `graph.spec.ts` failed once only in
-  a full run and pass alone and in smaller runs; unexplained until a full run reproduces
-  or clears them.
-- **Conversion slice 2:** list / task / quote / callout targets for Turn into. Peer-text loss
-  for these is characterized (SPEC §8.4); the gate is the safety story. Needs new
-  `block-format.ts` prepare logic (the earlier scratch candidate is gone).
-- **Block movement:** wire `block-handles.ts` behind the gate — but its last review FAILED
-  (repeated-move undo truncating unrelated text, temporary selection under filters /
-  appenders, GapCursor capability). The repair was lost; re-verify on `main` first.
-- **Toggles:** Markdown grammar not specified — needs a user decision.
-- **Small UI items:** popup first reveal paints before its RAF positioning; "A" wraps to the
-  toolbar's second row on mobile; the "No background" swatch outline is faint on desktop;
-  Move up/down under More are announced as "Insert move up block".
-- **Coverage margin:** `mb-core` is 95.22% against a 95% floor.
+Branch `feat/editor-next` (not pushed) adds on top of `main`: popup first-frame / Move
+labels / swatch fixes; Turn into → lists, to-dos, quote, callout, code, equation; block-move
+fixes (nested atom selection, undo/redo caret); clipper HTML `<` text-loss fix plus import
+tests; block handles wired with gated More moves, compact desktop gutter, none on touch;
+`e2e/block-move.spec.ts`. Verified: web unit suite, editor/shell 1838, selection-menu +
+block-move + editor specs single-worker on both layouts, mb-core / clipper Rust tests,
+clippy, wasm-check. Not run on this branch: `make check`, full `make e2e`.
+
+- **Toggles:** need the user's choice of Markdown form. Proposed: reuse foldable callouts
+  (`> [!note]-` collapsed / `> [!note]+` expanded, already parsed) as a "Toggle" Turn-into
+  target; alternative `<details>` needs new raw-HTML parser support.
+- **Unwrap** containers (list/quote/callout → Text) in Turn into: not implemented.
+- **Long-press handles on touch** (§8.2): not implemented; touch uses More → Move.
+- **Coverage:** `mb-core` was 95.13% vs a 95% floor before the clipper tests; re-measure.
+- **Load-sensitive e2e:** under heavy machine load, parallel workers time out mounting the
+  editor and `editor.spec.ts` "bootstrap identifies the note" once hit 30 s (0.5 s normally).
+  Use `--workers=1` when the machine is busy; not a product defect so far.
 
 ## Gotchas
 
