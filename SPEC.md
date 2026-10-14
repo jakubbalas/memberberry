@@ -2027,6 +2027,15 @@ syntax: callouts already parse and round-trip their fold.
 - Shares and exports render foldable callouts as `<details>`/`<summary>` (`open` for `+`),
   so they fold without script; plain callouts stay `<div>`.
 
+**Line break in a block (requested 2026-10-14: Shift+Enter, not Cmd/Ctrl+Enter).** Shift+Enter
+in a paragraph — top level, or inside a list item, quote, callout or toggle body — starts a
+new line in the same block: a Markdown hard break, written `\` + newline. Plain Enter still
+starts a new block. Headings and toggle summaries are single-line in Markdown, so Shift+Enter
+there does nothing; a table cell keeps its own Enter handling (§4). A break at the very start
+or end of a block is not representable and drops on the next parse; the editor keeps it
+until then, so the next line can be typed. Soft keyboards rarely send Shift+Enter; there is
+no on-screen route yet.
+
 - **Single-editor gate (`single-editor.ts`).** Shared with block movement. Refuses, at both
   display and invocation: a different mounted editor for the same note key, any known
   awareness peer, a disconnected or unsynced transport, and unsent writes. Several gated

@@ -4,13 +4,16 @@ Where things stand right now. Durable contracts and decisions live in `SPEC.md` 
 redesign: §8.4; inline `mb-` style grammar: §4.4). Rewrite this file — never append.
 History is in `git log`; detailed evidence for past runs is in `~/.hermes/cache/scratch/`.
 
-## Current state (2026-10-08)
+## Current state (2026-10-14)
 
 `main` is `1339b53` (PR #4 merged with a merge commit): editor styling revision 3 plus
-Paul's PR #3, which therefore landed too. Nothing is in flight; the working tree is clean.
+Paul's PR #3, which therefore landed too.
+
+**Work is in flight on `feat/editor-next`** (committed, not pushed, no PR yet — see Next).
+The working tree is clean.
 
 The user's editor redesign (SPEC §8.4): namespace formatting, a Notion-like selection
-popup, block-type conversion and block rearrangement, all in plain `.md`. On `main` now:
+popup, block-type conversion and block rearrangement, all in plain `.md`. On `main`:
 - **Styling revision 3** (SPEC §4.4): `mb-style` underline / colour / background / size
   with server + browser schema admission and refresh-required on revision mismatch.
 - **Selection popup:** native marks, link, an "A" button opening a labelled colour /
@@ -19,24 +22,35 @@ popup, block-type conversion and block rearrangement, all in plain `.md`. On `ma
 - **From PR #3:** list Enter/Tab/Shift-Tab, backtick inline code, undo history owned by
   the session's Y.Doc, `[[` inserting Markdown links, perf readiness wait.
 
-Verification on the merged code: `make check` green (`local/debug/make-check-20261008-214030.log`),
-web unit 2045/2045, overlapping browser specs 54/54 desktop + mobile, style-host acceptance
+`main` verification: `make check` green (`local/debug/make-check-20261008-214030.log`), web
+unit 2045/2045, overlapping browser specs 54/54 desktop + mobile, style-host acceptance
 (`web/scripts/test-md-style-hosts.mjs`) pass. **Not run:** full `make e2e`, physical-device
 performance. GitHub CI results on PR #4 were not checked from here.
 
 ## Next
 
-Branch `feat/editor-next` (not pushed) adds on top of `main`: popup first-frame / Move
-labels / swatch fixes; Turn into → lists, to-dos, quote, callout, code, equation; block-move
-fixes (nested atom selection, undo/redo caret); clipper HTML `<` text-loss fix plus import
-tests; block handles wired with gated More moves, compact desktop gutter, none on touch;
-`e2e/block-move.spec.ts`. Verified: web unit suite, editor/shell 1838, selection-menu +
-block-move + editor specs single-worker on both layouts, mb-core / clipper Rust tests,
-clippy, wasm-check. Not run on this branch: `make check`, full `make e2e`.
+`feat/editor-next` adds on top of `main`:
+- Popup first-frame / Move labels / swatch fixes.
+- Turn into → lists, to-dos, quote, callout, code, equation.
+- Block-move fixes (nested atom selection, undo/redo caret); block handles wired with gated
+  More moves, compact desktop gutter, none on touch; `e2e/block-move.spec.ts`.
+- Clipper HTML `<` text-loss fix plus import tests.
+- Toggles as foldable callouts; Mod-Enter folds from anywhere inside one.
+- Shift+Enter adds a line in the same block (Markdown hard break) in any
+  paragraph, including list items, quotes, callout and toggle bodies; headings and summaries
+  stay single-line (SPEC §8.4).
 
-- **Toggles: done** as foldable callouts (user's choice, SPEC §8.4). Open questions left:
-  folding is per-view and not remembered across reloads; no UI to change a toggle's `+`/`-`
-  default (edit source); arrow glyph size may want tuning.
+Verified on the branch: editor/shell unit 1858, web typecheck, mb-core / clipper Rust tests,
+clippy, wasm-check; browser specs single-worker on both layouts — selection-menu, block-move,
+editor, toggles, tables, and line-break (×3 each layout, plus a probe that it fails with the
+feature unplugged). **Not run on this branch:** `make check`, full `make e2e`, coverage.
+
+Open items:
+- **Line break:** no touch route (soft keyboards rarely send Shift+Enter). Headings are
+  tested (unit + browser) to ignore Shift+Enter; toggle summaries take the same fall-through
+  path but have no test of their own.
+- **Toggles:** folding is per-view and not remembered across reloads; no UI to change a
+  toggle's `+`/`-` default (edit source); arrow glyph size may want tuning.
 - **Unwrap** containers (list/quote/callout → Text) in Turn into: not implemented.
 - **Long-press handles on touch** (§8.2): not implemented; touch uses More → Move.
 - **Coverage:** `mb-core` was 95.13% vs a 95% floor before the clipper tests; re-measure.
@@ -52,6 +66,11 @@ clippy, wasm-check. Not run on this branch: `make check`, full `make e2e`.
   plugins still assume construction-time install.
 - The installed y-prosemirror binding **mutates/deletes** unknown nodes/marks when loading
   an old-schema doc. That is why admission preflights state before binding (SPEC §8.4).
+- Playwright can press a key before `selectionchange` reaches ProseMirror, so a shortcut
+  right after a click or arrow key runs at the old caret (flaky ~1 in 3). Poll the model
+  caret first — Tiptap exposes the editor as `root.editor` (see `e2e/line-break.spec.ts`).
+- `tables.spec.ts` fails under `--repeat-each` (2 tests, from the second repeat, on `HEAD`
+  too): it is not repeat-safe. A single run passes; don't read repeat failures as regressions.
 - Native typing in Playwright: Tiptap focuses on a deferred RAF; wait on a synchronous
   native+model caret/focus predicate, not on `focus` alone.
 - After keyboard selection, `editor.state.selection` can trail the native range until
