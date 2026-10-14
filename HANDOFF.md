@@ -33,7 +33,9 @@ performance. GitHub CI results on PR #4 were not checked from here.
 - Popup first-frame / Move labels / swatch fixes.
 - Turn into → lists, to-dos, quote, callout, code, equation.
 - Block-move fixes (nested atom selection, undo/redo caret); block handles wired with gated
-  More moves, compact desktop gutter, none on touch; `e2e/block-move.spec.ts`.
+  More moves, slim ⋯ then grip on one row, 12px clear of the text, in a
+  compact desktop gutter (hover there resolves by pointer row, so the handles no longer
+  vanish crossing to them), none on touch; `e2e/block-move.spec.ts`.
 - Clipper HTML `<` text-loss fix plus import tests.
 - Toggles as foldable callouts; Mod-Enter folds from anywhere inside one.
 - Shift+Enter adds a line in the same block (Markdown hard break) in any

@@ -55,7 +55,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   up.setAttribute("role", "menuitem"); down.setAttribute("role", "menuitem");
   const limit = document.createElement("p");
   limit.textContent = "Single-editor rearrangement only. Do not rearrange this note while another browser/device is editing it, including offline.";
-  menu.append(up, down, limit); group.append(grip, actions); document.body.append(group, menu, indicator);
+  menu.append(up, down, limit); group.append(actions, grip); document.body.append(group, menu, indicator);
   panel.classList.add("block-handles-host");
   const viewport = window.visualViewport;
   const close = (): void => { menu.hidden = true; actions.setAttribute("aria-expanded", "false"); };
@@ -105,7 +105,9 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     const bounds = paneBounds();
     if (rect.bottom < bounds.top || rect.top > bounds.bottom) { group.hidden = true; close(); } else group.hidden = false;
     const groupRect = group.getBoundingClientRect();
-    group.style.left = `${Math.max(bounds.left + 4, Math.min(rect.left - groupRect.width - 4, bounds.right - groupRect.width - 4))}px`;
+    // why: pin to the gutter's start so the clearance from the text is the CSS gutter's alone.
+    const gutter = dom.getBoundingClientRect().left;
+    group.style.left = `${Math.max(bounds.left + 4, Math.min(gutter, rect.left - groupRect.width, bounds.right - groupRect.width - 4))}px`;
     group.style.top = `${Math.max(bounds.top + 4, Math.min(rect.top, bounds.bottom - groupRect.height - 4))}px`;
     if (!menu.hidden) {
       const menuRect = menu.getBoundingClientRect();
@@ -178,10 +180,18 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   const moveUp = (): void => { apply("up"); }; const moveDown = (): void => { apply("down"); };
   const hover = (event: PointerEvent): void => {
     if (drag || !menu.hidden || event.pointerType === "touch" || !(event.target instanceof window.Node) || !dom.contains(event.target)) return;
-    try { show(mover.capture(editor.view.posAtDOM(event.target, 0))); } catch { hide(); }
+    // why: the gutter and the gaps between blocks are the editor root's own padding/margins;
+    // posAtDOM(root, 0) there is the title, so crossing the gap to the handles hid them.
+    // Resolve the root under the pointer's row instead, and keep the current one if none.
+    const pos = event.target === dom ? editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos : undefined;
+    if (event.target === dom && pos === undefined) return;
+    try { show(mover.capture(pos ?? editor.view.posAtDOM(event.target, 0))); } catch { hide(); }
   };
   const leave = (event: PointerEvent): void => {
-    if (drag || !menu.hidden || (event.relatedTarget instanceof window.Node && group.contains(event.relatedTarget))) return;
+    const into = event.relatedTarget instanceof window.Node ? event.relatedTarget : undefined;
+    // why: moving between the editor and the handles is one hover; the editor's own
+    // pointermove decides the block once the pointer is back over it.
+    if (drag || !menu.hidden || (into && (group.contains(into) || dom.contains(into)))) return;
     if (editor.view.hasFocus()) refresh(); else hide();
   };
   const pointerDown = (event: PointerEvent): void => {
