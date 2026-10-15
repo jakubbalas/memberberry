@@ -88,11 +88,13 @@ export function mountEmojiPicker(
   toolbar: HTMLElement,
   choices: EmojiChoices,
   importOptions?: EmojiImportOptions,
+  canInsert?: () => boolean,
 ): { destroy(): void } {
   let availableChoices = typeof choices === "function" ? [] : [...choices];
   let loaded = typeof choices !== "function";
   let destroyed = false;
   let loading: AbortController | undefined;
+  let insertion: { doc: Editor["state"]["doc"]; from: number; to: number } | undefined;
   const wrapper = document.createElement("div");
   wrapper.className = "emoji-picker-wrap";
   const toggle = document.createElement("button");
@@ -205,9 +207,10 @@ export function mountEmojiPicker(
             : `${choice.glyph}${choice.supportsSkinTone === true ? selectedTone : ""}`;
         }
         item.addEventListener("click", () => {
-          editor.chain().focus().insertContent(
-            choice.custom ? `:${choice.shortcode}:` : `${choice.glyph}${choice.supportsSkinTone === true ? selectedTone : ""}`,
-          ).run();
+          if (canInsert !== undefined && (!canInsert() || insertion?.doc !== editor.state.doc)) { close(); return; }
+          const content = choice.custom ? `:${choice.shortcode}:` : `${choice.glyph}${choice.supportsSkinTone === true ? selectedTone : ""}`;
+          if (insertion === undefined) editor.chain().focus().insertContent(content).run();
+          else editor.chain().focus().insertContentAt({ from: insertion.from, to: insertion.to }, content).run();
           recentShortcodes = [choice.shortcode, ...recentShortcodes.filter((shortcode) => shortcode !== choice.shortcode)].slice(0, MAX_RECENTS);
           writeRecents(recentShortcodes);
           close();
@@ -267,9 +270,11 @@ export function mountEmojiPicker(
     toggle.setAttribute("aria-expanded", "false");
   };
   const onToggle = (): void => {
+    if (canInsert !== undefined && !canInsert()) return;
     panel.hidden = !panel.hidden;
     toggle.setAttribute("aria-expanded", String(!panel.hidden));
     if (!panel.hidden) {
+      if (canInsert !== undefined) insertion = { doc: editor.state.doc, from: editor.state.selection.from, to: editor.state.selection.to };
       ensureChoices();
       render();
       search.focus();

@@ -10,7 +10,8 @@ import type { ConnectionStatus } from "./collaboration.js";
 import type { ConnectionState } from "./sync.js";
 import { PRESENCE_CLIENT_ATTRIBUTE, trackPresenceIdle } from "./presence.js";
 
-import { insertBlock, runTaskSlashCommand, setHeading, setTaskDue, setTaskPriority, slashCommands, toggleTask } from "./commands.js";
+import { insertBlock, runTaskSlashCommand, setHeading, setTaskDue, setTaskPriority, toggleTask } from "./commands.js";
+import { mountBlockCatalog } from "./block-catalog.js";
 import { CONFLICT_EVENT, mountConflicts, type ConflictDetail } from "./conflict-view.js";
 import { mountOutline } from "./outline.js";
 import { applySourceMarkdown, copyMarkdown, editorMarkdown, longNoteMode, setLongNoteMode } from "./source.js";
@@ -129,7 +130,10 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   }
   toolbar.append(sourceToggle);
   secondary.append(copy, print, html);
-  const media = mediaControls(options.editor, options.mediaUploader, options.status);
+  const canInsert = (): boolean => !shellDestroyed && !sourceVisible && !sourcePending && !terminal()
+    && options.editor.isEditable && !options.editor.isDestroyed && !options.editor.view.dom.hidden
+    && !options.editor.view.composing && options.panel.dataset["body"] !== "waiting";
+  const media = mediaControls(options.editor, options.mediaUploader, options.status, canInsert);
   if (media !== undefined) toolbar.append(media.element);
   let shellDestroyed = false;
   let imageEditor: { destroy(): void } | undefined;
@@ -177,7 +181,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       options.editor.view.dom.removeEventListener("click", onImageClick);
     };
   }
-  const emoji = mountEmojiPicker(options.editor, toolbar, options.emojiChoices ?? [], options.emojiImport);
+  const emoji = mountEmojiPicker(options.editor, toolbar, options.emojiChoices ?? [], options.emojiImport, canInsert);
   toolbar.append(more);
 
   const inspector = taskInspector(options.editor);
@@ -196,12 +200,19 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     canInteract: () => !sourceVisible && !sourcePending && !shellDestroyed && !terminal(),
   };
   mover = movement === undefined ? undefined : createBlockMover(movement);
-  const blockHandles = movement === undefined ? undefined : mountBlockHandles({ ...movement, panel: options.panel });
+  const blockHandles = movement === undefined ? undefined : mountBlockHandles({ ...movement, panel: options.panel,
+    onInsertBelow: (start) => slash.show(start), onTurnInto: (start) => slash.show(start, true) });
   const selectionMenu = mountSelectionMenu({ editor: options.editor, panel: options.panel,
     canInteract: () => !sourceVisible && !sourcePending && !shellDestroyed && !terminal(),
     onDraftStateChange: refreshReloadControls,
     ...(blockGate === undefined ? {} : { blockGate }) });
-  const blocksReload = (): boolean => sourceVisible || sourcePending || selectionMenu.hasOpenDraft()
+  const slash = mountBlockCatalog({ editor: options.editor, host: toolbar, status: options.status,
+    onDraftStateChange: refreshReloadControls,
+    canInteract: () => !sourceVisible && !sourcePending && !shellDestroyed && !terminal() && options.panel.dataset["body"] !== "waiting",
+    ...(blockGate === undefined ? {} : { gate: blockGate }),
+    ...(media === undefined ? {} : { image: () => media.openImage() }),
+    emoji: () => toolbar.querySelector<HTMLButtonElement>(".emoji-picker-toggle")?.click() });
+  const blocksReload = (): boolean => sourceVisible || sourcePending || selectionMenu.hasOpenDraft() || slash.hasOpenDraft()
     || (options.connection?.state.pending ?? 0) > 0;
   reloadBlockers.add(blocksReload);
   const canReload = (): boolean => ![...reloadBlockers].some((blocks) => blocks());
@@ -232,7 +243,14 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     ? undefined
     : mountPresence(options.panel, options.awareness, options.connection);
 
-  const slash = slashMenu(options.editor, toolbar);
+  const insertControl = button("Insert", "Insert block");
+  const onInsert = (): void => slash.show();
+  insertControl.addEventListener("click", onInsert);
+  toolbar.prepend(insertControl);
+  const turnIntoControl = button("Turn into…", "Turn current block into another type");
+  const onTurnInto = (): void => { more.open = false; slash.show(undefined, true); };
+  turnIntoControl.addEventListener("click", onTurnInto);
+  secondary.prepend(turnIntoControl);
   const onTemplate = (event: Event): void => {
     if (focusedEditor !== options.editor) return;
     if (!(event instanceof CustomEvent)) return;
@@ -346,6 +364,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     }
     if (sourcePending || shellDestroyed || options.editor.isDestroyed) return;
     sourcePending = true;
+    slash.hide();
     refreshReloadControls();
     selectionMenu.refresh();
     try { latestMarkdown = await editorMarkdown(options.document); } finally { sourcePending = false; }
@@ -477,6 +496,8 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       mover?.destroy();
       blockGate?.destroy();
       slash.destroy();
+      insertControl.removeEventListener("click", onInsert);
+      turnIntoControl.removeEventListener("click", onTurnInto);
       window.removeEventListener(TEMPLATE_EVENT, onTemplate);
       options.editor.view.dom.removeEventListener("focusin", rememberFocus);
       if (focusedEditor === options.editor) focusedEditor = undefined;
@@ -488,6 +509,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
 
 interface MediaControls {
   readonly element: HTMLElement;
+  openImage(): void;
   destroy(): void;
 }
 
@@ -495,6 +517,7 @@ function mediaControls(
   editor: Editor,
   uploader: MediaUploader | undefined,
   status: HTMLElement,
+  canInteract: () => boolean,
 ): MediaControls | undefined {
   if (uploader === undefined) return undefined;
   let destroyed = false;
@@ -507,6 +530,9 @@ function mediaControls(
   picker.multiple = false;
   picker.hidden = true;
   picker.setAttribute("aria-hidden", "true");
+  const allowed = (): boolean => !destroyed && !editor.isDestroyed && editor.isEditable && canInteract();
+  const capture = () => ({ doc: editor.state.doc, from: editor.state.selection.from, to: editor.state.selection.to });
+  let pickerTarget: ReturnType<typeof capture> | undefined;
   const replacePath = (from: string, to: string): void => {
     const transaction = editor.state.tr;
     editor.state.doc.descendants((node, position) => {
@@ -527,13 +553,17 @@ function mediaControls(
     if (transaction.docChanged) editor.view.dispatch(transaction);
   };
   const stopResolved = uploader.onResolved?.(replacePath);
-  const upload = (file: File): void => {
-    const selection = { from: editor.state.selection.from, to: editor.state.selection.to };
+  const upload = (file: File, selection = capture()): void => {
+    if (!allowed() || selection.doc !== editor.state.doc) return;
     status.textContent = "Uploading " + file.name + "…";
     void uploader
       .upload(file)
       .then((result) => {
         if (destroyed) return;
+        if (!allowed() || selection.doc !== editor.state.doc) {
+          status.textContent = "The insertion target changed. Choose the image or PDF again at the current position.";
+          return;
+        }
         const content = file.type === "application/pdf"
           ? {
               type: "text",
@@ -541,13 +571,13 @@ function mediaControls(
               marks: [{ type: "link", attrs: { href: result.path, title: null } }],
             }
           : { type: "image", attrs: { dest: result.path, alt: file.name } };
-        editor.chain().focus().insertContentAt(selection, content).run();
+        editor.chain().focus().insertContentAt({ from: selection.from, to: selection.to }, content).run();
         status.textContent = file.type === "application/pdf" ? "PDF inserted." : "Image inserted.";
         if (result.pending !== undefined) {
           status.textContent = "Image queued for upload.";
           void result.pending
             .then((uploaded) => {
-              if (destroyed) return;
+              if (!allowed()) return;
               replacePath(result.path, uploaded.path);
               status.textContent = "Queued image uploaded.";
             })
@@ -557,14 +587,15 @@ function mediaControls(
         }
       })
       .catch(() => {
-        status.textContent = "Image upload failed.";
+        if (!destroyed) status.textContent = "Image upload failed.";
       });
   };
   const mediaFrom = (files: FileList | readonly File[] | null): File | undefined =>
     files === null ? undefined : [...files].find(isSafeMedia);
   const onChange = (): void => {
     const file = mediaFrom(picker.files);
-    if (file !== undefined) upload(file);
+    if (file !== undefined) upload(file, pickerTarget ?? capture());
+    pickerTarget = undefined;
     picker.value = "";
   };
   const onPaste = (event: ClipboardEvent): void => {
@@ -583,16 +614,25 @@ function mediaControls(
     if ((event.dataTransfer?.files.length ?? 0) > 0) event.preventDefault();
   };
   picker.addEventListener("change", onChange);
-  buttonElement.addEventListener("click", () => picker.click());
+  const open = (imagesOnly: boolean): void => {
+    if (!allowed()) return;
+    pickerTarget = capture();
+    picker.accept = imagesOnly ? "image/png,image/jpeg,image/gif,image/webp" : "image/png,image/jpeg,image/gif,image/webp,application/pdf";
+    picker.click();
+  };
+  const onOpen = (): void => open(false);
+  buttonElement.addEventListener("click", onOpen);
   editor.view.dom.addEventListener("paste", onPaste);
   editor.view.dom.addEventListener("drop", onDrop);
   editor.view.dom.addEventListener("dragover", onDragOver);
   container.append(buttonElement, picker);
   return {
     element: container,
+    openImage: () => open(true),
     destroy: () => {
       destroyed = true;
       picker.removeEventListener("change", onChange);
+      buttonElement.removeEventListener("click", onOpen);
       editor.view.dom.removeEventListener("paste", onPaste);
       editor.view.dom.removeEventListener("drop", onDrop);
       editor.view.dom.removeEventListener("dragover", onDragOver);
@@ -805,78 +845,6 @@ function taskInspector(editor: Editor): TaskInspector {
         }
       }
     },
-  };
-}
-
-/**
- * The `/` menu.
- *
- * Two different questions were being asked of the same text, and conflating them is half of
- * why this was always open. *Should the menu be visible* is answered by a `/` that starts a
- * word at the end of the block with nothing but the command typed after it — so a URL, or a
- * date written `9/3`, no longer opens it. *What did the user type* is answered permissively,
- * because `/due tomorrow` contains a space and is still one command.
- *
- * The other half was CSS: `.slash-menu` declared `display: flex`, and an author rule beats
- * the user agent's `[hidden] { display: none }` regardless of specificity. The JavaScript
- * here has always set `hidden` correctly and it has never had any effect.
- */
-function slashMenu(editor: Editor, toolbar: HTMLElement) {
-  const menu = document.createElement("div");
-  menu.className = "slash-menu";
-  menu.hidden = true;
-  menu.setAttribute("role", "menu");
-  menu.setAttribute("aria-label", "Slash commands");
-  const items = slashCommands.map((command) => {
-    const item = button(command.label, command.description);
-    item.setAttribute("role", "menuitem");
-    item.addEventListener("click", () => { command.run(editor); menu.hidden = true; });
-    menu.append(item);
-    return { command, item };
-  });
-  const template = button("Template", "Insert a template");
-  template.setAttribute("role", "menuitem");
-  template.addEventListener("click", openTemplatePalette);
-  menu.append(template);
-  toolbar.after(menu);
-
-  const blockText = (): string => editor.state.selection.$from.parent.textContent;
-  const query = (): string | null => {
-    const matched = /\/(.*)$/.exec(blockText());
-    return matched === null ? null : matched[1] ?? "";
-  };
-  const prefix = (): string | null => {
-    const matched = /(?:^|\s)\/([^\s]*)$/.exec(blockText());
-    return matched === null ? null : (matched[1] ?? "").toLowerCase();
-  };
-
-  return {
-    query,
-    sync: (): void => {
-      const typed = prefix();
-      if (typed === null) {
-        menu.hidden = true;
-        return;
-      }
-      let matches = 0;
-      for (const { command, item } of items) {
-        const shown = command.label.toLowerCase().startsWith(typed);
-        item.hidden = !shown;
-        if (shown) matches += 1;
-      }
-      template.hidden = !"template".startsWith(typed);
-      if (!template.hidden) matches += 1;
-      // No match is the same as no menu: an empty popover over the note is an obstruction.
-      menu.hidden = matches === 0;
-    },
-    /** Opens the full menu with no `/` typed — the mobile long-press route (§8.3). */
-    show: (): void => {
-      for (const { item } of items) item.hidden = false;
-      template.hidden = false;
-      menu.hidden = false;
-    },
-    hide: () => { menu.hidden = true; },
-    destroy: () => menu.remove(),
   };
 }
 

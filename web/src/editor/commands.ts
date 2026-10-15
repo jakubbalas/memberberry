@@ -8,12 +8,6 @@ import { insertTable } from "./tables.js";
 
 export type BlockKind = "paragraph" | "heading" | "bullet_list" | "ordered_list" | "task_item" | "blockquote" | "callout" | "code_block" | "divider" | "table";
 
-export interface SlashCommand {
-  readonly label: string;
-  readonly description: string;
-  readonly run: (editor: Editor) => boolean;
-}
-
 /** Input rules required by M3. Their node names are pinned by `schema.json`. */
 export const memberberryInputRules = Extension.create({
   name: "memberberryInputRules",
@@ -159,19 +153,6 @@ export function toggleTask(editor: Editor, now?: Date): boolean {
   // disagreed about the `✅` date would be two different documents on disk.
   return editor.chain().focus().updateAttributes("task_item", toggledTaskAttributes(editor.getAttributes("task_item"), now)).run();
 }
-
-/** Commands exposed by the slash menu. */
-export const slashCommands: readonly SlashCommand[] = [
-  { label: "Heading 1", description: "Large section heading", run: (editor) => setHeading(editor, 1) },
-  { label: "Bullet list", description: "Unordered list", run: (editor) => insertBlock(editor, "bullet_list") },
-  { label: "Numbered list", description: "Ordered list", run: (editor) => insertBlock(editor, "ordered_list") },
-  { label: "Task", description: "Checkbox with metadata", run: (editor) => insertBlock(editor, "task_item") },
-  { label: "Quote", description: "Block quote", run: (editor) => insertBlock(editor, "blockquote") },
-  { label: "Callout", description: "Highlighted note block", run: (editor) => insertBlock(editor, "callout") },
-  { label: "Code block", description: "Fenced code", run: (editor) => insertBlock(editor, "code_block") },
-  { label: "Divider", description: "Horizontal divider", run: (editor) => insertBlock(editor, "divider") },
-  { label: "Table", description: "Two-column table", run: (editor) => insertBlock(editor, "table") },
-];
 
 /** Applies `/due tomorrow` and `/priority high` directly to the selected task. */
 export function runTaskSlashCommand(editor: Editor, query: string, now?: Date): boolean | null {

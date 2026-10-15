@@ -21,7 +21,7 @@ test("the block menu moves a block, saves it, and undo puts it and the caret bac
   await page.keyboard.press("Alt+Shift+F10");
   const menu = page.getByRole("menu", { name: "Move paragraph", exact: true });
   await expect(menu).toBeVisible();
-  await expect(menu).toContainText("Single-editor rearrangement only");
+  await expect(menu).not.toContainText("Single-editor rearrangement only");
   await expect(menu).toBeInViewport();
   await page.screenshot({ path: info.outputPath("block-menu.png") });
   await menu.getByRole("menuitem", { name: "Move down", exact: true }).click();

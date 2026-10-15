@@ -117,6 +117,16 @@ body {
 .editor-surface .tiptap > :first-child { margin-top: 0; }
 .editor-surface .tiptap > :last-child { margin-bottom: 0; }
 .editor-surface .tiptap p { margin: var(--editor-block-gap) 0; }
+.editor-surface .tiptap blockquote,
+.standalone-note .tiptap blockquote {
+  margin: var(--editor-block-gap) 0;
+  border-inline-start: 3px solid var(--text-muted);
+  padding-inline-start: var(--space-6);
+}
+.editor-surface .tiptap blockquote > :first-child,
+.standalone-note .tiptap blockquote > :first-child { margin-top: 0; }
+.editor-surface .tiptap blockquote > :last-child,
+.standalone-note .tiptap blockquote > :last-child { margin-bottom: 0; }
 .editor-surface .tiptap img { display: block; max-width: 100%; height: auto; }
 .image-editor-dialog { width: min(46rem, calc(100% - var(--space-8))); max-width: 100%; max-height: calc(100vh - var(--space-8)); overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-6); color: var(--text-primary); background: var(--surface-raised); box-shadow: var(--shadow-lg); }
 .image-editor-dialog::backdrop { background: color-mix(in srgb, var(--text-primary) 30%, transparent); }

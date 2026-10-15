@@ -47,7 +47,6 @@
 .block-handles button:focus-visible,
 .block-move-menu button:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
 .block-move-menu button:disabled { color: var(--text-muted); cursor: default; }
-.block-move-menu p { margin: var(--space-2); color: var(--text-muted); font-size: var(--text-sm); }
 .block-handles button:last-child { cursor: grab; touch-action: none; }
 .block-drop-indicator {
   position: fixed;

@@ -39,7 +39,7 @@ it("offers a collapsed-caret keyboard/touch menu outside content, moves real Yjs
   expect(key.defaultPrevented).toBe(true);
   const menu = document.querySelector<HTMLElement>(".block-move-menu");
   expect(menu?.hidden).toBe(false);
-  expect(menu?.textContent).toContain("Do not rearrange this note while another browser/device is editing it, including offline");
+  expect(menu?.textContent).not.toContain("Single-editor rearrangement only");
   expect(document.activeElement).toBe(f.control("Move up"));
   expect(f.editor.view.dom.querySelector("button")).toBeNull();
   // jsdom does not perform keyboard/touch default activation; real browser proof belongs to integration.

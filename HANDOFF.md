@@ -4,13 +4,14 @@ Where things stand right now. Durable contracts and decisions live in `SPEC.md` 
 redesign: §8.4; inline `mb-` style grammar: §4.4). Rewrite this file — never append.
 History is in `git log`; detailed evidence for past runs is in `~/.hermes/cache/scratch/`.
 
-## Current state (2026-10-14)
+## Current state (2026-10-15)
 
 `main` is `1339b53` (PR #4 merged with a merge commit): editor styling revision 3 plus
 Paul's PR #3, which therefore landed too.
 
-**Work is in flight on `feat/editor-next`** (committed, not pushed, no PR yet — see Next).
-The working tree is clean.
+**Work is in flight on `feat/editor-next`** (committed locally, not pushed,
+no PR yet — see Next). The latest commit includes the block catalogue, quote styling,
+movement-menu text removal and their documentation/tests.
 
 The user's editor redesign (SPEC §8.4): namespace formatting, a Notion-like selection
 popup, block-type conversion and block rearrangement, all in plain `.md`. On `main`:
@@ -28,6 +29,56 @@ unit 2045/2045, overlapping browser specs 54/54 desktop + mobile, style-host acc
 performance. GitHub CI results on PR #4 were not checked from here.
 
 ## Next
+
+Latest feedback: removed the standing single-editor rearrangement warning from the block
+movement menu at the user's request. The existing refusal gates and documented scope
+remain in place. Conversion's separate warning is unchanged.
+Focused verification: 49 handles/movement/gate tests and four rebuilt desktop/mobile
+movement browser cases pass; the two desktop-only geometry cases skip mobile as before.
+Full checks, coverage and manual full E2E remain deferred. Logs:
+`local/debug/memberberry-warning-*.log`.
+
+Quotes now have a themed 3px vertical rule and a 1rem inset, including
+nested quotes and browser HTML exports; normal text and callouts retain their styles.
+The new `quotes.spec.ts` first failed on the missing rule, then passed on desktop/mobile
+across all three themes, nested content and exported HTML. Screenshots were reviewed;
+the original Markdown remains unchanged. Rebuild/focused browser checks and `make
+token-check` pass. Full checks, coverage and full manual E2E remain deferred; the known
+bundle gate failure below is unchanged. Logs: `local/debug/memberberry-quote-*.log`.
+
+The Notion screenshot inventory is saved in `STYLINGIDEA.md`. The user approved every
+item labelled Include, plus Web bookmark and Date (2026-10-14). The catalogue
+implements that slice; its contract is in SPEC §8.4. Next: user feedback on the menu and
+manual full E2E, then decide whether to push the branch. File attachments and the
+other follow-up/excluded screenshot entries remain outside this slice.
+
+The block `⋯` now has Turn into and Insert below alongside movement. Insert in the toolbar,
+slash input and touch long-press open the searchable, grouped catalogue. It includes basic
+blocks, toggles, tables/dividers, code with language, equations, existing image/emoji
+pickers, existing authorized note-link lookup, template insertion, labelled web links and
+plain dates. More also exposes Turn into for touch. Conversion keeps the single-editor
+gate; insertion preserves selected content and the title, and captured forms fail closed
+on document/readiness changes. No schema, storage, server route or dependency changed.
+
+Catalogue focused verification: 161 unit/integration/property tests across catalogue,
+shell, handles, conversion, commands, emoji, document lookup and refresh-required state;
+typecheck clean; seven E5 permission
+leak tests pass. Deliberately replacing the inserted date made its persistence test fail;
+the defect was restored and the focused suite passed. A 2000-root jsdom refresh/filter
+benchmark runs from `web` with `npm exec -- vitest bench --run
+src/editor/block-catalog.bench.ts --maxWorkers=1`; it is not Android performance evidence.
+Rebuilt catalogue browser spec covers desktop/mobile web links/dates, handle insertion and
+conversion, note links, media, emoji, equations, code and slash dismissal. Catalogue (10),
+existing editor (20) and movement (4) browser cases pass; movement's two desktop-only
+geometry cases skip mobile as before. Media/emoji choices now retain their insertion
+destination and refuse a changed document or lost edit readiness. Full checks and coverage
+deferred; full `make e2e` remains manual/pending.
+
+**Known failing check:** the optimized bundle-size gate fails on both this tree and a
+clean pre-catalogue branch HEAD with the same WASM/dependencies. SPEC §21 records the
+measurement and this slice's size delta. The existing exception was not raised; fixing
+the broader critical-path bundle is outside this menu request. No physical-device
+performance claim. Focused logs are in `local/debug/memberberry-catalog-*.log`.
 
 `feat/editor-next` adds on top of `main`:
 - Popup first-frame / Move labels / swatch fixes.

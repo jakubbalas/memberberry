@@ -4,7 +4,11 @@ import type { BlockMoveOptions, BlockMoveToken } from "./block-move.js";
 import { createBlockMover } from "./block-move.js";
 
 /** The host must supply a vault-qualified noteKey and current mode/body readiness. */
-export interface BlockHandlesOptions extends BlockMoveOptions { readonly panel: HTMLElement }
+export interface BlockHandlesOptions extends BlockMoveOptions {
+  readonly panel: HTMLElement;
+  readonly onInsertBelow?: (rootStart: number) => void;
+  readonly onTurnInto?: (rootStart: number) => void;
+}
 /** One controller per editor. Alt-Shift-F10 opens the current complete root's actions. */
 export interface BlockHandles { focus(): boolean; refresh(): void; destroy(): void }
 interface Boundary { index: number; y: number }
@@ -52,10 +56,11 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   const grip = button("Move block", "⠿"); grip.draggable = false;
   const actions = button("Block actions", "⋯"); actions.setAttribute("aria-haspopup", "menu"); actions.setAttribute("aria-expanded", "false");
   const up = button("Move up"); const down = button("Move down");
+  const insert = button("Insert below…"); const convert = button("Turn into…");
+  insert.hidden = options.onInsertBelow === undefined; convert.hidden = options.onTurnInto === undefined;
+  insert.setAttribute("role", "menuitem"); convert.setAttribute("role", "menuitem");
   up.setAttribute("role", "menuitem"); down.setAttribute("role", "menuitem");
-  const limit = document.createElement("p");
-  limit.textContent = "Single-editor rearrangement only. Do not rearrange this note while another browser/device is editing it, including offline.";
-  menu.append(up, down, limit); group.append(actions, grip); document.body.append(group, menu, indicator);
+  menu.append(convert, insert, up, down); group.append(actions, grip); document.body.append(group, menu, indicator);
   panel.classList.add("block-handles-host");
   const viewport = window.visualViewport;
   const close = (): void => { menu.hidden = true; actions.setAttribute("aria-expanded", "false"); };
@@ -169,7 +174,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   };
   const menuKey = (event: KeyboardEvent): void => {
     if (event.key === "Escape") { event.preventDefault(); close(); endDrag(); if (!editor.isDestroyed) editor.view.focus(); refresh(); return; }
-    const enabled = [up, down].filter(control => !control.disabled);
+    const enabled = [convert, insert, up, down].filter(control => !control.disabled && !control.hidden);
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || enabled.length === 0) return;
     event.preventDefault();
     const index = enabled.indexOf(document.activeElement as HTMLButtonElement);
@@ -178,6 +183,8 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   };
   const open = (): void => { if (suppressClick) { suppressClick = false; return; } openMenu(); };
   const moveUp = (): void => { apply("up"); }; const moveDown = (): void => { apply("down"); };
+  const insertBelow = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onInsertBelow?.(current.start); };
+  const turnInto = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onTurnInto?.(current.start); };
   const hover = (event: PointerEvent): void => {
     if (drag || !menu.hidden || event.pointerType === "touch" || !(event.target instanceof window.Node) || !dom.contains(event.target)) return;
     // why: the gutter and the gaps between blocks are the editor root's own padding/margins;
@@ -239,6 +246,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   const unsubscribe = mover.subscribe(change => { if (change === "document") invalidate(); else readinessChanged(); });
   actions.addEventListener("click", open); grip.addEventListener("click", open);
   up.addEventListener("click", moveUp); down.addEventListener("click", moveDown);
+  insert.addEventListener("click", insertBelow); convert.addEventListener("click", turnInto);
   menu.addEventListener("keydown", menuKey); group.addEventListener("keydown", menuKey);
   group.addEventListener("pointerleave", leave);
   group.addEventListener("dragstart", nativeDrag); group.addEventListener("drop", nativeDrag);
@@ -255,6 +263,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     if (destroyed) return; destroyed = true; hide(); unsubscribe(); observe.disconnect();
     actions.removeEventListener("click", open); grip.removeEventListener("click", open);
     up.removeEventListener("click", moveUp); down.removeEventListener("click", moveDown);
+    insert.removeEventListener("click", insertBelow); convert.removeEventListener("click", turnInto);
     menu.removeEventListener("keydown", menuKey); group.removeEventListener("keydown", menuKey);
     group.removeEventListener("pointerleave", leave);
     group.removeEventListener("dragstart", nativeDrag); group.removeEventListener("drop", nativeDrag); grip.removeEventListener("pointerdown", pointerDown);

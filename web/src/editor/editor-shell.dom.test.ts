@@ -21,6 +21,29 @@ import { taskItemView } from "./task-view.js";
 const contractPath = resolve(process.cwd(), "../crates/mb-core/schema.json");
 const contract = JSON.parse(readFileSync(contractPath, "utf8")) as unknown;
 
+it.each(["changed", "readonly"])("does not insert a completed upload into a %s destination", async state => {
+  const panel = document.createElement("section"); const surface = document.createElement("div"); const status = document.createElement("p");
+  panel.append(surface); document.body.append(panel);
+  const ydoc = new Doc();
+  const editor = new Editor({ element: surface, extensions: [...createMemberberryExtensions(contract), tableRowHandles] });
+  let complete: ((result: { path: string }) => void) | undefined;
+  const pending = new Promise<{ path: string }>(resolve => { complete = resolve; });
+  const shell = mountEditorShell({ editor, document: ydoc, panel, status,
+    mediaUploader: { upload: () => pending, flush: async () => undefined, destroy: () => undefined } });
+  try {
+    const input = panel.querySelector<HTMLInputElement>(".media-controls input");
+    if (!input) throw new Error("missing media picker");
+    Object.defineProperty(input, "files", { value: [new File(["image"], "image.png", { type: "image/png" })] });
+    input.dispatchEvent(new Event("change"));
+    if (state === "changed") editor.commands.insertContent("Changed"); else editor.setEditable(false);
+    const before = editor.state.doc;
+    complete?.({ path: "media/ab/cd/image.png" });
+    await pending; await Promise.resolve();
+    expect(editor.state.doc).toBe(before);
+    expect(status.textContent).toContain("insertion target changed");
+  } finally { shell.destroy(); editor.destroy(); ydoc.destroy(); panel.remove(); }
+});
+
 beforeAll(async () => {
   const wasm = resolve(process.cwd(), "src/wasm/mb_bg.wasm");
   await load(readFileSync(wasm));
@@ -575,8 +598,8 @@ describe("the toolbar above the virtual keyboard", () => {
     // left on `visualViewport` is a fast leak rather than a slow one.
     const fake = fakeViewport(window.innerHeight);
     const mounted = await mountWithViewport(fake);
-    // The utility strip and contextual selection popup each own resize/scroll listeners.
-    expect(fake.listenerCount).toBe(4);
+    // The utility strip, selection popup and block catalogue own resize/scroll listeners.
+    expect(fake.listenerCount).toBe(6);
 
     mounted.destroy();
     expect(fake.listenerCount).toBe(0);
@@ -718,10 +741,10 @@ describe("what the control strip shows, and when", () => {
       expect(mounted.offered().length).toBeGreaterThan(1);
 
       mounted.type("ta");
-      expect(mounted.offered()).toEqual(["Task", "Table"]);
+      expect(mounted.offered()).toEqual(["To-do list", "Table"]);
 
       mounted.type("s");
-      expect(mounted.offered()).toEqual(["Task"]);
+      expect(mounted.offered()).toEqual(["To-do list"]);
     } finally {
       mounted.destroy();
     }

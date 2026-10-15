@@ -1935,10 +1935,12 @@ rearrangement can be explicitly unsupported.” Implement vertical movement for 
 single-editor scope; do not redesign the entire collaborative block-ordering representation
 in this iteration or relabel the failing partition probes as successes.
 
-- Handles, the movement menu and documentation state that the note must not be edited in
+- Documentation states that the note must not be edited in
   another tab/browser/device while rearranging, including offline edits elsewhere. Presence
   detects only known peers, not hidden offline replicas; no distributed-lock guarantee is
-  implied. Ordinary formatting/typing sync continues through the existing authorized path.
+  implied. At the user's request (2026-10-14), the standing single-editor rearrangement
+  warning is omitted from the movement menu. The refusal gates below remain enforced.
+  Ordinary formatting/typing sync continues through the existing authorized path.
 - Refuse movement on known peer presence, multiple mounted editors of the same note,
   disconnected/not-yet-synced routed notes or outstanding unsent updates. Refuse read-only,
   source/waiting/composing/destroyed states and stale/cross-editor drag tokens at invocation.
@@ -1954,7 +1956,7 @@ in this iteration or relabel the failing partition probes as successes.
   independent review are required before declaring this slice verified.
 
 **Implemented: movement wired (2026-10-08).** Routed notes mount the block handles
-(hover/focus grip, `⋯` menu with Move up/down and the visible single-editor limit, pointer
+(hover/focus grip, `⋯` menu with Move up/down, pointer
 drag with an insertion indicator; Alt-Shift-F10 opens the menu — plain Alt-F10 stays with
 the formatting popup). On fine pointers `⋯` and the grip sit side by side on one row (`⋯` first, the
 grip nearest the text) as slim 20×24px targets 4px apart — a deliberate exception to §8.2's
@@ -1967,6 +1969,51 @@ atom inside the moved root follows it, and undo/redo return the selection to the
 root (its offset is recorded on the undo stack item, since a move is delete + insert and
 y-prosemirror's relative positions would land in a neighbour). Not yet: an independent
 review and a physical-phone pass of drag.
+
+**Block catalogue (2026-10-14).** The block `⋯` additionally offers **Turn into…** and
+**Insert below…**. Insert below targets the complete root under the handle, including a
+whole list/table/container rather than a nested item. A labelled **Insert** toolbar button
+and the existing touch long-press open the same searchable, grouped catalogue. `/` at the
+end of a word boundary opens it with the typed query; choosing an item removes only that
+captured trigger. URLs, dates with slashes, literal code/math and the protected title do
+not trigger the slash catalogue. Escape dismisses it until fresh input; pointer dismissal,
+keyboard arrows/Enter and a Close menu control are supported. The menu fits the visible
+viewport below the top bar, including on mobile.
+
+The catalogue exposes Text, Heading 1–4, Bulleted list, Numbered list, To-do list, Toggle
+list, Callout, Quote, Table, Divider, Image, Code, Web bookmark, Block equation, Template,
+Link to note, Date, Emoji and Inline equation. It inserts existing schema nodes only:
+toggles use expanded foldable note callouts; code accepts an optional single language name;
+equation forms accept authored LaTeX, with inline input excluding dollar delimiters and
+line breaks. No wire-schema or Markdown-format extension is introduced. Toolbar insertion
+of a block goes below the current root and preserves selected content; inline items insert
+at the selection's end. Insertion from the title goes below it. Table and Divider are
+insertion actions, not conversions of populated content.
+
+**Quote styling (2026-10-14).** Ordinary quote blocks in the editor and browser-generated
+HTML exports have a 3px rule at the inline start, using the theme's muted-text colour,
+and a one-token (`space-6`) inset. Block spacing follows the editor's normal block gap;
+first/last child margins do not add empty space at the ends of the rule. Nested quotes
+retain their own rule and inset. Text retains normal readability and authored formatting;
+quotes do not acquire callout styling. Storage remains ordinary `>` Markdown.
+
+**Web bookmark** inserts an ordinary labelled Markdown link; a blank label uses the entered
+URL. Only complete HTTP/HTTPS URLs without credentials are accepted. No URL is fetched,
+and no rich preview is stored. **Date** inserts ordinary `YYYY-MM-DD` text from a native
+date picker, initially today's local date. This does not add reminders or change task
+due-date metadata. **Link to note** opens the existing `[[` document chooser and its
+permission-filtered catalog (E5); selecting a note inserts an ordinary Markdown link.
+Image and Emoji reuse the existing upload and picker flows. Template insertion remains
+reachable. File attachments, linked-note creation, TOCs, toggle headings and the other
+deferred/excluded screenshot items are not added by this catalogue request.
+
+**Turn into…** reuses the existing complete-text-block conversion engine and its
+single-editor gate, with a visible warning and a fresh invocation check. Mobile users can
+also open it through More. Containers are not implicitly unwrapped; unsupported selections
+receive an explanation. Every insertion/form captures the exact document and destination;
+a changed document, read-only state, source/waiting/composing state or destroyed editor
+refuses a retained action. An open insertion form prevents the refresh-required Reload
+action from discarding its draft. Editing controls stay outside serialized note content.
 
 **Structural-conversion scope decision, 2026-10-04.** Held peer typing survives ordinary
 edits but can disappear during heading/list/quote/callout conversions through the current
@@ -3340,6 +3387,13 @@ gzip for initial JS plus optimized WASM, above both the 358,400-byte budget and 
 741,471-byte recorded exception ceiling. The bundle gate remains failing; its exception
 was not raised. This measurement includes the existing uncommitted M18 work and is not
 an isolated attribution to the redesign. No runtime performance claim follows from it.
+
+**Block catalogue validation, 2026-10-14.** With `make wasm-ci` and a rebuilt frontend,
+initial JS plus WASM measures **896,671 bytes gzip**. A clean checkout of the pre-catalogue
+branch HEAD, built against the same optimized WASM and installed dependencies, measures
+892,830 bytes; this slice adds 3,841 bytes. Both builds already exceed the 358,400-byte
+budget and the unchanged 741,471-byte exception ceiling. The bundle gate remains failing;
+this feature does not rebaseline it or claim physical-device performance compliance.
 
 ### 21.1 Reference devices
 
