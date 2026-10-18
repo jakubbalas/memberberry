@@ -7,7 +7,11 @@
  * from coverage.
  */
 
-import { mount } from "svelte";
+import { mount, tick } from "svelte";
+import { launchDestination } from "./pwa/launch.js";
+import { RESUME_SYNC, WORKSPACE_REFRESH } from "./pwa/events.js";
+import { canReload } from "./pwa/pending.js";
+import { serialRefresh } from "./pwa/refresh.js";
 
 import { localOfflineStore, localReplica } from "./offline/local.js";
 import { noteFetcher, prefetchPinned } from "./offline/prefetch.js";
@@ -19,7 +23,7 @@ import {
 } from "./offline/register.js";
 import NoteWorkspace from "./shell/NoteWorkspace.svelte";
 import Workspace from "./shell/Workspace.svelte";
-import { readHomeBootstrap, remoteSyncFor, resolveNoteBootstrap } from "./shell/bootstrap.js";
+import { offlineHomeBootstrap, readHomeBootstrap, remoteSyncFor, resolveNoteBootstrap } from "./shell/bootstrap.js";
 import { startWorkspace } from "./shell/session.js";
 import ShareTarget from "./clipper/ShareTarget.svelte";
 import { loadShareTarget } from "./clipper/share-target.js";
@@ -37,7 +41,7 @@ const bootstrap = resolveNoteBootstrap(
   location,
   typeof localStorage === "undefined" ? undefined : localStorage,
 );
-const homeBootstrap = readHomeBootstrap(mountPoint);
+const homeBootstrap = readHomeBootstrap(mountPoint) ?? offlineHomeBootstrap(location.pathname, typeof localStorage === "undefined" ? undefined : localStorage);
 const session = bootstrap ?? homeBootstrap;
 if (session !== undefined) {
   const preferences = typeof localStorage === "undefined" ? undefined : localStorage;
@@ -56,6 +60,10 @@ if (session !== undefined) {
  * that decision is coming; it is not this change.)
  */
 async function start(): Promise<void> {
+  if (location.pathname === "/app.html" && new URLSearchParams(location.search).get("launch") === "1") {
+    location.replace(launchDestination(typeof localStorage === "undefined" ? undefined : localStorage));
+    return;
+  }
   if (location.pathname === "/share") {
     const draft = await loadShareTarget(location.search);
     if (draft !== null) {
@@ -71,6 +79,7 @@ async function start(): Promise<void> {
   }
 
   const started = await startWorkspace({ vault: session.vault, note: bootstrap?.note });
+  const refresh = serialRefresh(reconcileOfflineData);
   mount(Workspace, {
     target: mountPoint,
     props: {
@@ -78,8 +87,20 @@ async function start(): Promise<void> {
       session: { vault: session.vault, user: session.user },
       vaultTheme: session.theme,
       home: homeBootstrap !== undefined,
+      onresume: async () => { refresh.refresh(); },
+      onupdate: async (): Promise<boolean> => {
+        if (!navigator.onLine || !await canReload(await localOfflineStore())) return false;
+        started.transport.save(started.store.current);
+        await started.transport.flush({ final: true });
+        if (started.transport.saved === false || !await canReload(await localOfflineStore())) return false;
+        location.reload();
+        return true;
+      },
     },
   });
+  // why: mount schedules effects. A completed load must not dispatch the first refresh
+  // before the workspace has installed its lifecycle listener.
+  await tick();
 
   // why: registered only from a page a server bootstrapped, and only after it has loaded.
   // The `npm run dev` inner loop serves `index.html` from Vite with no bootstrap and no
@@ -96,13 +117,8 @@ async function start(): Promise<void> {
     // §7.2's pinned tier: the notes this device promised to keep are fetched now, in the
     // background, one at a time. After the load event for the same reason the precache is —
     // nothing on screen is waiting for it.
-    void reconcileOfflineData();
+    window.dispatchEvent(new Event(WORKSPACE_REFRESH));
   });
-
-  const reconnect = (): void => {
-    void reconcileOfflineData();
-  };
-  window.addEventListener("online", reconnect);
 
   /**
    * Downloads whatever is pinned and not already here (§7.2).
@@ -112,26 +128,29 @@ async function start(): Promise<void> {
    * something to interrupt a reader with.
    */
   async function keepPinnedNotes(): Promise<void> {
-    if (bootstrap === undefined) return;
+    if (session === undefined) return;
     const replica = await localReplica();
     if (replica === undefined) return;
-    const { endpoint } = remoteSyncFor(bootstrap, location);
+    const { endpoint } = remoteSyncFor({ ...session, note: "" }, location);
     await prefetchPinned({
-      vault: bootstrap.vault,
+      vault: session.vault,
       replica,
-      openNote: noteFetcher({ vault: bootstrap.vault, user: bootstrap.user, endpoint }),
+      openNote: noteFetcher({ vault: session.vault, user: session.user, endpoint }),
+      refreshResident: true,
     });
   }
 
   /** Reconciles permissions before any background work can retain stale offline bytes. */
   async function reconcileOfflineData(): Promise<void> {
-    if (bootstrap === undefined) return;
+    if (session === undefined) return;
     const store = await localOfflineStore();
     if (store !== undefined) {
       // The compact index owns a separate, stricter replica: zone bytes leave IndexedDB
       // before pinned-body work begins, exactly as §7.4 orders reconnection.
-      await syncClientIndex({ vault: bootstrap.vault, store }).catch(() => undefined);
+      const answer = await syncClientIndex({ vault: session.vault, store }).catch(() => "unreachable");
+      if (answer !== "synced") return;
     }
+    window.dispatchEvent(new CustomEvent(RESUME_SYNC, { detail: { vault: session.vault } }));
     await keepPinnedNotes();
   }
 
@@ -139,10 +158,18 @@ async function start(): Promise<void> {
   // a backgrounded tab is often discarded without it ever firing — and mobile is the primary
   // target (§21.1). The layout is debounced, so without this the last few hundred
   // milliseconds of pane arrangement would be lost on every navigation.
-  window.addEventListener("pagehide", () => {
-    window.removeEventListener("online", reconnect);
+  const hide = (event: PageTransitionEvent): void => {
+    if (event.persisted) {
+      // A BFCache document will return with the same editors and listeners.
+      started.transport.save(started.store.current);
+      void started.transport.flush({ final: true });
+      return;
+    }
+    window.removeEventListener("pagehide", hide);
+    refresh.destroy();
     void started.destroy();
-  }, { once: true });
+  };
+  window.addEventListener("pagehide", hide);
 }
 
 void start();

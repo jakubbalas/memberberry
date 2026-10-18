@@ -1,153 +1,94 @@
 # Handoff
 
-Where things stand right now. Durable contracts and decisions live in `SPEC.md` (editor
-redesign: §8.4; inline `mb-` style grammar: §4.4). Rewrite this file — never append.
-History is in `git log`; detailed evidence for past runs is in `~/.hermes/cache/scratch/`.
+## Current PWA candidate (2026-10-18)
 
-## Current state (2026-10-15)
+This is the isolated t-014 checkout, not the deployed app or the parallel editor/vault
+branches. Canonical workflow records live one directory above: PROJECT.md,
+project-status.md, tasks/open/t-014-installable-pwa.md and features/installable-pwa.md.
+The shared status retains the other chat's t-013 focus.
 
-`main` is `1339b53` (PR #4 merged with a merge commit): editor styling revision 3 plus
-Paul's PR #3, which therefore landed too.
+- Worktree: `/var/home/paul/clawd/projects/memberberry/pwa-20261018`.
+- Branch: `feat/installable-pwa-20261018`; base `123d8e4ddf01f4c1d63ccc7afa4ef1321b449e58`.
+- Feature source/tests and this handoff are uncommitted. No staging, commit, merge, push,
+  PR, live-data mutation or deployment. Other worktrees and their indexes are preserved.
+- Scope and approved behavior: SPEC §7.4; permission ordering §6.4/E2/E3, search §14.2.
 
-**Work is in flight on `feat/editor-next`** (committed locally, not pushed,
-no PR yet — see Next). The latest commit includes the block catalogue, quote styling,
-movement-menu text removal and their documentation/tests.
+Implemented Chrome installation assets/prompt, last-vault/workspace launch (including
+local offline layout), permission-first refresh on return, resident pinned-text refresh,
+current offline search and explicit guarded “Reload to update.” Two freshness defects
+found in browser testing are repaired: first wire snapshots import external Markdown
+before returning a stale sidecar; search revisions include contentHash rather than only
+ACL identity. Integrate the matching server and frontend together.
 
-The user's editor redesign (SPEC §8.4): namespace formatting, a Notion-like selection
-popup, block-type conversion and block rearrangement, all in plain `.md`. On `main`:
-- **Styling revision 3** (SPEC §4.4): `mb-style` underline / colour / background / size
-  with server + browser schema admission and refresh-required on revision mismatch.
-- **Selection popup:** native marks, link, an "A" button opening a labelled colour /
-  background / size panel, and **Turn into** Text ↔ Heading 1–4 behind the single-editor
-  gate (`single-editor.ts`, shared with block movement).
-- **From PR #3:** list Enter/Tab/Shift-Tab, backtick inline code, undo history owned by
-  the session's Y.Doc, `[[` inserting Markdown links, perf readiness wait.
+Return refresh retains the current editor/Y.Doc and workspace. Background pin readers
+announce no presence. No offline media, whole-vault body downloads, closed-app periodic
+refresh, push service or third-party call is introduced. Opened unpinned bodies refresh
+when opened again; there is no sweep of every cached body. No schema/WASM codec revision.
 
-`main` verification: `make check` green (`local/debug/make-check-20261008-214030.log`), web
-unit 2045/2045, overlapping browser specs 54/54 desktop + mobile, style-host acceptance
-(`web/scripts/test-md-style-hosts.mjs`) pass. **Not run:** full `make e2e`, physical-device
-performance. GitHub CI results on PR #4 were not checked from here.
+## Verification and review
 
-## Next
+Focused results and exact logs: ignored `local/pwa-evidence/README.md` in this checkout.
+Frontend focused suite, desktop/mobile install/return/update specs, existing offline and
+branding regressions, typecheck/tokens, targeted Rust sync/WebSocket/HTTP/leak checks and
+semantic red/green or compiling mutation proofs are recorded there. Browser specs run
+individually after rebuilds, one worker, zero retries. Existing offline spec has two
+intentional mobile exclusions; no new skipped PWA cases.
 
-Latest feedback: removed the standing single-editor rearrangement warning from the block
-movement menu at the user's request. The existing refusal gates and documented scope
-remain in place. Conversion's separate warning is unchanged.
-Focused verification: 49 handles/movement/gate tests and four rebuilt desktop/mobile
-movement browser cases pass; the two desktop-only geometry cases skip mobile as before.
-Full checks, coverage and manual full E2E remain deferred. Logs:
-`local/debug/memberberry-warning-*.log`.
+Author specification/security review precedes author quality review; reports are in the
+same evidence directory. No independent approval or Paul acceptance is claimed.
+Next: review the candidate, combine with the separately owned vault/editor branches,
+then validate on the intended origin and devices before release. Do not transplant a new
+frontend alone and claim the server freshness fixes are present.
 
-Quotes now have a themed 3px vertical rule and a 1rem inset, including
-nested quotes and browser HTML exports; normal text and callouts retain their styles.
-The new `quotes.spec.ts` first failed on the missing rule, then passed on desktop/mobile
-across all three themes, nested content and exported HTML. Screenshots were reviewed;
-the original Markdown remains unchanged. Rebuild/focused browser checks and `make
-token-check` pass. Full checks, coverage and full manual E2E remain deferred; the known
-bundle gate failure below is unchanged. Logs: `local/debug/memberberry-quote-*.log`.
+Not run/confirmed: full `make check`, coverage, full user-run manual `make e2e`, actual
+Android install/native activation, macOS Chrome, external Cloudflare Access expiry, or
+physical-device performance. Full gates are deferred under AGENTS §5, not waived.
+Optimized bundle budget remains an inherited failure, not rerun or relaxed here. No
+speedup or Android performance claim; production build's existing large-chunk warning
+remains. Existing browser-profile storage/eviction and offline-revocation limits remain.
 
-The Notion screenshot inventory is saved in `STYLINGIDEA.md`. The user approved every
-item labelled Include, plus Web bookmark and Date (2026-10-14). The catalogue
-implements that slice; its contract is in SPEC §8.4. Next: user feedback on the menu and
-manual full E2E, then decide whether to push the branch. File attachments and the
-other follow-up/excluded screenshot entries remain outside this slice.
+Update behavior: a chosen online reload obtains the current app; its waiting worker does
+not force takeover while older controlled windows remain. The offline build adopts the
+worker after those windows close. Never delete replicas or clear storage to update.
 
-The block `⋯` now has Turn into and Insert below alongside movement. Insert in the toolbar,
-slash input and touch long-press open the searchable, grouped catalogue. It includes basic
-blocks, toggles, tables/dividers, code with language, equations, existing image/emoji
-pickers, existing authorized note-link lookup, template insertion, labelled web links and
-plain dates. More also exposes Turn into for touch. Conversion keeps the single-editor
-gate; insertion preserves selected content and the title, and captured forms fail closed
-on document/readiness changes. No schema, storage, server route or dependency changed.
+## Reproducing focused checks
 
-Catalogue focused verification: 161 unit/integration/property tests across catalogue,
-shell, handles, conversion, commands, emoji, document lookup and refresh-required state;
-typecheck clean; seven E5 permission
-leak tests pass. Deliberately replacing the inserted date made its persistence test fail;
-the defect was restored and the focused suite passed. A 2000-root jsdom refresh/filter
-benchmark runs from `web` with `npm exec -- vitest bench --run
-src/editor/block-catalog.bench.ts --maxWorkers=1`; it is not Android performance evidence.
-Rebuilt catalogue browser spec covers desktop/mobile web links/dates, handle insertion and
-conversion, note links, media, emoji, equations, code and slash dismissal. Catalogue (10),
-existing editor (20) and movement (4) browser cases pass; movement's two desktop-only
-geometry cases skip mobile as before. Media/emoji choices now retain their insertion
-destination and refuse a changed document or lost edit readiness. Full checks and coverage
-deferred; full `make e2e` remains manual/pending.
+Dependencies are private copies under this checkout, not symlinks to a concurrently
+edited node_modules. The matching debug CLI is target/debug/memberberry. Existing cached
+WASM is schema 3; do not downgrade schema admission or regenerate codec types by hand.
 
-**Known failing check:** the optimized bundle-size gate fails on both this tree and a
-clean pre-catalogue branch HEAD with the same WASM/dependencies. SPEC §21 records the
-measurement and this slice's size delta. The existing exception was not raised; fixing
-the broader critical-path bundle is outside this menu request. No physical-device
-performance claim. Focused logs are in `local/debug/memberberry-catalog-*.log`.
+- `npm --prefix web run typecheck`
+- `python3 scripts/token-check.py` (host lacks make; this is make token-check's command).
+- `npm --prefix web test -- src/pwa src/offline src/shell/WorkspaceRefresh.dom.test.ts src/shell/TopBar.dom.test.ts src/shell/bootstrap.test.ts src/shell/workspace-sync.test.ts src/shell/workspace-offline.test.ts src/shell/session.test.ts src/shell/note-catalog.test.ts src/editor/sync.test.ts src/editor/collaboration.test.ts --maxWorkers=1`
+- Before EACH browser spec: `npm --prefix web run build`, then
+  `MEMBERBERRY_E2E_PORT=9016 npm --prefix web run e2e -- --config playwright.pwa.config.ts <name>.spec.ts --workers=1`.
+  Names: pwa-install, pwa-refresh, pwa-update, offline, branding. Run separately, no retries.
+- Rust helper: `python3 local/pwa-evidence/run-rust.py test --offline -p mb-server --test sync`.
+  It uses the existing local Docker image, private target/tmp/cache, copied stable toolchain,
+  read-only registry volume, network none, one CPU/4GiB. Do not overlap builders/fixtures.
 
-`feat/editor-next` adds on top of `main`:
-- Popup first-frame / Move labels / swatch fixes.
-- Turn into → lists, to-dos, quote, callout, code, equation.
-- Block-move fixes (nested atom selection, undo/redo caret); block handles wired with gated
-  More moves, slim ⋯ then grip on one row, 12px clear of the text, in a
-  compact desktop gutter (hover there resolves by pointer row, so the handles no longer
-  vanish crossing to them), none on touch; `e2e/block-move.spec.ts`.
-- Clipper HTML `<` text-loss fix plus import tests.
-- Toggles as foldable callouts; Mod-Enter folds from anywhere inside one.
-- Shift+Enter adds a line in the same block (Markdown hard break) in any
-  paragraph, including list items, quotes, callout and toggle bodies; headings and summaries
-  stay single-line (SPEC §8.4).
+Default Playwright context is incognito and cannot establish installability; the install
+spec uses a disposable persistent full-Chromium profile and requires zero diagnostic
+errors. The bundled headless shell crashed once before page creation; use the dedicated
+full-Chromium config, never suppress an installability error. Headless tab switching did
+not reliably emit OS focus; refresh specs explicitly dispatch focus while exercising real
+HTTP/WebSocket/IndexedDB. Native application activation therefore remains a device check.
+Rust 1.90 fails an existing yrs dependency; installed stable toolchain is required.
 
-Verified on the branch: editor/shell unit 1858, web typecheck, mb-core / clipper Rust tests,
-clippy, wasm-check; browser specs single-worker on both layouts — selection-menu, block-move,
-editor, toggles, tables, and line-break (×3 each layout, plus a probe that it fails with the
-feature unplugged). **Not run on this branch:** `make check`, full `make e2e`, coverage.
+## Inherited development gotchas
 
-Open items:
-- **Line break:** no touch route (soft keyboards rarely send Shift+Enter). Headings are
-  tested (unit + browser) to ignore Shift+Enter; toggle summaries take the same fall-through
-  path but have no test of their own.
-- **Toggles:** folding is per-view and not remembered across reloads; no UI to change a
-  toggle's `+`/`-` default (edit source); arrow glyph size may want tuning.
-- **Unwrap** containers (list/quote/callout → Text) in Turn into: not implemented.
-- **Long-press handles on touch** (§8.2): not implemented; touch uses More → Move.
-- **Coverage:** `mb-core` was 95.13% vs a 95% floor before the clipper tests; re-measure.
-- **Load-sensitive e2e:** under heavy machine load, parallel workers time out mounting the
-  editor and `editor.spec.ts` "bootstrap identifies the note" once hit 30 s (0.5 s normally).
-  Use `--workers=1` when the machine is busy; not a product defect so far.
-
-## Gotchas
-
-- **Install ProseMirror plugins at editor construction.** Late registration rebuilds plugin
-  views; y-prosemirror's stock undo plugin then destroyed its UndoManager. Undo now survives
-  that (`durableUndoPlugin`, history owned by the Y.Doc), but table handles and other
-  plugins still assume construction-time install.
-- The installed y-prosemirror binding **mutates/deletes** unknown nodes/marks when loading
-  an old-schema doc. That is why admission preflights state before binding (SPEC §8.4).
-- Playwright can press a key before `selectionchange` reaches ProseMirror, so a shortcut
-  right after a click or arrow key runs at the old caret (flaky ~1 in 3). Poll the model
-  caret first — Tiptap exposes the editor as `root.editor` (see `e2e/line-break.spec.ts`).
-- `tables.spec.ts` fails under `--repeat-each` (2 tests, from the second repeat, on `HEAD`
-  too): it is not repeat-safe. A single run passes; don't read repeat failures as regressions.
-- Native typing in Playwright: Tiptap focuses on a deferred RAF; wait on a synchronous
-  native+model caret/focus predicate, not on `focus` alone.
-- After keyboard selection, `editor.state.selection` can trail the native range until
-  `selectionchange` fires — and never catches up if focus leaves first. Code reacting to
-  focus leaving the editor must read the native range (see `selection-menu.ts`).
-- Ports 9010/9011 are the user's running dev services — never stop or reuse them as
-  test fixtures. E2E uses 9012.
+- ProseMirror plugins belong at editor construction. Unknown-schema Y docs must be
+  preflighted before binding: y-prosemirror can delete unknown marks/nodes.
+- Playwright native/model caret and selectionchange can disagree temporarily; poll the
+  actual selection before shortcuts. Tiptap focuses on a deferred RAF.
+- tables.spec.ts is historically not repeat-safe; repeated-run failures are not cleared.
+- 9010/9011 are user dev services; do not stop/reuse them. This fixture owns 9016 only;
+  other tasks own 9014/9015, as recorded in AGENTS.md.
 - `~/.hermes/cache/scratch/memberberry-r3-mixed-diagnostic-o5qcg3iy/delivery` has a
-  file-mode mismatch (REPORT.md 0644 vs declared 0444); a fix was denied at runtime.
-  Don't call it verified; don't reseal without user consent.
-
-## Local development
-
-- `make dev`: app on 9011, server on 9010. Disposable E2E server on 9012.
-- `make check` also writes `local/debug/make-check-<time>.log` (`make-check-latest.log` links
-  the newest); read that instead of re-running the gate.
-- Rebuild before each focused browser run:
-  `npm --prefix web run build && npm --prefix web run e2e -- <name>.spec.ts`.
-  Run specs serially (shared fixture).
-- Use stable Rust (1.90 is too old for current `yrs`; don't downgrade the dependency).
-- `make wasm` = no-opt dev WASM; bundle-budget measurements need `make wasm-ci`.
-- Never delete vault state or browser replicas to pick up UI changes; close all app tabs /
-  installed-app windows and reopen so the new service worker activates.
-- `local/` is gitignored (feedback in `local/debug/`); never stage it.
+  historical REPORT.md mode mismatch, unverified. Do not reseal without user consent.
+- Earlier editor follow-ups remain outside this PWA slice: no touch Shift+Enter route,
+  per-view toggle folding, no container-to-Text unwrap, no touch long-press handles;
+  coverage and load-sensitive editor browser limits remain unwaived.
 
 ## Open safety / verification items (pre-existing)
 
@@ -174,8 +115,9 @@ Open items:
 - Unlinked mentions: silent 50-block cap; no conversion/highlight/live refresh.
 - Offline bodies/pins: caps not configurable; eviction per visible vault; pins device-local;
   no folder pins.
-- Shell/PWA: reconnect delay up to 30s without `online` event; shared precache across users
-  of one browser profile; no skipWaiting; limited tablet/gesture coverage.
+- Shell/PWA: foreground reconnect backoff remains up to 30s without a return/online
+  signal; shared static precache across users of one browser profile; no skipWaiting;
+  limited tablet/gesture coverage. t-014 adds immediate socket reopening on authorized return.
 - Graphs: not persistent tabs; no live update; global nodes not draggable; local labels
   overlap; duplicate titles indistinguishable.
 - Rename/folder move: open clients/bookmarks not updated; partial writes not rolled back;

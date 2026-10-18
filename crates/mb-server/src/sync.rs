@@ -349,6 +349,7 @@ impl SyncRegistry {
                 schema_version: Some(current_schema_version()?),
             },
             false,
+            None,
         )
     }
 
@@ -358,8 +359,9 @@ impl SyncRegistry {
         vault: &Vault,
         canonical: &CanonicalNote,
         subscription: SchemaSubscription<'_>,
+        authorize: ReadCheck<'_>,
     ) -> Result<(), SyncError> {
-        self.subscribe_admitted(vault, canonical, subscription, true)
+        self.subscribe_admitted(vault, canonical, subscription, true, Some(authorize))
             .map(|_| ())
     }
 
@@ -371,6 +373,7 @@ impl SyncRegistry {
         canonical: &CanonicalNote,
         subscription: SchemaSubscription<'_>,
         acknowledge: bool,
+        authorize: Option<ReadCheck<'_>>,
     ) -> Result<ServerFrame, SyncError> {
         let SchemaSubscription {
             note,
@@ -394,6 +397,23 @@ impl SyncRegistry {
                 peers: Vec::new(),
             }),
         };
+        if let Some(authorize) = authorize
+            && let ExternalUpdate::Applied(update) = room.coordinator.inspect_external_change()?
+        {
+            // why: a background reader closes after the first body. Import external edits
+            // before that snapshot, and recheck every existing recipient before broadcasting.
+            let slug = vault.slug().to_string();
+            broadcast(
+                &mut room.peers,
+                (&slug, canonical.identity()),
+                authorize,
+                |note| ServerFrame::Update {
+                    vault: slug.clone(),
+                    note: note.to_string(),
+                    update: update.clone(),
+                },
+            );
+        }
         // Re-subscribing replaces rather than duplicates: a reconnecting client that sends
         // `subscribe` twice would otherwise receive every frame once per attempt.
         room.peers

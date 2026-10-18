@@ -6,6 +6,7 @@ import Workspace from "./Workspace.svelte";
 import { NoteCatalog } from "./note-catalog.svelte.js";
 import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
+import type { CatalogAnswer } from "../offline/replica.js";
 
 const apps: ReturnType<typeof mount>[] = [];
 afterEach(async () => {
@@ -22,10 +23,10 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
-async function render(session = true, firstFolders?: Promise<Response>) {
+async function render(session = true, firstFolders?: Promise<Response>, onresume?: () => Promise<void>) {
   let notes = [{ path: "Existing.md", title: "Existing", conflicts: 0 }];
   let folders = ["Existing folder"];
-  const load = vi.fn(async () => ({ kind: "ok" as const, notes }));
+  const load = vi.fn<() => Promise<CatalogAnswer>>(async () => ({ kind: "ok", notes }));
   const folderLoad = vi.fn(async () => new Response(JSON.stringify({ folders })));
   if (firstFolders !== undefined) folderLoad.mockReturnValueOnce(firstFolders);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/folders") ? folderLoad() : new Response("[]")));
@@ -35,6 +36,7 @@ async function render(session = true, firstFolders?: Promise<Response>) {
   const target = document.createElement("div"); document.body.append(target);
   const app = mount(Workspace, { target, props: {
     store, catalog, home: true, mode: "desktop",
+    ...(onresume === undefined ? {} : { onresume }),
     ...(session ? { session: { vault: "personal", user: "alice" } } : {}),
     chrome: { getItem: () => null, setItem: () => undefined },
     open: async () => ({ destroy: async () => undefined }),
@@ -150,4 +152,32 @@ it("removes previously displayed empty folders when the server denies their refr
   view.folderLoad.mockResolvedValueOnce(new Response(null, { status: 404 }));
   window.dispatchEvent(new Event("online")); await flush();
   expect(view.target.querySelector('[role="treeitem"][title="Existing folder"]')).toBeNull();
+});
+
+it.each(["denied", "unreachable"] as const)("does not begin background replica reads after an %s catalog answer", async kind => {
+  const resume = vi.fn(async () => undefined);
+  const view = await render(true, undefined, resume);
+  view.load.mockResolvedValueOnce({ kind });
+  window.dispatchEvent(new Event("focus"));
+  await flush();
+  expect(resume).not.toHaveBeenCalled();
+});
+
+it("starts replica refresh only after a fresh catalog has completed", async () => {
+  const resume = vi.fn(async () => undefined);
+  const view = await render(true, undefined, resume);
+  const answer = deferred<CatalogAnswer>();
+  view.load.mockReturnValueOnce(answer.promise);
+  window.dispatchEvent(new Event("focus")); await flush();
+  expect(resume).not.toHaveBeenCalled();
+  answer.resolve({ kind: "ok", notes: [] }); await flush();
+  expect(resume).toHaveBeenCalledTimes(1);
+});
+
+it("reconciles after a persisted page returns from the browser history cache", async () => {
+  const view = await render();
+  view.change();
+  window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  await flush();
+  expect(view.load).toHaveBeenCalledTimes(2);
 });

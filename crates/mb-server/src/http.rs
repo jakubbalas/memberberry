@@ -27,6 +27,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 use mb_core::Username;
 use mb_core::html::Urls;
@@ -815,6 +816,7 @@ fn handle_sync_frame(
                         outbound,
                         schema_version: schema_version.as_u64(),
                     },
+                    &|slug, note, reader| state.may_read_note(slug, note, reader),
                 )
                 .err()
                 .map(|_| ServerFrame::Error {
@@ -3505,6 +3507,7 @@ struct SearchEntry {
 struct SearchSegmentManifestEntry {
     zone_id: String,
     acl_hash: String,
+    content_hash: String,
 }
 
 /// The complete permission-filtered offline-search manifest.
@@ -3546,6 +3549,7 @@ async fn search_segments(
             .map(|segment| SearchSegmentManifestEntry {
                 zone_id: segment.zone_id,
                 acl_hash: segment.acl_hash,
+                content_hash: format!("{:x}", sha2::Sha256::digest(&segment.bytes)),
             })
             .collect(),
     })
@@ -5191,6 +5195,8 @@ fn content_type(path: &str) -> &'static str {
         "text/css; charset=utf-8"
     } else if path.ends_with(".wasm") {
         "application/wasm"
+    } else if path.ends_with(".png") {
+        "image/png"
     } else {
         "application/octet-stream"
     }
@@ -5743,6 +5749,9 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
     let mut out = String::with_capacity(body.len() + TOKENS.len() + STYLE.len() + 512);
     out.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\" />\n");
     out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n");
+    if !policy.is_public() {
+        out.push_str("<link rel=\"manifest\" href=\"/manifest.webmanifest\" />\n");
+    }
     if policy.is_public() {
         out.push_str("<meta name=\"robots\" content=\"noindex, nofollow, noarchive\" />\n");
     }
@@ -5751,7 +5760,7 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
     // lands, this stops it becoming script execution.
     out.push_str(
         "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
-         img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action ",
+         img-src 'self' data:; manifest-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action ",
     );
     out.push_str(policy.form_action());
     out.push_str("\" />\n");

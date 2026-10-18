@@ -35,6 +35,8 @@ export interface PrefetchOptions {
    * "this note is gone" from "there is no server".
    */
   readonly giveUpAfter?: number;
+  /** On return, also reconcile pinned bodies already resident on this device. */
+  readonly refreshResident?: boolean;
 }
 
 export interface PrefetchResult {
@@ -51,28 +53,27 @@ export async function prefetchPinned(options: PrefetchOptions): Promise<Prefetch
   let failures = 0;
 
   for (const note of await options.replica.pinned(options.vault)) {
-    if (await options.replica.isResident(options.vault, note)) continue;
+    if (!options.refreshResident && await options.replica.isResident(options.vault, note)) continue;
     if (failures >= giveUpAfter) {
       missing.push(note);
       continue;
     }
-    const handle = options.openNote(note);
-    let arrived = false;
+    const session = options.replica.session(options.vault, note);
     try {
-      arrived = await handle.synced;
-    } catch {
-      arrived = false;
-    } finally {
-      await handle.destroy();
-    }
-    if (arrived) {
-      await options.replica.opened(options.vault, note);
-      fetched.push(note);
-      failures = 0;
-    } else {
-      missing.push(note);
-      failures += 1;
-    }
+      const handle = options.openNote(note);
+      let arrived = false;
+      try { arrived = await handle.synced; }
+      catch { arrived = false; }
+      finally { await handle.destroy(); }
+      if (arrived && !session.revoked) {
+        await session.opened();
+        fetched.push(note);
+        failures = 0;
+      } else {
+        missing.push(note);
+        failures += 1;
+      }
+    } finally { session.close(); }
   }
   return { fetched, missing };
 }
@@ -108,6 +109,7 @@ export function noteFetcher(options: NoteFetcherOptions): (note: string) => Pref
       vaultId: options.vault,
       noteId: note,
       remoteSync: {
+        presence: false,
         endpoint: options.endpoint,
         vault: options.vault,
         note,

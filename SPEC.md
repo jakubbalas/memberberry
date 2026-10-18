@@ -807,7 +807,7 @@ ships.
 | # | Surface | Rule |
 |---|---|---|
 | E1 | HTTP routes | Every route resolves `(user, vault, path) → role` before doing anything. |
-| E2 | **WebSocket doc subscription** | A client may subscribe only to docs it can read. A document's room is keyed by the note's *canonical identity*, never by the name the client sent: one file is one room and therefore one writer. |
+| E2 | **WebSocket doc subscription** | A client may subscribe only to docs it can read. A document's room is keyed by the note's *canonical identity*, never by the name the client sent: one file is one room and therefore one writer. A schema-admitted wire subscription imports an external Markdown change before its first full-state snapshot; any resulting update to existing peers passes E3's current recipient check. |
 | E3 | **WebSocket update frames** | Every incoming update is authorized *per frame*, not once per connection — and so is every **outgoing** one. A room admits a peer once; each broadcast re-asks whether that recipient may still read the document, and drops it from the room if not. A viewer's frames are **rejected with an error**, never silently dropped — the client must know it is read-only. A caller who cannot read the note at all gets the neutral denial below instead, because `read_only` would confirm the note exists. |
 | E4 | Awareness / presence | Broadcast only to users who can read that document, re-checked per frame exactly as E3 is. |
 | E5 | Index queries | Every SQLite/Tantivy query carries a readable-set or path-prefix predicate. There is no unfiltered query helper in the codebase. **M8:** `mb-index` exposes no connection; queries live on a `Reader` that cannot exist without a user and an ACL, and read every content table through a view that joins a per-reader readable set. Two tests hold it: one fails if a read path names a base table, one fails if a view stops joining the set — because the filters are individually sufficient for today's queries, so no behavioural test can see the second one go. |
@@ -1279,10 +1279,33 @@ decisions:
 
 ### 7.4 PWA
 
+**Installed application follow-up (2026-10-18, t-014; approved scope, local review candidate).**
+Android/Chrome and Linux/Chrome are the primary targets. The existing berry mark has
+192px/512px PNG installation icons and the manifest is discoverable from private app
+landing pages. An in-app install action invokes the browser's own prompt when available.
+The stable app identity remains `/`; the installed start URL `/app.html?launch=1`
+resumes the last workspace route on this device, falling back to the vault list on first
+use. Remembered paths grant no access; the server still authenticates every online read.
+Offline launches can restore note and vault workspace shells and validated per-user,
+per-vault, per-device local layouts. Authoritative layout refusal never replays that cache.
+
+Returning to the visible app reconciles the current vault's permissions/catalog, search
+segments and pinned note text, coalescing focus/visibility/network events. Current editors
+retain their selection and workspace; this data refresh does not reload the application.
+Opened/pinned note text and offline search are the offline scope of this delivery.
+Offline images/attachments and periodic refresh while the app is closed are deferred.
+
+Application updates download in the background and show “Update available”; only the
+user's action reloads the page. The new server build is loaded through network-first
+navigation. The worker keeps its existing waiting lifecycle, preserving other open
+windows and lazy chunks; its offline build changes once old controlled windows close.
+The reload action flushes the workspace and refuses while note writes are pending or
+cannot be checked. No forced worker takeover or replica deletion is used for updating.
+
 Service worker precaches the app shell and WASM bundle. IndexedDB holds Y docs, the
-pending-update queue, and the client search index. Media for pinned notes is cached via
-the Cache API. Offline uploads and clips queue and flush on reconnect. The app must be
-fully functional after a cold start with no network.
+pending-update queue, and the client search index. Pinned-media caching is deferred as
+stated above. Offline uploads and clips queue and flush on reconnect. Downloaded note text
+and offline search must remain functional after a cold start with no network.
 
 On reconnect the client reconciles permissions first: the server sends the current zone
 list, and the client **drops any segment or body it is no longer permitted** before doing
@@ -2972,12 +2995,15 @@ segments whose zone ID and ACL hash match that reader's permitted epoch. The pre
 snapshot is cleared before a rebuild, so an interrupted rebuild withholds bytes rather than
 serving a note that may have moved into a denied zone. Invalid imported frontmatter IDs use the
 path identity, preserving §4.3's no-mutation rule. **Transport and browser ownership are also
-implemented in M9.** `GET /search/segments` returns only the reader's `(zone_id, acl_hash)`
-manifest, and `GET /search/segments/{zone}?acl_hash=…` repeats that live check before returning
+implemented in M9.** `GET /search/segments` returns the reader's `(zone_id, acl_hash)`
+manifest plus each segment's SHA-256 `contentHash` (t-014). `GET /search/segments/{zone}?acl_hash=…` repeats that live check before returning
 binary-v1 bytes. IndexedDB stores the permitted manifest separately from segment bytes and
-transactionally drops absent or changed epochs before fetching any missing bytes; a binary
+transactionally drops absent or changed permission/content revisions before fetching missing bytes; a binary
 refusal after a manifest is a race and clears every segment fail-closed. Each received binary
-is validated by `mb-search` through WASM before persistence. Full published snapshots replace
+is checked against its content digest and validated by `mb-search` through WASM before persistence.
+Unchanged content is reused after current-manifest reconciliation; legacy manifests without
+a content revision are refreshed rather than treated as permanently current. Late bytes
+cannot replace a newer content revision under an unchanged ACL. Full published snapshots replace
 their current epoch; the same WASM boundary exposes ordered same-epoch merge for incremental
 deltas when the transport starts emitting them.
 

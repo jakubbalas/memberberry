@@ -50,7 +50,10 @@ test("editor and installed app share the bookmark berry offline", async ({ page,
   const manifest = await page.request.get("/manifest.webmanifest");
   expect(await manifest.json()).toMatchObject({
     theme_color: "#6651a3",
-    icons: [{ src: source, purpose: "any" }, { src: source, purpose: "maskable" }],
+    icons: expect.arrayContaining([
+      expect.objectContaining({ src: source, purpose: "any" }),
+      expect.objectContaining({ src: source, purpose: "maskable" }),
+    ]),
   });
   await page.evaluate(async () => {
     await navigator.serviceWorker.ready;

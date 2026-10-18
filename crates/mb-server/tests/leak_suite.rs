@@ -1014,6 +1014,7 @@ fn e2_schema_refresh_withholds_content_before_note_state_is_opened() {
                 schema_version,
                 outbound,
             },
+            &|_, _, _| true,
         );
         assert!(result.is_err());
         assert!(inbox.try_recv().is_err(), "no metadata or body on refusal");
@@ -1034,6 +1035,7 @@ fn e2_schema_refresh_withholds_content_before_note_state_is_opened() {
                 schema_version: Some(current),
                 outbound,
             },
+            &|_, _, _| true,
         )
         .expect("current editor admitted");
     assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Admitted { .. })));
@@ -1041,6 +1043,78 @@ fn e2_schema_refresh_withholds_content_before_note_state_is_opened() {
     assert_eq!(
         std::fs::read_to_string(dir.path().join("Private.md")).expect("source"),
         "KEEP PRIVATE BODY\n"
+    );
+}
+
+/// E3: a subscription's fresh external import must not broadcast to a revoked reader.
+#[test]
+fn e3_first_sync_external_refresh_rechecks_existing_recipients() {
+    use mb_server::sync::{SchemaSubscription, ServerFrame, SyncRegistry, current_schema_version};
+    let dir = TempDir::new("leak-fresh-sync-import");
+    let note = dir.write("One.md", "old body\n");
+    dir.write("access.toml", "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[members]]\nuser = \"bob\"\nrole = \"viewer\"\n");
+    let vault = Vault::open(Slug::parse("personal").unwrap(), "Personal", dir.path()).unwrap();
+    let canonical = vault.canonical_note("One.md").unwrap();
+    let registry = SyncRegistry::default();
+    let alice = Username::parse("alice").unwrap();
+    let bob = Username::parse("bob").unwrap();
+    let (allowed, mut allowed_inbox) = tokio::sync::mpsc::unbounded_channel();
+    let (revoked, mut revoked_inbox) = tokio::sync::mpsc::unbounded_channel();
+    registry
+        .subscribe(
+            &vault,
+            &canonical,
+            "One.md",
+            &alice,
+            ConnectionId::issue(),
+            allowed,
+        )
+        .unwrap();
+    registry
+        .subscribe(
+            &vault,
+            &canonical,
+            "One.md",
+            &bob,
+            ConnectionId::issue(),
+            revoked,
+        )
+        .unwrap();
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    std::fs::write(note, "fresh private external body\n").unwrap();
+    let (outbound, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    registry
+        .subscribe_versioned(
+            &vault,
+            &canonical,
+            SchemaSubscription {
+                note: "One.md",
+                user: &alice,
+                connection: ConnectionId::issue(),
+                outbound,
+                schema_version: Some(current_schema_version().unwrap()),
+            },
+            &|_, note, reader| {
+                mb_server::AccessFile::load(vault.root())
+                    .unwrap()
+                    .policy()
+                    .effective_role(reader, &mb_core::NotePath::parse(note).unwrap())
+                    != Role::None
+            },
+        )
+        .unwrap();
+    assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Admitted { .. })));
+    assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Sync { .. })));
+    assert!(matches!(
+        allowed_inbox.try_recv(),
+        Ok(ServerFrame::Update { .. })
+    ));
+    assert!(
+        revoked_inbox.try_recv().is_err(),
+        "revoked recipients receive neither body nor metadata"
     );
 }
 

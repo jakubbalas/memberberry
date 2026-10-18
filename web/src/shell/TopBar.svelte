@@ -21,10 +21,13 @@
 -->
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import InstallControl from "../pwa/InstallControl.svelte";
+  import UpdateControl from "../pwa/UpdateControl.svelte";
   import ThemePicker from "./ThemePicker.svelte";
   import type { ShippedTheme, ThemeStorage } from "./theme.js";
 
   interface Props {
+    readonly onupdate?: (() => Promise<boolean>) | undefined;
     /** The vault this window is showing, as its slug — what the URL says (§6.1). */
     readonly vault: string;
     readonly leftCollapsed: boolean;
@@ -46,6 +49,7 @@
   }
 
   const {
+    onupdate,
     vault,
     leftCollapsed,
     rightCollapsed,
@@ -91,6 +95,8 @@
   </div>
 
   <div class="topbar-side topbar-end">
+    <InstallControl />
+    <UpdateControl reload={onupdate} />
     {#if onfind !== undefined}
       <button type="button" class="topbar-find" aria-label="Quick find" onclick={() => onfind()}>
         <Icon name="search" />

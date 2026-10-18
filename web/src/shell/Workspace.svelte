@@ -12,6 +12,8 @@
 -->
 <script lang="ts">
   import { untrack } from "svelte";
+  import { rememberLaunch } from "../pwa/launch.js";
+  import { WORKSPACE_REFRESH } from "../pwa/events.js";
 
   import Backlinks from "./Backlinks.svelte";
   import CommandCenter from "./CommandCenter.svelte";
@@ -76,6 +78,10 @@
   import { obsidianDefaultBinding } from "./default-keymap.js";
 
   interface Props {
+    /** Background work follows a freshly authorized catalog, never an offline fallback. */
+    readonly onresume?: (() => Promise<void>) | undefined;
+    /** Flushes and checks pending local work before an explicit application reload. */
+    readonly onupdate?: (() => Promise<boolean>) | undefined;
     /** Shows the vault home until a workspace action opens a note. */
     readonly home?: boolean;
     readonly store: WorkspaceStore;
@@ -130,6 +136,8 @@
   }
 
   const {
+    onresume,
+    onupdate,
     store,
     session,
     open,
@@ -174,6 +182,7 @@
     const base = `/v/${encodeURIComponent(session.vault)}`;
     const path = note === undefined ? base : `${base}/${note.split("/").map(encodeURIComponent).join("/")}`;
     if (window.location.pathname !== path) window.history.replaceState(window.history.state, "", path);
+    rememberLaunch(path, preferences);
   });
   let emptyFolders = $state<readonly string[]>([]);
   let folderPrompt = $state(false);
@@ -206,7 +215,10 @@
       // serves that burst; there is no timer or periodic whole-vault polling.
       void Promise.resolve().then(async () => {
         if (disposed) return;
-        try { await Promise.all([catalog.refresh(), refreshFolders()]); }
+        try {
+          await Promise.all([catalog.refresh(), refreshFolders()]);
+          if (!disposed && catalog.authorized) await onresume?.();
+        }
         finally { pending = false; }
       });
     };
@@ -216,16 +228,21 @@
     const visible = (): void => {
       if (document.visibilityState === "visible") refresh();
     };
+    const restored = (event: PageTransitionEvent): void => { if (event.persisted) refresh(); };
     window.addEventListener("focus", focus);
     window.addEventListener("online", refresh);
+    window.addEventListener(WORKSPACE_REFRESH, refresh);
     document.addEventListener("visibilitychange", visible);
+    window.addEventListener("pageshow", restored);
     return () => {
       disposed = true;
       // Invalidate a folder request still resolving after this workspace has gone away.
       folderRequest += 1;
       window.removeEventListener("focus", focus);
       window.removeEventListener("online", refresh);
+      window.removeEventListener(WORKSPACE_REFRESH, refresh);
       document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("pageshow", restored);
     };
   });
 
@@ -643,6 +660,7 @@
   onpointercancel={endSwipe}
 >
   <TopBar
+    {onupdate}
     vault={vaultSlug}
     leftCollapsed={collapsed.left}
     rightCollapsed={collapsed.right}
