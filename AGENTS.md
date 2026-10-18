@@ -269,7 +269,10 @@ assignments stable and record new ones here before adding a listener:
 | `9011` | Vite frontend when it runs separately from the server |
 | `9012` | Throwaway server the Playwright E2E suite provisions and drives |
 | `9013` | Throwaway server the performance harness provisions over a 10k-note vault |
-| `9014`-`9020` | Available for supporting services |
+| `9016` | Isolated PWA browser fixture (t-014); loopback only |
+| `9014` | Existing editor preview; owned by another task |
+| `9015` | Existing folder preview; owned by another task |
+| `9017`-`9020` | Available for supporting services |
 
 Production ports remain explicit deployment configuration. Tests that do not need a stable
 address should ask the OS for an ephemeral port instead of consuming this range.

@@ -57,7 +57,7 @@ test("the application declares itself installable", async ({ page }) => {
   expect(manifest.headers()["content-type"]).toContain("application/manifest+json");
   const parsed = (await manifest.json()) as { name: string; start_url: string; icons: unknown[] };
   expect(parsed.name).toBe("Memberberry");
-  expect(parsed.start_url).toBe("/");
+  expect(parsed.start_url).toBe("/app.html?launch=1");
   expect(parsed.icons.length).toBeGreaterThan(0);
 
   // An icon the manifest names and the server does not serve is an install that fails with

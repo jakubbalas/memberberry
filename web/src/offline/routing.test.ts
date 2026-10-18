@@ -72,8 +72,9 @@ describe("falling back when the network is gone", () => {
     expect(offlineFallbackFor("/login")).toBe("offline-page");
   });
 
-  it("gives a vault root the offline page, because it names no note", () => {
-    expect(offlineFallbackFor("/v/personal")).toBe("offline-page");
-    expect(offlineFallbackFor("/v/personal/")).toBe("offline-page");
+  it("resumes an installed launch and a vault workspace through the offline shell", () => {
+    expect(offlineFallbackFor("/app.html")).toBe("shell");
+    expect(offlineFallbackFor("/v/personal")).toBe("shell");
+    expect(offlineFallbackFor("/v/personal/")).toBe("shell");
   });
 });

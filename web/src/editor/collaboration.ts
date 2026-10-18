@@ -13,6 +13,7 @@ import { Awareness } from "y-protocols/awareness";
 import { redo, undo, yCursorPlugin, ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey } from "y-prosemirror";
 
 import { SCHEMA_VERSION } from "./schema-revision.js";
+import { trackPending } from "../pwa/pending.js";
 import { loadSchemaAdmission, SchemaRefreshRequired, type SchemaAdmission } from "./schema-admission.js";
 
 import { presenceCursorBuilder } from "./presence.js";
@@ -134,6 +135,8 @@ export function createConnectionStatus(): ConnectionStatus & { set(state: Connec
 
 /** A server-backed transport identity, supplied only for a routed vault note. */
 export interface RemoteSyncOptions {
+  /** Background replica refresh must not announce this user as reading the note. */
+  readonly presence?: boolean;
   readonly endpoint: string;
   readonly vault: string;
   readonly note: string;
@@ -164,7 +167,7 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
   const name = persistenceName(options.vaultId, options.noteId);
   const document = new Doc({ gc: true });
   const awareness = new Awareness(document);
-  if (options.remoteSync !== undefined) {
+  if (options.remoteSync !== undefined && options.remoteSync.presence !== false) {
     awareness.setLocalStateField("user", { name: options.remoteSync.user, color: presenceColor(options.remoteSync.user) });
   }
   const fragment = document.getXmlFragment(PROSEMIRROR_ROOT);
@@ -172,6 +175,7 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
   const persistence = createPersistence(name, document);
   let remote: SyncProvider | undefined;
   const status = options.remoteSync === undefined ? undefined : createConnectionStatus();
+  const stopTracking = status === undefined ? () => undefined : trackPending(() => status.state);
   const serverState = createServerStateSignal();
   let admission: SchemaAdmission | undefined;
   const whenReady = persistence.whenSynced.then(async () => {
@@ -205,6 +209,7 @@ export function createNoteCollaboration(options: CreateNoteCollaborationOptions)
       destroyed ??= whenReady.catch(() => undefined).then(() => persistence.destroy()).then(() => {
         remote?.destroy();
         document.destroy();
+        stopTracking();
       });
       return destroyed;
     },
@@ -294,7 +299,7 @@ function defaultRemoteSync(
   return createSyncProvider({
     ...options,
     document,
-    awareness,
+    ...(options.presence === false ? {} : { awareness }),
     onConnectionChange,
     onServerState,
   });

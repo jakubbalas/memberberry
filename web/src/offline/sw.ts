@@ -20,7 +20,7 @@
 import { offlinePage, offlinePageHeaders, type OfflineNoteLink } from "./offline-page.js";
 import { availableOfflineNotes } from "./available-notes.js";
 import { openOfflineStore } from "./db.js";
-import { SHELL_URL, cacheName, staleCaches, type PrecachePlan } from "./precache.js";
+import { SHELL_URL, cacheName, containsPageAssets, staleCaches, type PrecachePlan } from "./precache.js";
 import { offlineFallbackFor, strategyFor } from "./routing.js";
 import { receiveShareTarget } from "../clipper/share-inbox.js";
 
@@ -37,6 +37,12 @@ if (
   self instanceof ServiceWorkerGlobalScope
 ) {
   const scope: ServiceWorkerGlobalScope = self;
+
+  scope.addEventListener("message", (event: ExtendableMessageEvent) => {
+    const data: unknown = event.data;
+    if (typeof data !== "object" || data === null || !("type" in data) || data.type !== "memberberry:build" || !("assets" in data)) return;
+    event.ports[0]?.postMessage({ current: containsPageAssets(data.assets, scope.location.origin, PRECACHED) });
+  });
 
   scope.addEventListener("install", (event: ExtendableEvent) => {
     event.waitUntil(install());

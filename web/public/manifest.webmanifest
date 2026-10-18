@@ -3,7 +3,7 @@
   "name": "Memberberry",
   "short_name": "Memberberry",
   "description": "Your notes, as plain Markdown files you own.",
-  "start_url": "/",
+  "start_url": "/app.html?launch=1",
   "share_target": {
     "action": "/share",
     "method": "POST",
@@ -21,6 +21,18 @@
   "background_color": "#f7f7f5",
   "theme_color": "#6651a3",
   "icons": [
+    {
+      "src": "/assets/pwa/memory-berry-192-ff085f2c9c14.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/pwa/memory-berry-512-19533b83fe49.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
     {
       "src": "/icon.svg?v=memory-berry",
       "sizes": "any",

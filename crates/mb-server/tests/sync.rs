@@ -44,6 +44,7 @@ fn schema_acknowledgement_is_enqueued_before_a_wire_subscriber_can_receive_broad
                 outbound,
                 schema_version: Some(current),
             },
+            &permit_all,
         )
         .unwrap();
     assert!(
@@ -564,6 +565,43 @@ fn room(
 /// An authorizer that permits everyone, for tests whose subject is not permissions.
 fn permit_all(_: &str, _: &str, _: &Username) -> bool {
     true
+}
+
+#[test]
+fn versioned_subscription_imports_external_markdown_before_first_body() {
+    let dir = TempDir::new("sync-fresh-first-body");
+    let path = dir.write("One.md", "old cached body\n");
+    let vault = vault(&dir);
+    let canonical = vault.canonical_note("One.md").unwrap();
+    drop(NoteCoordinator::open(&vault, &canonical).unwrap());
+    std::fs::write(path, "fresh external body\n").unwrap();
+    let registry = SyncRegistry::default();
+    let user = Username::parse("alice").unwrap();
+    let (outbound, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    registry
+        .subscribe_versioned(
+            &vault,
+            &canonical,
+            mb_server::sync::SchemaSubscription {
+                note: "One.md",
+                user: &user,
+                connection: ConnectionId::issue(),
+                outbound,
+                schema_version: Some(mb_server::sync::current_schema_version().unwrap()),
+            },
+            &permit_all,
+        )
+        .unwrap();
+    assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Admitted { .. })));
+    let ServerFrame::Sync { update, .. } = inbox.try_recv().unwrap() else {
+        panic!("expected first body");
+    };
+    assert_eq!(
+        mb_core::to_markdown(
+            &document_from_yrs(&document_from_update_v1(&update).unwrap()).unwrap()
+        ),
+        "fresh external body\n"
+    );
 }
 
 #[test]

@@ -82,6 +82,16 @@ export function staleCaches(names: readonly string[], current: string): string[]
 
 const CACHE_PREFIX = "memberberry-app-";
 
+/** Every critical script and stylesheet must belong to the waiting build, including CSS-only updates. */
+export function containsPageAssets(assets: unknown, origin: string, precached: ReadonlySet<string>): boolean {
+  if (!Array.isArray(assets) || assets.length === 0) return false;
+  return assets.every((asset: unknown) => {
+    if (typeof asset !== "string") return false;
+    try { const url = new URL(asset); return url.origin === origin && precached.has(url.pathname); }
+    catch { return false; }
+  });
+}
+
 /**
  * A short, stable fingerprint of the URL list.
  *

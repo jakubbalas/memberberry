@@ -1,6 +1,7 @@
 /** Permission-aware WebSocket transport for a single persisted Yjs note. */
 
 import { createLoadedSchemaAdmission, type SchemaAdmission } from "./schema-admission.js";
+import { RESUME_SYNC } from "../pwa/events.js";
 
 import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVectorFromUpdate, snapshot, snapshotContainsUpdate } from "yjs";
 import {
@@ -413,6 +414,14 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
       attach();
     }, delay);
   };
+  const onResume = (event: Event): void => {
+    const detail: unknown = event instanceof CustomEvent ? event.detail : undefined;
+    if (typeof detail !== "object" || detail === null || !("vault" in detail) || detail.vault !== options.vault) return;
+    // why: a suspended mobile socket may still claim OPEN without carrying bytes. A fresh
+    // permission check has completed; reconnect the transport while retaining its Y doc.
+    onOffline();
+    onOnline();
+  };
   const onAwareness = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }): void => {
     const changed = [...added, ...updated, ...removed];
     if (changed.length > 0 && options.awareness !== undefined) {
@@ -436,6 +445,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   attach();
   network?.addEventListener("online", onOnline);
   network?.addEventListener("offline", onOffline);
+  network?.addEventListener(RESUME_SYNC, onResume);
   options.document.on("update", sendUpdate);
   options.awareness?.on("update", onAwareness);
 
@@ -458,6 +468,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
       options.awareness?.off("update", onAwareness);
       network?.removeEventListener("online", onOnline);
       network?.removeEventListener("offline", onOffline);
+      network?.removeEventListener(RESUME_SYNC, onResume);
       const closing = socket;
       detach();
       closing?.close();

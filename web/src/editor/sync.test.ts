@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Doc, applyUpdate, encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { Awareness, encodeAwarenessUpdate } from "y-protocols/awareness";
 import { SCHEMA_VERSION } from "./schema-revision.js";
+import { RESUME_SYNC } from "../pwa/events.js";
 // These fixtures test transport/durability over a generic Y.Text, not the note codec.
 // Real schema/WASM/binding refusal controls are in schema-admission*.test.ts.
 const transportAdmission = { version: SCHEMA_VERSION, validate: (_document: Doc): void => {}, validateIncoming: (_document: Doc, _update: Uint8Array): void => {} };
@@ -951,6 +952,39 @@ describe("coming back online (SPEC §7.4)", () => {
     sync.destroy();
   });
 
+  it("reopens a suspended socket for the returning vault while retaining local edits", () => {
+    const network = new EventTarget();
+    const document = new Doc();
+    const sockets: FakeSocket[] = [];
+    const sync = createSyncProvider({
+      admission: transportAdmission,
+      endpoint: "ws://localhost/api/v1/sync",
+      vault: "personal",
+      note: "One.md",
+      document,
+      network,
+      connect: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+    try {
+      sockets[0]?.emit("open", {});
+      document.getText("body").insert(0, "unsent local work");
+      network.dispatchEvent(new CustomEvent(RESUME_SYNC, { detail: { vault: "other" } }));
+      expect(sockets).toHaveLength(1);
+      network.dispatchEvent(new CustomEvent(RESUME_SYNC, { detail: { vault: "personal" } }));
+      expect(sockets[0]?.closed).toBe(1);
+      expect(sockets).toHaveLength(2);
+      expect(document.getText("body").toString()).toBe("unsent local work");
+      expect(sync.pending).toBeGreaterThan(0);
+      sync.destroy();
+      network.dispatchEvent(new CustomEvent(RESUME_SYNC, { detail: { vault: "personal" } }));
+      expect(sockets).toHaveLength(2);
+    } finally { sync.destroy(); document.destroy(); }
+  });
+
   it("stops listening when the pane closes", () => {
     // AGENTS.md §4.3: every listener has a matching teardown, and a test that proves it.
     const network = fakeNetwork();
@@ -964,7 +998,7 @@ describe("coming back online (SPEC §7.4)", () => {
       network: network.target,
       connect: () => socket as unknown as WebSocket,
     });
-    expect(network.count()).toBe(2);
+    expect(network.count()).toBe(3);
 
     sync.destroy();
 

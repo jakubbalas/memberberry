@@ -30,6 +30,7 @@ fn safety_child_success_with_unmatched_filter_is_not_completion_proof() {
     );
 }
 
+use sha2::Digest;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
@@ -2841,6 +2842,7 @@ fn pwa_web_root() -> TempDir {
     dir.write("manifest.webmanifest", "{\"name\":\"Memberberry\"}");
     dir.write("icon.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
     dir.write("assets/index-abc123.js", "console.log('editor')");
+    dir.write("assets/pwa/icon-192.png", "PNG test bytes");
     dir.write("secret.txt", "not part of the bundle");
     dir
 }
@@ -2938,6 +2940,13 @@ fn the_service_worker_and_its_manifest_are_served_from_the_root() {
 
     let (icon_status, _) = server.request("GET", "/icon.svg", "", "");
     assert!(is_ok(&icon_status), "{icon_status}");
+    assert!(
+        server
+            .headers("/assets/pwa/icon-192.png")
+            .contains("image/png")
+    );
+    let (_, landing) = server.get("/");
+    assert!(landing.contains("rel=\"manifest\" href=\"/manifest.webmanifest\""));
 }
 
 #[test]
@@ -4906,10 +4915,14 @@ fn client_search_manifest_and_segments_are_acl_filtered_and_never_cached() {
     assert_eq!(segments.len(), 1, "the owner has one root zone");
     let zone_id = segments[0]["zoneId"].as_str().expect("zone ID");
     let acl_hash = segments[0]["aclHash"].as_str().expect("ACL hash");
+    let content_hash = segments[0]["contentHash"]
+        .as_str()
+        .expect("content revision");
 
     let route = format!("/api/v1/vaults/v/search/segments/{zone_id}?acl_hash={acl_hash}");
     let (head, bytes) = server.get_raw(&route, "");
     assert!(head.contains("200"), "{head}");
+    assert_eq!(content_hash, format!("{:x}", sha2::Sha256::digest(&bytes)));
     assert!(head.contains("cache-control: no-store"), "{head}");
     assert!(
         head.contains("application/vnd.memberberry.search-index;version=1"),

@@ -15,6 +15,7 @@
 
 import { type Workspace, type WorkspaceIds } from "./workspace.js";
 import { type WorkspaceLoad, parseWorkspace, serializeWorkspace } from "./workspace-storage.js";
+import { USER_KEY } from "./bootstrap.js";
 
 /**
  * How long the layout must stop changing before it is written.
@@ -40,9 +41,13 @@ export interface WorkspaceTransportOptions {
   readonly clearTimer?: (handle: number) => void;
   /** Called when a save fails, so a shell can show that the layout is not being kept. */
   readonly onSaveError?: (error: unknown) => void;
+  /** Optional per-user, per-device fallback used only when the server cannot be reached. */
+  readonly storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
 }
 
 export interface WorkspaceTransport {
+  /** False when the latest layout has not been acknowledged by the server. */
+  readonly saved?: boolean;
   /** The stored layout, or a fresh workspace when there is none or it is unusable. */
   load(): Promise<WorkspaceLoad>;
   /** Records a new layout to be written after the debounce settles. */
@@ -99,6 +104,18 @@ export function createWorkspaceTransport(
   const debounceMs = options.debounceMs ?? SAVE_DEBOUNCE_MS;
   const setTimer = options.setTimer ?? ((run, ms) => globalThis.setTimeout(run, ms) as unknown as number);
   const clearTimer = options.clearTimer ?? ((handle) => { globalThis.clearTimeout(handle); });
+  const storage = options.storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
+  let cacheKey: string | undefined;
+  try {
+    const user = storage?.getItem(USER_KEY);
+    if (user) cacheKey = `memberberry.workspace:${JSON.stringify([user, options.vault, options.device])}`;
+  } catch { /* unavailable storage degrades to server-only layout persistence */ }
+  const cache = (workspace: Workspace): void => {
+    try { if (cacheKey !== undefined) storage?.setItem(cacheKey, serializeWorkspace(workspace)); } catch { /* quota/private mode */ }
+  };
+  const discard = (): void => {
+    try { if (cacheKey !== undefined) storage?.removeItem(cacheKey); } catch { /* no local fallback will be read */ }
+  };
 
   let timer: number | undefined;
   let pending: Workspace | undefined;
@@ -144,6 +161,7 @@ export function createWorkspaceTransport(
   };
 
   return {
+    get saved(): boolean { return latest === undefined || latest === written; },
     load: async (): Promise<WorkspaceLoad> => {
       const fresh = (reason: string): WorkspaceLoad => ({
         ok: false,
@@ -153,15 +171,25 @@ export function createWorkspaceTransport(
       try {
         const response = await request(url, { headers: { accept: "application/json" } });
         // 404 is the normal "this device has never saved one", and also every denial (E15).
-        if (!response.ok) return fresh(`the server has no layout for this device`);
-        return parseWorkspace(await response.text(), options.vault, options.ids);
+        if (!response.ok) {
+          if ([401, 403, 404].includes(response.status)) discard();
+          return fresh(`the server has no layout for this device`);
+        }
+        const result = parseWorkspace(await response.text(), options.vault, options.ids);
+        if (result.ok) cache(result.workspace);
+        return result;
       } catch (error) {
+        try {
+          const saved = cacheKey === undefined ? undefined : storage?.getItem(cacheKey);
+          if (saved) return parseWorkspace(saved, options.vault, options.ids);
+        } catch { /* a corrupt or unavailable fallback must not prevent startup */ }
         return fresh(error instanceof Error ? error.message : "the layout could not be fetched");
       }
     },
 
     save: (workspace: Workspace): void => {
       if (destroyed) return;
+      cache(workspace);
       pending = workspace;
       latest = workspace;
       if (timer !== undefined) clearTimer(timer);
