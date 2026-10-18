@@ -28,10 +28,10 @@ export const memberberryInputRules = Extension.create({
   },
   addKeyboardShortcuts() {
     const item = this.editor.schema.nodes["list_item"];
-    const inBullet = (): boolean => {
+    const inList = (kind?: "bullet_list" | "ordered_list"): boolean => {
       const { $from } = this.editor.state.selection;
       for (let depth = $from.depth; depth > 1; depth -= 1) {
-        if ($from.node(depth).type === item && $from.node(depth - 1).type.name === "bullet_list") return true;
+        if ($from.node(depth).type === item && (kind === undefined || $from.node(depth - 1).type.name === kind)) return true;
       }
       return false;
     };
@@ -39,15 +39,15 @@ export const memberberryInputRules = Extension.create({
       this.editor.isEditable && command(this.editor.state, this.editor.view.dispatch);
     return {
       Enter: () => {
-        if (item === undefined || !inBullet()) return false;
+        if (item === undefined || !inList()) return false;
         const { $from } = this.editor.state.selection;
         // why: the list schema permits block*; generic splitBlock inserts a second
         // paragraph *inside* the item rather than a new sibling.
         if ($from.parent.content.size === 0) return apply(liftListItem(item));
         return apply(splitListItem(item));
       },
-      Tab: () => item !== undefined && inBullet() && apply(sinkListItem(item)),
-      "Shift-Tab": () => item !== undefined && inBullet() && apply(liftListItem(item)),
+      Tab: () => item !== undefined && inList("bullet_list") && apply(sinkListItem(item)),
+      "Shift-Tab": () => item !== undefined && inList("bullet_list") && apply(liftListItem(item)),
     };
   },
 });
