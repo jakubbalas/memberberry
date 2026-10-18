@@ -1797,7 +1797,8 @@ decisions:
 **Installed application follow-up (2026-10-18, t-014; approved scope, local review candidate).**
 Android/Chrome and Linux/Chrome are the primary targets. The existing berry mark has
 192px/512px PNG installation icons and the manifest is discoverable from private app
-landing pages. An in-app install action invokes the browser's own prompt when available.
+landing pages. Manifest links include credentials so authenticated reverse proxies can
+serve the same-origin manifest. An in-app install action invokes the browser's own prompt when available.
 The stable app identity remains `/`; the installed start URL `/app.html?launch=1`
 resumes the last workspace route on this device, falling back to the vault list on first
 use. Remembered paths grant no access; the server still authenticates every online read.

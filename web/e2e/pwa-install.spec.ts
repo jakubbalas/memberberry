@@ -15,6 +15,17 @@ test("Chrome can discover the manifest and raster installation icons", async ({}
     ...(info.project.name === "mobile" ? { isMobile: true, hasTouch: true } : {}),
   });
   try {
+  await context.addCookies([{ name: "pwa-access-probe", value: "allowed", url: E2E_ORIGIN, httpOnly: true, sameSite: "Lax" }]);
+  let credentialedManifestRequests = 0;
+  await context.route("**/manifest.webmanifest", async route => {
+    // Model an authenticated reverse proxy at the real browser request boundary.
+    if (!(await route.request().allHeaders())["cookie"]?.includes("pwa-access-probe=allowed")) {
+      await route.fulfill({ status: 401, body: "Authentication required" });
+      return;
+    }
+    credentialedManifestRequests += 1;
+    await route.continue();
+  });
   const page = context.pages()[0] ?? await context.newPage();
   const problems: string[] = [];
   page.on("pageerror", error => { problems.push(error.message); });
@@ -38,6 +49,7 @@ test("Chrome can discover the manifest and raster installation icons", async ({}
   const cdp = await context.newCDPSession(page);
   const errors = await cdp.send("Page.getInstallabilityErrors");
   expect(errors.installabilityErrors).toEqual([]);
+  expect(credentialedManifestRequests).toBeGreaterThan(0);
   expect(problems).toEqual([]);
   } finally { await context.close(); rmSync(profile, { recursive: true }); }
 });

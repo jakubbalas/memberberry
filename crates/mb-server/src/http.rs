@@ -5833,7 +5833,8 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
     out.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\" />\n");
     out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n");
     if !policy.is_public() {
-        out.push_str("<link rel=\"manifest\" href=\"/manifest.webmanifest\" />\n");
+        // why: authenticated reverse proxies need cookies even for same-origin manifests.
+        out.push_str("<link rel=\"manifest\" href=\"/manifest.webmanifest\" crossorigin=\"use-credentials\" />\n");
     }
     if policy.is_public() {
         out.push_str("<meta name=\"robots\" content=\"noindex, nofollow, noarchive\" />\n");

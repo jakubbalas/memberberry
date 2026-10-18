@@ -2947,6 +2947,7 @@ fn the_service_worker_and_its_manifest_are_served_from_the_root() {
     );
     let (_, landing) = server.get("/");
     assert!(landing.contains("rel=\"manifest\" href=\"/manifest.webmanifest\""));
+    assert!(landing.contains("crossorigin=\"use-credentials\""));
 }
 
 #[test]
