@@ -2,6 +2,24 @@ import { cpSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, wri
 import { join } from "node:path";
 import { E2E_WEB_ROOT, scratchNote } from "./environment.js";
 import { expect, signIn, test } from "./fixtures.js";
+import type { Page } from "@playwright/test";
+
+// Two complete precache downloads run on the resource-limited release fixture.
+test.setTimeout(90_000);
+
+async function checkCurrentWorker(page: Page): Promise<void> {
+  // Finish the startup update job before publishing a new worker; the browser coalesces
+  // simultaneous update jobs and could otherwise finish checking the previous bytes.
+  await page.evaluate(async () => { await (await navigator.serviceWorker.ready).update(); });
+}
+
+async function downloadUpdate(page: Page): Promise<void> {
+  await checkCurrentWorker(page);
+  await expect.poll(() => page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    return registration?.waiting?.state ?? registration?.installing?.state ?? "no update";
+  }), { timeout: 30_000 }).toBe("installed");
+}
 
 /** Publish a second coherent asset identity inside this spec's disposable build only. */
 function nextBuild(): { entry: string; restore: () => void } {
@@ -46,9 +64,10 @@ test("an update waits for a click, reloads the new build and leaves another wind
   await other.goto("/v/personal/Welcome.md");
   await expect(other.getByText("A note that already exists")).toBeVisible();
   await other.evaluate(() => { document.documentElement.dataset["keptWindow"] = "yes"; });
+  await checkCurrentWorker(page);
   const build = nextBuild();
   try {
-    await page.evaluate(async () => { await (await navigator.serviceWorker.ready).update(); });
+    await downloadUpdate(page);
     await expect(page.getByRole("button", { name: "Reload to update" })).toBeVisible();
     expect(await page.locator('script[type="module"][src]').getAttribute("src")).not.toBe(build.entry);
     await page.screenshot({ path: test.info().outputPath("update-ready.png") });
@@ -69,9 +88,10 @@ test("an update cannot reload over unsent offline edits", async ({ page, context
   const editor = page.locator(".ProseMirror").first();
   await expect(editor).toContainText("A note this test may edit");
   await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+  await checkCurrentWorker(page);
   const build = nextBuild();
   try {
-    await page.evaluate(async () => { await (await navigator.serviceWorker.ready).update(); });
+    await downloadUpdate(page);
     await expect(page.getByRole("button", { name: "Reload to update" })).toBeVisible();
     failures.allow(/ERR_INTERNET_DISCONNECTED|Failed to fetch|Failed to load resource|WebSocket/);
     await context.setOffline(true);
