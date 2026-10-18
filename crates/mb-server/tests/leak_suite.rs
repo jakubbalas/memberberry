@@ -10,6 +10,11 @@
 
 mod support;
 
+#[cfg(target_os = "linux")]
+#[allow(dead_code)] // why: the leak target uses a subset of these shared test helpers.
+#[path = "support/http_safety.rs"]
+mod safety;
+
 use mb_core::{Access, Member, Role, Username};
 use mb_server::Vault;
 use mb_server::repository::AuthorizedVault;

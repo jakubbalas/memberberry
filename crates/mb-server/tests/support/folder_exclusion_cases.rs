@@ -2,8 +2,7 @@
 #![allow(dead_code, clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use super::registration_cases::{Observer, post};
 use super::registration_fixture::{Server, json};
-#[path = "http_safety.rs"]
-mod safety;
+use crate::safety;
 use std::os::unix::fs::PermissionsExt;
 
 struct Mode(std::path::PathBuf, std::fs::Permissions);
@@ -64,7 +63,10 @@ pub fn checked_option_filters_without_reading_or_repairing(test: &str) {
         serde_json::json!([]),
     ] {
         let mut malformed = request.clone();
-        malformed["ignore_non_writable_folders"] = invalid;
+        malformed
+            .as_object_mut()
+            .expect("selection object")
+            .insert("ignore_non_writable_folders".into(), invalid);
         assert_eq!(post(&s, preview, &headers, &malformed.to_string()).0, 400);
     }
     let duplicate = request.to_string().trim_end_matches('}').to_owned()
@@ -74,12 +76,24 @@ pub fn checked_option_filters_without_reading_or_repairing(test: &str) {
         observer.events().is_empty(),
         "malformed options reached excluded storage"
     );
-    request["ignore_non_writable_folders"] = true.into();
+    request
+        .as_object_mut()
+        .expect("selection object")
+        .insert("ignore_non_writable_folders".into(), true.into());
     let (status, body) = post(&s, preview, &headers, &request.to_string());
     assert_eq!(status, 200, "checked preview: {body}");
     let mut changed = request.clone();
-    changed["confirmation"] = json(&body)["confirmation"].clone();
-    changed["ignore_non_writable_folders"] = false.into();
+    changed.as_object_mut().expect("selection object").insert(
+        "confirmation".into(),
+        json(&body)
+            .get("confirmation")
+            .expect("preview receipt")
+            .clone(),
+    );
+    changed
+        .as_object_mut()
+        .expect("selection object")
+        .insert("ignore_non_writable_folders".into(), false.into());
     assert_eq!(
         post(
             &s,
@@ -93,7 +107,13 @@ pub fn checked_option_filters_without_reading_or_repairing(test: &str) {
     );
     let (status, body) = post(&s, preview, &headers, &request.to_string());
     assert_eq!(status, 200);
-    request["confirmation"] = json(&body)["confirmation"].clone();
+    request.as_object_mut().expect("selection object").insert(
+        "confirmation".into(),
+        json(&body)
+            .get("confirmation")
+            .expect("preview receipt")
+            .clone(),
+    );
     let (status, body) = post(
         &s,
         "/api/v1/vault-locations/projects/register",
@@ -182,7 +202,11 @@ pub fn checked_option_filters_without_reading_or_repairing(test: &str) {
         mb_server::ServerConfig::load(&s.dir.path().join("server.toml")).expect("saved config");
     let reopened = config.open_vaults(None).expect("fresh open");
     assert_eq!(
-        reopened[0].notes().expect("fresh catalog"),
+        reopened
+            .first()
+            .expect("registered vault")
+            .notes()
+            .expect("fresh catalog"),
         ["New/Live.md", "Real/Visible.md"]
     );
     assert!(

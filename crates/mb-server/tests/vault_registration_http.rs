@@ -8,6 +8,9 @@
 )] // why: controlled JSON/array fixtures and behavioral assertions, test-only.
 #[path = "support/vault_registration.rs"]
 mod registration_fixture;
+#[allow(dead_code)] // why: each integration target uses a subset of these shared test helpers.
+#[path = "support/http_safety.rs"]
+mod safety;
 use registration_fixture::{Server, json};
 use std::io::{Read, Write};
 #[path = "vault_registration_http/cases.rs"]

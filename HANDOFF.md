@@ -1,20 +1,37 @@
-# Handoff — combined release deployed
+# Handoff — combined release PR
 
-Updated 2026-10-18T19:06:12+02:00. Canonical workflow: ../PROJECT.md, ../project-status.md and
-../tasks/open/t-015-combine-completed-work-and-deploy.md.
+Updated 2026-10-18T20:35:00+02:00. Canonical local workflow: ../PROJECT.md,
+../project-status.md and ../tasks/open/t-016-publish-combined-release-pr.md.
 
 Live is healthy on memberberry-memberberry:combined-pwa-editor-20261018,
 image sha256:4dd3b78eef63dc06068497e7ae74d64ed07e8a3da237606d637d17298ace1b06. Tested source ccfe65b625a2b4da642489f003880640ef138f69, branch
 integrate/completed-work-20261018, worktree /var/home/paul/clawd/projects/memberberry/release-20261018.
-This operational handoff is updated after the frozen source/build; its documentation-only
-commit does not change the runtime. No GitHub push/PR. Original four worktrees, HEADs and
-indexes remain unchanged, verified in the evidence receipt.
+Published [PR #5](https://github.com/jakubbalas/memberberry/pull/5) from
+quantanex-tech:integrate/completed-work-20261018 to jakubbalas:main. The deployed runtime
+remains the frozen source above; PR follow-up repairs currently affect tests only.
+Original four worktrees, HEADs and indexes remain preserved.
 
 Includes the deployed vault/folder/individual-movement baseline, purple block selection/
 group moves, numbered-list Return and the installable PWA. All older remote feature refs
 are already ancestors of fetched upstream 123d8e4. No unfinished Tasks source imported.
 
-## Verified rollout and next action
+## PR checks and next action
+
+Paul explicitly authorized publication, CI repairs and merge on October 18. The initial
+CI run is [39154343837](https://github.com/jakubbalas/memberberry/actions/runs/39154343837).
+Frontend types, tests and coverage floors pass; fuzz build and the unchanged bundle ceiling
+pass. Rust CI stops at Clippy. Local full-workspace Clippy now passes after consolidating
+duplicate test-helper modules, replacing test JSON/vector indexing with checked access,
+naming the pause-hook tuple and using an octal permission literal. All test assertions and
+gate settings remain in force. All 68 registration unit cases and the real unprivileged
+discovery denial regression pass. Registration HTTP and permission leak suites are running.
+
+Next: publish the verified repair, inspect all automatic CI jobs to completion, and obtain
+upstream maintainer review/merge. Authenticated user quantanex-tech has READ permission on
+upstream and ADMIN on its fork; cannot approve its own PR or merge upstream. Full manual
+E2E remains user-run; physical-device and normal signed-in acceptance remain pending.
+
+## Verified rollout and live review
 
 All 389 frontend files and backend SHA256 b1e75eec57ec9a0bd90ea2c610f6d980f9b9d5144b922a1789ac9955ba2ba44d match
 the tested package. Four registrations, 739 Markdown and four policies match the fresh
@@ -36,8 +53,9 @@ including PNG/WASM plus protected entry denials; zero POSTs/errors. Exact build/
 rechecked afterward. Public signed-in review, actual Android install/native activation,
 macOS and Access expiry remain Paul's checks. Unauthenticated command-line public requests
 returned Cloudflare 403; real public Chrome reaches the normal Cloudflare Access sign-in (200), without credentials.
-Full make check, coverage, full user-run manual E2E and physical-device budgets remain
-deferred/unwaived. No speedup claim; inherited optimized bundle failure remains open.
+Full automatic CI/coverage verification is in progress under the new authorization.
+Full user-run manual E2E and physical-device budgets remain pending. The initial CI bundle
+ceiling passes; the underlying SPEC size-budget exception is not waived or increased.
 
 Next: close all Memberberry tabs/installed windows and reopen
 https://memberberry.quantanex.space using the normal account. Do not clear site data.
@@ -49,7 +67,7 @@ Return and the current New vault form. Task/feature records remain in review for
 ../integration-evidence-20261018/combined-release/README.md contains the current runbook,
 exact frozen source manifest/archive (763 inputs), package/backup/deploy/live-browser
 receipts, retained failures, public check and source/index preservation proof. Code remains
-committed locally; no upstream merge/push/PR. The generated note-WASM was explicitly
+published in PR #5, awaiting CI/review/merge. The generated note-WASM was explicitly
 copied from the prior verified build and byte-matches its served package; schema unchanged.
 
 Private build: memberberry-local-dev:/tmp/memberberry-combined-20261018, stable Rust,
@@ -92,7 +110,8 @@ offline media, closed-app periodic refresh or new third-party service is added.
 - Linux Chromium crashes, mobile cold-start / quick-switcher perf breaches
   (`web/perf/breaches.json`). Laptop/jsdom benchmarks are not Android evidence.
 - `npm audit`: 13 advisories (1 low, 10 moderate, 2 high) last seen, not re-triaged.
-- Clippy on server tests has 30 inherited errors (not green).
+- Historical server-test Clippy failures are repaired in this PR; local workspace Clippy
+  passes, and the next CI run must confirm it.
 - Known codec limits: native marks on atomic images can be lost; adversarial unmatched
   CommonMark brackets are slow.
 

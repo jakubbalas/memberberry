@@ -1,8 +1,6 @@
 use super::*;
 use crate::registration_cases as leak;
-#[allow(dead_code)] // why: this focused target uses only the accepted helper's unprivileged runner/mode guard.
-#[path = "../support/http_safety.rs"]
-mod safety;
+use crate::safety;
 const PREVIEW: &str = "/api/v1/vault-locations/projects/preview";
 const REGISTER: &str = "/api/v1/vault-locations/projects/register";
 fn headers(s: &Server) -> String {

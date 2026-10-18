@@ -472,7 +472,7 @@ fn permission_denial_is_observed_as_an_unprivileged_process_not_root_mode_bits()
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).expect("fixture parent");
     mkdir(dir.path(), "Denied");
     let denied = dir.path().join("Denied");
-    fs::set_permissions(&denied, fs::Permissions::from_mode(0)).expect("deny");
+    fs::set_permissions(&denied, fs::Permissions::from_mode(0o0)).expect("deny");
     let mut command = std::process::Command::new(std::env::current_exe().expect("test executable"));
     command.args(["--exact", "vault_locations::discovery::tests::permission_denial_is_observed_as_an_unprivileged_process_not_root_mode_bits", "--nocapture"]);
     command.env(MARKER, &denied);

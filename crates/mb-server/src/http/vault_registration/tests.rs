@@ -26,6 +26,11 @@ pub(super) enum Phase {
     Maintenance,
     Stopped,
 }
+type Pause = (
+    tokio::sync::oneshot::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
 #[derive(Debug, Default)]
 pub(super) struct Hooks {
     pub(super) before_fs: std::sync::atomic::AtomicUsize,
@@ -36,15 +41,7 @@ pub(super) struct Hooks {
     pub(super) config_fault: Mutex<storage::test_io::Fault>,
     pub(super) disable_sweeps: AtomicBool,
     pub(super) maintenance_completed: Mutex<Option<tokio::sync::mpsc::Sender<Changes>>>,
-    pauses: Mutex<
-        BTreeMap<
-            Phase,
-            (
-                tokio::sync::oneshot::Sender<()>,
-                std::sync::mpsc::Receiver<()>,
-            ),
-        >,
-    >,
+    pauses: Mutex<BTreeMap<Phase, Pause>>,
 }
 impl Hooks {
     pub(super) fn pause(&self, phase: Phase) {

@@ -332,7 +332,13 @@ pub fn symlinks_are_skipped_without_reading_targets() {
         &request.to_string(),
     );
     assert_eq!(status, 200, "links must not refuse preview: {body}");
-    request["confirmation"] = json(&body)["confirmation"].clone();
+    request.as_object_mut().expect("selection object").insert(
+        "confirmation".into(),
+        json(&body)
+            .get("confirmation")
+            .expect("preview receipt")
+            .clone(),
+    );
     let (status, body) = post(
         &s,
         "/api/v1/vault-locations/projects/register",
