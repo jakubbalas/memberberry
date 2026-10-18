@@ -87,6 +87,131 @@ function textPosition(editor: Editor, text: string): number {
   if (found === undefined) throw new Error(`missing fixture text ${text}`);
   return found;
 }
+it("moves a contiguous mixed range in order, saves/reopens it and undoes it in one step", async () => {
+  const f = await open("# Title\n\nBefore\n\n- **Alpha**\n- Beta\n\nMiddle\n\nAfter\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "mixed-range" }); cleanups.push(mover.destroy);
+  const original = await f.saved();
+  const token = mover.captureRange(textPosition(f.editor, "Alpha"), textPosition(f.editor, "Middle"));
+  if (!token) throw new Error("missing range");
+  expect(token.count).toBe(3);
+  expect(mover.drop(token, mover.targets(token).length)).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\nBefore\n\nAfter\n\n- **Alpha**\n- Beta\n\nMiddle\n");
+  expect(mover.moved(token)?.count).toBe(3);
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+  expect(undo(f.editor.state)).toBe(true); expect(await f.saved()).toBe(original);
+  expect(redo(f.editor.state)).toBe(true); expect(await f.saved()).toBe(await reopened.saved());
+});
+it("renumbers the source and destination when the first numbered group moves to another list", async () => {
+  const f = await open("# Title\n\n1. Alpha\n2. Beta\n3. Gamma\n\nBetween\n\n7. Delta\n8. Epsilon\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "numbered-group" }); cleanups.push(mover.destroy);
+  const original = await f.saved();
+  const token = mover.captureRange(textPosition(f.editor, "Alpha"), textPosition(f.editor, "Beta"));
+  if (!token) throw new Error("missing numbered range");
+  expect(mover.drop(token, mover.targets(token).length - 1)).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\n1. Gamma\n\nBetween\n\n7. Delta\n1. Alpha\n1. Beta\n1. Epsilon\n");
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+  expect(undo(f.editor.state)).toBe(true); expect(await f.saved()).toBe(original);
+});
+it("renumbers the remaining source after an individual first numbered item moves out", async () => {
+  const f = await open("# Title\n\n1. Alpha\n2. Beta\n3. Gamma\n\nAfter\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "numbered-first" }); cleanups.push(mover.destroy);
+  const token = mover.capture(textPosition(f.editor, "Alpha")); if (!token) throw new Error("missing item");
+  expect(mover.drop(token, mover.targets(token).length)).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\n1. Beta\n1. Gamma\n\nAfter\n\n1. Alpha\n");
+});
+it.each([false, true])("renumbers all items when a numbered group is reordered within its list (reverse=%j)", async reverse => {
+  const f = await open("# Title\n\n1. Alpha\n2. Beta\n3. Gamma\n4. Delta\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "numbered-within" }); cleanups.push(mover.destroy);
+  const token = mover.captureRange(textPosition(f.editor, reverse ? "Gamma" : "Alpha"), textPosition(f.editor, reverse ? "Delta" : "Beta"));
+  if (!token) throw new Error("missing numbered group");
+  expect(mover.drop(token, reverse ? 1 : mover.targets(token).length)).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\n1. Gamma\n1. Delta\n1. Alpha\n1. Beta\n");
+});
+it("refuses title ranges, nested scope crossings, every internal drop boundary and stale group tokens", async () => {
+  const f = await open("# Title\n\n- Parent\n  - Child\n- Sibling\n\nAfter\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "range-refusals" }); cleanups.push(mover.destroy);
+  expect(mover.captureRange(0, textPosition(f.editor, "After"))).toBeUndefined();
+  expect(mover.captureRange(textPosition(f.editor, "Child"), textPosition(f.editor, "Sibling"))).toBeUndefined();
+  expect(mover.captureRange(NaN, -1)).toBeUndefined();
+  const token = mover.captureRange(textPosition(f.editor, "Sibling"), textPosition(f.editor, "Parent")); if (!token) throw new Error("missing range");
+  for (let boundary = token.index; boundary <= token.index + token.count; boundary++) expect(mover.drop(token, boundary)).toBe(false);
+  expect(mover.drop(token, 0)).toBe(false);
+  f.editor.view.dispatch(f.editor.state.tr.insertText("x", textPosition(f.editor, "After")));
+  expect(mover.drop(token, mover.targets(token).length)).toBe(false);
+});
+it("preserves group ordering and one-step undo for seeded list permutations", async () => {
+  const f = await open("# Title\n\n1. Alpha\n2. Beta\n3. Gamma\n4. Delta\n5. Epsilon\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "range-property" }); cleanups.push(mover.destroy);
+  const original = f.editor.state.doc;
+  const names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"];
+  await fc.assert(fc.asyncProperty(fc.integer({ min: 0, max: 3 }), fc.integer({ min: 1, max: 4 }), fc.integer({ min: 0, max: 5 }), async (index, size, boundary) => {
+    const count = Math.min(size, names.length - index);
+    const token = mover.captureRange(textPosition(f.editor, names[index] ?? ""), textPosition(f.editor, names[index + count - 1] ?? ""));
+    if (!token) throw new Error("missing seeded range");
+    const noop = boundary >= index && boundary <= index + count;
+    try {
+      expect(mover.drop(token, boundary + 1)).toBe(!noop);
+      if (!noop) {
+        const expected = names.slice(); const moved = expected.splice(index, count);
+        expected.splice(boundary > index ? boundary - count : boundary, 0, ...moved);
+        expect(await f.saved()).toBe(`# Title\n\n${expected.map(name => `1. ${name}`).join("\n")}\n`);
+      }
+    } finally {
+      if (!f.editor.state.doc.eq(original)) { expect(undo(f.editor.state)).toBe(true); expect(f.editor.state.doc.eq(original)).toBe(true); }
+    }
+  }), { seed: 20261018, numRuns: 32 });
+});
+it("moves several explicit lines together without losing breaks, marks or their unique paragraph anchor", async () => {
+  const f = await open("# Title\n\nFirst\n**Second**\\\nThird\nFourth ^body\n\nAfter\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "line-range" }); cleanups.push(mover.destroy);
+  const original = await f.saved();
+  const token = mover.captureRange(textPosition(f.editor, "Second"), textPosition(f.editor, "Third")); if (!token) throw new Error("missing line range");
+  expect(mover.drop(token, mover.targets(token).length)).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\nFirst\nFourth ^body\n\nAfter\n\n**Second**\nThird\n");
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+  expect(undo(f.editor.state)).toBe(true); expect(await f.saved()).toBe(original);
+});
+it("moves a range of nested siblings with their subtrees while preserving the parent", async () => {
+  const f = await open("# Title\n\n- Parent\n  - One\n    - Descendant\n  - Two\n  - Three\n- Outside\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "nested-range" }); cleanups.push(mover.destroy);
+  const before = f.editor.state.doc;
+  const token = mover.captureRange(textPosition(f.editor, "One"), textPosition(f.editor, "Two")); if (!token) throw new Error("missing nested range");
+  expect(mover.move(token, "down")).toBe(true);
+  const list = f.editor.state.doc.child(1).child(0).child(1);
+  expect(list.child(0).textContent).toBe("Three");
+  expect(list.child(1).toJSON()).toEqual(before.child(1).child(0).child(1).child(0).toJSON());
+  expect(f.editor.state.doc.child(1).child(1).eq(before.child(1).child(1))).toBe(true);
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+  expect(undo(f.editor.state)).toBe(true); expect(f.editor.state.doc.eq(before)).toBe(true);
+});
+it("keeps task metadata and subtrees exact when a group joins a differently numbered list", async () => {
+  const f = await open("# Title\n\n1. [x] **Done** 📅 2026-10-03 ✅ 2026-10-04\n2. [ ] Todo\n3. Remaining\n\nBetween\n\n5. Destination\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "task-range" }); cleanups.push(mover.destroy);
+  const list = f.editor.state.doc.child(1);
+  const token = mover.captureRange(textPosition(f.editor, "Done"), textPosition(f.editor, "Todo")); if (!token) throw new Error("missing task range");
+  expect(mover.drop(token, mover.targets(token).length)).toBe(true);
+  const result = f.editor.state.doc.lastChild;
+  expect(result?.attrs["start"]).toBe(5);
+  expect(result?.child(1).toJSON()).toEqual(list.child(0).toJSON());
+  expect(result?.child(2).toJSON()).toEqual(list.child(1).toJSON());
+  expect(f.editor.state.doc.child(1).attrs["start"]).toBe(1);
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+});
+it("applies the same peer, transport, read-only, foreign-token and stale gates to group moves", async () => {
+  const connection = createConnectionStatus(); connection.set({ connected: true, synced: true, pending: 0 });
+  const f = await open(); const awareness = new Awareness(f.ydoc); cleanups.push(() => awareness.destroy());
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "guarded-range", connection, awareness }); cleanups.push(mover.destroy);
+  const token = mover.captureRange(f.start(1) + 1, f.start(2) + 1); if (!token) throw new Error("missing guarded range");
+  const original = await f.saved();
+  connection.set({ connected: true, synced: true, pending: 1 }); expect(mover.move(token, "down")).toBe(false);
+  connection.set({ connected: false, synced: false, pending: 0 }); expect(mover.move(token, "down")).toBe(false);
+  connection.set({ connected: true, synced: true, pending: 0 });
+  awareness.states.set(999, { user: { name: "peer" } }); expect(mover.move(token, "down")).toBe(false); awareness.states.delete(999);
+  f.editor.setEditable(false); expect(mover.move(token, "down")).toBe(false); f.editor.setEditable(true);
+  const g = await open(); const foreign = createBlockMover({ editor: g.editor, document: g.ydoc, noteKey: "foreign-range" }); cleanups.push(foreign.destroy);
+  expect(foreign.move(token, "down")).toBe(false); expect(await f.saved()).toBe(original);
+  expect(mover.move(token, "down")).toBe(true);
+});
 it("captures a bullet marker boundary as the individual item", async () => {
   const f = await open("# Title\n\n- Alpha\n- Beta\n- Gamma\n");
   const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "marker" }); cleanups.push(mover.destroy);
@@ -95,6 +220,13 @@ it("captures a bullet marker boundary as the individual item", async () => {
   expect(token.label).toBe("Move list item");
   expect(mover.move(token, "down")).toBe(true);
   expect(await f.saved()).toBe("# Title\n\n- Beta\n- Alpha\n- Gamma\n");
+});
+it.each(["- Alpha\n- Beta", "Alpha\nBeta"])("captures a selection seed on the outer container boundary: %s", async body => {
+  const f = await open(`# Title\n\n${body}\n`);
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "margin-boundary" }); cleanups.push(mover.destroy);
+  const token = mover.captureRange(f.start(1), f.start(1));
+  expect(token?.count).toBe(1);
+  expect(token?.start).toBe(f.start(1) + 1);
 });
 it("reorders nested sibling bullets while keeping their parent and other siblings intact", async () => {
   const f = await open("# Title\n\n- Parent\n  - One\n  - Two\n- Sibling\n");

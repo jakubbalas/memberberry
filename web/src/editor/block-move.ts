@@ -20,7 +20,7 @@ export interface BlockMoveOptions {
   readonly canInteract?: () => boolean;
 }
 /** Opaque capture; backing editor/document/unit are controller-private. */
-export interface BlockMoveToken { readonly label: string; readonly index: number; readonly start: number; readonly end: number; readonly rootStart: number; readonly inline: boolean }
+export interface BlockMoveToken { readonly label: string; readonly index: number; readonly count: number; readonly start: number; readonly end: number; readonly rootStart: number; readonly inline: boolean }
 /** Geometry inputs for the exact captured movement scope. */
 export interface BlockMoveTarget { readonly start: number; readonly end: number; readonly inline: boolean }
 /** Distinguishes document invalidation from a known readiness-state change. */
@@ -29,10 +29,16 @@ export type BlockMoveChange = "document" | "safety";
 export interface BlockMover {
   /** Capture an individual list item/explicit line, or a complete non-list root. */
   capture(pos: number): BlockMoveToken | undefined;
+  /** Capture a contiguous range in one movement scope; the protected title is excluded. */
+  captureRange(anchor: number, head: number): BlockMoveToken | undefined;
+  /** Recapture the moved range after a successful drop, if its document is still current. */
+  moved(token: BlockMoveToken): BlockMoveToken | undefined;
   /** Read targets only for a current token; indices match canDrop/drop boundaries. */
   targets(token: BlockMoveToken): readonly BlockMoveTarget[];
   /** Recheck lifetime, exact doc/generation and current single-editor/runtime readiness. */
   isCurrent(token: BlockMoveToken): boolean;
+  /** Exact moved snapshot waiting only for its own pending updates; never permits writes. */
+  isPending(token: BlockMoveToken): boolean;
   /** Test a pre-delete boundary without writing; indices source/source+1 are no-ops. */
   canDrop(token: BlockMoveToken, boundary: number): boolean;
   /** Apply one adjacent move and isolate its real Y undo capture. */
@@ -72,14 +78,16 @@ function offset(doc: PMNode, index: number): number {
 export function createBlockMover(options: BlockMoveOptions): BlockMover {
   const { editor } = options;
   const captures = new WeakMap<BlockMoveToken, Capture>();
+  const movedRanges = new WeakMap<BlockMoveToken, { doc: PMNode; generation: number; anchor: number; head: number }>();
   let destroyed = false;
   let generation = 0;
   const listeners = new Set<(change: BlockMoveChange) => void>();
   const changed = (change: BlockMoveChange): void => { if (!destroyed) for (const listener of listeners) listener(change); };
   const gate = createSingleEditorGate(options);
-  const allowed = (): boolean =>
+  const usable = (): boolean =>
     !destroyed && !editor.isDestroyed && editor.isEditable && editor.view.editable && !editor.view.composing
-    && (options.canInteract?.() ?? true) && gate.refusal() === undefined;
+    && (options.canInteract?.() ?? true);
+  const allowed = (): boolean => usable() && gate.refusal() === undefined;
   const capture = (pos: number): BlockMoveToken | undefined => {
     if (!allowed()) return undefined;
     const doc = editor.state.doc;
@@ -93,19 +101,38 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     // why: selection already resolves the root start; do not scan preceding roots on typing.
     const rootStart = resolved.depth === 0 ? pos : resolved.before(1);
     const start = unit?.start ?? rootStart;
-    const token = Object.freeze({ label: unit?.inline ? "Move text line" : label(node), index: expanded?.index ?? index, start, end: unit?.end ?? start + node.nodeSize, rootStart, inline: unit?.inline ?? false });
+    const token = Object.freeze({ label: unit?.inline ? "Move text line" : label(node), index: expanded?.index ?? index, count: 1, start, end: unit?.end ?? start + node.nodeSize, rootStart, inline: unit?.inline ?? false });
     captures.set(token, { doc, node, generation, ...(expanded ? { plan: expanded.plan } : {}) });
+    return token;
+  };
+  const captureRange = (anchor: number, head: number, pending = false): BlockMoveToken | undefined => {
+    if (!allowed() && !(pending && usable() && gate.refusal() === "pending")) return undefined;
+    const doc = editor.state.doc;
+    if (![anchor, head].every(pos => Number.isInteger(pos) && pos >= 0 && pos < doc.content.size)) return undefined;
+    const first = captureMoveUnits(doc, anchor, true);
+    const last = captureMoveUnits(doc, head, true);
+    if (!first || !last || first.plan.parent !== last.plan.parent || first.plan.from !== last.plan.from) return undefined;
+    const index = Math.min(first.index, last.index);
+    const count = Math.abs(first.index - last.index) + 1;
+    const unit = first.plan.units[index]; const end = first.plan.units[index + count - 1];
+    if (!unit || !end || (first.plan.parent === doc && title(doc) && index === 0)) return undefined;
+    const token = Object.freeze({ label: count > 1 ? `Move ${count} blocks` : unit.inline ? "Move text line" : label(unit.node), index, count, start: unit.start, end: end.end, rootStart: unit.rootStart, inline: unit.inline });
+    captures.set(token, { doc, node: unit.node, generation, plan: first.plan });
     return token;
   };
   const isCurrent = (token: BlockMoveToken): boolean => {
     const saved = captures.get(token);
     return allowed() && saved !== undefined && saved.doc === editor.state.doc && saved.generation === generation;
   };
+  const isPending = (token: BlockMoveToken): boolean => {
+    const saved = captures.get(token);
+    return usable() && gate.refusal() === "pending" && saved !== undefined && saved.doc === editor.state.doc && saved.generation === generation;
+  };
   const canDrop = (token: BlockMoveToken, boundary: number): boolean => {
     if (!isCurrent(token)) return false;
     const saved = captures.get(token);
     const first = saved?.plan && saved.plan.parent.type.name !== "doc" ? 0 : title(editor.state.doc) ? 1 : 0;
-    if (!saved || !Number.isInteger(boundary) || boundary < first || boundary > (saved.plan?.units.length ?? saved.doc.childCount) || boundary === token.index || boundary === token.index + 1) return false;
+    if (!saved || !Number.isInteger(boundary) || boundary < first || boundary > (saved.plan?.units.length ?? saved.doc.childCount) || (boundary >= token.index && boundary <= token.index + token.count)) return false;
     if (!saved.plan && !title(saved.doc) && token.index === 0 && saved.doc.childCount > 1) {
       const next = saved.doc.child(1);
       if (next.type.name === "heading" && next.attrs["level"] === 1) return false;
@@ -121,7 +148,7 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     let insertion = token.start;
     let relocate: (pos: number) => number;
     if (saved.plan) {
-      const result = reorderMoveUnits(tr, saved.plan, token.index, boundary);
+      const result = reorderMoveUnits(tr, saved.plan, token.index, boundary, token.count);
       if (!result) return false;
       relocate = result.relocate;
       insertion = relocate(token.start);
@@ -145,6 +172,10 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     manager?.stopCapturing();
     try { editor.view.dispatch(tr); } finally { manager?.stopCapturing(); }
     const applied = editor.state.doc.eq(tr.doc);
+    if (applied && saved.plan) {
+      const first = saved.plan.units[token.index]; const last = saved.plan.units[token.index + token.count - 1];
+      if (first && last) movedRanges.set(token, { doc: tr.doc, generation, anchor: relocate(first.start), head: relocate(last.start) });
+    }
     if (applied && (selection instanceof TextSelection || selection instanceof NodeSelection)) {
       manager?.undoStack[manager.undoStack.length - 1]?.meta.set(MOVED_SELECTION, {
         before: { doc: saved.doc, anchor: selection.anchor, head: selection.head },
@@ -175,7 +206,11 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     }
   };
   history?.on("stack-item-popped", restoreMovedSelection);
-  const move = (token: BlockMoveToken, direction: "up" | "down"): boolean => drop(token, direction === "up" ? token.index - 1 : token.index + 2);
+  const move = (token: BlockMoveToken, direction: "up" | "down"): boolean => drop(token, direction === "up" ? token.index - 1 : token.index + token.count + 1);
+  const moved = (token: BlockMoveToken): BlockMoveToken | undefined => {
+    const range = movedRanges.get(token);
+    return range?.doc === editor.state.doc && range.generation === generation ? captureRange(range.anchor, range.head, true) : undefined;
+  };
   const destroy = (): void => {
     if (destroyed) return;
     destroyed = true;
@@ -204,5 +239,5 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     saved.doc.forEach((node, start) => units.push({ start, end: start + node.nodeSize, inline: false }));
     return units;
   };
-  return { capture, move, drop, isCurrent, canDrop, targets, subscribe, destroy };
+  return { capture, captureRange, moved, move, drop, isCurrent, isPending, canDrop, targets, subscribe, destroy };
 }

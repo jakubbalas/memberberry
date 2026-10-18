@@ -50,7 +50,7 @@ function paragraphUnits(parent: PMNode, start: number): MoveUnit[] {
   return units;
 }
 /** Only expanded captures scan rows; ordinary block/caret captures retain their constant-depth path. */
-export function captureMoveUnits(doc: PMNode, pos: number): { plan: MoveUnits; index: number } | undefined {
+export function captureMoveUnits(doc: PMNode, pos: number, expand = false): { plan: MoveUnits; index: number } | undefined {
   const at = doc.resolve(pos);
   const root = doc.child(at.index(0));
   const rootStart = at.depth > 0 ? at.before(1) : pos;
@@ -67,7 +67,7 @@ export function captureMoveUnits(doc: PMNode, pos: number): { plan: MoveUnits; i
     return { plan: { units, from, parent }, index: at.index(listDepth) };
   }
   const lines = root.type.name === "paragraph" ? paragraphUnits(root, rootStart) : undefined;
-  if (listDepth === 0 && (!lines || lines.length < 2)) return undefined;
+  if (!expand && listDepth === 0 && (!lines || lines.length < 2)) return undefined;
   const units: MoveUnit[] = [];
   doc.forEach((node, start, childIndex) => {
     if (isList(node)) units.push(...listUnits(node, start, start));
@@ -77,20 +77,23 @@ export function captureMoveUnits(doc: PMNode, pos: number): { plan: MoveUnits; i
       else units.push({ node, start, end: start + node.nodeSize, rootStart: start, inline: false, childIndex });
     } else units.push({ node, start, end: start + node.nodeSize, rootStart: start, inline: false, childIndex });
   });
-  const start = listDepth > 0 ? at.depth > listDepth ? at.before(listDepth + 1) : pos : lines?.find(line => pos >= line.start && pos <= line.end)?.start;
+  const start = listDepth > 0 ? at.depth > listDepth ? at.before(listDepth + 1) : pos
+    : isList(root) ? rootStart + 1
+    : lines && lines.length > 1 ? lines.find(line => pos >= line.start && pos <= line.end)?.start ?? (pos === rootStart ? lines[0]?.start : undefined) : rootStart;
   const index = units.findIndex(unit => unit.start === start);
   return index < 0 ? undefined : { plan: { units, from: 0, parent: doc }, index };
 }
 /** Describes the post-move location of every original unit, including an unrelated selection. */
 export interface UnitMoveResult { readonly relocate: (pos: number) => number }
 /** Reorders units, reconstructing only changed containers and replacing the smallest root span. */
-export function reorderMoveUnits(tr: Transaction, plan: MoveUnits, index: number, boundary: number): UnitMoveResult | undefined {
+export function reorderMoveUnits(tr: Transaction, plan: MoveUnits, index: number, boundary: number, count = 1): UnitMoveResult | undefined {
   const rows = plan.units.slice();
-  const moved = rows.splice(index, 1)[0];
-  if (!moved) return undefined;
-  rows.splice(boundary > index ? boundary - 1 : boundary, 0, moved);
+  const moved = new Set(rows.splice(index, count));
+  if (moved.size !== count || count < 1) return undefined;
+  rows.splice(boundary > index ? boundary - count : boundary, 0, ...moved);
   const nodes: PMNode[] = [];
   const locations = new Map<MoveUnit, number>();
+  const numbering = new Map<PMNode, number>();
   let position = plan.from;
   for (let i = 0; i < rows.length;) {
     const first = rows[i]; if (!first) return undefined;
@@ -103,10 +106,19 @@ export function reorderMoveUnits(tr: Transaction, plan: MoveUnits, index: number
       if (!next || !(next.parent === first.parent || (!first.inline && next.parent && compatibleLists(first.parent, next.parent)))) break;
       group.push(next); i++;
     }
-    const parent = group.find(row => row !== moved)?.parent ?? first.parent;
+    const resident = group.find(row => !moved.has(row));
+    const parent = resident?.parent ?? first.parent;
     const ownsAnchor = group.some(row => row.parent === parent && row.childIndex === 0);
     const attrs: Record<string, unknown> = { ...parent.attrs, ...(ownsAnchor ? {} : { anchor: null }) };
-    if (!first.inline && parent.type.name === "ordered_list" && !ownsAnchor) attrs["start"] = Number(parent.attrs["start"]) + (group.find(row => row.parent === parent)?.childIndex ?? 0);
+    if (!first.inline && parent.type.name === "ordered_list") {
+      // why: numbering belongs to the resulting list, not to the original item offsets.
+      // Source survivors retain their starting number; inserted items adopt the destination.
+      // A detached subset starts a new list at 1; moving an entire list retains its start.
+      const wholeList = group.length === parent.childCount && group.every(row => row.parent === parent);
+      const start = resident ? numbering.get(parent) ?? Number(parent.attrs["start"]) : wholeList ? Number(parent.attrs["start"]) : 1;
+      attrs["start"] = start;
+      if (resident) numbering.set(parent, start + group.length);
+    }
     const children: PMNode[] = [];
     let offset = position + 1;
     const breaks: PMNode[] = [];

@@ -2494,6 +2494,34 @@ Catalogue Insert below/Turn into continue targeting the enclosing root as specif
 Not yet: an independent
 review and a physical-phone pass of drag.
 
+**Multi-block selection (2026-10-18).** At Paul’s request, block selection is separate
+from native text highlighting. On fine pointers, drag a rectangle from the blank editor
+margin/gaps across complete movement units. The rectangle and selected rows use translucent
+Memberberry purple tokens in every theme. A gesture beginning in text retains native text
+selection. Shift-click extends an existing block selection to an endpoint.
+
+Escape on a collapsed body caret selects its movement unit; Shift-Up/Down extends or shrinks
+the contiguous range, and Escape clears it. The block menu offers Select block, Extend
+selection up/down and Clear block selection, also reached on touch through More → Block
+actions (accessible name “Select or move blocks”). Touch scrolling remains native. The
+first-H1 title is excluded; nested item ranges stay inside their common parent list.
+
+The selected range shares one handle and Move up/down actions, including More’s movement
+actions. Moving preserves item order, marks, metadata and nested subtrees in one isolated
+undo step. Drops inside or directly beside the same range are no-ops. Source survivors keep
+the original list starting number, inserted numbered items adopt the destination sequence,
+and a detached subset starts a new list at 1. A whole list retains its explicit start.
+HTML ordered-list counters update sequentially; Markdown retains the canonical serializer’s
+existing first-start/subsequent-`1.` marker representation.
+
+Selection overlays and status live outside note content, clip to the visible note pane clear of
+its toolbar, and are omitted from print/export. Ordinary text gestures, editing, composition,
+outside focus, document changes and safety refusals clear selection. The exact range from
+an applied local move can wait for its own acknowledgement, with further writes refused
+until sync is ready; source changes or other safety failures invalidate it. All existing
+single-editor/runtime/read-only and stale-token movement guards remain in force.
+
+
 **Block catalogue (2026-10-14).** The block `⋯` additionally offers **Turn into…** and
 **Insert below…**. Insert below targets the complete root under the handle, including a
 whole list/table/container rather than a nested item. A labelled **Insert** toolbar button

@@ -34,6 +34,15 @@ describe("individual grouped-unit capture", () => {
     }, { time: 200, warmupTime: 100 });
   }
 });
+describe("contiguous group capture", () => {
+  for (const kind of ["bullet", "line"] as const) for (const count of counts) {
+    bench(`all ${count} ${kind} rows`, () => {
+      const f = fixtures.get(`${kind}:${count}`); if (!f) throw new Error("missing benchmark fixture");
+      const first = f.mover.capture(f.editor.state.doc.firstChild?.nodeSize ?? 0);
+      if (!first || !f.mover.captureRange(first.start, f.pos)) throw new Error("benchmark did not capture a range");
+    }, { time: 200, warmupTime: 100 });
+  }
+});
 afterAll(() => {
   for (const f of fixtures.values()) { f.mover.destroy(); f.editor.destroy(); f.doc.destroy(); }
   fixtures.clear();
