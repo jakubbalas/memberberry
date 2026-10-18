@@ -1,79 +1,88 @@
-# Current state — October 18, 2026
+# Handoff — combined release candidate
 
-The New vault checkbox and graceful symbolic-link handling (t-013/t-012) are implemented
-and deployed. Live memberberry-memberberry-1 is healthy on
-memberberry-memberberry:ignore-folders-20261018, image sha256:90585f1efde3eaa74700bca7f5fa27a7e7794114dcbb591db6d9d81ee4efb123.
-Backend SHA256 10e0f1e9d24f8a55301214f7e14b4cc4127a231ea40036c5efcca1ceb61bc99c; source manifest cfa3d26d870c6f7dfc602360189b494560ea5d4bdc5bbf3d068ba39485474d62
-(731 files, operational HANDOFF excluded). All 387 frontend files and unchanged schema-3
-WASM match the tested package. Four registrations, 738 Markdown files, 4 policies,
-config/media/credentials/runtime settings were preserved. Six fresh writer-stopped same-disk
-archives and the previous fb528f1f image are retained; 62 saved CRDT copies verified.
-Never replay deploy or restore stale Markdown. Private archives are not off-host recovery.
+Canonical workflow: ../PROJECT.md, ../project-status.md and
+../tasks/open/t-015-combine-completed-work-and-deploy.md.
 
-After choosing a server folder, New vault offers the default-off checkbox
-“Ignore non-writable folders from vault”. The value persists per vault. Registration,
-catalog/tree, direct reads, search/indexing and native watcher enrollment omit service-ineligible
-folders without repairing permissions. Root/policy/required media/index storage remain strict,
-as do individual eligible Markdown files. Symbolic links are always excluded and never grant
-content access. The later settings-page toggle/recheck and manual exclusion patterns are deferred.
-SPEC.md §§6.1/6.4 contain the contract; no CRDT/WASM schema or dependency changes.
+Worktree release-20261018, branch integrate/completed-work-20261018. Paul directly
+requested combining all completed work and deploying it for live testing on October 18.
+This branch preserves the deployed vault/folder/individual-movement baseline and adds
+purple block selection/group moves, numbered-list Return and the installable PWA.
+Original source worktrees and indexes are preserved; integration uses verified snapshots.
+Older Tasks/editor refs already occur in upstream history; no unfinished Tasks changes
+are included. Latest fetched origin/main is 123d8e4. No GitHub push/PR is requested.
 
-Nine specifically authorized workspace Markdown files received service-UID 10001 rw ACLs,
-with bytes and other users' effective access preserved at repair time. Private evidence
-folder permissions were not broadened. Exact receipts are in the parent evidence directory.
-No real vault was registered for testing, no policy/credential reset or fabricated session.
+Current state: integration and focused validation in progress. Live remains on
+ignore-folders-20261018 (90585f1e…) until the matched build is verified. No deployment
+or backup claim is made at this checkpoint. Evidence and deployment tooling live in
+../integration-evidence-20261018/combined-release/. Never replay older rollout receipts.
 
-## Verification and next action
+The approved rollout preserves all live registrations, note/policy bytes, credentials,
+media, runtime and mount settings. Fresh writer-stopped backups and previous image are
+required. Saved CRDT compatibility is checked on copies. Never restore stale notes or
+clear browser replicas. Paul performs normal-login/device acceptance afterward.
 
-157 focused Rust, 152 frontend and 34 unique final release-binary desktop/mobile browser cases
-pass (zero retries/skips). Each browser spec followed a rebuild. Typecheck has zero errors/
-warnings; token, Rustfmt and whitespace checks pass. Regression-first reds and raw logs,
-native UID 65534 no-read observers/positive controls, config restart, critical-storage refusal
-and watcher new-directory refresh are retained. The focused directory-resolution Criterion
-benchmark is recorded with machine-specific limits; this is not Android/full budget validation.
-Read-only live desktop/mobile browsers render login/CSP, verify exact app/folder assets and
-anonymous denials, with zero POSTs/errors. Public origin is behind Cloudflare Access;
-normal signed-in review remains pending. Full make check, coverage, user-run full make e2e,
-independent review and acceptance are deferred/pending. Existing historical full-gate failures
-remain unwaived in PROJECT.md; focused passes are not a full-gate claim.
+Source/security self-review precedes quality review; combined verification must cover
+folder filters, permission boundaries, selection plus numbered Return, PWA refresh,
+search and guarded cross-window updates. Full make check, coverage, full user-run manual
+E2E, independent approval and physical-device budgets remain deferred/unwaived. No
+speedup/phone performance claim; inherited optimized bundle failure remains open.
 
-Next: Paul refreshes New vault, chooses the folder, checks the option and reviews the result.
-Do not create that live registration on his behalf. Keep task records open for review and
-combine the parallel editor/PWA work only when separately ready and authorized.
+Durable behavior is in SPEC §6.1/6.4, §7.4, §8.4 and §14.2. The matching server and
+frontend must deploy together. Offline media and closed-app periodic refresh are deferred.
+The new app uses explicit reload; the waiting worker changes offline build only when
+old controlled windows close. A remembered path grants no server authority.
 
-## Source isolation and later merge
+The isolated build and exact reproduction commands are recorded in the evidence runbook.
+Do not overlap browser fixtures or Rust builders; each browser spec requires a rebuild,
+one worker and no retries. Use installed stable Rust (1.90 fails existing yrs code).
 
-Work only in /var/home/paul/clawd/projects/memberberry/new-vault-20261018,
-branch feat/unified-new-vault-20261018, HEAD 123d8e4ddf01f4c1d63ccc7afa4ef1321b449e58.
-No new commit/merge/push/PR. Prerequisite integration is staged in this worktree's independent
-index; t-009/t-012/t-013 are unstaged (new tests/helpers intent-to-add). Do not commit the
-whole staged baseline as this feature. Preserve integration-20261017, which holds the common
-Git directory and concurrent t-010 work. t-011 and t-014 remain separate. Earlier t-009 copies
-exist in the shared source; avoid applying twice. Current source contains none of those later
-parallel changes.
+## Inherited development gotchas
 
-Parent integration-evidence-20261018/non-writable-folders contains final source/package,
-guarded rollout and browser receipts, t013-only.patch and merge-patch-verification.json.
-Its baseline.json identifies t-012 tree a6bcbbfa… and t012-base-source.tar; t012-only.patch
-is relative to t-009 tree bfca5369…. Earlier new-vault evidence contains prerequisite and
-t009 feature patches. Review/reconcile prerequisites first, then t009/t012/t013 and parallel
-changes, particularly SPEC/HANDOFF and shared runtime code; test the final combined source.
-Earlier t012 source verification is historical: its build directory was intentionally reused
-for t013. Final verify-source.py checks all current frozen inputs and returns nonzero on drift.
+- ProseMirror plugins belong at editor construction. Unknown-schema Y docs must be
+  preflighted before binding: y-prosemirror can delete unknown marks/nodes.
+- Playwright native/model caret and selectionchange can disagree temporarily; poll the
+  actual selection before shortcuts. Tiptap focuses on a deferred RAF.
+- tables.spec.ts is historically not repeat-safe; repeated-run failures are not cleared.
+- 9010/9011 are user dev services; do not stop/reuse them. This fixture owns 9016 only;
+  other tasks own 9014/9015, as recorded in AGENTS.md.
+- `~/.hermes/cache/scratch/memberberry-r3-mixed-diagnostic-o5qcg3iy/delivery` has a
+  historical REPORT.md mode mismatch, unverified. Do not reseal without user consent.
+- Earlier editor follow-ups remain outside this PWA slice: no touch Shift+Enter route,
+  per-view toggle folding, no container-to-Text unwrap, no touch long-press handles;
+  coverage and load-sensitive editor browser limits remain unwaived.
 
-## Development commands and environment
+## Open safety / verification items (pre-existing)
 
-Use memberberry-local-dev (1CPU/4GiB), independent source/target/node_modules at
-/tmp/memberberry-symlink-20261018. Do not edit /src or the earlier t009 frozen build.
-Docker execution needs host access. Set PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin,
-CARGO_HOME=/build-cargo, CARGO_BUILD_JOBS=1 and RUST_TEST_THREADS=1. TMPDIR must be
-/tmp/memberberry-symlink-20261018/target/browser-tmp; default inherited scratch points to /src.
-For browser work set XDG_CACHE_HOME to target/browser-cache, GSETTINGS_SCHEMA_DIR to
-target/browser-schemas and GSETTINGS_BACKEND=memory. Chromium is installed at
-/root/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome.
+- `sync registry lock poisoned` panic: unreproduced, unfixed. Capture the first backtrace
+  if it recurs; don't clear poison or delete replicas.
+- False-conflict callouts are not auto-removed.
+- Real-browser IndexedDB cap eviction and cross-tab eviction unverified.
+- Previously failing on main, unverified since:
+  `onboarding_failed_config_write_removes_the_unpublished_vault_and_allows_retry`,
+  `unreadable_vault_shows_recovery_guidance_only_to_its_member`.
+- Linux Chromium crashes, mobile cold-start / quick-switcher perf breaches
+  (`web/perf/breaches.json`). Laptop/jsdom benchmarks are not Android evidence.
+- `npm audit`: 13 advisories (1 low, 10 moderate, 2 high) last seen, not re-triaged.
+- Clippy on server tests has 30 inherited errors (not green).
+- Known codec limits: native marks on atomic images can be lost; adversarial unmatched
+  CommonMark brackets are slow.
 
-Run relevant focused Rust targets, admin tests with one worker, typecheck and tokens.
-Rebuild immediately before each single focused browser spec; run-browser.py records the exact
-command/environment and release binary. Do not run full gates/coverage/full E2E without the
-explicit request required by AGENTS.md. Final read-only live-network helper restores the
-container's exact previous networks. Raw logs and screenshots are retained in checks/.
+## Carried-forward feature limits
+
+- Tables: no offscreen drag autoscroll; no multi-client browser coverage; no column
+  delete/resize or headerless tables.
+- Inbox: no offline filtered query, live refresh, remembered filters, timezone-aware dates.
+- Creation: no folder-row create / template picker; creation not audited (§6.10).
+- Unlinked mentions: silent 50-block cap; no conversion/highlight/live refresh.
+- Offline bodies/pins: caps not configurable; eviction per visible vault; pins device-local;
+  no folder pins.
+- Shell/PWA: foreground reconnect backoff remains up to 30s without a return/online
+  signal; shared static precache across users of one browser profile; no skipWaiting;
+  limited tablet/gesture coverage. t-014 adds immediate socket reopening on authorized return.
+- Graphs: not persistent tabs; no live update; global nodes not draggable; local labels
+  overlap; duplicate titles indistinguishable.
+- Rename/folder move: open clients/bookmarks not updated; partial writes not rolled back;
+  O(vault) cost.
+- Outline/tags/transclusion: limited drag/cross-pane coverage; tags don't poll; embeds
+  don't live-refresh; unavailable placeholders never name hidden targets (by design).
+- Index/backlinks: no conditional 304; audit timestamps are Unix seconds, not RFC3339.

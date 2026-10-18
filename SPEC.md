@@ -2341,8 +2341,9 @@ exactly the devices nobody tried.
 - In the editable note body, Cmd/Ctrl-Z undoes local edits; Cmd/Ctrl-Shift-Z or
   Cmd/Ctrl-Y redoes them through the CRDT undo stack. This stack lasts for the open
   editor session and is separate from server version history (§18).
-- In lists, Enter after a nonempty bullet starts a sibling bullet; Enter on an empty
-  final item leaves the list. Tab nests a bullet below its preceding sibling, and
+- In bulleted and numbered lists, Enter after a nonempty item starts a sibling item
+  (the next number in a numbered list); Enter on an empty final item leaves the list.
+  Tab nests a bullet below its preceding sibling, and
   Shift-Tab outdents it. Other focusable controls retain their ordinary Tab behavior.
 - Typing paired single backticks in ordinary text creates the inline `code` mark;
   unmatched and escaped backticks remain text. Fenced code remains a block.
