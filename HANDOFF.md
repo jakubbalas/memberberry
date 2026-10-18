@@ -1,40 +1,69 @@
-# Handoff — combined release candidate
+# Handoff — combined release deployed
 
-Canonical workflow: ../PROJECT.md, ../project-status.md and
+Updated 2026-10-18T19:06:12+02:00. Canonical workflow: ../PROJECT.md, ../project-status.md and
 ../tasks/open/t-015-combine-completed-work-and-deploy.md.
 
-Worktree release-20261018, branch integrate/completed-work-20261018. Paul directly
-requested combining all completed work and deploying it for live testing on October 18.
-This branch preserves the deployed vault/folder/individual-movement baseline and adds
-purple block selection/group moves, numbered-list Return and the installable PWA.
-Original source worktrees and indexes are preserved; integration uses verified snapshots.
-Older Tasks/editor refs already occur in upstream history; no unfinished Tasks changes
-are included. Latest fetched origin/main is 123d8e4. No GitHub push/PR is requested.
+Live is healthy on memberberry-memberberry:combined-pwa-editor-20261018,
+image sha256:4dd3b78eef63dc06068497e7ae74d64ed07e8a3da237606d637d17298ace1b06. Tested source ccfe65b625a2b4da642489f003880640ef138f69, branch
+integrate/completed-work-20261018, worktree /var/home/paul/clawd/projects/memberberry/release-20261018.
+This operational handoff is updated after the frozen source/build; its documentation-only
+commit does not change the runtime. No GitHub push/PR. Original four worktrees, HEADs and
+indexes remain unchanged, verified in the evidence receipt.
 
-Current state: integration and focused validation in progress. Live remains on
-ignore-folders-20261018 (90585f1e…) until the matched build is verified. No deployment
-or backup claim is made at this checkpoint. Evidence and deployment tooling live in
-../integration-evidence-20261018/combined-release/. Never replay older rollout receipts.
+Includes the deployed vault/folder/individual-movement baseline, purple block selection/
+group moves, numbered-list Return and the installable PWA. All older remote feature refs
+are already ancestors of fetched upstream 123d8e4. No unfinished Tasks source imported.
 
-The approved rollout preserves all live registrations, note/policy bytes, credentials,
-media, runtime and mount settings. Fresh writer-stopped backups and previous image are
-required. Saved CRDT compatibility is checked on copies. Never restore stale notes or
-clear browser replicas. Paul performs normal-login/device acceptance afterward.
+## Verified rollout and next action
 
-Source/security self-review precedes quality review; combined verification must cover
-folder filters, permission boundaries, selection plus numbered Return, PWA refresh,
-search and guarded cross-window updates. Full make check, coverage, full user-run manual
-E2E, independent approval and physical-device budgets remain deferred/unwaived. No
-speedup/phone performance claim; inherited optimized bundle failure remains open.
+All 389 frontend files and backend SHA256 b1e75eec57ec9a0bd90ea2c610f6d980f9b9d5144b922a1789ac9955ba2ba44d match
+the tested package. Four registrations, 739 Markdown and four policies match the fresh
+writer-stopped snapshot. Config, credentials, media, mounts, runtime/environment and
+Compose are preserved. Six checked private same-disk backup archives and the previous
+90585f1e… image are retained under before-combined-pwa-editor-20261018. All 63 saved
+CRDT copies passed the unchanged-codec compatibility probe; live state was not opened
+by the probe. No data restoration, registry/ACL/credential edit or Access policy change.
+Backups are not off-host recovery. Never replay older deploy or restore stale notes.
 
-Durable behavior is in SPEC §6.1/6.4, §7.4, §8.4 and §14.2. The matching server and
-frontend must deploy together. Offline media and closed-app periodic refresh are deferred.
-The new app uses explicit reload; the waiting worker changes offline build only when
-old controlled windows close. A remembered path grants no server authority.
+Focused combined proof: 763 frontend cases/51 files; 54 leak + 23 sync + 13 WebSocket
+and two HTTP cases; typecheck/tokens/Rustfmt/whitespace pass. Seven immediately rebuilt
+single specs: 31 browser passes, one inherited mouse-only mobile exclusion, no retries.
+The actual optimized release binary is used. Author spec/security then quality reviews
+found no remaining finding; independent approval and feature acceptance are not claimed.
 
-The isolated build and exact reproduction commands are recorded in the evidence runbook.
-Do not overlap browser fixtures or Rust builders; each browser spec requires a rebuild,
-one worker and no retries. Use installed stable Rust (1.90 fails existing yrs code).
+Read-only actual live desktop/mobile browsers render login/CSP, verify 11 served assets
+including PNG/WASM plus protected entry denials; zero POSTs/errors. Exact build/data/health
+rechecked afterward. Public signed-in review, actual Android install/native activation,
+macOS and Access expiry remain Paul's checks. Unauthenticated command-line public requests
+returned Cloudflare 403; real public Chrome reaches the normal Cloudflare Access sign-in (200), without credentials.
+Full make check, coverage, full user-run manual E2E and physical-device budgets remain
+deferred/unwaived. No speedup claim; inherited optimized bundle failure remains open.
+
+Next: close all Memberberry tabs/installed windows and reopen
+https://memberberry.quantanex.space using the normal account. Do not clear site data.
+Test install/resume, return refresh, offline text/search, selection/group moves, numbered
+Return and the current New vault form. Task/feature records remain in review for acceptance.
+
+## Evidence and reproduction
+
+../integration-evidence-20261018/combined-release/README.md contains the current runbook,
+exact frozen source manifest/archive (763 inputs), package/backup/deploy/live-browser
+receipts, retained failures, public check and source/index preservation proof. Code remains
+committed locally; no upstream merge/push/PR. The generated note-WASM was explicitly
+copied from the prior verified build and byte-matches its served package; schema unchanged.
+
+Private build: memberberry-local-dev:/tmp/memberberry-combined-20261018, stable Rust,
+1CPU/4GiB, offline dependencies and copied private target/node_modules. Scripts in the
+runbook run affected frontend checks or exactly one rebuilt browser spec, one worker,
+zero retries. Never overlap builders/fixtures or edit the old source directories.
+Missing generated-WASM/browser-cache setup failures are retained, not counted as red.
+
+Two integration corrections are recorded: constant same-origin manifest links explicitly
+send credentials for authenticated proxies (real browser cookie-gate red/green proof);
+update tests finish startup worker checks and await completed installation before asserting
+the prompt (four final passes). The latter changes tests only. App update behavior remains
+explicit reload, with old windows retaining their waiting worker/cache. No replica deletion,
+offline media, closed-app periodic refresh or new third-party service is added.
 
 ## Inherited development gotchas
 
