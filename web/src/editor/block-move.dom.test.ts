@@ -51,6 +51,175 @@ it("moves an adjacent complete block through actual Yjs/WASM and isolates move u
   expect(undo(f.editor.state)).toBe(true);
   expect(await f.saved()).toBe("# Title ^title\n\nAlpha ^a\n\n## Beta ^b\n\nGamma ^c\n");
 });
+it("moves just the selected bullet with its nested children and keeps its siblings in place", async () => {
+  const f = await open("# Title\n\n- Alpha\n  - child\n- **Beta α🌍**\n- Gamma\n\nAfter\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "bullet-row" }); cleanups.push(mover.destroy);
+  const original = await f.saved();
+  let pos = -1;
+  f.editor.state.doc.descendants((node, start) => { if (node.isText && node.text === "Beta α🌍") pos = start; });
+  f.editor.commands.setTextSelection(pos + 2);
+  const token = mover.capture(pos); if (!token) throw new Error("missing bullet");
+  expect(mover.move(token, "up")).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\n- **Beta α🌍**\n\n- Alpha\n\n  - child\n\n- Gamma\n\nAfter\n");
+  expect(undo(f.editor.state)).toBe(true);
+  expect(await f.saved()).toBe(original);
+  expect(redo(f.editor.state)).toBe(true);
+  expect(f.editor.state.selection.$head.parent.textContent).toBe("Beta α🌍");
+});
+it.each(["\n", "  \n", "\r\n", "\r"])("moves just one explicit text line separated by %j through save and reopen", async separator => {
+  const f = await open(`# Title\n\nAlpha${separator}**Beta α🌍**${separator}Gamma\n\nAfter\n`);
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "text-row" }); cleanups.push(mover.destroy);
+  let pos = -1;
+  f.editor.state.doc.descendants((node, start) => { if (node.isText && node.text === "Beta α🌍") pos = start; });
+  f.editor.commands.setTextSelection(pos + 2);
+  const original = await f.saved();
+  const token = mover.capture(pos); if (!token) throw new Error("missing line");
+  expect(mover.move(token, "up")).toBe(true);
+  const canonicalSeparator = separator === "  \n" ? "\\\n" : "\n";
+  expect(await f.saved()).toBe(`# Title\n\n**Beta α🌍**${canonicalSeparator}Alpha${canonicalSeparator}Gamma\n\nAfter\n`);
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+  expect(undo(f.editor.state)).toBe(true); expect(await f.saved()).toBe(original);
+  expect(f.editor.state.selection.$head.parentOffset).toBe(8);
+});
+function textPosition(editor: Editor, text: string): number {
+  let found: number | undefined;
+  editor.state.doc.descendants((node, pos) => { if (node.isText && node.text === text) found = pos; });
+  if (found === undefined) throw new Error(`missing fixture text ${text}`);
+  return found;
+}
+it("captures a bullet marker boundary as the individual item", async () => {
+  const f = await open("# Title\n\n- Alpha\n- Beta\n- Gamma\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "marker" }); cleanups.push(mover.destroy);
+  const start = f.start(1) + 1;
+  const token = mover.capture(start); if (!token) throw new Error("missing bullet marker");
+  expect(token.label).toBe("Move list item");
+  expect(mover.move(token, "down")).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\n- Beta\n- Alpha\n- Gamma\n");
+});
+it("reorders nested sibling bullets while keeping their parent and other siblings intact", async () => {
+  const f = await open("# Title\n\n- Parent\n  - One\n  - Two\n- Sibling\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "nested" }); cleanups.push(mover.destroy);
+  const before = f.editor.state.doc;
+  const token = mover.capture(textPosition(f.editor, "Two")); if (!token) throw new Error("missing nested item");
+  expect(mover.move(token, "up")).toBe(true);
+  const parent = f.editor.state.doc.child(1).child(0);
+  expect(parent.child(0).eq(before.child(1).child(0).child(0))).toBe(true);
+  expect(parent.child(1).child(0).eq(before.child(1).child(0).child(1).child(1))).toBe(true);
+  expect(f.editor.state.doc.child(1).child(1).eq(before.child(1).child(1))).toBe(true);
+  expect(undo(f.editor.state)).toBe(true); expect(f.editor.state.doc.eq(before)).toBe(true);
+});
+it("moves one bullet beyond its list without losing its siblings, marks or nested content on reopen", async () => {
+  const f = await open("# Title\n\n- **Alpha**\n- Beta\n\nAfter\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "outside-list" }); cleanups.push(mover.destroy);
+  const item = f.editor.state.doc.child(1).child(0);
+  const token = mover.capture(textPosition(f.editor, "Alpha")); if (!token) throw new Error("missing item");
+  expect(mover.drop(token, mover.targets(token).length)).toBe(true);
+  expect(f.editor.state.doc.lastChild?.firstChild?.eq(item)).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\n- Beta\n\nAfter\n\n- **Alpha**\n");
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+});
+it("merges a moved bullet into a compatible destination list so save/reopen preserves the structure", async () => {
+  const f = await open("# Title\n\n- Alpha\n- Beta\n\nBetween\n\n- Gamma\n- Delta\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "between-lists" }); cleanups.push(mover.destroy);
+  const token = mover.capture(textPosition(f.editor, "Alpha")); if (!token) throw new Error("missing item");
+  expect(mover.drop(token, mover.targets(token).length - 1)).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\n- Beta\n\nBetween\n\n- Gamma\n- Alpha\n- Delta\n");
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+});
+it("uses the destination numbering when moving an item between differently numbered lists", async () => {
+  const f = await open("# Title\n\n1. Alpha\n2. Beta\n\nBetween\n\n7. Gamma\n8. Delta\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "numbered-destination" }); cleanups.push(mover.destroy);
+  const token = mover.capture(textPosition(f.editor, "Alpha")); if (!token) throw new Error("missing item");
+  expect(mover.drop(token, mover.targets(token).length - 1)).toBe(true);
+  expect(f.editor.state.doc.lastChild?.attrs["start"]).toBe(7);
+  expect(f.editor.state.doc.lastChild?.childCount).toBe(3);
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+});
+it("keeps a node selection on the moved bullet at an adjacent item boundary", async () => {
+  const f = await open("# Title\n\n- Alpha\n- Beta\n- Gamma\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "selected-item" }); cleanups.push(mover.destroy);
+  const start = f.start(1) + 1 + f.editor.state.doc.child(1).child(0).nodeSize;
+  f.editor.view.dispatch(f.editor.state.tr.setSelection(NodeSelection.create(f.editor.state.doc, start)));
+  const token = mover.capture(start); if (!token) throw new Error("missing selected item");
+  expect(mover.move(token, "up")).toBe(true);
+  expect(f.editor.state.selection instanceof NodeSelection && f.editor.state.selection.node.textContent).toBe("Beta");
+  expect(undo(f.editor.state)).toBe(true);
+  expect(f.editor.state.selection.from).toBe(start);
+});
+it("retains an unrelated selected bullet while another item in the same list moves", async () => {
+  const f = await open("# Title\n\n- Alpha\n- Beta\n- Gamma\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "other-selected-item" }); cleanups.push(mover.destroy);
+  const list = f.editor.state.doc.child(1);
+  const start = f.start(1) + 1 + list.child(0).nodeSize + list.child(1).nodeSize;
+  f.editor.view.dispatch(f.editor.state.tr.setSelection(NodeSelection.create(f.editor.state.doc, start)));
+  const token = mover.capture(textPosition(f.editor, "Alpha")); if (!token) throw new Error("missing item");
+  expect(mover.move(token, "down")).toBe(true);
+  expect(f.editor.state.selection instanceof NodeSelection && f.editor.state.selection.node.textContent).toBe("Gamma");
+});
+it("moves one text line beyond its paragraph while preserving a unique block anchor and every inline mark", async () => {
+  const f = await open("# Title\n\nAlpha\n**Beta α🌍**\nGamma ^body\n\nAfter\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "outside-paragraph" }); cleanups.push(mover.destroy);
+  const token = mover.capture(textPosition(f.editor, "Beta α🌍")); if (!token) throw new Error("missing line");
+  expect(mover.drop(token, mover.targets(token).length)).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\nAlpha\nGamma ^body\n\nAfter\n\n**Beta α🌍**\n");
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+});
+it("keeps line selection and mixed explicit separator kinds through move, undo and redo", async () => {
+  const f = await open("# Title\n\nAlpha\n**Beta**\\\nGamma\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "mixed-lines" }); cleanups.push(mover.destroy);
+  const pos = textPosition(f.editor, "Beta");
+  f.editor.commands.setTextSelection({ from: pos + 1, to: pos + 3 });
+  const original = f.editor.state.doc;
+  const token = mover.capture(pos); if (!token) throw new Error("missing line");
+  expect(mover.move(token, "up")).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\n**Beta**\nAlpha\\\nGamma\n");
+  expect(f.editor.state.doc.textBetween(f.editor.state.selection.from, f.editor.state.selection.to)).toBe("et");
+  expect(undo(f.editor.state)).toBe(true); expect(f.editor.state.doc.eq(original)).toBe(true);
+  expect(f.editor.state.selection.from).toBe(pos + 1);
+  expect(redo(f.editor.state)).toBe(true);
+  expect(f.editor.state.doc.textBetween(f.editor.state.selection.from, f.editor.state.selection.to)).toBe("et");
+});
+it("preserves numbered task item JSON and original list start through reordering", async () => {
+  const f = await open("# Title\n\n3. [x] **Done** 📅 2026-10-03 ✅ 2026-10-04\n4. Plain\n5. [ ] Todo\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "numbered" }); cleanups.push(mover.destroy);
+  const original = f.editor.state.doc.child(1);
+  const token = mover.capture(textPosition(f.editor, "Done")); if (!token) throw new Error("missing task");
+  expect(mover.move(token, "down")).toBe(true);
+  expect(f.editor.state.doc.child(1).attrs).toEqual(original.attrs);
+  expect(f.editor.state.doc.child(1).child(1).toJSON()).toEqual(original.child(0).toJSON());
+  const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+});
+it.each(["- Alpha\n- Beta\n- Gamma", "Alpha\nBeta\nGamma"])("rechecks a captured individual unit after authority and source changes: %s", async body => {
+  const f = await open(`# Title\n\n${body}\n`); let ready = true;
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: `unit-guard-${f.ydoc.clientID}`, canInteract: () => ready }); cleanups.push(mover.destroy);
+  const token = mover.capture(textPosition(f.editor, "Beta")); if (!token) throw new Error("missing unit");
+  const before = await f.saved();
+  ready = false; expect(mover.move(token, "up")).toBe(false);
+  ready = true; f.editor.setEditable(false); expect(mover.move(token, "up")).toBe(false);
+  expect(await f.saved()).toBe(before);
+  f.editor.setEditable(true);
+  f.ydoc.getMap("frontmatter").set("version", "changed");
+  const changed = await f.saved();
+  expect(mover.move(token, "up")).toBe(false); expect(await f.saved()).toBe(changed);
+});
+it("preserves each bullet subtree exactly across seeded nonadjacent item moves and undo", async () => {
+  await fc.assert(fc.asyncProperty(fc.integer({ min: 0, max: 3 }), fc.integer({ min: 0, max: 4 }), async (index, boundary) => {
+    const f = await open("# Title\n\n- **One**\n- [ ] Two 📅 2026-10-03\n- Three\n  - child\n- Four\n");
+    const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: `item-property-${f.ydoc.clientID}` }); cleanups.push(mover.destroy);
+    const original = f.editor.state.doc; const list = original.child(1);
+    let pos = f.start(1) + 1; for (let i = 0; i < index; i++) pos += list.child(i).nodeSize;
+    const token = mover.capture(pos + 2); if (!token) throw new Error("missing item");
+    const expected: object[] = []; list.forEach(node => expected.push(node.toJSON() as object));
+    const item = expected.splice(index, 1)[0]; if (!item) throw new Error("missing expected item");
+    expected.splice(boundary > index ? boundary - 1 : boundary, 0, item);
+    const changed = mover.drop(token, boundary + 1);
+    expect(changed).toBe(boundary !== index && boundary !== index + 1);
+    const actual: object[] = []; f.editor.state.doc.child(1).forEach(node => actual.push(node.toJSON() as object));
+    expect(actual).toEqual(expected);
+    const reopened = await open(await f.saved()); expect(reopened.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
+    if (changed) { expect(undo(f.editor.state)).toBe(true); expect(f.editor.state.doc.eq(original)).toBe(true); }
+  }), { seed: 171026, numRuns: 24 });
+});
 it("refuses moving the original first H1 and preserves title identity", async () => {
   const f = await open(); const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "title" }); cleanups.push(mover.destroy);
   expect(mover.capture(2)).toBeUndefined();
@@ -109,14 +278,15 @@ it("labels a nested table cell as its whole table and moves every child unchange
   expect(f.editor.state.doc.child(2).toJSON()).toEqual(table.toJSON());
   const reopen = await open(await f.saved()); expect(reopen.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
 });
-it("labels a nested task as its whole list and preserves status/due/done, nested children and marks", async () => {
+it("moves a task item with its status/due/done, nested children and marks", async () => {
   const f = await open("# Title\n\n- [x] **Done α🌍** 📅 2026-10-03 ✅ 2026-10-04\n  - child [link](https://example.com)\n- [ ] sibling\n\nAfter\n");
   const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "task" }); cleanups.push(mover.destroy);
   const list = f.editor.state.doc.child(1);
   const token = mover.capture(f.start(1) + 4); if (!token) throw new Error("missing list token");
-  expect(token.label).toBe("Move task list");
+  expect(token.label).toBe("Move task item");
   expect(mover.move(token, "down")).toBe(true);
-  expect(f.editor.state.doc.child(2).toJSON()).toEqual(list.toJSON());
+  expect(f.editor.state.doc.child(1).child(1).toJSON()).toEqual(list.child(0).toJSON());
+  expect(f.editor.state.doc.child(1).child(0).toJSON()).toEqual(list.child(1).toJSON());
   const reopen = await open(await f.saved()); expect(reopen.editor.state.doc.toJSON()).toEqual(f.editor.state.doc.toJSON());
 });
 it("refuses known peers, duplicate mounted note keys and routed unsynced/offline/pending writes", async () => {
@@ -236,7 +406,7 @@ for (const [kind, source, expectedLabel] of [
     const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: kind }); cleanups.push(mover.destroy);
     const root = f.editor.state.doc.child(1); const title = f.editor.state.doc.firstChild;
     const yTitle = f.ydoc.getXmlFragment(PROSEMIRROR_ROOT).get(0);
-    const token = mover.capture(f.start(1) + (root.isLeaf ? 0 : 1)); if (!token) throw new Error("missing capture");
+    const token = mover.capture(f.start(1) + (root.isLeaf || kind.endsWith("_list") ? 0 : 1)); if (!token) throw new Error("missing capture");
     expect(token.label).toBe(expectedLabel);
     if (root.isAtom) f.editor.view.dispatch(f.editor.state.tr.setSelection(NodeSelection.create(f.editor.state.doc, f.start(1))));
     expect(mover.move(token, "down")).toBe(true);

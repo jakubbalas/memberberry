@@ -207,6 +207,28 @@ fn a_note_the_watcher_did_not_name_is_not_re_read() {
 }
 
 #[test]
+fn a_watcher_event_burst_is_bounded_and_consumed_once() {
+    let signal = WatchSignal::default();
+    for i in 0..16_385 {
+        signal.touched(PathBuf::from(format!("/fixture/Note-{i}.md")));
+    }
+    assert_eq!(
+        signal.take(),
+        Changes::All,
+        "over-budget real paths must not grow an unbounded pending set"
+    );
+    assert!(
+        signal.take().is_empty(),
+        "overflow recovery is consumed once"
+    );
+    signal.touched(PathBuf::from("/fixture/After.md"));
+    assert_eq!(
+        signal.take(),
+        Changes::Only([PathBuf::from("/fixture/After.md")].into_iter().collect())
+    );
+}
+
+#[test]
 fn an_overflowed_signal_degrades_to_checking_everything() {
     let signal = WatchSignal::default();
     signal.touched(PathBuf::from("/one.md"));

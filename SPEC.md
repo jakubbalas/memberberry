@@ -739,8 +739,520 @@ and permissions. One server hosts several.
   is never changed. This is durable authorization, not an admin bypass: after creation the
   same `access.toml` is the only source of content access (§6.2).
 
+#### Unified New vault — t-009 (October 18, 2026)
+
+This amendment supersedes the separate Add vault navigation and earlier setup-form wording
+below. The home page offers **New vault** and **Log out**, with first-vault guidance separate
+from the action label. `/vaults/new` combines managed creation and configured-folder adoption.
+It follows Paul’s linked Penpot design: vault name, **Vault address (optional)**, **Choose a
+folder (optional)**, **Choose folder**, **Create vault**, and **Back to your vaults**.
+A blank address generates a valid independent-random-suffixed address without catalog probes;
+an explicit address is validated after trimming surrounding whitespace and used unchanged.
+No folder selection creates the existing managed `<config-directory>/vaults/<address>/notes` layout. A selected folder registers its
+exact root through the existing preview/single-use register API, respecting its ACL unchanged.
+The optional overlay uses the shared Memberberry token contract and form/button appearance,
+current-directory heading, add-folder and parent navigation, child rows and Cancel/Use this
+folder. Immediate folder creation and all existing E29/E31 containment/authorization/no-replay
+requirements remain. Cancelling a selection restores the previous choice; a clear-selection
+control returns to managed storage. Folder browsing/selection never registers a vault.
+The former `/vaults/add` URL remains a compatibility entry to the same interface; its separate
+home-page action is removed. Existing vaults, managed storage, CLI, media and in-vault browsing
+are not migrated. The design is an implementation reference, not authority to expand access.
+
+#### Project-folder vaults — backend technically accepted; interface implemented for review
+
+The folder-based **Add vault** flow extends, rather than replaces, the managed
+`/vaults/new` flow above. Paul approved choosing an existing project directory or
+creating a project directory in an allowed server location and registering it in place.
+Delivery is split into safe location primitives (t-001), authorized registration (t-002),
+and the accessible desktop/mobile interface (t-003). The optional configuration and
+syntax/discovery foundation are implemented in t-001. The bounded t-002a read-only HTTP
+gates and E29 read-side assertions have been exercised and passed independent security
+then quality review. The t-002b fixture-only safety prerequisite has also passed both
+reviews; it adds no product behavior or registration authority. The t-002c registration
+backend has passed independent SPEC/security and full-backend quality review on its frozen
+source identity. The t-003 browser below is implemented for fresh review. Neither backend
+technical acceptance nor interface implementation is finished-feature or release acceptance.
+
+- Optional `[[vault_locations]]` entries in `server.toml` declare a validated stable `id`,
+  display `name`, and absolute server `path`. No locations are available by default;
+  old configs remain valid. Invalid/duplicate entries fail closed. Paths refer to the
+  server's filesystem (for example `/projects` inside a container), not the browser's
+  device. The configured location itself is browse-only, not a selectable whole-tree vault.
+- **Implemented foundation:** ids follow vault-slug syntax (1–64 ASCII lowercase letters,
+  digits and internal hyphens); labels must be nonblank and control-free. Config paths are
+  explicit slash-separated absolute server paths: no home expansion, backslash, controls,
+  empty/repeated/trailing separators (except `/`), dot or traversal components. Parsing is
+  structural and does not require mounted/existing roots; actual discovery requires an
+  existing directory. Config serialization retains existing vault/media values and omits
+  an empty locations list. Relative browsing tokens allow the empty root only for browsing;
+  selection requires a nonempty path. Directory components preserve Unicode, ordinary
+  spaces, colons and percent-looking literal text exactly; `Design: notes`, `100% Complete`
+  and `%2e%2e` are names, not decoded paths. Hidden/dot/traversal, blank, control, separator,
+  over-255-byte and ASCII-letter-plus-colon drive-prefixed components are rejected. This
+  narrow drive-syntax check does not imply a Windows filesystem backend. Tokens are never
+  decoded or normalized; t-002a decodes the HTTP query boundary exactly once as specified
+  below. Unrepresentable filesystem
+  names (including non-UTF-8 names) are omitted rather than lossily converted into tokens.
+  Directory discovery stays crate-private behind the t-002a HTTP gate and lists only immediate real
+  children in exact-name sorted order without note-body reads or recursive tree scans.
+  Registration states distinguish available, already-registered, inside-registered and
+  containing-registered paths; the configured-root flag independently makes roots browse-only.
+  Registered roots are boundaries, while their ancestors remain browsable but unselectable.
+  The filesystem implementation currently targets Linux with `openat2`: pinned directory
+  handles, no-follow/beneath resolution and identity rechecks reject symlink substitution
+  and moved/replaced selections. Registered snapshots pin root descriptors and retain both
+  their original registry paths and canonical targets; moved, unavailable, replaced or
+  retargeted snapshots fail closed. Actual configured-root/selection ancestors are checked
+  descriptor-relatively against registered identities, not just lexical prefixes. Snapshot,
+  configured alias/anchor and relative identity checks run before enumeration and again
+  immediately before status/list publication. Unsupported kernels fail closed; there is no
+  filesystem discovery backend on non-Linux hosts yet. An explicitly configured root alias
+  is trusted, pinned and revalidated; symlinks below it are refused. These checks are not an
+  atomic filesystem namespace transaction: arbitrary external rename-and-restore or mount
+  manipulation between syscalls cannot be frozen by read-only descriptors. Filesystem-level
+  access remains outside the ACL protection model (§6.7); no stronger race-free snapshot or
+  registration authority is claimed by the read-only foundation. t-002a holds the management
+  lock and checks current disk/live registration agreement on each request; the write-side
+  confirmation below revalidates state under that lock.
+- Only enabled server administrators authenticated by a signed session may browse these
+  locations or register folders. Scoped API tokens confer no server-administration rights.
+  Authentication precedes any filesystem discovery, and writes require same-origin checks.
+  Location id plus a validated relative path is the boundary: no arbitrary absolute path,
+  traversal, hidden component, control character or symlink traversal below a location.
+  Invalid tokens are rejected, never silently repaired or normalized into a selection.
+- The t-003 browser at `/vaults/add` offers **Use an existing folder** and **Create a project folder**. It lists
+  immediate visible directories in a labelled folder dialog, permits parent/child navigation,
+  identifies registered boundaries, and validates storage when **Add vault** is submitted.
+  It does not read note bodies merely to render a directory picker, expose private contents
+  of existing vaults through administrative browsing, or chmod/chown project trees.
+- Existing-folder registration preserves the selected folder and all pre-existing files
+  in place. Existing `access.toml` remains unchanged; malformed policy refuses registration.
+  Only an absent policy receives an explicit owner grant for the authenticated creator,
+  with no anonymous access. Server administration still grants no content-reading bypass.
+- New-folder creation uses a selected parent and a validated single directory name,
+  refuses existing files/directories/symlinks, and never silently adopts a collision.
+  It creates a root-layout project vault without implicitly adding a `notes/` directory.
+  Both modes retain `Vault::open`'s existing rule: use `notes/` when present, otherwise
+  root-layout Markdown. Optional collapsed **Details** explains recursive `.md` discovery and that ordinary
+  dependency/build directories are not automatically excluded; non-Markdown files are
+  not imported as notes. Ignore-rule changes and general file management are separate scope.
+- Duplicate or ancestor/descendant-overlapping vault registrations are refused server-side.
+  Registered vault roots form browsing boundaries; admin discovery cannot enumerate their
+  private children. Confirmation revalidates path identity and registration state rather
+  than trusting an earlier preview. Durable registry persistence is atomic; live publication,
+  indexing and watching must cover an adopted folder without requiring a restart.
+  Failures leave existing folders/content/policies and prior registrations intact; rollback
+  may remove only artifacts created by the failed operation, never a pre-existing project.
+- The controls use existing design tokens, labels and keyboard navigation, remain usable
+  on mobile, preserve form context after errors, and work under the application's CSP.
+  The existing managed creation and operator CLI remain available. Explicit operator
+  configuration/deployment is needed to enable a location on an existing running server.
+
 Building this now rather than retrofitting is exactly right: vault-scoping every index
 query, route, and doc ID later would touch every file in the project.
+
+
+##### t-002a read-only HTTP contract and conservative delivery limits
+
+No rendered controls or registration endpoint are supplied by this slice. Linux `openat2`
+remains required; missing management/configuration or unsupported platform/kernel refuses
+neutrally. These routes accept GET (and Axum's bodyless HEAD), with no request body:
+
+- `GET /api/v1/vault-locations` returns `{"locations":[{"id":"projects","name":"Projects"}]}`.
+  Labels/ids are configured metadata, not filesystem availability claims; no server path is
+  serialized. An empty locations list returns `{"locations":[]}`.
+- `GET /api/v1/vault-locations/{id}/directories?path=<form-encoded-relative-token>` returns
+  `{"path":"", "state":<state>, "children":[{"name":"Public","path":"Public","state":<state>}]}`.
+  The state has `location_root`, `registration`, `selectable` and `browsable` fields.
+  Registration is `available`, `already_registered`, `inside_registered_vault` or
+  `contains_registered_vault`. Root is always unselectable. Registered-root entries can be
+  listed as boundaries, never enumerated; their ancestors are browsable but unselectable.
+- `GET /api/v1/vault-locations/{id}/status?path=<form-encoded-relative-token>` returns
+  `{"path":"Public","state":<state>}` without child enumeration. A registered root's
+  status can be inspected, but resolving any private descendant refuses before opening it.
+
+The only optional query is one literal `path=` field (absent/empty means location root).
+Duplicate/unknown query fields and encoded key aliases refuse. Route ids are exact literal
+slug tokens, with no percent-encoded alternate spelling. Query decoding is strict UTF-8,
+once only: `%25` becomes a literal `%`, `+` becomes a space, and no later primitive decodes
+again. Encode literal plus as `%2B`; encode Unicode/colon/percent normally. `%252e%252e`
+addresses literal `%2e%2e`, not `..`; `%252f` and `%255c` address literal `%2f` and `%5c`.
+Further percent-looking text is still literal (including a genuinely named `%252e%252e`
+directory), not silently repaired. Invalid percent escapes/UTF-8 refuse; actual traversal,
+absolute/hidden/control/backslash/drive-prefixed components refuse after boundary decoding.
+
+All responses are JSON and `Cache-Control: no-store`. Non-admin/anonymous, disabled/demoted,
+expired/revoked/invalid sessions and unavailable/unsafe roots/registry/config return the
+same `404 {"error":"not_found"}` without path/error details. An Authorization header,
+including scoped Bearer tokens even alongside a cookie, cannot authorize these routes.
+Authorized malformed wire inputs return `400 {"error":"invalid_request"}`; exceeded
+budgets return `422 {"error":"limit_exceeded"}` with no partial list. Admission contention
+or rate exhaustion returns `429 {"error":"busy"}`. No filesystem/config error details or
+secrets are logged by these read routes. Authentication is checked again inside the
+blocking job and before response publication; no client user/role or cached admin flag is used.
+
+Delivery assumptions (HTTP refusal only, not changed persisted configuration syntax):
+
+| Budget | Bound and enforcement |
+|---|---|
+| Request | Raw route path ≤256 bytes; raw query ≤4096 bytes before decoding/allocation; decoded relative token ≤1024 bytes and ≤16 components before filesystem work. Existing component limit remains 255 bytes. No body/Transfer-Encoding. |
+| Configuration | Regular config file ≤1 MiB before parse; capped read also catches growth. Nonblocking open plus regular-file check refuses FIFO/devices. At most 32 configured locations / 128 disk and live registered roots before collecting borrowed vault references or snapshot discovery. Names/media credentials are never cloned from the live registry. Duplicate ids/slugs or disk/live path/slug disagreement refuse. |
+| Metadata | Location label ≤256 UTF-8 bytes; conservatively reserved locations JSON ≤32 KiB before collection; no location path/status probes for the metadata route. |
+| Server paths | Original and canonical server paths ≤4096 bytes / ≤64 components before corresponding descriptor ancestry work; relative traversal cannot expand beyond the same ceiling. |
+| Directory work | At most 4096 iterator entries, including files, hidden/unrepresentable names and the kernel's dot entries. Exhaustion refuses even at exactly 4096 (no extra EOF lookahead); counter checked before stat/token allocation. At most 128 returned immediate directories, and worst-case escaped child JSON reservation ≤64 KiB before child token/vector allocation. A child token exceeding the token/depth ceiling refuses the whole listing, not omission/truncation. |
+| Ancestry/revalidation | At most 100,000 charged work units per snapshot/list: registered verification/identity comparisons, ancestry steps and entry work are charged before each bounded batch. Path and registered-count ceilings additionally bound each batch and canonicalization. Units are conservative loop/syscall accounting, not a wall-clock deadline or an exact syscall count. |
+| Output | Bounded JSON writer refuses before appending beyond 64 KiB; child estimation also bounds intermediate DTO allocations before serialization. No paging/partial success. |
+| Admission | Global to these three routes: 60 admitted requests per fixed 60-second monotonic window; two permits at most for submitted/running blocking jobs, no waiter queue. Management and live-registry locks are try-locks. Per-user maps cannot grow because admission uses one global budget. |
+
+Filesystem work stays on `spawn_blocking`, never the async executor. The blocking closure
+owns its permit until it actually exits, including after its async waiter is cancelled;
+cooperative cancellation is checked between bounded batches and before publication. A
+running kernel/remote-filesystem syscall is not forcibly cancellable and has no claimed
+time deadline, but cannot release its slot early or create an unbounded queued workload.
+Current disk configuration and live registry are checked under management/registry locks
+each request; no cached preview grants future discovery/registration authority. Existing
+managed creation and persisted config syntax are unchanged. Storage writability, ACL
+creation/preservation and registration/index/watch are supplied separately by t-002c below;
+the UI remains a later slice. The accepted t-002a GET wire contract is unchanged.
+
+
+**Project-folder registration JSON API (implemented, technically accepted backend):**
+The GET contracts above are unchanged. Linux adds two POST routes in the same family:
+
+| Route | Input | Success |
+|---|---|---|
+| `/api/v1/vault-locations/{id}/preview` | exact selection object below, **without** `confirmation` | 200, a short-lived receipt and explicit usability scope; no registration |
+| `/api/v1/vault-locations/{id}/register` | identical selection object **plus** `confirmation` | 201 after atomic registry commit and coherent live publication |
+
+Both require exactly one real signed-session credential **across all Cookie fields** for a
+**currently enabled server admin**. Unrelated cookies may occupy the same or additional
+fields; duplicate session credentials (even identical genuine tokens) refuse, and credential
+bytes are not trimmed/repaired. Every `Authorization` header is refused, including alongside
+a valid cookie. Registration-scoped strict same-origin checks leave managed onboarding and
+GET discovery helpers unchanged: exactly one structurally valid HTTP(S) Origin and Host,
+and zero or one Sec-Fetch-Site (cross-site refuses). Host is a literal authority including
+bracketed IPv6 and optional numeric port; userinfo/path/query/fragment/backslash/control/
+whitespace and parser-repaired spellings refuse. Raw Origin allows no path other than the
+historically accepted single trailing slash; normalized dot/encoded-dot/backslash paths
+refuse before URL-origin tuple comparison. Missing/cross-origin/ambiguous credentials or
+unauthorized actors receive neutral 404 JSON before configuration reads,
+stat/open/canonicalization or probes.
+Current actor/session identity is rechecked when blocking work begins, after waiting for
+management serialization, before temporary writes, and under the final auth lock at commit.
+There is no client username/role authority and server admin never bypasses content ACLs.
+
+Exactly one Content-Type field is required, with literal value `application/json`;
+Transfer-Encoding is refused. Authorized absent/invalid/duplicate Content-Type is 400
+before storage; credential/origin ambiguity remains neutral 404. JSON is one flat
+object of string fields plus the optional t-013 boolean `ignore_non_writable_folders`;
+duplicate/unknown fields, nulls, nested values, form data and any
+query (including empty queries/aliases) refuse. Fields are:
+- `mode`: exactly `existing` or `new`;
+- `path`: **literal JSON string data**, an existing non-root selected relative directory in
+  existing mode, or existing parent relative directory (empty means location root) in new mode;
+- `directory`: required only in new mode, exactly one missing `DirectoryName` child;
+- `slug`: existing Slug grammar, 1–64 lowercase ASCII letters/digits/internal hyphens;
+- `name`: nonblank, control-free display label, at most 256 UTF-8 bytes; stored without trim;
+- `confirmation`: register only, exactly 64 lowercase hexadecimal characters from preview;
+- `ignore_non_writable_folders`: optional boolean, defaults to false; opt-in behavior below.
+
+JSON escaping is decoded once as JSON; **no URL/form/recursive percent decoding or Unicode
+normalization** applies to path/name values. `%2e%2e` names are literal names, not traversal.
+DirectoryName/RelativeDirectoryPath reject absolute, drive, hidden, control, backslash,
+empty/repeated separator and dot/dot-dot syntax without repair. An existing location root
+is browse-only. New-mode parent at/inside a registered vault refuses; an ancestor containing
+a registered descendant may create only an exactly nonoverlapping missing child.
+
+| Bound | Registration/preview maximum |
+|---|---|
+| URI path / JSON body | 256 / 8,192 bytes |
+| Relative path / component count / child name | 1,024 UTF-8 bytes / 16 / 255 bytes; final new-child path also bounded |
+| Blocking admissions / retained confirmations / lifetime | 2 / 16 / 120 seconds; no admission wait queue; this pair shares a separate 12 requests per fixed 60-second budget |
+| Configured locations / total resulting registered vaults | 32 / 128; exceeding bounds refuses, never truncates old configuration |
+| Server config / project config / access.toml input | 1 MiB / 1 MiB / 64 KiB; regular, bounded, no symlink/special reads |
+| Storage scan | 16,384 entries, 1,024 directories including selected root, depth 64 below root, relative traversal path 4,096 bytes |
+| Eligible Markdown input | 4 MiB per note / 64 MiB aggregate, checked at usability scan and actual initial indexing |
+| Runtime dirty paths | 16,384; overflow is explicit recovery work, not unlimited accumulation |
+
+Filesystem/config/index preparation runs off the async executor. Checks may refuse earlier
+for unavailable storage or native resource limits; these bounds do not promise universal
+filesystem compatibility or a complete inventory from one root probe. Default strict adoption
+fails rather than silently accepting a partial tree; t-013 explicitly permits inaccessible
+child-folder omissions only when the user opts in. Metadata traversal includes hidden/dependency
+subtrees and all ordinary non-Markdown files remain untouched; only visible Markdown in the
+chosen notes layout is indexed. October 18 approved amendment (t-012): child symbolic links
+are skipped without resolving or opening their targets, including internal/external, directory,
+broken and looping links. Their entries still count toward scan limits. They do not block
+adoption, appear in content catalogs/shallow folder trees, or authorize direct note reads,
+subscriptions or writes. Watchers do not follow them; indexing rechecks no-link resolution
+before reading bodies and drops stale rows when a real note becomes a link. A legacy Auto
+vault whose notes/ becomes a link retains its namespace with no content access, rather than
+falling back to root and changing ACL-relative identities. Adoption keeps the path-rule
+compatibility guard for either a real or linked notes/ child, without following the link.
+Root selection,
+critical policy/config/storage paths and configured-root alias pinning retain existing strict
+no-follow rules. Non-UTF-8 regular entries and FIFO/device/special files still refuse; no
+permissions are automatically changed to make a project usable.
+Depth-first metadata traversal retains the active descriptor chain, not one fd per sibling.
+
+October 18 approved opt-in (t-013): after selecting a server folder, New vault offers an
+unchecked **Ignore non-writable folders from vault** checkbox. Managed/no-JavaScript creation
+keeps the default strict behavior. The folder API accepts an optional JSON boolean
+`ignore_non_writable_folders` (omitted/false is strict); null, strings, numbers, duplicate
+fields and compound values refuse before storage. This one boolean is the explicit exception
+to the string-only request fields above. The value is part of the exact, single-use preview
+selection, so changing it invalidates confirmation. A checked registration stores the boolean
+in its `[[vaults]]` configuration; legacy/false values are omitted and default to false.
+
+Checked adoption omits child directories the effective service identity cannot read, search
+and write, using native access checks that honor POSIX ACLs/read-only mounts. It checks before
+opening excluded directories, retains scan budgets for skipped entries/directories, and does
+not inspect their descendants or repair permissions. Other I/O/resource errors still refuse.
+The selected root, valid policy and required media/index/config storage remain strict; ordinary
+eligible Markdown files must still pass their existing read/write checks. No arbitrary
+user-supplied path exclusion or client-side permission filtering is introduced.
+
+The persisted option is enforced by vault note lists, direct reads/writes, empty-folder and
+shallow directory views, index preparation/maintenance and sync recipient rechecks. Excluded
+folders cannot create navigation through deeper grants or disclose names/bodies via content
+APIs. User ACL checks still precede protected reads. Permissions are reevaluated during these
+operations and on restart; a newly usable folder can become eligible without data migration.
+Native watchers use bounded, no-follow nonrecursive subscriptions only for eligible directories.
+Directory events/full sweeps prepare replacement subscriptions off-lock before index work;
+overlap preserves delivery and picks up new eligible descendants. Excluded subtrees are not
+opened by watcher setup or refresh. A later vault-settings toggle/recheck UI is deferred.
+
+Preview is **not strictly read-only**: `read_only:false` discloses operation-owned, exclusive,
+random-name write/file-sync/atomic-rename/directory-sync probes, removed after checking.
+Pre-existing file bytes are unchanged; directory timestamps can change. Existing-mode
+scope is root, recursive note-directory traversal/write/rename, actual RDWR opening of
+eligible Markdown (without reading bodies), and existing-or-nearest-ancestor media,
+`.memberberry`, index/search-v1/zones directories. Hidden/non-note directories are enumerated
+for safe watcher access but are not all required to be writable. New preview probes the
+existing parent only, not a child it has not created. Scope strings and notes-layout metadata
+are not note contents or an uncapped filesystem inventory. Service-identity failures refuse;
+no chmod/chown/ACL repair is attempted, and write probes cannot guarantee future disk space
+or crash/power-loss durability.
+
+Preview success JSON is
+`{confirmation, expires_in_seconds:120, mode, notes_root:"root"|"notes", read_only:false,
+storage_check:"bounded_service_identity_probes", scope:"existing-parent"|"existing-project",
+recursive_markdown:boolean}`. The bounded in-memory receipt stores actor/session digest,
+exact selection, expiry, configuration/policy/config-file metadata and pinned directory/
+registered-ancestry identity, **never note bodies**. Expired authority cannot be used;
+expired retained metadata/descriptors are reaped on the next management request or teardown.
+Receipts are process-local, single-use and not ongoing authority. At register, current
+configuration, registry, anchors, selected existing root/new parent, notes layout, policy
+state and exact parameters are re-resolved under management serialization. Expired,
+replayed, other-session, mismatched or changed selections refuse. Races cannot publish
+same-slug, duplicate/alias, ancestor/descendant or new-name collisions twice. The accepted
+openat2/root-alias namespace limits still apply; no race-free claim against arbitrary
+filesystem-owner or privileged mount manipulation is added.
+
+Existing projects retain root layout unless a real `notes/` already exists, matching
+`Vault::open`; no existing/new-mode operation creates `notes/`. A new operation uses
+exclusive mkdir for only its missing child and never adopts an existing collision.
+A valid existing `access.toml` remains byte-for-byte intact, even if it excludes the admin.
+Malformed/unreadable/symlink policy refuses. Only genuine absence permits an exclusive
+random temporary, file sync and NOREPLACE rename installing authenticated creator Owner,
+with no anonymous grant; an externally appearing policy is never overwritten. The normal
+fixed overwriteable AccessFile temporary is not used for adoption.
+
+Before commit, failures clean only identity-and-current-byte-matched owned policy/probe/
+config temporaries. Existing project trees are never recursively deleted. A new-root rollback
+checks directory identity and uses empty-only rmdir; foreign files, replaced roots or edited
+artifacts are retained and reported as unavailable/residual, not deleted. Prior configuration,
+registrations, media/credential values, Markdown and non-Markdown contents remain intact.
+The **commit point is successful atomic config rename** after synced preparation and final
+config-parent/config-file/layout/selection/current-actor revalidation. Live registry, policy,
+ready in-memory index and watcher publication follows under short publication locks; expensive
+indexing holds no global auth/registry lock. HTTP waiter cancellation may abort before mutation,
+but cannot strand an already committed disk registry without live publication.
+
+New external roots enroll a real staged recursive watcher **before** final enumeration and
+privileged internal initial indexing. Events collected during preparation are isolated and
+then relayed to the live signal at publication, closing the enrollment/index gap. Exact-root
+runtime ownership/deduplication retains external roots even when a managed-parent watcher
+also exists; server watcher-lease teardown stops listeners. An inactive/unusable lifecycle
+refuses registration. Create/change/remove/policy events drive normal permission-filtered
+index/sync maintenance without a restart; a periodic recovery sweep is not watcher proof.
+Server shutdown stops the maintenance timer and joins an in-flight blocking maintenance job
+before watcher teardown and final flush; aborting only its async waiter would detach a writer.
+Lifecycle/shutdown regressions use a real ephemeral HTTP listener, notify callbacks and
+explicitly disabled recovery sweeps, not manually supplied watcher signals.
+Initial indexing is privileged internal maintenance, never preview content rendering or an
+unfiltered public query helper. No existing derived index files are overwritten precommit:
+newly adopted indexes are ready in memory until normal restart reconstruction; subsequent
+normal index/search APIs still enforce repository/index-layer ACLs.
+
+Register success JSON is `{slug, committed:true, directory_synced:boolean, audit_recorded:boolean,
+watched:true, index_ready:true, index_storage:"memory_until_restart"}`. `audit_recorded` is
+true **only for an actual successful append**; an absent optional writer reports false,
+without making an audit writer a registration prerequisite. A post-rename directory sync
+or actual audit append failure still completes committed live publication and reports its
+false flag; it is **not** a precommit rollback or a claim of durable crash recovery. Unexpected
+postcommit failures must not delete registered storage. Errors are no-store JSON `{error:code}`:
+404 `not_found` (authorization/origin/unknown location), 400 `invalid_request`, 409
+`confirmation_conflict` (stale receipt/identity/policy/overlap/collision), 422 `limit_exceeded`,
+429 `busy`, 503 `storage_unavailable` (including unsafe policy/lifecycle) or `cleanup_incomplete`
+(ownership-safe residual failures). They contain no absolute paths, note titles/bodies,
+credentials, OS diagnostics or configuration dumps. Existing managed `/vaults/new`, CLI,
+legacy config/media schemas and all GET discovery contracts remain unchanged.
+Authentication itself runs in the same two-permit bounded blocking budget, not on the async
+executor. Unverified admission overflow is neutral 404; the separate 12/minute rate budget
+is charged only after successful current-admin authentication. A revocation queued during
+final atomic commit waits for coherent publication. If authority is gone at the worker's
+final response check, the caller receives neutral 404 even though that commit remains live.
+
+**Configured-folder browser, t-003 (implemented for review):** `/vaults/add` is an HTML
+entry, not an additional registration API. The vault-list Add vault link and HTML handler
+reuse the registration boundary's strict session/current-enabled-admin predicate. HTML
+checks use a nonwaiting auth try-lock and fail closed on contention; authority is repeated
+inside the blocking HTML read and before publication. A missing/unusable build returns
+neutral no-store 503 HTML. The regular UTF-8 HTML bundle is capped at 256 KiB with a capped
+read, nonblocking/no-follow opening on Linux. Requests lacking current authority at entry
+do not look up the bundle or configured locations. Public self-hosted JS/CSS assets contain
+only interface code; the bare
+HTML filename is not a public route. The actual CSP permits only self scripts/connections,
+self stylesheet assets and shared inline fallback tokens; no inline script, external
+network, upload/copy operation, schema change or content authority is added.
+
+**UI simplification approved by Paul on October 10, 2026; implemented for review: t-004,
+amending the t-003 interface.** The main form contains the vault label, the selected folder
+and, for creation, a single new folder name. A **Choose folder** button opens a Sonarr-style
+folder-browser dialog: configured server location, current relative path, parent/child
+navigation, plain folder-name rows, **Cancel** and **Use this folder**. Both modes use that
+same selection label. The dialog stays within configured locations; a relative-path input
+may navigate only validated literal paths in the selected location. It is not an arbitrary
+server-root file browser. Available folders have no "Available" badge or replacement status
+jargon; unavailable/registered boundaries remain disabled with a short useful explanation.
+Keyboard focus is contained while open, Escape/Cancel restore opener focus, and mobile
+layout/touch targets remain usable. Selecting or cancelling a folder never writes/probes.
+
+There is no editable **Vault address** field. Memberberry still requires a route slug,
+so the browser derives an internal lowercase ASCII slug from the label with a short
+cryptographically random suffix, within the existing 64-character grammar. Non-ASCII-only
+labels use a "vault" base; labels themselves and filesystem path/name tokens remain exact,
+without trimming, normalization or repair. The suffix avoids needing an unfiltered catalog
+or revealing private vaults to determine uniqueness; server collision refusal remains final.
+Generate one stable slug for an unchanged form intent, freeze it with the submitted selection,
+and use identical bytes for preview and register. It is not a content-access credential.
+
+The main action is **Add vault**. Remove the technical paragraphs under the former address
+field and the manual **Check storage and review**/separate confirmation stage. Submission
+is explicit create/register intent: validate the form, run the existing server usability
+preview automatically, validate its schema/expiry, then consume its single-use receipt in
+one register request for the identical selection. Do not probe during browsing or typing.
+Any preview refusal prevents registration and returns concise, sensible guidance with the
+label/folder context intact. A double submission must not send duplicate preview/register
+writes. Editing/changing context while validation is pending, cancellation, expiry or teardown
+invalidates the pending intent and aborts/fences publication; a late response must not register
+an older selection. BFCache remount cannot revive pending intent or receipts. The selected
+literal path remains visible before submission; detailed Markdown-root/storage/policy facts
+may be available as optional collapsed help, not a wall of prerequisite text. Recursive
+Markdown/layout rules, policy preservation and service-identity temporary write probes above
+are unchanged; **Add vault** authorizes those automatic validation probes as part of submission.
+
+Successful registration distinguishes content access from registration and obtains an open
+link only from the normal permission-filtered vault catalog. Independent directory-sync/audit
+outcomes must not be described as rollback; secondary technical facts can be collapsed.
+Network/schema loss and register 404/503 remain **possibly committed**, with visible no-retry
+and exact sent folder/label intent, never an automatic or in-place register retry. Read-only
+status can report the exact folder is registered, not which request completed or that content
+is readable. Disposed-aware authoritative denial on every administrative read, including
+outcome status, precedes ordinary generation filtering and fences newer success/failure without
+hiding possibly committed state (t-003 R1/R2 invariants). Verified commit, verified precommit
+refusal and never-sent preview remain distinct. Explicit precommit400/409/422/429 refusals keep
+context and permit only a fresh user submission/preview. Safe return links preserve managed
+New vault and CLI/media behavior. The server API, receipt, policy, storage and atomicity
+contracts above are unchanged.
+
+##### Shallow browser and simple picker — backend reviewed, UI implementation active: t-005/t-006
+
+Paul approved both the setup picker and in-vault browser on October 11, 2026; `.txt`
+support is explicitly outside this slice. Native OS watching, exclusions, periodic index/
+recovery reconciliation and Tasks/search discovery are unchanged. Shallow here describes
+one UI navigation request, not a new whole-app indexing policy. The following amendment
+supersedes t-004's create-at-registration controls and automatic note-root selection for
+**new project-folder registrations only**; old accepted/reviewed receipts remain historical.
+
+- The setup dialog heading is the current directory basename (configured location label at
+  its root). It contains **Add folder here** with a folder-plus icon/name prompt, a parent
+  arrow only when an allowed parent exists, immediate child folders, **0 folders found**
+  when none, **Cancel** and **Use this folder**. One configured location needs no redundant
+  selector; multiple locations retain a labelled switch. No mode toggles, Available badge,
+  manual review or technical Details wall. Necessary refusal/registered-boundary guidance
+  remains concise. Configured location root is still browse-only; no arbitrary server path.
+- **Add folder here** explicitly creates one real child immediately through
+  `POST /api/v1/vault-locations/{id}/directories`, JSON exactly `{path,directory}` with no
+  query. It reuses E29's strict current signed-admin and same-origin/header boundary, bounded
+  work and management serialization, descriptor-relative no-follow containment/identity
+  revalidation and overlap protection. Collisions never overwrite/adopt. It creates no
+  vault registration, ACL or index. Success is `201 {path,created:true,directory_synced:boolean}`
+  after exact created-child identity readback. Sync failure is not rollback. Failures clean
+  only an owned, still-identical empty child; ambiguous post-mkdir outcomes are possibly
+  created and never blindly retried. Folder creation persists when the picker is cancelled.
+- **Use this folder** chooses the exact current selectable directory. The main form keeps
+  vault label, folder selection/Choose folder and **Add vault**; generated internal slug,
+  automatic submit-time validation, single-use receipt and all registration R1/R2/F1
+  denial/no-replay/sent-uncertainty invariants remain. After immediate mkdir, registration
+  is existing-folder mode against that created directory. Browsing/typing/selection do not
+  mutate; only explicit folder creation and Add vault do. Sent mkdir uncertainty also
+  retains its exact parent/name across remount, independent of stale read generations.
+- New project-folder registrations persist `notes_layout = "root"` in their `[[vaults]]`
+  entry. This typed setting makes storage checks, preview, initial index, live Vault and
+  restart use the exact selected root even if `notes/` exists or is later created. Omitted
+  setting retains legacy `auto` behavior (`notes/` if present, root otherwise); unknown
+  setting values refuse. Existing entries, managed creation, CLI behavior and media/config
+  are preserved. Files/ACLs are not moved or repaired. Markdown remains canonical on disk.
+- **Permission-layout compatibility guard — approved October 11, 2026, t-005 implementation independently reviewed:**
+  existing-folder adoption refuses when the exact selected root contains both a real immediate
+  `notes/` directory and an existing selected-root `access.toml` with any parsed path-specific
+  rules. Even an intentionally root-relative rule is conservatively refused: Memberberry must
+  not guess the old policy base or let `Private.md` stop protecting physical
+  `notes/Private.md`. Only the selected root's policy is authoritative; no parent/nested
+  policy fallback or automatic rule translation. No policy/file move, rewrite or permission
+  migration is authorised. No real `notes/` directory, no existing policy, or a valid policy
+  containing only vault-wide memberships does not trigger this guard; other existing
+  safety checks and malformed-policy fail-closed behavior remain unchanged.
+  Validate through the existing pinned descriptors and bounded (64 KiB) policy parser,
+  without descendant enumeration, note-body reads or effective-role comparison scans.
+  Check before preview storage probes/receipt creation, on confirmation and at repeated
+  preparation/final precommit revalidation, before any durable registry rename or live
+  publication. A previously valid confirmation cannot bypass a newly added `notes/` or
+  path-specific rule. The incompatibility yields a content-free `409`/no-store refusal
+  after strict current administrator authorization, with concise permission-layout guidance;
+  it must not disclose rule paths, principal names, note names/bodies, absolute paths or
+  policy/config contents. No registration, index/policy/watcher publication or pre-existing
+  file mutation follows refusal. Temporary artifacts clean up only under existing owned-only
+  guarantees. Legacy registered Auto/managed/CLI entries are not reinterpreted or migrated.
+  This guard is part of E29 and has permanent refusal/revalidation and permission-leak tests.
+- `GET /api/v1/vaults/{slug}/directory?path=<form-encoded-literal-token>` returns exactly
+  `{path,folders:[{name,path}],files:[{name,path}]}` from the permission-filtered repository.
+  It lists only the requested directory's immediate real visible folders and regular `.md`
+  files, sorted by exact name within each array, without titles, bodies or descendant
+  enumeration. Hidden, unsupported, symlinked or unrepresentable entries are omitted.
+  Root uses empty path. Invalid/traversal/absolute/hidden tokens refuse; no token repair.
+  Current content ACL and directory identity are checked before I/O and before publication;
+  admin status grants no bypass. Folder metadata requires a readable folder path or a
+  necessary existing deeper readable grant; explicit denial is absorbing and an absent
+  grant target never manufactures discovery authority. Ordinary directory metadata does
+  not imply permission for any descendant note. Denied/missing paths are neutral.
+- Shallow listing bounds: 1024-byte/16-component relative path, at most 4096 iterator entries
+  (no unbudgeted lookahead), 128 returned entries and 64 KiB JSON; overflow refuses without
+  partial list. Blocking filesystem work stays off the async executor with bounded job
+  admission and no unbounded queue. No listing request calls the recursive note catalog or
+  empty-folder traversal merely to enumerate its directory.
+- In-vault folder navigation fetches that shallow listing, folders before Markdown files;
+  file activation opens the existing editor. Heading, folder-plus, conditional parent and
+  **0 folders found** follow the simple browser. Folder creation uses existing exact-path
+  editor/owner checks. New note from this view targets the current folder. Sidebar/catalog,
+  Tasks/search, offline dirty-note preservation and existing legacy vault layout remain.
+  Permission refusal clears stale names; older success/network failure cannot resurrect
+  them. Every request/effect tears down, native desktop/mobile focus and keyboard behavior
+  remain tested. `.txt`, general file management and exclusions/reconciliation optimisation
+  are separate future work.
 
 ### 6.2 Where permissions live — `<vault>/access.toml`
 
@@ -835,6 +1347,9 @@ ships.
 | E26 | **Browser vault creation** (§6.1) | Only an enabled server administrator authenticated by a signed session may create a vault. Scoped API tokens do not grant server administration. Authorization and same-origin checks precede filesystem access; validated slugs cannot traverse out of the managed root. New vaults receive an explicit owner ACL for the creator, with no change to any existing vault's access. |
 | E27 | **Browser first-account setup** (§6.8) | Only an uninitialized, loopback-bound server with a trusted loopback peer and localhost Host accepts the setup form. Origin validation rejects cross-site claims; forwarded headers cannot supply the peer. The auth transaction permits exactly one initial administrator. Once initialized, GET and POST both return a neutral not-found response. |
 | E28 | **Empty folders** (§8.2) | `GET /api/v1/vaults/{slug}/folders` requires vault discovery access and returns only physically empty directories the caller can read, through `AuthorizedVault::empty_folders`. Existing readable empty folders also permit discovery for a path-only reader. Traversal prunes denied subtrees before filesystem reads, while preserving valid deeper grants under default-denied ancestors; explicit denials remain absorbing. Hidden directories and symlinks are excluded. Nonempty folders remain inferred from readable notes, so a folder containing only denied notes remains invisible. `POST` requires editor-or-owner on the requested folder path before any filesystem lookup, validates containment, and refuses existing paths without overwriting. A denied existing and absent path give the same response. |
+| E29 | **Project-folder vault discovery, registration and New vault HTML** (§6.1; backend independently reviewed; t-003 interface implemented for review) | `GET /vaults/new` and compatibility `GET /vaults/add` (including bodyless HEAD) are enabled-current-signed-admin HTML entries, filtered before bundle/config/open/stat/probe work; authority is repeated in the blocking read and before publication. The New vault action is server-filtered. Neutral no-store 404 **HTML** is distinct from the existing no-store 404 **JSON** API refusal. Public content-free static JS/CSS assets do not authorize discovery, registration or content; the bare `add-vault.html` bundle is not a public HTML route. `GET /api/v1/vault-locations` and its `/{id}/{directories,status}` read routes plus JSON `/{id}/{preview,register}` POST require a current enabled signed-session server administrator before config/open/stat/canonicalization/discovery/probes. Scoped Bearer or any Authorization header, including alongside a valid cookie, never authorizes management. Both POSTs require unique session authority across all Cookie fields, unique Origin/Host/Content-Type, zero or one Sec-Fetch-Site, literal authority/raw-Origin validation, same origin and reauthentication after waiting and at commit. Identity-bound, expiring single-use confirmations and exact literal input/whole-tree budgets enforce duplicate/alias/ancestor/collision boundaries. Policy preservation includes the approved t-005 S1 compatibility guard: real immediate notes/ plus an existing selected-root ACL with any path-specific rules refuses adoption at preview and repeated confirmation/precommit checks, without policy translation or permission broadening; bounded validation and content-free authorized 409/no-store refusals are leak-tested. The t-013 opt-in is a receipt-bound persisted boolean: native effective-user permission failures on child folders may be skipped, with required root/policy/storage checks retained and excluded descendants absent from all content/index/tree paths and watcher setup/refresh. Real unprivileged no-read observers, strict-off/checked-on controls and a changed-option receipt refusal cover it. Child symbolic links are skipped during adoption without target reads; E1/E5/E30 catalogs, direct content and index reads exclude them, including aliases within the vault. Critical policy/config links still refuse. Atomic config commit, owned-only rollback and live watcher/index publication do not grant content access. E29 real-session/origin/inotify tests include authorized positive controls; no private note names/content, absolute paths or config secrets appear in denials. Registered roots stop read traversal/enumeration and existing-policy-no-admin-content stays neutral on normal filtered APIs. |
+| E30 | **Shallow vault directory browsing** (§6.1; backend reviewed, t-006 UI implementation active) | Immediate folder and `.md` names are read through `AuthorizedVault` with the current caller/ACL, never through an unfiltered feature helper or admin bypass. Denied/unknown directory or vault is neutral. Permission filtering precedes filesystem reads of denied paths and response publication; no titles/bodies, descendant enumeration, symlink/hidden traversal or stale-authority publication. Necessary deeper-grant navigation cannot reopen an explicit denial or manufacture access from absent targets. The persisted t-013 native folder filter is applied after content authority and before excluded-directory reads/navigation. Bounded work/output refuses without partial disclosure. |
+| E31 | **Immediate configured-location folder creation** (§6.1; backend reviewed, t-006 UI implementation active) | Strict enabled signed-session-admin and same-origin/header authority precedes config/filesystem work; repeat after waits and at mkdir/publication. One exact child under a pinned allowed parent, no-follow beneath configured root, current registry/identity checks and no collisions/overlaps. No content grant, ACL/registry creation or registration receipt. Owned-only cleanup; post-create ambiguity never implies rollback or safe replay. Readback verifies the exact child identity before success. |
 
 **Every sync-frame denial is one reply.** An unknown vault, a path that does not resolve,
 a missing ACL and a role of `none` all return the same `not_found` error frame. Sending
@@ -1945,10 +2460,16 @@ in this iteration or relabel the failing partition probes as successes.
   disconnected/not-yet-synced routed notes or outstanding unsent updates. Refuse read-only,
   source/waiting/composing/destroyed states and stale/cross-editor drag tokens at invocation.
   Local-only synthetic fixtures are explicit controls, not proof of a routed online guard.
-- Move a complete root unit, preserving body, native/style marks, anchors, task metadata,
-  media, nested content and the original first-H1 title. Root lists/tables/containers move
-  as a whole in the first slice, never extract a cell or nested paragraph under a misleading
-  label. Nonadjacent drop, adjacent keyboard/touch actions and one-step undo must retain
+- Move the labelled unit, preserving body, native/style marks, anchors, task metadata,
+  media, nested content and the original first-H1 title. The original root-only slice is
+  extended by the user's October 17, 2026 correction: each bullet/numbered/task item moves
+  individually with its nested subtree, and each explicit soft/hard-break-separated text
+  line in a body paragraph moves individually. Visual wrapping alone does not split a unit.
+  Nested list items reorder within their own parent list; moving the parent carries its
+  descendants. Top-level items/lines can move outside their original list/paragraph;
+  compatible adjacent lists merge, and split containers retain their anchor only once.
+  Tables/code/quotes/other containers remain whole units; never extract a cell under a
+  misleading label. Nonadjacent drop, adjacent keyboard/touch actions and one-step undo must retain
   unrelated content and separate earlier/later typing history.
 - Drag handles are hover/focus contextual; labelled keyboard/touch Move up/down and an
   insertion indicator are required. No always-visible formatting strip or UI nodes inside
@@ -1965,9 +2486,12 @@ rule — pinned to the start of a ~62px reserved gutter, 12px clear of the text.
 handles; touch moves blocks through More → Move up/down. The long-press handles of §8.2
 are not implemented. More's Move up/down use the same gated mover; the old ungated
 adjacent swap is removed, and local-only editors show no movement. A node selection on an
-atom inside the moved root follows it, and undo/redo return the selection to the moved
-root (its offset is recorded on the undo stack item, since a move is delete + insert and
-y-prosemirror's relative positions would land in a neighbour). Not yet: an independent
+atom inside the moved unit follows it, and undo/redo return the selection to its original
+logical position (exact isolated document/selection states are recorded on the undo stack
+item, since structural moves replace Yjs items and relative positions can land in a neighbour).
+Pointer targeting follows the hovered explicit line/item, including across the gutter.
+Catalogue Insert below/Turn into continue targeting the enclosing root as specified below.
+Not yet: an independent
 review and a physical-phone pass of drag.
 
 **Block catalogue (2026-10-14).** The block `⋯` additionally offers **Turn into…** and
@@ -3397,6 +3921,18 @@ this feature does not rebaseline it or claim physical-device performance complia
 
 ### 21.1 Reference devices
 
+**t-002c watcher-signal microbenchmark, 2026-10-10.** Criterion release benches in the
+existing one-CPU/4-GiB local container compare literal archived accepted `watch.rs` with
+current production signal code (10 samples; 0.2 s warmup/0.5 s measurement). Central
+estimates: touched-and-take **29.333 ns → 35.667 ns** (extra bounded generation notification),
+and 1,024 distinct paths then take **744.73 µs → 695.51 µs**. The small-sample single-signal
+regression is recorded, not hidden or called an optimization. Both literal source identities,
+full confidence intervals and exact restoration are in
+`local/t-002c-registration/{focused-watch-bench-baseline,focused-watch-bench-restored}.log`
+and `benchmark-baseline-restoration.json`. This measures only the bounded signal path;
+registration scanning is off-executor/not on the keystroke path. No browser/mobile,
+10k-note, filesystem latency or §21.2 compliance claim follows from this microbenchmark.
+
 | Class | Definition |
 |---|---|
 | **Mobile (primary)** | Mid-range Android, ~2023–24, 6–8GB RAM — Pixel 7a / Galaxy A54 class. **This is the device budgets are written against.** |
@@ -4003,11 +4539,23 @@ index rather than to a vault with no graph.
 
 ### 22.5 Permission tests — the leak suite
 
-Because §6.4 enumerates seventeen enforcement points, there is a dedicated suite that walks
+Because §6.4 enumerates the enforcement points, there is a dedicated suite that walks
 them systematically. It is the suite most likely to catch a real security bug.
 
 - A **matrix test** over `(role × surface × operation)` asserting every combination either
   succeeds or returns exactly the right denial.
+- **Project-folder management (E29):** real signed-session discovery plus JSON preview/register
+  tests assert unauthorized, member, demoted/disabled/revoked, invalid, bearer and mixed-credential
+  requests and missing/cross origins refuse before filesystem I/O. Inotify observers have actual
+  authorized positive controls; byte/config preservation, literal inputs, unsafe ACLs, receipt
+  races, unprivileged storage failures, operation-owned rollback, ready filtered initial indexes
+  and dynamically enrolled external watchers have dedicated unit/HTTP regressions. F1–F3 repair
+  regressions cover duplicate cookie/header cardinality, literal Host/raw Origin, and absent/
+  successful/failing optional audit writers with actual audit readback and live-state checks.
+  Inotify observes open/access/create/delete/rename, **not stat**; positive-controlled full-handler
+  pre-filesystem-boundary observation and static ordering supplement it. Handler-only malformed
+  headers are distinct from real-listener cases and transport-parser rejection. Equality
+  means status/body, not constant timing or complete header equality. No browser proof is claimed.
 - `effective_role` property tests: `none` is absorbing, specificity is monotone, resolution
   is order-independent, and malformed `access.toml` fails closed rather than open.
 - **Invisibility assertions** (§6.5): for a note the user cannot read, assert its title
@@ -4033,8 +4581,8 @@ them systematically. It is the suite most likely to catch a real security bug.
   `Vault::resolve`, which always refused a symlink pointing out of the vault — but the index
   is built from `Vault::notes`, which *listed* one. The title and the block text of a file
   the note route will not serve were reaching the index and coming back out as a backlink
-  row's context. `Vault::notes` now applies the same rule, paying the extra `canonicalize`
-  only for an entry that is actually a symlink, and both the listing and the query surface
+  row's context. `Vault::notes` now skips all symbolic links (t-012, including aliases within the vault),
+  and direct note/index reads reject symlink components. Both the listing and query surface
   are asserted. Found while building transclusion, where the same listing decides what an
   `![[…]]` can name.
 - **Tag counts** (E16, **M8**): the disclosure is arithmetic rather than a name, so the

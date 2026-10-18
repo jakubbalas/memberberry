@@ -27,6 +27,7 @@ pub mod sync;
 pub mod titles;
 pub mod trash;
 pub mod vault;
+pub mod vault_locations;
 pub mod watch;
 pub mod workspace;
 

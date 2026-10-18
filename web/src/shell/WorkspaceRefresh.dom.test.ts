@@ -28,7 +28,8 @@ async function render(session = true, firstFolders?: Promise<Response>) {
   const load = vi.fn(async () => ({ kind: "ok" as const, notes }));
   const folderLoad = vi.fn(async () => new Response(JSON.stringify({ folders })));
   if (firstFolders !== undefined) folderLoad.mockReturnValueOnce(firstFolders);
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/folders") ? folderLoad() : new Response("[]")));
+  const shallowLoad=vi.fn(async(path:string)=>new Response(JSON.stringify({path,folders:[],files:[]}),{headers:{"content-type":"application/json"}}));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {const url=String(input);return url.includes("/directory?")?shallowLoad(new URL(url,"http://localhost").searchParams.get("path")??""):url.endsWith("/folders")?folderLoad():new Response("[]");}));
   const catalog = new NoteCatalog({ vault: "personal", load, replica: async () => undefined });
   const ids = sessionIds();
   const store = new WorkspaceStore({ initial: createWorkspace("personal", ids), ids });
@@ -41,7 +42,7 @@ async function render(session = true, firstFolders?: Promise<Response>) {
   } });
   apps.push(app);
   await flush();
-  return { target, app, load, folderLoad, catalog, change: () => {
+  return { target, app, load, folderLoad, shallowLoad, catalog, change: () => {
     notes = [...notes, { path: "Other device.md", title: "Other device", conflicts: 0 }];
     folders = [...folders, "Other device folder"];
   } };
@@ -115,20 +116,12 @@ it("removes live listeners and cancels an already queued refresh on unmount", as
   expect(view.folderLoad).toHaveBeenCalledTimes(2);
 });
 
-it("keeps folder contents loading until both independent lists finish refreshing", async () => {
-  const view = await render();
-  view.target.querySelector<HTMLButtonElement>('[aria-label="Folder actions for Existing folder"]')?.click();
-  await flush();
-  [...view.target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent === "Open in main panel")?.click();
-  await flush();
-  expect(view.target.querySelector(".folder-contents")?.textContent).toContain("This folder is empty.");
-  const response = deferred<Response>();
-  view.folderLoad.mockReturnValueOnce(response.promise);
-  window.dispatchEvent(new Event("online")); await flush();
-  expect(view.catalog.ready).toBe(true);
-  expect(view.target.querySelector('.folder-contents [role="status"]')?.textContent).toBe("Loading folder contents…");
-  response.resolve(new Response(JSON.stringify({ folders: [] }))); await flush();
-  expect(view.target.querySelector('.folder-contents [role="status"]')?.textContent).toBe("This folder is no longer available.");
+it("loads each shallow navigation independently of recursive sidebar/catalog refresh", async () => {
+  const view=await render();view.target.querySelector<HTMLButtonElement>('[aria-label="Folder actions for Existing folder"]')?.click();await flush();[...view.target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item=>item.textContent==="Open in main panel")?.click();
+  await vi.waitFor(()=>expect(view.target.querySelector(".folder-contents")?.textContent).toContain("0 folders found"));expect(view.shallowLoad).toHaveBeenCalledTimes(1);
+  const sidebar=deferred<Response>();view.folderLoad.mockReturnValueOnce(sidebar.promise);window.dispatchEvent(new Event("online"));await flush();expect(view.catalog.ready).toBe(true);expect(view.target.querySelector('.folder-contents [role="status"]')).toBeNull();expect(view.shallowLoad).toHaveBeenCalledTimes(1);
+  const shallow=deferred<Response>();view.shallowLoad.mockReturnValueOnce(shallow.promise);view.target.querySelector<HTMLButtonElement>('.folder-contents [aria-label="Go to parent folder"]')?.click();await flush();expect(view.target.querySelector('.folder-contents [role="status"]')?.textContent).toBe("Loading folder contents…");expect(view.shallowLoad).toHaveBeenCalledTimes(2);
+  sidebar.resolve(new Response(JSON.stringify({folders:[]})));await flush();expect(view.target.querySelector('.folder-contents [role="status"]')?.textContent).toBe("Loading folder contents…");shallow.resolve(new Response(JSON.stringify({path:"",folders:[],files:[]}),{headers:{"content-type":"application/json"}}));await vi.waitFor(()=>expect(view.target.querySelector(".folder-contents")?.textContent).toContain("0 folders found"));expect(view.target.querySelector('.folder-contents [role="status"]')).toBeNull();
 });
 
 it("clears denied folders and cannot restore them from an older successful response", async () => {

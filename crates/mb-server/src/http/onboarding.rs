@@ -8,9 +8,9 @@ use super::*;
 #[derive(Debug)]
 pub(super) struct VaultManagement {
     pub(super) root: PathBuf,
-    config: PathBuf,
+    pub(super) config: PathBuf,
     allow_setup: bool,
-    writer: Mutex<()>,
+    pub(super) writer: Mutex<()>,
 }
 
 impl AppState {
@@ -62,7 +62,7 @@ fn local_setup(state: &AppState, headers: &HeaderMap, peer: Option<IpAddr>) -> b
             .is_some_and(|url| matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")))
 }
 
-fn same_origin(headers: &HeaderMap) -> bool {
+pub(super) fn same_origin(headers: &HeaderMap) -> bool {
     let Some(host) = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -195,16 +195,32 @@ pub(super) async fn new_vault_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
+    #[cfg(target_os = "linux")]
+    if state.web_root.is_some() {
+        return folder_ui::page(State(state), headers).await;
+    }
     if !state.is_server_admin(&headers) {
         return workspace_denied();
     }
-    new_vault_form(&state, None, "", "")
+    new_vault_form(&state, &headers, None, "", "").await
 }
 
-fn new_vault_form(state: &AppState, error: Option<&str>, name: &str, slug: &str) -> Response {
+async fn new_vault_form(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    error: Option<&str>,
+    name: &str,
+    slug: &str,
+) -> Response {
+    let _ = headers;
     let Some(management) = &state.management else {
         return (StatusCode::SERVICE_UNAVAILABLE, form_page("New vault", "<p class=\"mb-empty\">Vault creation is not configured on this server. Ask your administrator to enable it.</p>")).into_response();
     };
+    #[cfg(target_os = "linux")]
+    if state.web_root.is_some() {
+        return folder_ui::form_page(State(state.clone()), headers.clone(), error, name, slug)
+            .await;
+    }
     let mut body = String::from(
         "<p class=\"mb-empty\">Think of a vault as a notebook: a home for related notes, with its own settings and sharing.</p>",
     );
@@ -213,10 +229,10 @@ fn new_vault_form(state: &AppState, error: Option<&str>, name: &str, slug: &str)
 <label class="mb-field">Vault name<input name="name" autocomplete="off" maxlength="120" placeholder="Personal notebook" required value=""#);
     push_escaped_attr(&mut body, name);
     body.push_str(r#"" /></label>
-<label class="mb-field">Vault address<input name="slug" autocomplete="off" maxlength="64" placeholder="personal" required aria-describedby="address-help" value=""#);
+<label class="mb-field">Vault address (optional)<input name="slug" autocomplete="off" maxlength="64" placeholder="personal" aria-describedby="address-help" value=""#);
     push_escaped_attr(&mut body, slug);
     body.push_str(r#"" /></label>
-<p id="address-help" class="mb-empty">A short, unique address. Use lower-case letters, numbers and hyphens, for example personal or work-notes.</p>
+<p id="address-help" class="mb-empty">A short, unique address. Use lower-case letters, numbers and hyphens, for example personal or work-notes. Auto-generated if left blank.</p>
 <button class="mb-button" type="submit">Create vault</button>
 <a href="/">Back to your vaults</a>
 </form><p class="mb-empty">Only you can access this vault until you share it. Notes are plain Markdown files, stored on this server in <code>"#);
@@ -228,6 +244,7 @@ fn new_vault_form(state: &AppState, error: Option<&str>, name: &str, slug: &str)
 #[derive(Deserialize)]
 pub(super) struct VaultForm {
     name: String,
+    #[serde(default)]
     slug: String,
 }
 
@@ -247,18 +264,73 @@ pub(super) async fn create_vault(
     if name.is_empty()
         || name.chars().count() > 120
         || name.chars().any(char::is_control)
-        || Slug::parse(slug).is_err()
+        || (!slug.is_empty() && Slug::parse(slug).is_err())
     {
-        return (StatusCode::BAD_REQUEST, new_vault_form(&state, Some("Add a name and a valid vault address, without spaces or a leading or trailing hyphen."), name, slug)).into_response();
+        return vault_form_status(new_vault_form(&state, &headers, Some("Add a name and a valid vault address, without spaces or a leading or trailing hyphen."), name, slug).await, StatusCode::BAD_REQUEST);
     }
-    let created = register_vault(&state, &actor, name, slug);
+    let slug = if slug.is_empty() {
+        match automatic_vault_address(name) {
+            Ok(slug) => slug,
+            Err(error) => {
+                eprintln!("memberberry vault address: {error}");
+                return vault_form_status(new_vault_form(&state, &headers, Some("Could not generate a vault address. Your details are kept; try again later."), name, "").await, StatusCode::SERVICE_UNAVAILABLE);
+            }
+        }
+    } else {
+        slug.to_owned()
+    };
+    let created = register_vault(&state, &actor, name, &slug);
     match created {
         Ok(()) => axum::response::Redirect::to(&format!("/v/{slug}")).into_response(),
         Err(error) => {
             eprintln!("memberberry vault creation: {error}");
-            (StatusCode::CONFLICT, new_vault_form(&state, Some("Could not create this vault. Try a different address. If it still fails, check the server's storage permissions and logs."), name, slug)).into_response()
+            vault_form_status(new_vault_form(&state, &headers, Some("Could not create this vault. Try a different address. If it still fails, check the server's storage permissions and logs."), name, &slug).await, StatusCode::CONFLICT)
         }
     }
+}
+
+fn vault_form_status(mut response: Response, status: StatusCode) -> Response {
+    // why: a rechecked authorization denial or missing bundle keeps its own status.
+    if response.status() == StatusCode::OK {
+        *response.status_mut() = status;
+    }
+    response
+}
+
+fn automatic_vault_address(name: &str) -> Result<String, Error> {
+    use rand_core::RngCore;
+    use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
+    let mut random = [0_u8; 6];
+    rand_core::OsRng
+        .try_fill_bytes(&mut random)
+        .map_err(management_error)?;
+    let suffix = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let base = name
+        .nfkd()
+        .filter(|c| !is_combining_mark(*c))
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let base = if base.is_empty() { "vault" } else { &base };
+    Ok(format!(
+        "{}-{suffix}",
+        base.chars()
+            .take(51)
+            .collect::<String>()
+            .trim_end_matches('-')
+    ))
 }
 
 fn register_vault(
@@ -293,6 +365,8 @@ fn register_vault(
             .map_err(management_error)?;
         let vault = Vault::open(slug.clone(), name, &root)?;
         config.vaults.push(crate::config::VaultEntry {
+            notes_layout: crate::config::NotesLayout::Auto,
+            ignore_non_writable_folders: false,
             slug: raw_slug.to_string(),
             name: Some(name.to_string()),
             path: root.to_str().ok_or(Error::NotFound)?.to_string(),

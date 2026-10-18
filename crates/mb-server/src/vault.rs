@@ -9,7 +9,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::Error;
-use crate::config::MediaBackendConfig;
+use crate::config::{MediaBackendConfig, NotesLayout};
 
 /// A registered vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +19,9 @@ pub struct Vault {
     root: PathBuf,
     /// Where notes actually live — see [`Vault::notes_root`].
     notes_root: PathBuf,
+    notes_layout: NotesLayout,
     media_backend: MediaBackendConfig,
+    ignore_non_writable_folders: bool,
 }
 
 /// One note's canonical identity: the file it is, independent of how it was named.
@@ -59,6 +61,19 @@ impl Vault {
         name: impl Into<String>,
         root: impl Into<PathBuf>,
     ) -> Result<Self, Error> {
+        Self::open_with_layout(slug, name, root, NotesLayout::Auto)
+    }
+
+    /// Opens a vault with an explicit, persisted note-root selector.
+    ///
+    /// # Errors
+    /// Returns the same root validation errors as [`Vault::open`]. No content is moved.
+    pub fn open_with_layout(
+        slug: Slug,
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        notes_layout: NotesLayout,
+    ) -> Result<Self, Error> {
         let root = root.into();
         let meta = std::fs::metadata(&root).map_err(|source| Error::VaultRoot {
             slug: slug.to_string(),
@@ -72,11 +87,15 @@ impl Vault {
             });
         }
         // why: `SPEC.md` §4.1 puts notes in `<vault>/notes/`. An existing Obsidian vault has
-        // them at its root instead, and refusing to open one would make this server useless
-        // against the only real corpus anybody has. So the spec layout wins when it is
-        // present, and the root is used when it is not. Recorded in SPEC §4.1.
+        // them at its root instead. Legacy Auto prefers notes/ when present; explicit Root
+        // pins the exact selected directory, independent of existing or later notes/.
+        // Nothing is moved, and old entries are not migrated (SPEC §4.1/§6.1).
         let spec_layout = root.join("notes");
-        let notes_root = if spec_layout.is_dir() {
+        // why: a legacy notes/ alias must not silently switch policy-relative identities
+        // to root layout. Retain its namespace but make linked content inaccessible.
+        let notes_entry = std::fs::symlink_metadata(&spec_layout)
+            .is_ok_and(|metadata| metadata.is_dir() || metadata.file_type().is_symlink());
+        let notes_root = if notes_layout == NotesLayout::Auto && notes_entry {
             spec_layout
         } else {
             root.clone()
@@ -86,8 +105,31 @@ impl Vault {
             name: name.into(),
             root,
             notes_root,
+            notes_layout,
             media_backend: MediaBackendConfig::Local,
+            ignore_non_writable_folders: false,
         })
+    }
+
+    /// Applies the persisted opt-in service-identity folder filter.
+    #[must_use]
+    pub fn with_non_writable_folders_ignored(mut self, enabled: bool) -> Self {
+        self.ignore_non_writable_folders = enabled;
+        self
+    }
+
+    /// Whether inaccessible or unwritable folders are omitted from this vault.
+    #[must_use]
+    pub fn ignore_non_writable_folders(&self) -> bool {
+        self.ignore_non_writable_folders
+    }
+
+    pub(crate) fn directory_included(&self, path: &Path) -> bool {
+        !self.ignore_non_writable_folders || directory_is_writable(path)
+    }
+
+    pub(crate) fn directory_path_included(&self, relative: &str) -> bool {
+        !self.ignore_non_writable_folders || self.without_symlinks(Path::new(relative))
     }
 
     /// Applies the server-owned media backend configuration for this vault.
@@ -118,10 +160,16 @@ impl Vault {
         &self.root
     }
 
-    /// `<vault>/notes` when it exists, otherwise the vault root.
+    /// The selected notes root: exact root when pinned, otherwise legacy automatic layout.
     #[must_use]
     pub fn notes_root(&self) -> &Path {
         &self.notes_root
+    }
+
+    /// The persisted selector used to open this vault.
+    #[must_use]
+    pub fn notes_layout(&self) -> NotesLayout {
+        self.notes_layout
     }
 
     /// The vault-relative folder containing templates.
@@ -279,7 +327,7 @@ impl Vault {
     /// Resolves a request-supplied relative path to a real file inside the vault.
     ///
     /// This is the containment boundary — the only thing between a URL and the rest of the
-    /// filesystem. Two checks, and it is worth knowing which one carries the weight:
+    /// filesystem. Containment and no-link checks apply together:
     ///
     /// 1. **Load-bearing:** the result is canonicalized and required to sit under the
     ///    canonicalized notes root. This catches ordinary `../` traversal *and* the case no
@@ -289,6 +337,9 @@ impl Vault {
     ///    any filesystem call. Deliberately kept even though check 1 subsumes it — deleting
     ///    it changes no test, which is exactly why this note exists, so a future reader does
     ///    not mistake it for the real boundary and delete that instead.
+    ///
+    /// Child symbolic links are rejected before canonicalization, including aliases to
+    /// other notes in this vault. Catalogs and direct access use the same no-link policy.
     ///
     /// # Errors
     ///
@@ -322,6 +373,9 @@ impl Vault {
             return Err(Error::NotFound);
         }
 
+        if !self.without_symlinks(candidate) {
+            return Err(Error::NotFound);
+        }
         let joined = self.notes_root.join(candidate);
         let real = joined.canonicalize().map_err(|_| Error::NotFound)?;
         let base = self
@@ -339,7 +393,7 @@ impl Vault {
 
     /// Resolves a note to the identity every writer for that file must agree on.
     ///
-    /// why: two request strings can name one file — a symlink, or a different
+    /// why: two request strings can name one file through different
     /// capitalization on a case-insensitive filesystem. `mb-server` keeps exactly one
     /// serialized writer per note, and keying that writer on the caller's spelling gives
     /// one file two writers that clobber each other. The vault-relative form of the
@@ -385,6 +439,9 @@ impl Vault {
     /// [`Error::NotFound`] if the path would land outside the vault, matching
     /// [`Vault::resolve`]'s refusal rather than describing the boundary to a caller.
     pub fn reserve(&self, relative: &str) -> Result<PathBuf, Error> {
+        if !self.without_symlinks(Path::new(relative)) {
+            return Err(Error::NotFound);
+        }
         let joined = self.notes_root.join(relative);
         let base = self
             .notes_root
@@ -404,6 +461,38 @@ impl Vault {
                 _ => return Err(Error::NotFound),
             }
         }
+    }
+
+    fn linked_notes_root(&self) -> bool {
+        self.notes_root != self.root
+            && std::fs::symlink_metadata(&self.notes_root)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    }
+
+    // why: aliases are excluded from both catalogs and direct access, even when they
+    // stay inside the vault. Check each child before descending; the configured root
+    // remains trusted (for example /tmp aliases on macOS). Missing suffixes permit reserve.
+    fn without_symlinks(&self, relative: &Path) -> bool {
+        if self.linked_notes_root() || !self.directory_included(&self.notes_root) {
+            return false;
+        }
+        let mut path = self.notes_root.clone();
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return false;
+            };
+            path.push(name);
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => return false,
+                Ok(metadata) if metadata.is_dir() && !self.directory_included(&path) => {
+                    return false;
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return false,
+            }
+        }
+        true
     }
 
     /// Finds a note by the human-readable name a wikilink carries (`SPEC.md` §4.3).
@@ -451,13 +540,15 @@ impl Vault {
     ///
     /// Fails if the notes root cannot be read.
     pub fn notes(&self) -> Result<Vec<String>, Error> {
+        if self.linked_notes_root() {
+            return Ok(Vec::new());
+        }
         let mut found = Vec::new();
         let mut stack = vec![self.notes_root.clone()];
-        let base = self
-            .notes_root
-            .canonicalize()
-            .unwrap_or_else(|_| self.notes_root.clone());
         while let Some(dir) = stack.pop() {
+            if !self.directory_included(&dir) {
+                continue;
+            }
             let entries = std::fs::read_dir(&dir).map_err(|source| Error::ReadDir {
                 path: dir.clone(),
                 source,
@@ -471,26 +562,16 @@ impl Vault {
                 if entry.file_name().to_string_lossy().starts_with('.') {
                     continue;
                 }
-                // why: the same containment rule [`Vault::resolve`] applies, applied here as
-                // well. `resolve` refuses a symlink pointing out of the vault, but this
-                // listing did not — and it is what the index is built from, so the *content*
-                // of a file the note route will not serve was reaching the index and coming
-                // back out through a backlink's context text. The canonicalize is paid only
-                // for a symlink, so the ordinary 10 000-note sweep costs nothing extra
-                // (§21.2).
-                let escapes = entry
-                    .file_type()
-                    .map(|kind| kind.is_symlink())
-                    .unwrap_or(true)
-                    && !path
-                        .canonicalize()
-                        .is_ok_and(|real| real.starts_with(&base));
-                if escapes {
-                    continue;
-                }
-                if path.is_dir() {
+                // why: DirEntry::file_type does not follow links. The catalog and index
+                // must omit internal aliases, loops and broken links as well as escapes.
+                let kind = entry.file_type().map_err(|source| Error::ReadDir {
+                    path: dir.clone(),
+                    source,
+                })?;
+                if kind.is_dir() {
                     stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "md")
+                } else if kind.is_file()
+                    && path.extension().is_some_and(|e| e == "md")
                     && let Ok(rel) = path.strip_prefix(&self.notes_root)
                 {
                     found.push(rel.to_string_lossy().replace('\\', "/"));
@@ -571,5 +652,30 @@ impl Slug {
 impl std::fmt::Display for Slug {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+// why: mode bits do not account for named POSIX ACLs or the effective service identity.
+#[cfg(target_os = "linux")]
+pub(crate) fn writable_directory_at(
+    fd: &impl std::os::fd::AsFd,
+    path: &Path,
+) -> rustix::io::Result<()> {
+    rustix::fs::accessat(
+        fd,
+        path,
+        rustix::fs::Access::READ_OK | rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
+        rustix::fs::AtFlags::EACCESS | rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    )
+}
+pub(crate) fn directory_is_writable(path: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        writable_directory_at(&rustix::fs::CWD, path).is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        false
     }
 }

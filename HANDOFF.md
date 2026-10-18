@@ -1,185 +1,79 @@
-# Handoff
+# Current state — October 18, 2026
 
-Where things stand right now. Durable contracts and decisions live in `SPEC.md` (editor
-redesign: §8.4; inline `mb-` style grammar: §4.4). Rewrite this file — never append.
-History is in `git log`; detailed evidence for past runs is in `~/.hermes/cache/scratch/`.
+The New vault checkbox and graceful symbolic-link handling (t-013/t-012) are implemented
+and deployed. Live memberberry-memberberry-1 is healthy on
+memberberry-memberberry:ignore-folders-20261018, image sha256:90585f1efde3eaa74700bca7f5fa27a7e7794114dcbb591db6d9d81ee4efb123.
+Backend SHA256 10e0f1e9d24f8a55301214f7e14b4cc4127a231ea40036c5efcca1ceb61bc99c; source manifest cfa3d26d870c6f7dfc602360189b494560ea5d4bdc5bbf3d068ba39485474d62
+(731 files, operational HANDOFF excluded). All 387 frontend files and unchanged schema-3
+WASM match the tested package. Four registrations, 738 Markdown files, 4 policies,
+config/media/credentials/runtime settings were preserved. Six fresh writer-stopped same-disk
+archives and the previous fb528f1f image are retained; 62 saved CRDT copies verified.
+Never replay deploy or restore stale Markdown. Private archives are not off-host recovery.
 
-## Current state (2026-10-15)
+After choosing a server folder, New vault offers the default-off checkbox
+“Ignore non-writable folders from vault”. The value persists per vault. Registration,
+catalog/tree, direct reads, search/indexing and native watcher enrollment omit service-ineligible
+folders without repairing permissions. Root/policy/required media/index storage remain strict,
+as do individual eligible Markdown files. Symbolic links are always excluded and never grant
+content access. The later settings-page toggle/recheck and manual exclusion patterns are deferred.
+SPEC.md §§6.1/6.4 contain the contract; no CRDT/WASM schema or dependency changes.
 
-`main` is `1339b53` (PR #4 merged with a merge commit): editor styling revision 3 plus
-Paul's PR #3, which therefore landed too.
+Nine specifically authorized workspace Markdown files received service-UID 10001 rw ACLs,
+with bytes and other users' effective access preserved at repair time. Private evidence
+folder permissions were not broadened. Exact receipts are in the parent evidence directory.
+No real vault was registered for testing, no policy/credential reset or fabricated session.
 
-**Work is in flight on `feat/editor-next`** (committed locally, not pushed,
-no PR yet — see Next). The latest commit includes the block catalogue, quote styling,
-movement-menu text removal and their documentation/tests.
+## Verification and next action
 
-The user's editor redesign (SPEC §8.4): namespace formatting, a Notion-like selection
-popup, block-type conversion and block rearrangement, all in plain `.md`. On `main`:
-- **Styling revision 3** (SPEC §4.4): `mb-style` underline / colour / background / size
-  with server + browser schema admission and refresh-required on revision mismatch.
-- **Selection popup:** native marks, link, an "A" button opening a labelled colour /
-  background / size panel, and **Turn into** Text ↔ Heading 1–4 behind the single-editor
-  gate (`single-editor.ts`, shared with block movement).
-- **From PR #3:** list Enter/Tab/Shift-Tab, backtick inline code, undo history owned by
-  the session's Y.Doc, `[[` inserting Markdown links, perf readiness wait.
+157 focused Rust, 152 frontend and 34 unique final release-binary desktop/mobile browser cases
+pass (zero retries/skips). Each browser spec followed a rebuild. Typecheck has zero errors/
+warnings; token, Rustfmt and whitespace checks pass. Regression-first reds and raw logs,
+native UID 65534 no-read observers/positive controls, config restart, critical-storage refusal
+and watcher new-directory refresh are retained. The focused directory-resolution Criterion
+benchmark is recorded with machine-specific limits; this is not Android/full budget validation.
+Read-only live desktop/mobile browsers render login/CSP, verify exact app/folder assets and
+anonymous denials, with zero POSTs/errors. Public origin is behind Cloudflare Access;
+normal signed-in review remains pending. Full make check, coverage, user-run full make e2e,
+independent review and acceptance are deferred/pending. Existing historical full-gate failures
+remain unwaived in PROJECT.md; focused passes are not a full-gate claim.
 
-`main` verification: `make check` green (`local/debug/make-check-20261008-214030.log`), web
-unit 2045/2045, overlapping browser specs 54/54 desktop + mobile, style-host acceptance
-(`web/scripts/test-md-style-hosts.mjs`) pass. **Not run:** full `make e2e`, physical-device
-performance. GitHub CI results on PR #4 were not checked from here.
+Next: Paul refreshes New vault, chooses the folder, checks the option and reviews the result.
+Do not create that live registration on his behalf. Keep task records open for review and
+combine the parallel editor/PWA work only when separately ready and authorized.
 
-## Next
+## Source isolation and later merge
 
-Latest feedback: removed the standing single-editor rearrangement warning from the block
-movement menu at the user's request. The existing refusal gates and documented scope
-remain in place. Conversion's separate warning is unchanged.
-Focused verification: 49 handles/movement/gate tests and four rebuilt desktop/mobile
-movement browser cases pass; the two desktop-only geometry cases skip mobile as before.
-Full checks, coverage and manual full E2E remain deferred. Logs:
-`local/debug/memberberry-warning-*.log`.
+Work only in /var/home/paul/clawd/projects/memberberry/new-vault-20261018,
+branch feat/unified-new-vault-20261018, HEAD 123d8e4ddf01f4c1d63ccc7afa4ef1321b449e58.
+No new commit/merge/push/PR. Prerequisite integration is staged in this worktree's independent
+index; t-009/t-012/t-013 are unstaged (new tests/helpers intent-to-add). Do not commit the
+whole staged baseline as this feature. Preserve integration-20261017, which holds the common
+Git directory and concurrent t-010 work. t-011 and t-014 remain separate. Earlier t-009 copies
+exist in the shared source; avoid applying twice. Current source contains none of those later
+parallel changes.
 
-Quotes now have a themed 3px vertical rule and a 1rem inset, including
-nested quotes and browser HTML exports; normal text and callouts retain their styles.
-The new `quotes.spec.ts` first failed on the missing rule, then passed on desktop/mobile
-across all three themes, nested content and exported HTML. Screenshots were reviewed;
-the original Markdown remains unchanged. Rebuild/focused browser checks and `make
-token-check` pass. Full checks, coverage and full manual E2E remain deferred; the known
-bundle gate failure below is unchanged. Logs: `local/debug/memberberry-quote-*.log`.
+Parent integration-evidence-20261018/non-writable-folders contains final source/package,
+guarded rollout and browser receipts, t013-only.patch and merge-patch-verification.json.
+Its baseline.json identifies t-012 tree a6bcbbfa… and t012-base-source.tar; t012-only.patch
+is relative to t-009 tree bfca5369…. Earlier new-vault evidence contains prerequisite and
+t009 feature patches. Review/reconcile prerequisites first, then t009/t012/t013 and parallel
+changes, particularly SPEC/HANDOFF and shared runtime code; test the final combined source.
+Earlier t012 source verification is historical: its build directory was intentionally reused
+for t013. Final verify-source.py checks all current frozen inputs and returns nonzero on drift.
 
-The Notion screenshot inventory is saved in `STYLINGIDEA.md`. The user approved every
-item labelled Include, plus Web bookmark and Date (2026-10-14). The catalogue
-implements that slice; its contract is in SPEC §8.4. Next: user feedback on the menu and
-manual full E2E, then decide whether to push the branch. File attachments and the
-other follow-up/excluded screenshot entries remain outside this slice.
+## Development commands and environment
 
-The block `⋯` now has Turn into and Insert below alongside movement. Insert in the toolbar,
-slash input and touch long-press open the searchable, grouped catalogue. It includes basic
-blocks, toggles, tables/dividers, code with language, equations, existing image/emoji
-pickers, existing authorized note-link lookup, template insertion, labelled web links and
-plain dates. More also exposes Turn into for touch. Conversion keeps the single-editor
-gate; insertion preserves selected content and the title, and captured forms fail closed
-on document/readiness changes. No schema, storage, server route or dependency changed.
+Use memberberry-local-dev (1CPU/4GiB), independent source/target/node_modules at
+/tmp/memberberry-symlink-20261018. Do not edit /src or the earlier t009 frozen build.
+Docker execution needs host access. Set PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin,
+CARGO_HOME=/build-cargo, CARGO_BUILD_JOBS=1 and RUST_TEST_THREADS=1. TMPDIR must be
+/tmp/memberberry-symlink-20261018/target/browser-tmp; default inherited scratch points to /src.
+For browser work set XDG_CACHE_HOME to target/browser-cache, GSETTINGS_SCHEMA_DIR to
+target/browser-schemas and GSETTINGS_BACKEND=memory. Chromium is installed at
+/root/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome.
 
-Catalogue focused verification: 161 unit/integration/property tests across catalogue,
-shell, handles, conversion, commands, emoji, document lookup and refresh-required state;
-typecheck clean; seven E5 permission
-leak tests pass. Deliberately replacing the inserted date made its persistence test fail;
-the defect was restored and the focused suite passed. A 2000-root jsdom refresh/filter
-benchmark runs from `web` with `npm exec -- vitest bench --run
-src/editor/block-catalog.bench.ts --maxWorkers=1`; it is not Android performance evidence.
-Rebuilt catalogue browser spec covers desktop/mobile web links/dates, handle insertion and
-conversion, note links, media, emoji, equations, code and slash dismissal. Catalogue (10),
-existing editor (20) and movement (4) browser cases pass; movement's two desktop-only
-geometry cases skip mobile as before. Media/emoji choices now retain their insertion
-destination and refuse a changed document or lost edit readiness. Full checks and coverage
-deferred; full `make e2e` remains manual/pending.
-
-**Known failing check:** the optimized bundle-size gate fails on both this tree and a
-clean pre-catalogue branch HEAD with the same WASM/dependencies. SPEC §21 records the
-measurement and this slice's size delta. The existing exception was not raised; fixing
-the broader critical-path bundle is outside this menu request. No physical-device
-performance claim. Focused logs are in `local/debug/memberberry-catalog-*.log`.
-
-`feat/editor-next` adds on top of `main`:
-- Popup first-frame / Move labels / swatch fixes.
-- Turn into → lists, to-dos, quote, callout, code, equation.
-- Block-move fixes (nested atom selection, undo/redo caret); block handles wired with gated
-  More moves, slim ⋯ then grip on one row, 12px clear of the text, in a
-  compact desktop gutter (hover there resolves by pointer row, so the handles no longer
-  vanish crossing to them), none on touch; `e2e/block-move.spec.ts`.
-- Clipper HTML `<` text-loss fix plus import tests.
-- Toggles as foldable callouts; Mod-Enter folds from anywhere inside one.
-- Shift+Enter adds a line in the same block (Markdown hard break) in any
-  paragraph, including list items, quotes, callout and toggle bodies; headings and summaries
-  stay single-line (SPEC §8.4).
-
-Verified on the branch: editor/shell unit 1858, web typecheck, mb-core / clipper Rust tests,
-clippy, wasm-check; browser specs single-worker on both layouts — selection-menu, block-move,
-editor, toggles, tables, and line-break (×3 each layout, plus a probe that it fails with the
-feature unplugged). **Not run on this branch:** `make check`, full `make e2e`, coverage.
-
-Open items:
-- **Line break:** no touch route (soft keyboards rarely send Shift+Enter). Headings are
-  tested (unit + browser) to ignore Shift+Enter; toggle summaries take the same fall-through
-  path but have no test of their own.
-- **Toggles:** folding is per-view and not remembered across reloads; no UI to change a
-  toggle's `+`/`-` default (edit source); arrow glyph size may want tuning.
-- **Unwrap** containers (list/quote/callout → Text) in Turn into: not implemented.
-- **Long-press handles on touch** (§8.2): not implemented; touch uses More → Move.
-- **Coverage:** `mb-core` was 95.13% vs a 95% floor before the clipper tests; re-measure.
-- **Load-sensitive e2e:** under heavy machine load, parallel workers time out mounting the
-  editor and `editor.spec.ts` "bootstrap identifies the note" once hit 30 s (0.5 s normally).
-  Use `--workers=1` when the machine is busy; not a product defect so far.
-
-## Gotchas
-
-- **Install ProseMirror plugins at editor construction.** Late registration rebuilds plugin
-  views; y-prosemirror's stock undo plugin then destroyed its UndoManager. Undo now survives
-  that (`durableUndoPlugin`, history owned by the Y.Doc), but table handles and other
-  plugins still assume construction-time install.
-- The installed y-prosemirror binding **mutates/deletes** unknown nodes/marks when loading
-  an old-schema doc. That is why admission preflights state before binding (SPEC §8.4).
-- Playwright can press a key before `selectionchange` reaches ProseMirror, so a shortcut
-  right after a click or arrow key runs at the old caret (flaky ~1 in 3). Poll the model
-  caret first — Tiptap exposes the editor as `root.editor` (see `e2e/line-break.spec.ts`).
-- `tables.spec.ts` fails under `--repeat-each` (2 tests, from the second repeat, on `HEAD`
-  too): it is not repeat-safe. A single run passes; don't read repeat failures as regressions.
-- Native typing in Playwright: Tiptap focuses on a deferred RAF; wait on a synchronous
-  native+model caret/focus predicate, not on `focus` alone.
-- After keyboard selection, `editor.state.selection` can trail the native range until
-  `selectionchange` fires — and never catches up if focus leaves first. Code reacting to
-  focus leaving the editor must read the native range (see `selection-menu.ts`).
-- Ports 9010/9011 are the user's running dev services — never stop or reuse them as
-  test fixtures. E2E uses 9012.
-- `~/.hermes/cache/scratch/memberberry-r3-mixed-diagnostic-o5qcg3iy/delivery` has a
-  file-mode mismatch (REPORT.md 0644 vs declared 0444); a fix was denied at runtime.
-  Don't call it verified; don't reseal without user consent.
-
-## Local development
-
-- `make dev`: app on 9011, server on 9010. Disposable E2E server on 9012.
-- `make check` also writes `local/debug/make-check-<time>.log` (`make-check-latest.log` links
-  the newest); read that instead of re-running the gate.
-- Rebuild before each focused browser run:
-  `npm --prefix web run build && npm --prefix web run e2e -- <name>.spec.ts`.
-  Run specs serially (shared fixture).
-- Use stable Rust (1.90 is too old for current `yrs`; don't downgrade the dependency).
-- `make wasm` = no-opt dev WASM; bundle-budget measurements need `make wasm-ci`.
-- Never delete vault state or browser replicas to pick up UI changes; close all app tabs /
-  installed-app windows and reopen so the new service worker activates.
-- `local/` is gitignored (feedback in `local/debug/`); never stage it.
-
-## Open safety / verification items (pre-existing)
-
-- `sync registry lock poisoned` panic: unreproduced, unfixed. Capture the first backtrace
-  if it recurs; don't clear poison or delete replicas.
-- False-conflict callouts are not auto-removed.
-- Real-browser IndexedDB cap eviction and cross-tab eviction unverified.
-- Previously failing on main, unverified since:
-  `onboarding_failed_config_write_removes_the_unpublished_vault_and_allows_retry`,
-  `unreadable_vault_shows_recovery_guidance_only_to_its_member`.
-- Linux Chromium crashes, mobile cold-start / quick-switcher perf breaches
-  (`web/perf/breaches.json`). Laptop/jsdom benchmarks are not Android evidence.
-- `npm audit`: 13 advisories (1 low, 10 moderate, 2 high) last seen, not re-triaged.
-- Clippy on server tests has 30 inherited errors (not green).
-- Known codec limits: native marks on atomic images can be lost; adversarial unmatched
-  CommonMark brackets are slow.
-
-## Carried-forward feature limits
-
-- Tables: no offscreen drag autoscroll; no multi-client browser coverage; no column
-  delete/resize or headerless tables.
-- Inbox: no offline filtered query, live refresh, remembered filters, timezone-aware dates.
-- Creation: no folder-row create / template picker; creation not audited (§6.10).
-- Unlinked mentions: silent 50-block cap; no conversion/highlight/live refresh.
-- Offline bodies/pins: caps not configurable; eviction per visible vault; pins device-local;
-  no folder pins.
-- Shell/PWA: reconnect delay up to 30s without `online` event; shared precache across users
-  of one browser profile; no skipWaiting; limited tablet/gesture coverage.
-- Graphs: not persistent tabs; no live update; global nodes not draggable; local labels
-  overlap; duplicate titles indistinguishable.
-- Rename/folder move: open clients/bookmarks not updated; partial writes not rolled back;
-  O(vault) cost.
-- Outline/tags/transclusion: limited drag/cross-pane coverage; tags don't poll; embeds
-  don't live-refresh; unavailable placeholders never name hidden targets (by design).
-- Index/backlinks: no conditional 304; audit timestamps are Unix seconds, not RFC3339.
+Run relevant focused Rust targets, admin tests with one worker, typecheck and tokens.
+Rebuild immediately before each single focused browser spec; run-browser.py records the exact
+command/environment and release binary. Do not run full gates/coverage/full E2E without the
+explicit request required by AGENTS.md. Final read-only live-network helper restores the
+container's exact previous networks. Raw logs and screenshots are retained in checks/.

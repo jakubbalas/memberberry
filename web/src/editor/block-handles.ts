@@ -1,6 +1,6 @@
 /** Editor-local hover/focus controls; portals never enter note content or exports. */
 import { NodeSelection, TextSelection } from "@tiptap/pm/state";
-import type { BlockMoveOptions, BlockMoveToken } from "./block-move.js";
+import type { BlockMoveOptions, BlockMoveToken, BlockMoveTarget } from "./block-move.js";
 import { createBlockMover } from "./block-move.js";
 
 /** The host must supply a vault-qualified noteKey and current mode/body readiness. */
@@ -9,7 +9,7 @@ export interface BlockHandlesOptions extends BlockMoveOptions {
   readonly onInsertBelow?: (rootStart: number) => void;
   readonly onTurnInto?: (rootStart: number) => void;
 }
-/** One controller per editor. Alt-Shift-F10 opens the current complete root's actions. */
+/** One controller per editor. Alt-Shift-F10 opens the current item's actions. */
 export interface BlockHandles { focus(): boolean; refresh(): void; destroy(): void }
 interface Boundary { index: number; y: number }
 interface Drag {
@@ -86,26 +86,32 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     const node = editor.view.nodeDOM(start);
     return node instanceof window.HTMLElement ? node : undefined;
   };
-  const readBoundaries = (): Boundary[] => {
+  const unitRect = (unit: BlockMoveTarget): { left: number; right: number; top: number; bottom: number } | undefined => {
+    if (!unit.inline) return rootElement(unit.start)?.getBoundingClientRect();
+    const from = editor.view.coordsAtPos(unit.start, 1);
+    const to = editor.view.coordsAtPos(unit.end, -1);
+    const parent = editor.state.doc.resolve(unit.start);
+    const rect = rootElement(parent.before(1))?.getBoundingClientRect();
+    return rect ? { left: rect.left, right: rect.right, top: from.top, bottom: to.bottom } : undefined;
+  };
+  const readBoundaries = (current: BlockMoveToken): Boundary[] => {
     const boundaries: Boundary[] = [];
     let previousBottom: number | undefined;
-    const doc = editor.state.doc;
-    const firstBody = doc.firstChild?.type.name === "heading" && doc.firstChild.attrs["level"] === 1 ? 1 : 0;
-    // why: scan root geometry only during drag/reflow, never on ordinary keystrokes.
-    doc.forEach((node, start, index) => {
-      if (index < firstBody) return;
-      const rect = rootElement(start)?.getBoundingClientRect();
+    const units = mover.targets(current);
+    // why: scan unit geometry only during drag/reflow, never on ordinary keystrokes.
+    units.forEach((unit, index) => {
+      const rect = unitRect(unit);
       if (!rect) return;
       boundaries.push({ index, y: previousBottom === undefined ? rect.top : (previousBottom + rect.top) / 2 });
       previousBottom = rect.bottom;
     });
-    if (previousBottom !== undefined) boundaries.push({ index: doc.childCount, y: previousBottom });
+    if (previousBottom !== undefined) boundaries.push({ index: units.length, y: previousBottom });
     return boundaries;
   };
   const position = (): void => {
     frame = undefined;
     if (!token || !mover.isCurrent(token)) { hide(); return; }
-    const rect = rootElement(token.start)?.getBoundingClientRect();
+    const rect = unitRect(token);
     if (!rect) { hide(); return; }
     const bounds = paneBounds();
     if (rect.bottom < bounds.top || rect.top > bounds.bottom) { group.hidden = true; close(); } else group.hidden = false;
@@ -122,7 +128,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
       menu.style.top = `${Math.max(bounds.top + 4, Math.min(rect.bottom + 4, bounds.bottom - menuRect.height - 4))}px`;
     }
     if (!drag) return;
-    drag.boundaries ??= readBoundaries();
+    drag.boundaries ??= readBoundaries(drag.token);
     drag.boundary = undefined; indicator.hidden = true;
     if (!drag.moved || drag.x < bounds.left || drag.x > bounds.right || drag.y < bounds.top || drag.y > bounds.bottom) return;
     let nearest: Boundary | undefined;
@@ -183,16 +189,25 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   };
   const open = (): void => { if (suppressClick) { suppressClick = false; return; } openMenu(); };
   const moveUp = (): void => { apply("up"); }; const moveDown = (): void => { apply("down"); };
-  const insertBelow = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onInsertBelow?.(current.start); };
-  const turnInto = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onTurnInto?.(current.start); };
+  const insertBelow = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onInsertBelow?.(current.rootStart); };
+  const turnInto = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onTurnInto?.(current.rootStart); };
   const hover = (event: PointerEvent): void => {
     if (drag || !menu.hidden || event.pointerType === "touch" || !(event.target instanceof window.Node) || !dom.contains(event.target)) return;
     // why: the gutter and the gaps between blocks are the editor root's own padding/margins;
     // posAtDOM(root, 0) there is the title, so crossing the gap to the handles hid them.
     // Resolve the root under the pointer's row instead, and keep the current one if none.
-    const pos = event.target === dom ? editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos : undefined;
-    if (event.target === dom && pos === undefined) return;
-    try { show(mover.capture(pos ?? editor.view.posAtDOM(event.target, 0))); } catch { hide(); }
+    try {
+      const rect = token && unitRect(token);
+      if (rect && event.clientX < rect.left && event.clientY >= rect.top && event.clientY <= rect.bottom) return;
+      // why: posAtDOM(p, 0) always selects the first line, even when hovering a later <br> row.
+      const pos = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
+      if (event.target === dom && pos === undefined) return;
+      show(mover.capture(pos ?? editor.view.posAtDOM(event.target, 0)));
+    } catch {
+      // why: non-layout DOM test hosts cannot hit-test coordinates; native DOM positions
+      // still support keyboard movement and node hover there.
+      try { show(mover.capture(editor.view.posAtDOM(event.target, 0))); } catch { hide(); }
+    }
   };
   const leave = (event: PointerEvent): void => {
     const into = event.relatedTarget instanceof window.Node ? event.relatedTarget : undefined;

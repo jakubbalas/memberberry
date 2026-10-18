@@ -471,9 +471,8 @@ fn a_symlinked_directory_pointing_out_of_the_vault_is_not_walked() {
 }
 
 #[test]
-fn a_symlink_staying_inside_the_vault_is_still_listed() {
-    // Containment must not become "no symlinks at all" — vaults full of symlinks are
-    // ordinary, and this is the counterpart of the resolve case below.
+fn a_symlink_staying_inside_the_vault_is_not_listed() {
+    // t-012: aliases are unsupported even when their targets are inside the vault.
     let dir = TempDir::new("symlink-list-ok");
     let target = dir.write("Real.md", "# Real\n");
     let link = dir.path().join("Alias.md");
@@ -488,13 +487,13 @@ fn a_symlink_staying_inside_the_vault_is_still_listed() {
 
     assert_eq!(
         vault_at(&dir).notes().expect("notes"),
-        vec!["Alias.md".to_string(), "Real.md".to_string()]
+        vec!["Real.md".to_string()]
     );
 }
 
 #[test]
-fn a_symlink_staying_inside_the_vault_still_resolves() {
-    // Containment must not become "no symlinks at all" — that would break ordinary vaults.
+fn a_symlink_staying_inside_the_vault_does_not_resolve() {
+    // t-012: direct requests must agree with the link-free catalog.
     let dir = TempDir::new("symlink-inside");
     let target = dir.write("real.md", "# Real\n");
     let link = dir.path().join("alias.md");
@@ -509,8 +508,8 @@ fn a_symlink_staying_inside_the_vault_still_resolves() {
 
     let vault = vault_at(&dir);
     assert!(
-        vault.resolve("alias.md").is_ok(),
-        "an internal symlink should resolve"
+        matches!(vault.resolve("alias.md"), Err(Error::NotFound)),
+        "an internal symlink is invisible to content requests"
     );
 }
 
@@ -694,4 +693,49 @@ fn a_name_resolves_across_unicode_normalisation_forms() {
         vault.find_by_name(nfc).is_some(),
         "NFC link should find an NFC file"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_directories_loops_and_dangling_links_are_invisible() {
+    let dir = TempDir::new("symlink-skipped");
+    dir.write("Real/Note.md", "# Real\n");
+    for (target, name) in [("Real", "Alias"), ("missing", "Broken.md"), (".", "Loop")] {
+        std::os::unix::fs::symlink(target, dir.path().join(name)).expect("symlink");
+    }
+    let vault = vault_at(&dir);
+    assert_eq!(vault.notes().expect("notes"), ["Real/Note.md"]);
+    for path in ["Alias/Note.md", "Broken.md", "Loop/Real/Note.md"] {
+        assert!(
+            matches!(vault.resolve(path), Err(Error::NotFound)),
+            "{path}"
+        );
+        assert!(
+            matches!(vault.reserve(path), Err(Error::NotFound)),
+            "{path}"
+        );
+    }
+    assert!(vault.resolve("Real/Note.md").is_ok());
+    assert!(vault.reserve("New/Note.md").is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn auto_layout_does_not_follow_a_symlink_named_notes() {
+    let dir = TempDir::new("symlink-auto-layout");
+    let outside = TempDir::new("symlink-auto-outside");
+    dir.write("Real.md", "# Real\n");
+    outside.write("Secret.md", "# Secret\n");
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("notes")).expect("link");
+    let vault = vault_at(&dir);
+    assert_eq!(vault.notes_root(), dir.path().join("notes"));
+    assert!(vault.notes().expect("notes").is_empty());
+    assert!(
+        matches!(vault.resolve("Real.md"), Err(Error::NotFound)),
+        "do not change legacy ACL-relative identities by falling back to root"
+    );
+    assert!(matches!(
+        vault.resolve("notes/Secret.md"),
+        Err(Error::NotFound)
+    ));
 }

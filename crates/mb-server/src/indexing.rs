@@ -35,7 +35,7 @@ const INDEX_PATH: &str = ".memberberry/index/graph.sqlite";
 /// connection would be a permission bug rather than a performance win.
 #[derive(Debug, Default)]
 pub struct IndexRegistry {
-    indexes: RwLock<BTreeMap<Slug, Arc<Mutex<Index>>>>,
+    pub(crate) indexes: RwLock<BTreeMap<Slug, Arc<Mutex<Index>>>>,
 }
 
 impl IndexRegistry {
@@ -192,11 +192,19 @@ fn touched<'a>(
         let Some(relative) = relative_note(&base, path) else {
             continue;
         };
-        // A deleted file cannot be canonicalized, so the watcher reports a deletion as an
-        // overflow and it arrives here as a sweep instead (`watch.rs`). Anything that got
-        // this far and is now missing is a race with a delete, and the sweep will catch it.
-        if path.is_file() {
-            reindex(vault, index, &relative)?;
+        // why: a concrete file-removal event retains its canonical parent spelling.
+        // Drop that exact note without a recursive recovery sweep; other I/O failures
+        // must not be mistaken for deletion.
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
+                reindex(vault, index, &relative)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                index
+                    .remove(&relative)
+                    .map_err(|error| format!("removing indexed note: {error}"))?;
+            }
+            _ => {}
         }
     }
     index
@@ -210,7 +218,14 @@ fn touched<'a>(
 /// A note that cannot be read is skipped rather than fatal: a file being written by another
 /// process is ordinary, and the stamp it is left with means the next reconcile tries again.
 fn reindex(vault: &Vault, index: &mut Index, relative: &str) -> Result<(), String> {
-    let path = vault.notes_root().join(relative);
+    // why: a listed/watched path may have become a link since the scan. Resolve again
+    // before reading bodies, and remove old rows rather than leaving stale link content.
+    let Ok(path) = vault.resolve(relative) else {
+        index
+            .remove(relative)
+            .map_err(|error| format!("removing unavailable note: {error}"))?;
+        return Ok(());
+    };
     let Some(stamp) = Stamp::of(&path) else {
         return Ok(());
     };

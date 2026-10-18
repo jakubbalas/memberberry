@@ -7,6 +7,7 @@ import type { Doc, UndoManager } from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import type { ConnectionStatus } from "./collaboration.js";
 import { createSingleEditorGate } from "./single-editor.js";
+import { captureMoveUnits, reorderMoveUnits, type MoveUnits } from "./block-move-units.js";
 
 /** One note/editor lifetime. noteKey must include vault identity, not a title/path label. */
 export interface BlockMoveOptions {
@@ -18,14 +19,18 @@ export interface BlockMoveOptions {
   /** Rechecked at invocation; the host supplies mode/body/authorization readiness. */
   readonly canInteract?: () => boolean;
 }
-/** Opaque capture; backing editor/document/root node are controller-private. */
-export interface BlockMoveToken { readonly label: string; readonly index: number; readonly start: number }
+/** Opaque capture; backing editor/document/unit are controller-private. */
+export interface BlockMoveToken { readonly label: string; readonly index: number; readonly start: number; readonly end: number; readonly rootStart: number; readonly inline: boolean }
+/** Geometry inputs for the exact captured movement scope. */
+export interface BlockMoveTarget { readonly start: number; readonly end: number; readonly inline: boolean }
 /** Distinguishes document invalidation from a known readiness-state change. */
 export type BlockMoveChange = "document" | "safety";
-/** Bounded mutation API; boundaries are root indices in the exact captured, pre-delete doc. */
+/** Bounded mutation API; boundaries index the exact captured, pre-delete movement units. */
 export interface BlockMover {
-  /** Capture the complete root containing a PM position, never a nested item/cell. */
+  /** Capture an individual list item/explicit line, or a complete non-list root. */
   capture(pos: number): BlockMoveToken | undefined;
+  /** Read targets only for a current token; indices match canDrop/drop boundaries. */
+  targets(token: BlockMoveToken): readonly BlockMoveTarget[];
   /** Recheck lifetime, exact doc/generation and current single-editor/runtime readiness. */
   isCurrent(token: BlockMoveToken): boolean;
   /** Test a pre-delete boundary without writing; indices source/source+1 are no-ops. */
@@ -38,9 +43,10 @@ export interface BlockMover {
   subscribe(listener: (change: BlockMoveChange) => void): () => void;
   destroy(): void;
 }
-interface Capture { doc: PMNode; node: PMNode; generation: number }
-/** Where the selection sat inside a moved root, relative to that root's start. */
-interface MovedSelection { readonly node: PMNode; readonly before: number; readonly after: number; readonly anchor: number; readonly head: number; readonly kind: "text" | "node" }
+interface Capture { doc: PMNode; node: PMNode; generation: number; plan?: MoveUnits }
+/** Exact isolated history states avoid ambiguous matches between identical items/lines. */
+interface SelectionState { readonly doc: PMNode; readonly anchor: number; readonly head: number }
+interface MovedSelection { readonly before: SelectionState; readonly after: SelectionState; readonly kind: "text" | "node" }
 // why: a move is a delete plus an insert, so the root becomes new Yjs items and
 // y-prosemirror's relative positions resolve into a neighbour on undo/redo. The undo stack
 // item carries the logical position instead, keyed privately on its metadata map.
@@ -81,10 +87,14 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     const resolved = doc.resolve(pos);
     const index = resolved.index(0);
     if (index >= doc.childCount || (index === 0 && title(doc))) return undefined;
-    const node = doc.child(index);
+    const expanded = captureMoveUnits(doc, pos);
+    const unit = expanded?.plan.units[expanded.index];
+    const node = unit?.node ?? doc.child(index);
     // why: selection already resolves the root start; do not scan preceding roots on typing.
-    const token = Object.freeze({ label: label(node), index, start: resolved.depth === 0 ? pos : resolved.before(1) });
-    captures.set(token, { doc, node, generation });
+    const rootStart = resolved.depth === 0 ? pos : resolved.before(1);
+    const start = unit?.start ?? rootStart;
+    const token = Object.freeze({ label: unit?.inline ? "Move text line" : label(node), index: expanded?.index ?? index, start, end: unit?.end ?? start + node.nodeSize, rootStart, inline: unit?.inline ?? false });
+    captures.set(token, { doc, node, generation, ...(expanded ? { plan: expanded.plan } : {}) });
     return token;
   };
   const isCurrent = (token: BlockMoveToken): boolean => {
@@ -94,8 +104,9 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
   const canDrop = (token: BlockMoveToken, boundary: number): boolean => {
     if (!isCurrent(token)) return false;
     const saved = captures.get(token);
-    if (!saved || !Number.isInteger(boundary) || boundary < (title(saved.doc) ? 1 : 0) || boundary > saved.doc.childCount || boundary === token.index || boundary === token.index + 1) return false;
-    if (!title(saved.doc) && token.index === 0 && saved.doc.childCount > 1) {
+    const first = saved?.plan && saved.plan.parent.type.name !== "doc" ? 0 : title(editor.state.doc) ? 1 : 0;
+    if (!saved || !Number.isInteger(boundary) || boundary < first || boundary > (saved.plan?.units.length ?? saved.doc.childCount) || boundary === token.index || boundary === token.index + 1) return false;
+    if (!saved.plan && !title(saved.doc) && token.index === 0 && saved.doc.childCount > 1) {
       const next = saved.doc.child(1);
       if (next.type.name === "heading" && next.attrs["level"] === 1) return false;
     }
@@ -106,27 +117,38 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     const saved = captures.get(token);
     if (!saved) return false;
     const selection = editor.state.selection;
-    const tr = editor.state.tr.delete(token.start, token.start + saved.node.nodeSize);
-    const insertion = tr.mapping.map(offset(saved.doc, boundary), -1);
-    tr.insert(insertion, saved.node);
+    const tr = editor.state.tr;
+    let insertion = token.start;
+    let relocate: (pos: number) => number;
+    if (saved.plan) {
+      const result = reorderMoveUnits(tr, saved.plan, token.index, boundary);
+      if (!result) return false;
+      relocate = result.relocate;
+      insertion = relocate(token.start);
+    } else {
+      tr.delete(token.start, token.end);
+      insertion = tr.mapping.map(offset(saved.doc, boundary), -1);
+      tr.insert(insertion, saved.node);
+      const inside = (pos: number) => pos > token.start && pos < token.end;
+      relocate = pos => inside(pos) ? insertion + pos - token.start : tr.mapping.map(pos);
+    }
     const originalTitle = title(saved.doc);
     if (originalTitle ? !tr.doc.firstChild?.eq(originalTitle) : title(tr.doc) !== undefined) return false;
-    const inside = (pos: number) => pos > token.start && pos < token.start + saved.node.nodeSize;
-    const relocate = (pos: number) => inside(pos) ? insertion + pos - token.start : tr.mapping.map(pos);
+    if (tr.doc.eq(saved.doc)) return false;
     if (selection instanceof TextSelection) tr.setSelection(TextSelection.create(tr.doc, relocate(selection.anchor), relocate(selection.head)));
+    else if (selection instanceof NodeSelection && saved.plan) tr.setSelection(NodeSelection.create(tr.doc, relocate(selection.from)));
     else if (selection instanceof NodeSelection && selection.from === token.start) tr.setSelection(NodeSelection.create(tr.doc, insertion));
     // A nested atom (an image inside the moved paragraph) keeps its own node selection.
-    else if (selection instanceof NodeSelection && inside(selection.from)) tr.setSelection(NodeSelection.create(tr.doc, relocate(selection.from)));
+    else if (selection instanceof NodeSelection && selection.from > token.start && selection.from < token.end) tr.setSelection(NodeSelection.create(tr.doc, relocate(selection.from)));
     tr.setStoredMarks(editor.state.storedMarks);
     const manager = (yUndoPluginKey.getState(editor.state) as { undoManager: UndoManager } | undefined)?.undoManager;
     manager?.stopCapturing();
     try { editor.view.dispatch(tr); } finally { manager?.stopCapturing(); }
     const applied = editor.state.doc.eq(tr.doc);
-    const end = token.start + saved.node.nodeSize;
-    if (applied && selection.anchor >= token.start && selection.anchor <= end && selection.head >= token.start && selection.head <= end) {
+    if (applied && (selection instanceof TextSelection || selection instanceof NodeSelection)) {
       manager?.undoStack[manager.undoStack.length - 1]?.meta.set(MOVED_SELECTION, {
-        node: saved.node, before: token.index, after: tr.doc.resolve(insertion).index(0),
-        anchor: selection.anchor - token.start, head: selection.head - token.start,
+        before: { doc: saved.doc, anchor: selection.anchor, head: selection.head },
+        after: { doc: tr.doc, anchor: tr.selection.anchor, head: tr.selection.head },
         kind: selection instanceof NodeSelection ? "node" : "text",
       } satisfies MovedSelection);
     }
@@ -141,16 +163,12 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     const counterpart = type === "undo" ? history.redoStack[history.redoStack.length - 1] : history.undoStack[history.undoStack.length - 1];
     counterpart?.meta.set(MOVED_SELECTION, moved);
     const target = type === "undo" ? moved.before : moved.after;
-    let found: { index: number; start: number } | undefined;
-    editor.state.doc.forEach((node, start, index) => {
-      if (node.eq(moved.node) && (found === undefined || Math.abs(index - target) < Math.abs(found.index - target))) found = { index, start };
-    });
-    if (found === undefined) return;
     const doc = editor.state.doc;
+    if (!doc.eq(target.doc)) return;
     try {
       const selection = moved.kind === "node"
-        ? NodeSelection.create(doc, found.start + moved.anchor)
-        : TextSelection.create(doc, found.start + moved.anchor, found.start + moved.head);
+        ? NodeSelection.create(doc, target.anchor)
+        : TextSelection.create(doc, target.anchor, target.head);
       editor.view.dispatch(editor.state.tr.setSelection(selection));
     } catch {
       // why: the restored root no longer has that position; keep y-prosemirror's selection.
@@ -178,5 +196,13 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     if (!destroyed) listeners.add(listener);
     return () => { listeners.delete(listener); };
   };
-  return { capture, move, drop, isCurrent, canDrop, subscribe, destroy };
+  const targets = (token: BlockMoveToken): readonly BlockMoveTarget[] => {
+    if (!isCurrent(token)) return [];
+    const saved = captures.get(token); if (!saved) return [];
+    if (saved.plan) return saved.plan.units;
+    const units: BlockMoveTarget[] = [];
+    saved.doc.forEach((node, start) => units.push({ start, end: start + node.nodeSize, inline: false }));
+    return units;
+  };
+  return { capture, move, drop, isCurrent, canDrop, targets, subscribe, destroy };
 }

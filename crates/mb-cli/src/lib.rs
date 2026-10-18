@@ -635,6 +635,8 @@ fn vault_create(
         return Err(format!("vault `{slug}` is already registered"));
     }
     config.vaults.push(mb_server::config::VaultEntry {
+        notes_layout: mb_server::config::NotesLayout::Auto,
+        ignore_non_writable_folders: false,
         slug: slug.clone(),
         name: flag(args, "--name").cloned(),
         path: vault_path.clone(),

@@ -116,7 +116,10 @@ export default defineConfig({
   // why: the manifest is what tells the performance harness which chunks a first visit
   // actually downloads. §21.2 budgets the *initial* JS, and from M8's graph onwards not every
   // chunk is initial — see `perf/bundle.ts`.
-  build: { manifest: true },
+  build: { manifest: true, rollupOptions: { input: {
+    app: fileURLToPath(new URL("./index.html", import.meta.url)),
+    folders: fileURLToPath(new URL("./add-vault.html", import.meta.url)),
+  } } },
   server: {
     host: "127.0.0.1",
     port: 9011,

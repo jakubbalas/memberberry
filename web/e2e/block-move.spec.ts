@@ -7,6 +7,65 @@ import { expect, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 
+for (const [kind, body, selected, label, expected] of [
+  ["bullet", "- Alpha\n- **Beta α🌍**\n- Gamma", "Beta α🌍", "Move list item", "- **Beta α🌍**\n- Alpha\n- Gamma"],
+  ["line", "Alpha\n**Beta α🌍**\nGamma", "Beta α🌍", "Move text line", "**Beta α🌍**\nAlpha\nGamma"],
+] as const) {
+  test(`individual ${kind} movement saves and undo restores the selected item`, async ({ page }, info) => {
+    await signIn(page);
+    const path = `Individual ${kind} ${info.project.name} ${randomUUID()}.md`;
+    const initial = `# Title\n\n${body}\n\nAfter\n`;
+    expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path, content: initial } })).ok()).toBe(true);
+    await page.goto(`/v/personal/${encodeURIComponent(path)}`);
+    const editor = page.locator(EDITOR);
+    await editor.getByText(selected, { exact: true }).click();
+    await page.keyboard.press("Alt+Shift+F10");
+    const menu = page.getByRole("menu", { name: label, exact: true });
+    await expect(menu).toBeVisible();
+    await menu.getByRole("menuitem", { name: "Move up", exact: true }).click();
+    const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
+    await expect.poll(disk, { timeout: 15_000 }).toBe(`# Title\n\n${expected}\n\nAfter\n`);
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(disk, { timeout: 15_000 }).toBe(initial);
+    await page.reload();
+    await expect(editor).toContainText(selected);
+  });
+  test(`individual ${kind} pointer drag and touch action target the hovered row`, async ({ page }, info) => {
+    await signIn(page);
+    const path = `Individual pointer ${kind} ${info.project.name} ${randomUUID()}.md`;
+    const initial = `# Title\n\n${body}\n\nAfter\n`;
+    expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path, content: initial } })).ok()).toBe(true);
+    await page.goto(`/v/personal/${encodeURIComponent(path)}`);
+    const editor = page.locator(EDITOR);
+    const beta = editor.getByText(selected, { exact: true });
+    await beta.click();
+    if (info.project.name === "mobile") {
+      await page.getByLabel("More editing tools", { exact: true }).click();
+      await page.getByRole("button", { name: "Move block up", exact: true }).click();
+    } else {
+      await beta.hover();
+      const grip = page.getByRole("group", { name: "Block movement" }).getByRole("button", { name: label, exact: true });
+      await expect(grip).toBeVisible();
+      const source = await grip.boundingBox();
+      const target = await editor.locator("p").filter({ hasText: "Alpha" }).first().boundingBox();
+      const text = await beta.boundingBox();
+      if (!source || !target || !text) throw new Error("missing row geometry");
+      expect(Math.abs(source.y - text.y)).toBeLessThan(5);
+      await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(target.x + 12, target.y - 2, { steps: 12 });
+      await expect(page.locator(".block-drop-indicator")).toBeVisible();
+      await page.screenshot({ path: info.outputPath(`individual-${kind}-drag.png`) });
+      await page.mouse.up();
+    }
+    const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
+    await expect.poll(disk, { timeout: 15_000 }).toBe(`# Title\n\n${expected}\n\nAfter\n`);
+    await editor.focus();
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(disk, { timeout: 15_000 }).toBe(initial);
+  });
+}
+
 test("the block menu moves a block, saves it, and undo puts it and the caret back", async ({ page }, info) => {
   await signIn(page);
   const path = `Block move ${info.project.name} ${randomUUID()}.md`;

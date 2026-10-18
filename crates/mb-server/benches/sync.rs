@@ -191,11 +191,33 @@ fn vault_lookup(criterion: &mut Criterion) {
     group.finish();
 }
 
+/// Native folder checks are also on direct note/sync resolution; measure their opt-in cost.
+fn folder_filter_resolution(criterion: &mut Criterion) {
+    let scratch = Scratch::new(&format!("folder-filter-resolve-{}", std::process::id()));
+    std::fs::create_dir_all(scratch.0.join("A/B/C")).expect("directories");
+    std::fs::write(scratch.0.join("A/B/C/Note.md"), "# Note\n").expect("note");
+    let mut group = criterion.benchmark_group("vault/resolve_folder_filter");
+    for ignore in [false, true] {
+        let vault = Vault::open(
+            Slug::parse("bench").expect("slug"),
+            "Bench",
+            scratch.0.clone(),
+        )
+        .expect("vault")
+        .with_non_writable_folders_ignored(ignore);
+        group.bench_function(if ignore { "enabled" } else { "strict" }, |bench| {
+            bench.iter(|| black_box(vault.resolve(black_box("A/B/C/Note.md")).expect("resolve")))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     accept_update,
     materialize,
     encode_frame,
-    vault_lookup
+    vault_lookup,
+    folder_filter_resolution
 );
 criterion_main!(benches);

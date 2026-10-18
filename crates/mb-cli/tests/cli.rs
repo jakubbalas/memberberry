@@ -1294,6 +1294,85 @@ fn vault_create_registers_and_list_shows_it() {
 }
 
 #[test]
+fn vault_create_and_remove_preserve_configured_locations_and_existing_media_settings() {
+    use mb_server::vault_locations::{VaultLocation, VaultLocationId};
+    let dir = TempDir::new("vault-location-preservation");
+    setup_admin(&dir);
+    let existing = TempDir::new("vault-location-existing");
+    let added = TempDir::new("vault-location-added");
+    let location = VaultLocation::new(
+        VaultLocationId::parse("projects").expect("id"),
+        "Projects 📚",
+        "/not-mounted-yet/projects",
+    )
+    .expect("location");
+    let config = mb_server::ServerConfig {
+        bind: Some("127.0.0.1:9010".into()),
+        web_root: Some("web/dist".into()),
+        vault_locations: vec![location],
+        vaults: vec![mb_server::config::VaultEntry {
+            notes_layout: mb_server::config::NotesLayout::Auto,
+            ignore_non_writable_folders: false,
+            slug: "existing".into(),
+            name: Some("Existing".into()),
+            path: existing.path().to_str().expect("path").into(),
+            media: mb_server::MediaBackendConfig::S3 {
+                bucket: "fixture-bucket".into(),
+                region: "fixture-region".into(),
+                endpoint: Some("http://127.0.0.1:9000".into()),
+                access_key_id: "fixture-key".into(),
+                secret_access_key: "fixture-secret".into(),
+                allow_http: true,
+                virtual_hosted_style: true,
+            },
+        }],
+    };
+    dir.write("server.toml", &config.to_toml().expect("fixture config"));
+    let config_path = config_of(&dir);
+    let added_path = added.path().to_str().expect("path");
+    let (code, _) = run_with_stdin(
+        &[
+            "vault",
+            "create",
+            "--slug",
+            "added",
+            "--path",
+            added_path,
+            "--config",
+            &config_path,
+            "--actor",
+            "alice",
+        ],
+        "correct horse battery staple\n",
+    );
+    assert!(is_success(code));
+    let after_create =
+        mb_server::ServerConfig::load(&dir.path().join("server.toml")).expect("created config");
+    assert_eq!(after_create.vault_locations, config.vault_locations);
+    assert_eq!(after_create.vaults.first(), config.vaults.first());
+    let (code, _) = run_with_stdin(
+        &[
+            "vault",
+            "remove",
+            "--slug",
+            "added",
+            "--config",
+            &config_path,
+            "--actor",
+            "alice",
+        ],
+        "correct horse battery staple\n",
+    );
+    assert!(is_success(code));
+    let after_remove =
+        mb_server::ServerConfig::load(&dir.path().join("server.toml")).expect("removed config");
+    assert_eq!(after_remove.vaults, config.vaults);
+    assert_eq!(after_remove.vault_locations, config.vault_locations);
+    assert_eq!(after_remove.bind, config.bind);
+    assert_eq!(after_remove.web_root, config.web_root);
+}
+
+#[test]
 fn vault_create_preserves_an_existing_access_policy() {
     let dir = TempDir::new("vault-existing-access");
     setup_admin(&dir);

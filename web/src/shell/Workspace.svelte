@@ -23,6 +23,7 @@
   import Icon from "./Icon.svelte";
   import Home from "./Home.svelte";
   import FolderContents from "./FolderContents.svelte";
+  import { FolderBrowser } from "./folder-browser.svelte.js";
   import "./navigation.css";
   import { clampSidebarWidths, MIN_SIDEBAR_WIDTH, readSidebarPreferences, sidebarMaximum, writeSidebarPreferences, type SidebarPreferences } from "./sidebar-preferences.js";
   import NamePrompt from "./NamePrompt.svelte";
@@ -42,7 +43,7 @@
   type GlobalGraphComponent = typeof import("./GlobalGraph.svelte").default;
   import { Bookmarks } from "./bookmarks.svelte.js";
   import type { NoteBootstrap } from "./bootstrap.js";
-  import type { fetchVaults } from "./catalog.js";
+  import { fetchVaults } from "./catalog.js";
   import { NoteCatalog } from "./note-catalog.svelte.js";
   import { PinnedNotes } from "./pins.svelte.js";
   import { OUTLINE_EVENT, type OutlineDetail } from "../editor/outline.js";
@@ -160,6 +161,14 @@
   }: Props = $props();
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
+  const folderBrowser = new FolderBrowser();
+  let folderVaultLabel = $state<string | undefined>();
+  $effect(() => {
+    if (folderPath === undefined || folderVaultLabel !== undefined) return;
+    let disposed = false;
+    void (loadVaults ?? fetchVaults)().then(vaults => { if (!disposed) folderVaultLabel = vaults.find(v => v.slug === vaultSlug)?.name; });
+    return () => { disposed = true; };
+  });
   const initialWorkspace = untrack(() => store.current);
   // why: this is a temporary catalog view, not a note tab or persisted workspace schema.
   // A command opening/focusing a note changes the workspace and dismisses the folder view.
@@ -733,7 +742,7 @@
         <InboxPane idPrefix="main-inbox" view={inbox} onopen={openNavigationNote} onedit={editTask} display={taskDisplay} ondisplay={saveTaskDisplay} onclose={closeTasks} />
       </div>
     {:else if folderPath !== undefined}
-      <FolderContents path={folderPath} {catalog} {emptyFolders} {foldersLoading} onopen={openNavigationNote} onfolder={openFolder} onclose={() => { selectedFolder = undefined; }} />
+      <FolderContents path={folderPath} vault={vaultSlug} vaultLabel={folderVaultLabel ?? vaultSlug} browser={folderBrowser} oncreate={() => requestPalette({ kind: "create", from: folderPath === "" ? "" : `${folderPath}/` }, target ?? window)} onopen={openNavigationNote} onfolder={openFolder} onclose={() => { selectedFolder = undefined; }} />
     {:else if showingHome}
       <Home {catalog} onopen={openNavigationNote} oncreate={() => requestPalette("create", target ?? window)} />
     {:else if layout === "mobile"}

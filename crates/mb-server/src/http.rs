@@ -49,6 +49,13 @@ use crate::{AccessFile, Error, Slug, Vault};
 pub struct AppState {
     vaults: RwLock<BTreeMap<Slug, Arc<Vault>>>,
     management: Option<onboarding::VaultManagement>,
+    #[cfg(target_os = "linux")]
+    discovery: vault_discovery::DiscoveryGate,
+    #[cfg(target_os = "linux")]
+    registration: vault_registration::RegistrationGate,
+    #[cfg(target_os = "linux")]
+    directory: shallow_directory::DirectoryGate,
+    watchers: crate::watch::RuntimeWatchers,
     web_root: Option<PathBuf>,
     /// Server-owned storage (§4.1). Bookmarks live here rather than in a vault; see
     /// `bookmarks.rs` for why. `None` leaves the routes that need it answering as denied.
@@ -168,7 +175,40 @@ impl FileStamp {
     }
 }
 
+mod folder_ui;
 mod onboarding;
+#[cfg(target_os = "linux")]
+mod shallow_directory;
+mod vault_discovery;
+#[cfg(target_os = "linux")]
+mod vault_registration;
+
+fn project_registration_routes() -> Router<Arc<AppState>> {
+    #[cfg(target_os = "linux")]
+    {
+        Router::new()
+            .route(
+                "/api/v1/vault-locations/{id}/preview",
+                post(vault_registration::preview),
+            )
+            .route(
+                "/api/v1/vault-locations/{id}/register",
+                post(vault_registration::register),
+            )
+            .route(
+                "/api/v1/vault-locations/{id}/directories",
+                post(vault_registration::create_directory),
+            )
+            .route(
+                "/api/v1/vaults/{slug}/directory",
+                get(shallow_directory::directory),
+            )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Router::new()
+    }
+}
 
 impl AppState {
     fn allow_clip(&self, vault: &Slug, actor: &Username) -> bool {
@@ -233,9 +273,17 @@ impl AppState {
     /// Blocking: callers must keep it off the async runtime.
     pub fn maintain_index(&self, changed: &Changes) -> Vec<String> {
         let vaults = self.vault_snapshot();
-        let mut errors = self
-            .indexes
-            .maintain(vaults.iter().map(Arc::as_ref), changed);
+        // why: directory creation/removal schedules All, so new eligible descendants get
+        // native subscriptions before indexing without rescanning on every file edit.
+        let mut errors = if matches!(changed, Changes::All) {
+            self.watchers.refresh_filtered()
+        } else {
+            Vec::new()
+        };
+        errors.extend(
+            self.indexes
+                .maintain(vaults.iter().map(Arc::as_ref), changed),
+        );
         for vault in &vaults {
             let now = std::time::SystemTime::now();
             match vault.notes() {
@@ -307,6 +355,23 @@ impl AppState {
         roots
     }
 
+    /// Starts the server-owned watcher lifecycle, including later external enrollments.
+    /// Blocking: invoke outside the async executor. Dropping the lease stops all watchers.
+    pub fn start_watching(
+        &self,
+        signal: Arc<WatchSignal>,
+    ) -> Result<(crate::watch::WatchLease, Vec<String>), Error> {
+        let filtered: Vec<_> = self
+            .vault_snapshot()
+            .iter()
+            .filter(|vault| vault.ignore_non_writable_folders())
+            .map(|vault| vault.root().to_path_buf())
+            .collect();
+        self.watchers
+            .start(&self.watch_roots(), &filtered, signal)
+            .map_err(Error::Config)
+    }
+
     /// The E3 re-check every outbound sync frame passes through, per recipient.
     ///
     /// Fails closed on an unparseable slug, an unregistered vault, a missing ACL or an
@@ -321,7 +386,10 @@ impl AppState {
         let Ok(path) = mb_core::NotePath::parse(note) else {
             return false;
         };
-        access.effective_role(user, &path) != mb_core::Role::None
+        let Some(vault) = self.vault(slug.as_str()) else {
+            return false;
+        };
+        access.effective_role(user, &path) != mb_core::Role::None && vault.resolve(note).is_ok()
     }
 
     /// Builds the production state: authentication plus fail-closed ACLs for every vault.
@@ -382,6 +450,13 @@ impl AppState {
         Ok(Self {
             vaults: RwLock::new(registered),
             management: None,
+            #[cfg(target_os = "linux")]
+            discovery: vault_discovery::DiscoveryGate::new(),
+            #[cfg(target_os = "linux")]
+            registration: vault_registration::RegistrationGate::new(),
+            #[cfg(target_os = "linux")]
+            directory: shallow_directory::DirectoryGate::new(),
+            watchers: crate::watch::RuntimeWatchers::default(),
             web_root: None,
             data_dir: None,
             assets: RwLock::new(BTreeMap::new()),
@@ -482,6 +557,7 @@ impl AppState {
 /// Builds the router.
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
+        .merge(project_registration_routes())
         .route("/", get(index))
         .route("/login", post(login))
         .route("/logout", get(logout))
@@ -497,8 +573,18 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .post(onboarding::create_vault)
                 .layer(DefaultBodyLimit::max(8 * 1024)),
         )
+        .route("/vaults/add", get(folder_ui::page))
         .route("/api/v1/sync", get(websocket))
         .route("/api/v1/vaults", get(vault_index_json))
+        .route("/api/v1/vault-locations", get(vault_discovery::locations))
+        .route(
+            "/api/v1/vault-locations/{id}/directories",
+            get(vault_discovery::directories),
+        )
+        .route(
+            "/api/v1/vault-locations/{id}/status",
+            get(vault_discovery::status),
+        )
         .route(
             "/api/v1/vaults/{slug}/folders",
             get(folder_index).post(create_folder),
@@ -952,22 +1038,19 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
         );
     }
     body.push_str("</ul>");
-    if !state.is_server_admin(&headers) && visible == 0 {
-        body.push_str("<p class=\"mb-empty\">No vaults are shared with you yet. Ask your administrator for an invitation.</p>");
+    if visible == 0 {
+        body.push_str(if state.is_server_admin(&headers) {
+            "<p class=\"mb-empty\">Create your first vault to get started.</p>"
+        } else {
+            "<p class=\"mb-empty\">No vaults are shared with you yet. Ask your administrator for an invitation.</p>"
+        });
     }
     // why: one primary and one quiet, in a row with a gap. Both used to be `mb-button`, so
     // the page offered "New vault" and "Log out" as equally likely next steps — with no space
     // between them, because neither carried a horizontal margin.
     body.push_str("<div class=\"mb-actions\">");
     if state.is_server_admin(&headers) {
-        let label = if visible == 0 {
-            "Create your first vault"
-        } else {
-            "New vault"
-        };
-        body.push_str("<a class=\"mb-button mb-action\" href=\"/vaults/new\">");
-        body.push_str(label);
-        body.push_str("</a>");
+        body.push_str("<a class=\"mb-button mb-action\" href=\"/vaults/new\">New vault</a>");
     }
     body.push_str("<a class=\"mb-button mb-quiet mb-action\" href=\"/logout\">Log out</a></div>");
     page("Your vaults", &body).into_response()
@@ -5852,10 +5935,25 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| Error::Bind { addr, source })?;
-    let bound = listener.local_addr().unwrap_or(addr);
+    serve_listener(state, listener, shutdown()).await
+}
+
+// why: the same running lifecycle is exercised with an ephemeral listener and a scoped
+// shutdown future in tests, rather than mocking watching or launching a stable service.
+async fn serve_listener(
+    state: Arc<AppState>,
+    listener: tokio::net::TcpListener,
+    stop: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), Error> {
+    let bound = listener.local_addr().map_err(Error::Serve)?;
     println!("memberberry: listening on http://{bound}");
     let signal = Arc::new(WatchSignal::default());
-    let (watcher, problems) = crate::watch::watch(&state.watch_roots(), Arc::clone(&signal));
+    let watch_state = state.clone();
+    let watch_signal = signal.clone();
+    let (watcher, problems) =
+        tokio::task::spawn_blocking(move || watch_state.start_watching(watch_signal))
+            .await
+            .map_err(|_| Error::Config("watcher startup failed".into()))??;
     for problem in problems {
         eprintln!("memberberry watcher: {problem}; falling back to the recovery sweep");
     }
@@ -5877,7 +5975,15 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
         built.elapsed().as_millis()
     );
 
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        let serving = state.clone();
+        tokio::task::spawn_blocking(move || serving.registration.serving())
+            .await
+            .map_err(|_| Error::Config("controlled serving readiness failed".into()))?;
+    }
     let maintenance_state = Arc::clone(&state);
+    let (stop_maintenance, mut maintenance_stop) = tokio::sync::oneshot::channel::<()>();
     let maintenance = tokio::spawn(async move {
         let mut interval = tokio::time::interval(MAINTENANCE_INTERVAL);
         let mut since_sweep = std::time::Duration::ZERO;
@@ -5885,11 +5991,19 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
         let mut since_media_materialize = std::time::Duration::ZERO;
         let mut since_media_prune = std::time::Duration::ZERO;
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = &mut maintenance_stop => break,
+                _ = interval.tick() => {}
+            }
             since_sweep += MAINTENANCE_INTERVAL;
             since_index_sweep += MAINTENANCE_INTERVAL;
             since_media_materialize += MAINTENANCE_INTERVAL;
             since_media_prune += MAINTENANCE_INTERVAL;
+            #[cfg(all(test, target_os = "linux"))]
+            if !maintenance_state.registration.sweeps_enabled() {
+                since_sweep = std::time::Duration::ZERO;
+                since_index_sweep = std::time::Duration::ZERO;
+            }
             let mut changed = signal.take();
             if since_sweep >= RECOVERY_SWEEP_INTERVAL {
                 since_sweep = std::time::Duration::ZERO;
@@ -5903,8 +6017,12 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
                 // path, and it is empty on a tick where nothing was touched.
                 changed.clone()
             };
+            #[cfg(all(test, target_os = "linux"))]
+            let observed = indexed.clone();
             let tick = Arc::clone(&maintenance_state);
             let errors = tokio::task::spawn_blocking(move || {
+                #[cfg(all(test, target_os = "linux"))]
+                tick.registration.maintenance();
                 let (mut errors, flushed) = tick.maintain_sync_with_flushed(&changed);
                 let index_changes = match indexed {
                     Changes::All => Changes::All,
@@ -5919,6 +6037,10 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
                 errors
             })
             .await;
+            #[cfg(all(test, target_os = "linux"))]
+            maintenance_state
+                .registration
+                .maintenance_completed(&observed);
             for error in errors.unwrap_or_default() {
                 eprintln!("memberberry maintenance: {error}");
             }
@@ -5940,10 +6062,19 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
         listener,
         router(Arc::clone(&state)).into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown())
+    .with_graceful_shutdown(stop)
     .await;
-    // Stop the timer before flushing so the two are never in a note's writer at once.
-    maintenance.abort();
+    // why: finish the in-flight blocking maintenance job before final flush/teardown.
+    // Aborting its async waiter would detach that job and permit a concurrent note writer.
+    let _ = stop_maintenance.send(());
+    let _ = maintenance.await;
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        let stopped = state.clone();
+        tokio::task::spawn_blocking(move || stopped.registration.stopped())
+            .await
+            .map_err(|_| Error::Config("controlled stopped observation failed".into()))?;
+    }
     drop(watcher);
     for error in state.security.sync.flush_all() {
         eprintln!("memberberry sync shutdown flush: {error}");
