@@ -19,7 +19,8 @@ import { fileURLToPath } from "node:url";
 export const REPO: string = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** AGENTS.md §5.1 reserves this for the E2E server, clear of the dev server on 9010. */
-export const E2E_PORT: number = 9012;
+export const E2E_PORT: number = Number(process.env["MEMBERBERRY_E2E_PORT"] ?? "9012");
+if (!Number.isInteger(E2E_PORT) || E2E_PORT < 9010 || E2E_PORT > 9020) throw new Error("invalid Memberberry E2E port");
 export const E2E_ORIGIN: string = `http://127.0.0.1:${E2E_PORT}`;
 
 /** The account the suite signs in as. Throwaway, and never outside a temp directory. */
@@ -65,6 +66,8 @@ const SCRATCH_PURPOSES: readonly string[] = [
   "rename-source",
   // Typed into with the network off, then read off disk once it comes back (§7.4).
   "offline-edit",
+  "pwa-update",
+  "pwa-pinned",
   "media",
   "media-drop",
   "media-offline",

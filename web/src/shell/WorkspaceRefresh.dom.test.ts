@@ -6,6 +6,7 @@ import Workspace from "./Workspace.svelte";
 import { NoteCatalog } from "./note-catalog.svelte.js";
 import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
+import type { CatalogAnswer } from "../offline/replica.js";
 
 const apps: ReturnType<typeof mount>[] = [];
 afterEach(async () => {
@@ -22,26 +23,28 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
-async function render(session = true, firstFolders?: Promise<Response>) {
+async function render(session = true, firstFolders?: Promise<Response>, onresume?: () => Promise<void>) {
   let notes = [{ path: "Existing.md", title: "Existing", conflicts: 0 }];
   let folders = ["Existing folder"];
-  const load = vi.fn(async () => ({ kind: "ok" as const, notes }));
+  const load = vi.fn<() => Promise<CatalogAnswer>>(async () => ({ kind: "ok", notes }));
   const folderLoad = vi.fn(async () => new Response(JSON.stringify({ folders })));
   if (firstFolders !== undefined) folderLoad.mockReturnValueOnce(firstFolders);
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/folders") ? folderLoad() : new Response("[]")));
+  const shallowLoad=vi.fn(async(path:string)=>new Response(JSON.stringify({path,folders:[],files:[]}),{headers:{"content-type":"application/json"}}));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {const url=String(input);return url.includes("/directory?")?shallowLoad(new URL(url,"http://localhost").searchParams.get("path")??""):url.endsWith("/folders")?folderLoad():new Response("[]");}));
   const catalog = new NoteCatalog({ vault: "personal", load, replica: async () => undefined });
   const ids = sessionIds();
   const store = new WorkspaceStore({ initial: createWorkspace("personal", ids), ids });
   const target = document.createElement("div"); document.body.append(target);
   const app = mount(Workspace, { target, props: {
     store, catalog, home: true, mode: "desktop",
+    ...(onresume === undefined ? {} : { onresume }),
     ...(session ? { session: { vault: "personal", user: "alice" } } : {}),
     chrome: { getItem: () => null, setItem: () => undefined },
     open: async () => ({ destroy: async () => undefined }),
   } });
   apps.push(app);
   await flush();
-  return { target, app, load, folderLoad, catalog, change: () => {
+  return { target, app, load, folderLoad, shallowLoad, catalog, change: () => {
     notes = [...notes, { path: "Other device.md", title: "Other device", conflicts: 0 }];
     folders = [...folders, "Other device folder"];
   } };
@@ -115,20 +118,12 @@ it("removes live listeners and cancels an already queued refresh on unmount", as
   expect(view.folderLoad).toHaveBeenCalledTimes(2);
 });
 
-it("keeps folder contents loading until both independent lists finish refreshing", async () => {
-  const view = await render();
-  view.target.querySelector<HTMLButtonElement>('[aria-label="Folder actions for Existing folder"]')?.click();
-  await flush();
-  [...view.target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent === "Open in main panel")?.click();
-  await flush();
-  expect(view.target.querySelector(".folder-contents")?.textContent).toContain("This folder is empty.");
-  const response = deferred<Response>();
-  view.folderLoad.mockReturnValueOnce(response.promise);
-  window.dispatchEvent(new Event("online")); await flush();
-  expect(view.catalog.ready).toBe(true);
-  expect(view.target.querySelector('.folder-contents [role="status"]')?.textContent).toBe("Loading folder contents…");
-  response.resolve(new Response(JSON.stringify({ folders: [] }))); await flush();
-  expect(view.target.querySelector('.folder-contents [role="status"]')?.textContent).toBe("This folder is no longer available.");
+it("loads each shallow navigation independently of recursive sidebar/catalog refresh", async () => {
+  const view=await render();view.target.querySelector<HTMLButtonElement>('[aria-label="Folder actions for Existing folder"]')?.click();await flush();[...view.target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item=>item.textContent==="Open in main panel")?.click();
+  await vi.waitFor(()=>expect(view.target.querySelector(".folder-contents")?.textContent).toContain("0 folders found"));expect(view.shallowLoad).toHaveBeenCalledTimes(1);
+  const sidebar=deferred<Response>();view.folderLoad.mockReturnValueOnce(sidebar.promise);window.dispatchEvent(new Event("online"));await flush();expect(view.catalog.ready).toBe(true);expect(view.target.querySelector('.folder-contents [role="status"]')).toBeNull();expect(view.shallowLoad).toHaveBeenCalledTimes(1);
+  const shallow=deferred<Response>();view.shallowLoad.mockReturnValueOnce(shallow.promise);view.target.querySelector<HTMLButtonElement>('.folder-contents [aria-label="Go to parent folder"]')?.click();await flush();expect(view.target.querySelector('.folder-contents [role="status"]')?.textContent).toBe("Loading folder contents…");expect(view.shallowLoad).toHaveBeenCalledTimes(2);
+  sidebar.resolve(new Response(JSON.stringify({folders:[]})));await flush();expect(view.target.querySelector('.folder-contents [role="status"]')?.textContent).toBe("Loading folder contents…");shallow.resolve(new Response(JSON.stringify({path:"",folders:[],files:[]}),{headers:{"content-type":"application/json"}}));await vi.waitFor(()=>expect(view.target.querySelector(".folder-contents")?.textContent).toContain("0 folders found"));expect(view.target.querySelector('.folder-contents [role="status"]')).toBeNull();
 });
 
 it("clears denied folders and cannot restore them from an older successful response", async () => {
@@ -150,4 +145,32 @@ it("removes previously displayed empty folders when the server denies their refr
   view.folderLoad.mockResolvedValueOnce(new Response(null, { status: 404 }));
   window.dispatchEvent(new Event("online")); await flush();
   expect(view.target.querySelector('[role="treeitem"][title="Existing folder"]')).toBeNull();
+});
+
+it.each(["denied", "unreachable"] as const)("does not begin background replica reads after an %s catalog answer", async kind => {
+  const resume = vi.fn(async () => undefined);
+  const view = await render(true, undefined, resume);
+  view.load.mockResolvedValueOnce({ kind });
+  window.dispatchEvent(new Event("focus"));
+  await flush();
+  expect(resume).not.toHaveBeenCalled();
+});
+
+it("starts replica refresh only after a fresh catalog has completed", async () => {
+  const resume = vi.fn(async () => undefined);
+  const view = await render(true, undefined, resume);
+  const answer = deferred<CatalogAnswer>();
+  view.load.mockReturnValueOnce(answer.promise);
+  window.dispatchEvent(new Event("focus")); await flush();
+  expect(resume).not.toHaveBeenCalled();
+  answer.resolve({ kind: "ok", notes: [] }); await flush();
+  expect(resume).toHaveBeenCalledTimes(1);
+});
+
+it("reconciles after a persisted page returns from the browser history cache", async () => {
+  const view = await render();
+  view.change();
+  window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  await flush();
+  expect(view.load).toHaveBeenCalledTimes(2);
 });

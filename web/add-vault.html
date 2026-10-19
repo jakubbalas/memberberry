@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>New vault · Memberberry</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="src/admin/folder-vault.css" />
+</head>
+<body>
+<header class="site-header"><a class="brand" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5A2.5 2.5 0 0 1 8 3h10.5v18H8a2.5 2.5 0 0 1-2.5-2.5z"/><path d="M9.5 3v18"/></svg>Memberberry</a></header>
+<main id="folder-vault" data-managed-storage="true" data-server-error="">
+  <h1>Start a new notebook</h1>
+  <p class="introduction">Think of a vault as a notebook: a home for related notes, with its own settings and sharing.</p>
+  <form id="details" class="vault-form" method="post" action="/vaults/new" novalidate>
+    <div class="field"><label for="vault-name">Vault name</label><input id="vault-name" name="name" autocomplete="off" maxlength="120" required /></div>
+    <div class="field"><label for="vault-slug">Vault address (optional)</label><input id="vault-slug" name="slug" autocomplete="off" maxlength="64" aria-describedby="address-help" /><p id="address-help" class="help">A short, unique address. Use lower-case letters, numbers and hyphens, for example personal or work-notes. Auto-generated if left blank.</p></div>
+    <div class="field"><span id="folder-label">Choose a folder (optional)</span><button id="choose-folder" class="primary" type="button" aria-haspopup="dialog">Choose folder</button><div id="folder-selection" hidden><p id="selected-path"></p><button id="clear-folder" class="quiet" type="button">Use default folder</button><label class="folder-option" for="ignore-non-writable-folders"><input id="ignore-non-writable-folders" type="checkbox" disabled aria-describedby="folder-option-help" /><span>Ignore non-writable folders from vault</span></label><p id="folder-option-help" class="help folder-option-help">Folders Memberberry cannot read or write will be left out. Their files and permissions stay unchanged.</p></div><p class="help"><span id="managed-path"><!-- managed-root -->/&lt;vault-address&gt;/notes</span> will be used if no folder chosen.</p></div>
+    <p id="message" role="status" tabindex="-1"><!-- server-error --></p>
+    <div class="submit-actions"><button id="preview" class="primary" type="submit">Create vault</button><button id="cancel-validation" class="quiet" type="button" hidden>Cancel validation</button></div>
+    <a class="back-link" href="/">Back to your vaults</a>
+  </form>
+  <dialog id="picker" hidden aria-labelledby="picker-heading">
+    <header class="picker-header"><h2 id="picker-heading" tabindex="-1"></h2><button id="close-picker" class="quiet icon-button" type="button" aria-label="Close folder picker">×</button></header>
+    <div id="location-switch" class="field" hidden><label for="location">Server location</label><select id="location"></select></div>
+    <span id="current-path" hidden></span>
+    <div class="folder-browser">
+      <button id="add-folder" class="folder-row" type="button" disabled><svg class="folder-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h4l3 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7 M12 10v7 M8.5 13.5h7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg><span>Add folder here</span></button>
+      <form id="create-directory" hidden novalidate><div class="field"><label for="directory-name">Folder name</label><input id="directory-name" autocomplete="off" /></div><div class="actions"><button id="create-folder" class="primary" type="submit">Create</button><button id="cancel-create" class="quiet" type="button">Cancel folder creation</button></div></form>
+      <button id="up" class="folder-row" type="button" hidden><svg class="folder-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 20V4 M5 11l7-7 7 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg><span>Go to parent folder</span></button>
+      <ul id="directories" aria-label="Folders"></ul>
+      <p id="folder-state" class="help"></p><p id="picker-message" role="status" tabindex="-1"></p>
+      <button id="refresh" class="quiet" type="button" hidden>Refresh folders</button>
+    </div>
+    <footer class="actions"><button id="cancel-picker" class="quiet" type="button">Cancel</button><button id="select-folder" class="primary" type="button" disabled>Use this folder</button></footer>
+  </dialog>
+  <section id="mkdir-outcome" class="outcome" hidden aria-labelledby="mkdir-heading"><h2 id="mkdir-heading" tabindex="-1"></h2><p id="mkdir-message"></p><p id="mkdir-intent"></p></section>
+  <section id="result" class="outcome" hidden aria-labelledby="result-heading"><h2 id="result-heading" tabindex="-1"></h2><p id="result-message"></p><p id="outcomes"></p><details id="outcome-details" hidden><summary>Registration outcome</summary><p id="secondary-outcomes"></p></details><p id="content-access"></p><a id="open-vault" hidden>Open vault</a><button id="check-outcome" class="quiet" type="button" hidden>Check registration status</button><a class="back-link" href="/">Back to your vaults</a></section>
+  <noscript>You can create a vault in the default folder using this form. Choosing a different folder requires JavaScript.</noscript>
+</main>
+<script type="module" src="src/admin/folder-vault-entry.ts"></script>
+</body>
+</html>

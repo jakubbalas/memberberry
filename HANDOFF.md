@@ -2,119 +2,123 @@
 
 ## Current state (2026-10-19)
 
-The latest completed change on `main` adds note cover images (SPEC §12.5), including the
-approved empty-state styling, clipboard/drop inputs and menu dismissal. No PR was created.
+Local branch `integrate/pr-5` integrates PR #5 at
+`2c715985e2b75c948c74c569383a98ef6d627dfc` into the note-cover main commit
+`c0410f041a25df8c65b17958fc5f08411c8dd963`. The user authorized the local
+merge commit; main has not moved and nothing has been pushed.
 
-Authenticated note panes offer Add cover, Change cover, Remove cover and a keyboard
-Reposition slider. With a cover set, an overlaid Edit cover button reveals the controls;
-desktop shows it on hover/keyboard focus, touch keeps it visible. Escape closes the controls
-even when a pointer click left focus outside the menu, and returns focus to the trigger.
-Empty notes have a compact hover/focus target with a centered, rounded, theme-accented
-`+ Add cover` button and centered source chooser, offering Choose from files and Paste from
-clipboard. Menus dismiss on outside click/tap without taking focus; equal-width action
-rows and helper text share a left inset. Escape still restores focus to the trigger.
-Paste shortcuts on cover controls and image drops onto the cover area use the same guarded
-uploader. Image drags over the note highlight the cover target;
-body drops retain their inline-image behavior. Clipboard-denial feedback offers alternatives.
-Covers use the existing vault media uploader and E11 media authorization.
-Settings are ordinary `cover` and `cover_position` Markdown frontmatter scalars,
-replicated through the existing Y.Map. Core extraction records covers as media references,
-so authorization, materialized exports and garbage collection see them. No dependency,
-schema revision or route was added. Viewers see covers without controls.
+The two textual conflicts were HANDOFF.md and crates/mb-server/benches/sync.rs.
+The benchmark resolution retains and registers both cover extraction and opt-in
+non-writable-folder resolution benchmarks. This handoff replaces the fork's
+deployment-specific instructions with the state of this checkout.
 
-Previous editor work is present in this checkout: block catalogue, selection formatting,
-movement/conversion gates, quotes, toggles, hard line breaks and revision-3 inline styles.
-Their durable contracts remain in SPEC §8.4 and §4.4.
+The combined source contains Markdown-backed note covers, server-folder vault
+discovery/registration, shallow folder browsing/creation, grouped block selection
+and movement, numbered-list Return, and PWA install/resume/refresh/update controls.
+SPEC.md merged automatically and retains both contracts, including cover §12.5,
+PWA §7.4 and the new permission enforcement entries. Editor-shell integration
+also merged automatically; focused shell/movement/cover tests and the cover browser
+regression pass on the combined source.
 
 ## Verification
 
-- Rebuilt focused Playwright `note-cover.spec.ts`: two cases pass, desktop and mobile;
-  upload, decoded image, position, persistence, reload, replacement and removal, plus
-  collapsed controls, desktop hover/keyboard access, touch access, Escape dismissal,
-  empty-target hover/options, highlighted cover drops, paste events and clipboard-button
-  input. Browser clipboard reads use an injected external boundary so tests do not overwrite
-  the user's OS clipboard; native OS clipboard permission prompting is not browser-tested.
-  Screenshots reviewed; the fixture landscape PNG uses no external service.
-- Focused web cover/shell/uploader tests pass: malformed inputs, read-only callers,
-  stale uploads, offline resolution, cleanup and seeded Rust/WASM metadata round-trips.
-  Empty-cover feedback: 95 cover/shell/uploader tests. Removing the new clipboard and drop
-  listeners made all three corresponding tests fail; restored listeners pass. Focused
-  evidence is in `local/debug/note-cover-input-*.log`; earlier control checks use
-  `local/debug/note-cover-controls-*.log`.
-  Escape regression: 87 cover/shell tests and rebuilt desktop/mobile cover browser cases
-  pass. A new regression first failed with focus on the page body; document capture now
-  handles Escape for the open menu, with listener teardown tested. Evidence:
-  `local/debug/note-cover-escape-*.log`.
-  Button styling uses a rebuilt desktop/mobile browser geometry assertion for centering;
-  visual evidence and build/browser logs are in `local/debug/note-cover-style-*.log`
-  and `web/test-results/`.
-  Outside dismissal/alignment: 91 cover/shell tests, including regressions that first failed
-  for empty and existing covers; inside-pointer behavior and listener cleanup are tested.
-  Rebuilt desktop/mobile cases cover outside dismissal and stacked, equal-width action
-  geometry. Evidence: `local/debug/note-cover-menu-*.log` and `web/test-results/`.
-- Core extraction and round-trip suites: 40 + 11 tests pass, including seeded cover properties.
-- E11 leak tests: two pass. Focused HTTP integration proves readable cover delivery
-  and indistinguishable denied/missing covers. Browser runs use an updated CLI build.
-- Web typecheck, design-token check and `mb-core` wasm target check pass.
-- Mutation probes: removing cover extraction makes its test fail; allowing a cancelled
-  upload to clear the next upload's state makes the stale-upload test fail. Both restored.
-- Criterion extraction and jsdom refresh benchmarks run; laptop measurements are in
-  SPEC §21.9. No physical-device performance claim.
-- Evidence: `local/debug/note-cover-*.log`; screenshots in `web/test-results/`.
-- Full `make check` and local coverage measurement are deferred, not requested.
-  Full `make e2e` remains user-run and pending. Focused passing specs do not establish a
-  passing full suite. The inherited optimized bundle gate failure has not been rechecked.
+Focused local integration verification passes:
 
-## Next and current limits
+- 361 frontend tests across 22 files: cover, editor shell, block movement/handles,
+  PWA, admin folder/new-vault flows and folder shell components.
+- All 42 macOS-enabled permission leak tests, including E11 covers and the PR's
+  revoked-reader sync regression. Linux-only folder/registration leak cases are
+  compiled out here; their evidence remains the PR-head Linux CI result.
+- The focused HTTP cover authorization test passes (one test).
+- Rebuilt note-cover.spec.ts passes on desktop and mobile (two browser cases),
+  using the rebuilt combined-source CLI and a disposable server on 9012.
+- Production web build and frontend typecheck pass (zero Svelte errors/warnings).
+  Build output is in local/debug/pr-5-integration-build.log.
+- The sync benchmark target compiles with both benchmarks retained. Focused
+  rustfmt and staged whitespace checks pass.
 
-User feedback on the cover layout and manual full E2E are next.
+Rust build/check emits an incoming PR warning on macOS: directory_path_included
+in crates/mb-server/src/vault.rs:131 is unused because its callers are Linux-only.
+Left open to keep this conflict resolution focused; a warnings-as-errors check
+on macOS would need this addressed. Vite also retains its vendor directive/chunk
+size warnings. No performance or bundle-budget acceptance is claimed.
 
-- Cover UI decorates authenticated panes and browser print/PDF. Anonymous shares and browser
-  HTML exports omit the banner. Markdown/vault exports retain the settings.
-- Offline uploads retain the old cover until the new upload resolves. The note must stay
-  open to attach the result; closing it requires selecting the cover again. Blob URLs
-  are never saved as cover frontmatter. No stock gallery or external image URLs.
-- Existing Source editing replaces body blocks, not frontmatter. View/copy/export includes
-  cover metadata; edit settings with the controls or an external Markdown editor.
-- Existing inline style/catalogue work increased an already-failing optimized bundle-size
-  gate. Its exception was not raised; see SPEC §21. No new dependency here.
-- Editor limits: container-to-Text unwrap and touch long-press block handles are absent;
-  touch uses More. Toggle folding is per-view; default fold state is source-only.
-- Existing multi-client/browser and physical-device performance coverage remains limited.
+PR-head GitHub CI was independently checked: check, web, perf and fuzz-build all
+passed on 2c71598. This is evidence for the PR head, not for this combined branch.
+The PR reports 763 focused frontend cases, 92 selected Rust cases and 31 browser
+passes before publication; its later CI reports full Rust/frontend tests and
+coverage floors passing. These are upstream results, not local reruns.
+
+Main's preceding cover work passed focused cover/shell/uploader tests, seeded
+metadata properties, extraction/round-trip tests, E11 leak and HTTP tests, and a
+rebuilt desktop/mobile note-cover browser spec. Its mutation probes caught missing
+cover extraction, stale uploads and missing clipboard/drop listeners. Local prior
+evidence is in local/debug/note-cover-*.log; those results predate this integration.
+
+Full `make check` and local coverage measurement are deferred, not requested.
+Full `make e2e` remains user-run and pending. The PR's perf job enforces bundle
+size but reports browser timing/memory with --report-only; green CI is not
+physical-device performance acceptance. Main previously recorded an optimized
+bundle-size failure; the combined branch's bundle gate has not been rechecked.
+
+## Next
+
+Review the local integration merge before merging into main. Manual full E2E
+and user feedback remain pending.
+No deployment or remote merge is authorized by the current local integration task.
 
 ## Local development and gotchas
 
-- `make dev`: frontend 9011 and backend 9010. These may be the user's live services;
-  do not stop or reuse them. Focused browser fixtures use 9012 and disposable vaults.
-- Rebuild before a focused browser run:
+- `make dev`: frontend 9011 and backend 9010. These may be live user services;
+  do not stop or reuse them. Default focused browser fixtures use 9012 and disposable vaults.
+- Rebuild before each focused browser spec:
   `npm --prefix web run build && npm --prefix web run e2e -- note-cover.spec.ts --workers=1`.
-  Build the Rust CLI after server changes: `cargo build -p mb-cli`.
-  Listening tests need sandbox escalation in this environment.
-- `make check` is explicit-request only; full E2E is manual unless explicitly delegated.
-- Use current stable Rust; 1.90 is too old for the installed `yrs`.
+  Build the current Rust CLI after server changes: `cargo build -p mb-cli`.
+  Listening tests require sandbox escalation in this environment.
+- Use stable Rust; 1.90 is too old for the installed yrs dependency.
 - `make wasm` creates unoptimized WASM; use `make wasm-ci` for bundle measurements.
-- Install ProseMirror plugins at editor construction. Late registration rebuilds plugin
-  views; undo ownership and row-handle behavior depend on their lifecycle.
-- Old-schema Yjs binding can delete unknown nodes; admission must happen before binding.
-- Native and model selections can differ briefly in Playwright. Wait on the model caret
-  before shortcuts; focus alone does not establish it.
-- `tables.spec.ts` is not repeat-safe; repeated runs failed on unchanged HEAD.
-- Heavy parallel browser load previously caused editor-mount timeouts. Use one worker.
-- Never clear vault state or browser replicas to refresh the app. Close all app/PWA windows
-  and reopen for service-worker activation.
-- `local/` is gitignored; user feedback lives in `local/debug/`. Never stage it.
+- Install ProseMirror plugins at editor construction. Late registration rebuilds
+  plugin views; undo ownership and row handles depend on their lifecycle.
+- Preflight unknown-schema Y docs before binding; y-prosemirror can delete unknown nodes/marks.
+- Browser native/model selections may disagree briefly. Poll the model caret before shortcuts.
+- tables.spec.ts is historically not repeat-safe. Heavy parallel browser runs have
+  caused mount timeouts; use one worker and no retries.
+- Never clear vault state or browser replicas to refresh the app. Close all app/PWA
+  windows and reopen, or use the explicit update flow with pending-work safeguards.
+- local/ is gitignored; local/debug/ is the user's feedback inbox. Never stage it.
+- The fork's production deployment and external evidence paths are not this machine's
+  runtime or reproduction instructions. No live deployment has been inspected here.
 
-## Carried-forward open items
+## Current limits and open items
 
-- Unreproduced `sync registry lock poisoned` panic: capture the first backtrace; do not
-  clear poison or delete replicas. False-conflict callouts are not auto-removed.
+- Covers decorate authenticated panes and browser print/PDF; anonymous shares and
+  browser HTML exports omit the banner. Markdown/vault exports retain metadata.
+  Offline uploads retain the old cover until completion and require the note to
+  stay open. Source editing changes body blocks, not frontmatter.
+- Editor: no container-to-Text unwrap or touch long-press block handles; touch uses
+  More. Toggle folding is per-view; default folding is source-only.
+- Unreproduced sync registry lock poisoned panic: capture the first backtrace; do
+  not clear poison or delete replicas. False-conflict callouts are not auto-removed.
 - Browser IndexedDB cap eviction and cross-tab eviction remain unverified.
-- Earlier failures still unverified: onboarding failed-config-write cleanup and unreadable
-  vault recovery guidance tests. Server-test clippy had 30 inherited errors.
-- Linux Chromium crashes and mobile cold-start/quick-switcher breaches were recorded in
-  `web/perf/breaches.json`. Prior npm audit had 13 advisories; not re-triaged here.
-- Codec limits: atomic-image native marks may be lost; adversarial unmatched CommonMark
-  brackets are slow. Coverage floors remain enforced in CI; local measurement is deferred.
-- Tables lack offscreen drag autoscroll, column deletion/resizing and headerless mode.
-  Inbox, graph, outline/tags/transclusion, offline caches and rename retain the limits
-  documented in SPEC; this change does not address them.
+- Previously failing onboarding failed-config-write cleanup and unreadable-vault
+  recovery-guidance tests remain unverified locally. Historical server-test Clippy
+  failures were repaired in PR #5 and its CI passed; full integration Clippy is deferred.
+- Linux Chromium crashes and mobile cold-start/quick-switcher performance breaches
+  were recorded in web/perf/breaches.json. No physical-device claim is made.
+  The last npm audit reported 13 advisories; not re-triaged here.
+- Codec: native marks on atomic images may be lost; adversarial unmatched CommonMark
+  brackets are slow. Existing multi-client/browser coverage remains limited.
+- Tables: no offscreen drag autoscroll, column deletion/resizing or headerless mode.
+- Inbox: no offline filtered query, live refresh, remembered filters or timezone-aware dates.
+- Creation: no folder-row note creation or template picker; creation is not audited (§6.10).
+- Unlinked mentions: silent 50-block cap; no conversion/highlight/live refresh.
+- Offline: caps are not configurable; eviction is per visible vault; pins are device-local;
+  no folder pins or offline media. Shared static precache across browser-profile users,
+  no skipWaiting or closed-app periodic refresh. Tablet/gesture coverage is limited.
+- Graphs: not persistent tabs; no live update; global nodes are not draggable;
+  local labels overlap and duplicate titles are indistinguishable.
+- Rename/folder move: open clients/bookmarks are not updated; partial writes are not
+  rolled back; cost is O(vault).
+- Outline/tags/transclusion: limited drag/cross-pane coverage; tags do not poll and embeds
+  do not live-refresh. Unavailable placeholders never name hidden targets by design.
+- Index/backlinks: no conditional 304; audit timestamps are Unix seconds, not RFC3339.

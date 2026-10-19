@@ -1,7 +1,8 @@
 /** Editor-local hover/focus controls; portals never enter note content or exports. */
 import { NodeSelection, TextSelection } from "@tiptap/pm/state";
-import type { BlockMoveOptions, BlockMoveToken } from "./block-move.js";
+import type { BlockMoveOptions, BlockMoveToken, BlockMoveTarget } from "./block-move.js";
 import { createBlockMover } from "./block-move.js";
+import { mountBlockSelection } from "./block-selection.js";
 
 /** The host must supply a vault-qualified noteKey and current mode/body readiness. */
 export interface BlockHandlesOptions extends BlockMoveOptions {
@@ -9,8 +10,8 @@ export interface BlockHandlesOptions extends BlockMoveOptions {
   readonly onInsertBelow?: (rootStart: number) => void;
   readonly onTurnInto?: (rootStart: number) => void;
 }
-/** One controller per editor. Alt-Shift-F10 opens the current complete root's actions. */
-export interface BlockHandles { focus(): boolean; refresh(): void; destroy(): void }
+/** One controller per editor. Alt-Shift-F10 opens the current item's actions. */
+export interface BlockHandles { focus(): boolean; move(direction: "up" | "down"): boolean; refresh(): void; destroy(): void }
 interface Boundary { index: number; y: number }
 interface Drag {
   token: BlockMoveToken;
@@ -57,10 +58,12 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   const actions = button("Block actions", "⋯"); actions.setAttribute("aria-haspopup", "menu"); actions.setAttribute("aria-expanded", "false");
   const up = button("Move up"); const down = button("Move down");
   const insert = button("Insert below…"); const convert = button("Turn into…");
+  const select = button("Select block"); const extendUp = button("Extend selection up"); const extendDown = button("Extend selection down"); const clearSelection = button("Clear block selection");
+  for (const control of [select, extendUp, extendDown, clearSelection]) control.setAttribute("role", "menuitem");
   insert.hidden = options.onInsertBelow === undefined; convert.hidden = options.onTurnInto === undefined;
   insert.setAttribute("role", "menuitem"); convert.setAttribute("role", "menuitem");
   up.setAttribute("role", "menuitem"); down.setAttribute("role", "menuitem");
-  menu.append(convert, insert, up, down); group.append(actions, grip); document.body.append(group, menu, indicator);
+  menu.append(convert, insert, up, down, select, extendUp, extendDown, clearSelection); group.append(actions, grip); document.body.append(group, menu, indicator);
   panel.classList.add("block-handles-host");
   const viewport = window.visualViewport;
   const close = (): void => { menu.hidden = true; actions.setAttribute("aria-expanded", "false"); };
@@ -72,40 +75,55 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   };
   const syncControls = (): void => {
     up.disabled = !token || !mover.canDrop(token, token.index - 1);
-    down.disabled = !token || !mover.canDrop(token, token.index + 2);
+    down.disabled = !token || !mover.canDrop(token, token.index + token.count + 1);
+    const selected = selection.current();
+    select.hidden = selected !== undefined;
+    extendUp.hidden = extendDown.hidden = clearSelection.hidden = !selected;
+    insert.hidden = options.onInsertBelow === undefined || selected !== undefined;
+    convert.hidden = options.onTurnInto === undefined || selected !== undefined;
   };
   const paneBounds = () => {
     const bounds = panel.getBoundingClientRect();
-    const left = Math.max(bounds.left, viewport?.offsetLeft ?? 0);
-    const right = Math.min(bounds.right || window.innerWidth, (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth));
-    const top = Math.max(bounds.top, viewport?.offsetTop ?? 0);
-    const bottom = Math.min(bounds.bottom || window.innerHeight, (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight));
+    const pane = panel.closest(".note-pane")?.getBoundingClientRect() ?? bounds;
+    const left = Math.max(bounds.left, pane.left, viewport?.offsetLeft ?? 0);
+    const right = Math.min(bounds.right || window.innerWidth, pane.right || window.innerWidth, (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth));
+    const top = Math.max(bounds.top, pane.top, viewport?.offsetTop ?? 0);
+    const bottom = Math.min(bounds.bottom || window.innerHeight, pane.bottom || window.innerHeight, (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight));
     return { left, right, top, bottom };
   };
   const rootElement = (start: number): HTMLElement | undefined => {
     const node = editor.view.nodeDOM(start);
     return node instanceof window.HTMLElement ? node : undefined;
   };
-  const readBoundaries = (): Boundary[] => {
+  const unitRect = (unit: BlockMoveTarget): { left: number; right: number; top: number; bottom: number } | undefined => {
+    if (!unit.inline) {
+      const node = rootElement(unit.start); const rect = node?.getBoundingClientRect();
+      return rect && node?.tagName === "LI" ? { left: node.parentElement?.getBoundingClientRect().left ?? rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : rect;
+    }
+    const from = editor.view.coordsAtPos(unit.start, 1);
+    const to = editor.view.coordsAtPos(unit.end, -1);
+    const parent = editor.state.doc.resolve(unit.start);
+    const rect = rootElement(parent.before(1))?.getBoundingClientRect();
+    return rect ? { left: rect.left, right: rect.right, top: from.top, bottom: to.bottom } : undefined;
+  };
+  const readBoundaries = (current: BlockMoveToken): Boundary[] => {
     const boundaries: Boundary[] = [];
     let previousBottom: number | undefined;
-    const doc = editor.state.doc;
-    const firstBody = doc.firstChild?.type.name === "heading" && doc.firstChild.attrs["level"] === 1 ? 1 : 0;
-    // why: scan root geometry only during drag/reflow, never on ordinary keystrokes.
-    doc.forEach((node, start, index) => {
-      if (index < firstBody) return;
-      const rect = rootElement(start)?.getBoundingClientRect();
+    const units = mover.targets(current);
+    // why: scan unit geometry only during drag/reflow, never on ordinary keystrokes.
+    units.forEach((unit, index) => {
+      const rect = unitRect(unit);
       if (!rect) return;
       boundaries.push({ index, y: previousBottom === undefined ? rect.top : (previousBottom + rect.top) / 2 });
       previousBottom = rect.bottom;
     });
-    if (previousBottom !== undefined) boundaries.push({ index: doc.childCount, y: previousBottom });
+    if (previousBottom !== undefined) boundaries.push({ index: units.length, y: previousBottom });
     return boundaries;
   };
   const position = (): void => {
     frame = undefined;
     if (!token || !mover.isCurrent(token)) { hide(); return; }
-    const rect = rootElement(token.start)?.getBoundingClientRect();
+    const rect = unitRect(token);
     if (!rect) { hide(); return; }
     const bounds = paneBounds();
     if (rect.bottom < bounds.top || rect.top > bounds.bottom) { group.hidden = true; close(); } else group.hidden = false;
@@ -122,7 +140,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
       menu.style.top = `${Math.max(bounds.top + 4, Math.min(rect.bottom + 4, bounds.bottom - menuRect.height - 4))}px`;
     }
     if (!drag) return;
-    drag.boundaries ??= readBoundaries();
+    drag.boundaries ??= readBoundaries(drag.token);
     drag.boundary = undefined; indicator.hidden = true;
     if (!drag.moved || drag.x < bounds.left || drag.x > bounds.right || drag.y < bounds.top || drag.y > bounds.bottom) return;
     let nearest: Boundary | undefined;
@@ -139,13 +157,15 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     token = next; group.hidden = false; grip.setAttribute("aria-label", next.label); grip.title = `${next.label} (drag or open actions)`;
     menu.setAttribute("aria-label", next.label); syncControls(); schedule();
   };
+  const selection = mountBlockSelection({ editor, panel, mover, rect: unitRect, dragging: () => drag !== undefined, changed: next => { if (next) show(next); else refresh(); } });
   const refresh = (): void => {
     if (destroyed || applying || handingOff) return;
     if (drag || !menu.hidden) { if (!token || !mover.isCurrent(token)) hide(); return; }
-    const selection = editor.state.selection;
-    show(mover.capture(selection instanceof NodeSelection ? selection.from : selection.head));
+    const caret = editor.state.selection;
+    show(selection.current() ?? mover.capture(caret instanceof NodeSelection ? caret.from : caret.head));
   };
   const nativeHandoff = (): void => {
+    if (selection.current()) return;
     const native = document.getSelection();
     if (!native?.anchorNode || !native.focusNode || !dom.contains(native.anchorNode) || !dom.contains(native.focusNode)) return;
     try {
@@ -161,20 +181,25 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     (up.disabled ? down.disabled ? menu : down : up).focus({ preventScroll: true }); schedule(); return true;
   };
   const focus = (): boolean => { if (!canInteract()) { hide(); return false; } nativeHandoff(); refresh(); return openMenu(); };
-  const apply = (direction: "up" | "down"): void => {
-    const current = token;
-    if (menu.hidden || !current || !mover.isCurrent(current)) { hide(); return; }
-    close(); applying = true;
-    try { if (mover.move(current, direction)) editor.view.focus(); } finally { applying = false; }
+  const move = (direction: "up" | "down"): boolean => {
     refresh();
+    const current = token;
+    if (!current || !mover.isCurrent(current)) { hide(); return false; }
+    close(); applying = true;
+    const selected = selection.current() !== undefined;
+    let applied = false;
+    try { applied = mover.move(current, direction); if (applied) { if (selected) selection.moved(current); editor.view.focus(); } } finally { applying = false; }
+    refresh();
+    return applied;
   };
+  const apply = (direction: "up" | "down"): void => { if (!menu.hidden) move(direction); };
   const keydown = (event: KeyboardEvent): void => {
     if (event.key === "Escape" && drag) { event.preventDefault(); endDrag(); return; }
     if (event.key === "F10" && event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey && focus()) event.preventDefault();
   };
   const menuKey = (event: KeyboardEvent): void => {
     if (event.key === "Escape") { event.preventDefault(); close(); endDrag(); if (!editor.isDestroyed) editor.view.focus(); refresh(); return; }
-    const enabled = [convert, insert, up, down].filter(control => !control.disabled && !control.hidden);
+    const enabled = [convert, insert, up, down, select, extendUp, extendDown, clearSelection].filter(control => !control.disabled && !control.hidden);
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || enabled.length === 0) return;
     event.preventDefault();
     const index = enabled.indexOf(document.activeElement as HTMLButtonElement);
@@ -183,22 +208,35 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   };
   const open = (): void => { if (suppressClick) { suppressClick = false; return; } openMenu(); };
   const moveUp = (): void => { apply("up"); }; const moveDown = (): void => { apply("down"); };
-  const insertBelow = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onInsertBelow?.(current.start); };
-  const turnInto = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onTurnInto?.(current.start); };
+  const insertBelow = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onInsertBelow?.(current.rootStart); };
+  const turnInto = (): void => { const current = token; if (!current || !mover.isCurrent(current)) return; close(); options.onTurnInto?.(current.rootStart); };
+  const selectBlock = (): void => { const current = token; close(); if (current) selection.select(current); };
+  const expandUp = (): void => { close(); selection.extend(-1); editor.view.focus(); };
+  const expandDown = (): void => { close(); selection.extend(1); editor.view.focus(); };
+  const clearBlocks = (): void => { close(); selection.clear(); editor.view.focus(); };
   const hover = (event: PointerEvent): void => {
-    if (drag || !menu.hidden || event.pointerType === "touch" || !(event.target instanceof window.Node) || !dom.contains(event.target)) return;
+    if (drag || selection.current() || !menu.hidden || event.pointerType === "touch" || !(event.target instanceof window.Node) || !dom.contains(event.target)) return;
     // why: the gutter and the gaps between blocks are the editor root's own padding/margins;
     // posAtDOM(root, 0) there is the title, so crossing the gap to the handles hid them.
     // Resolve the root under the pointer's row instead, and keep the current one if none.
-    const pos = event.target === dom ? editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos : undefined;
-    if (event.target === dom && pos === undefined) return;
-    try { show(mover.capture(pos ?? editor.view.posAtDOM(event.target, 0))); } catch { hide(); }
+    try {
+      const rect = token && unitRect(token);
+      if (rect && event.clientX < rect.left && event.clientY >= rect.top && event.clientY <= rect.bottom) return;
+      // why: posAtDOM(p, 0) always selects the first line, even when hovering a later <br> row.
+      const pos = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
+      if (event.target === dom && pos === undefined) return;
+      show(mover.capture(pos ?? editor.view.posAtDOM(event.target, 0)));
+    } catch {
+      // why: non-layout DOM test hosts cannot hit-test coordinates; native DOM positions
+      // still support keyboard movement and node hover there.
+      try { show(mover.capture(editor.view.posAtDOM(event.target, 0))); } catch { hide(); }
+    }
   };
   const leave = (event: PointerEvent): void => {
     const into = event.relatedTarget instanceof window.Node ? event.relatedTarget : undefined;
     // why: moving between the editor and the handles is one hover; the editor's own
     // pointermove decides the block once the pointer is back over it.
-    if (drag || !menu.hidden || (into && (group.contains(into) || dom.contains(into)))) return;
+    if (drag || selection.current() || !menu.hidden || (into && (group.contains(into) || dom.contains(into)))) return;
     if (editor.view.hasFocus()) refresh(); else hide();
   };
   const pointerDown = (event: PointerEvent): void => {
@@ -224,18 +262,20 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     suppressClick = current.moved; endDrag();
     if (!current.moved) { openMenu(); return; }
     applying = true;
-    try { if (current.boundary !== undefined && mover.drop(current.token, current.boundary)) editor.view.focus(); } finally { applying = false; }
+    const selected = selection.current() !== undefined;
+    try { if (current.boundary !== undefined && mover.drop(current.token, current.boundary)) { if (selected) selection.moved(current.token); editor.view.focus(); } } finally { applying = false; }
     refresh();
   };
   const cancel = (): void => { endDrag(); };
   const nativeDrag = (event: Event): void => { event.preventDefault(); event.stopImmediatePropagation(); };
   const editorNativeDrag = (event: Event): void => { if (drag) nativeDrag(event); };
   const reflow = (): void => { if (drag) drag.boundaries = undefined; schedule(); };
-  const invalidate = (): void => { if (!applying && token && !mover.isCurrent(token)) hide(); };
+  const invalidate = (): void => { if (!applying) { selection.refresh(); if (token && !mover.isCurrent(token)) hide(); } };
   const startComposition = (): void => { composing = true; hide(); };
   const endComposition = (): void => { composing = false; };
   const focusChanged = (event: FocusEvent): void => {
-    if (event.target instanceof window.Node && !dom.contains(event.target) && !group.contains(event.target) && !menu.contains(event.target)) hide();
+    if (event.target instanceof window.Element && panel.contains(event.target) && event.target.closest(".editor-more")) return;
+    if (event.target instanceof window.Node && !dom.contains(event.target) && !group.contains(event.target) && !menu.contains(event.target)) { selection.clear(); hide(); }
   };
   const readinessChanged = (): void => {
     const wasDragging = drag !== undefined;
@@ -247,6 +287,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   actions.addEventListener("click", open); grip.addEventListener("click", open);
   up.addEventListener("click", moveUp); down.addEventListener("click", moveDown);
   insert.addEventListener("click", insertBelow); convert.addEventListener("click", turnInto);
+  select.addEventListener("click", selectBlock); extendUp.addEventListener("click", expandUp); extendDown.addEventListener("click", expandDown); clearSelection.addEventListener("click", clearBlocks);
   menu.addEventListener("keydown", menuKey); group.addEventListener("keydown", menuKey);
   group.addEventListener("pointerleave", leave);
   group.addEventListener("dragstart", nativeDrag); group.addEventListener("drop", nativeDrag);
@@ -264,6 +305,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     actions.removeEventListener("click", open); grip.removeEventListener("click", open);
     up.removeEventListener("click", moveUp); down.removeEventListener("click", moveDown);
     insert.removeEventListener("click", insertBelow); convert.removeEventListener("click", turnInto);
+    select.removeEventListener("click", selectBlock); extendUp.removeEventListener("click", expandUp); extendDown.removeEventListener("click", expandDown); clearSelection.removeEventListener("click", clearBlocks);
     menu.removeEventListener("keydown", menuKey); group.removeEventListener("keydown", menuKey);
     group.removeEventListener("pointerleave", leave);
     group.removeEventListener("dragstart", nativeDrag); group.removeEventListener("drop", nativeDrag); grip.removeEventListener("pointerdown", pointerDown);
@@ -276,10 +318,10 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     viewport?.removeEventListener("resize", reflow); viewport?.removeEventListener("scroll", reflow);
     editor.off("selectionUpdate", refresh); editor.off("focus", refresh); editor.off("transaction", invalidate); editor.off("destroy", destroy);
     options.document.off("destroy", destroy);
-    mover.destroy(); group.remove(); menu.remove(); indicator.remove(); panel.classList.remove("block-handles-host");
+    selection.destroy(); mover.destroy(); group.remove(); menu.remove(); indicator.remove(); panel.classList.remove("block-handles-host");
   };
   editor.on("destroy", destroy);
   options.document.on("destroy", destroy);
   if (editor.view.hasFocus()) refresh();
-  return { focus, refresh, destroy };
+  return { focus, move, refresh, destroy };
 }

@@ -459,7 +459,7 @@ async fn sync_frames_never_reveal_whether_an_unreadable_note_exists() {
 }
 
 #[tokio::test]
-async fn two_names_for_one_file_share_a_single_writer() {
+async fn two_subscribers_share_one_writer_but_symlink_aliases_are_refused() {
     // `NoteCoordinator` is a serialized writer and only safe as one instance per file. An
     // earlier revision keyed rooms on the raw client string, so a symlink — or, on a
     // case-insensitive filesystem, a different capitalization — opened a second
@@ -489,10 +489,17 @@ async fn two_names_for_one_file_share_a_single_writer() {
     let mut aliased = server.connect(&cookie).await;
 
     let baseline = subscribe(&mut canonical, "personal", "One.md").await;
-    let aliased_sync = subscribe(&mut aliased, "personal", "Alias.md").await;
+    for note in ["Alias.md", "Absent.md"] {
+        aliased.send(Message::Text(serde_json::json!({"type":"subscribe","vault":"personal","note":note,"schema_version":schema_revision()}).to_string().into())).await.unwrap();
+        assert_eq!(
+            next_json(&mut aliased).await,
+            serde_json::json!({"type":"error","code":"not_found"})
+        );
+    }
+    let aliased_sync = subscribe(&mut aliased, "personal", "One.md").await;
     assert_eq!(
         baseline, aliased_sync,
-        "both names must be admitted to the same document state"
+        "real subscribers must share the same document state"
     );
 
     let update = external_edit(&baseline, "after\n");
@@ -507,7 +514,7 @@ async fn two_names_for_one_file_share_a_single_writer() {
             .expect("the aliased subscriber shares the room and must receive the edit");
     assert_eq!(tag, 0x02);
     assert_eq!(
-        note, "Alias.md",
+        note, "One.md",
         "each peer is addressed by the name it subscribed with"
     );
 }

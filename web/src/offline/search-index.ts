@@ -63,7 +63,10 @@ export async function syncClientIndex(options: ClientIndexOptions): Promise<Clie
   }
 
   const missing = await options.store.reconcileSearchZones(options.vault, manifest.zones);
-  for (const zone of missing) {
+  const needed = new Set(missing.map(zone => zone.zoneId));
+  // Old servers do not provide a content revision; permission hashes alone cannot prove
+  // freshness, so those segments must be refreshed rather than trusted indefinitely.
+  for (const zone of manifest.zones.filter(zone => zone.contentHash === undefined || needed.has(zone.zoneId))) {
     const bytes = await fetchSegment(options.vault, zone, request);
     if (bytes === "denied") {
       await options.store.reconcileSearchZones(options.vault, []);
@@ -71,6 +74,7 @@ export async function syncClientIndex(options: ClientIndexOptions): Promise<Clie
     }
     if (bytes === "unreachable") return "unreachable";
     try {
+      if (zone.contentHash !== undefined && await contentHash(bytes) !== zone.contentHash) return "unreachable";
       await (options.validate ?? validateSearchSegment)(bytes);
     } catch {
       // Invalid bytes are not stored. The manifest remains, so a later reconnect retries;
@@ -129,10 +133,16 @@ function readManifest(vault: string, body: unknown): readonly SearchZone[] | und
   const zones = new Map<string, SearchZone>();
   for (const entry of entries) {
     if (typeof entry !== "object" || entry === null) return undefined;
-    const { zoneId, aclHash } = entry as Record<string, unknown>;
+    const { zoneId, aclHash, contentHash } = entry as Record<string, unknown>;
     if (typeof zoneId !== "string" || typeof aclHash !== "string") return undefined;
     if (!HEX.test(zoneId) || !HEX.test(aclHash) || zones.has(zoneId)) return undefined;
-    zones.set(zoneId, { vault, zoneId, aclHash });
+    if (contentHash !== undefined && (typeof contentHash !== "string" || !HEX.test(contentHash))) return undefined;
+    zones.set(zoneId, { vault, zoneId, aclHash, ...(typeof contentHash === "string" ? { contentHash } : {}) });
   }
   return [...zones.values()];
+}
+
+async function contentHash(bytes: Uint8Array): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }

@@ -69,7 +69,7 @@ export type OfflineFallback =
  * handing either the shell would render an editor over a URL that has never been one.
  */
 export function offlineFallbackFor(pathname: string): OfflineFallback {
-  return /^\/v\/[^/]+\/.+/.test(pathname) ? "shell" : "offline-page";
+  return pathname === "/app.html" || /^\/v\/[^/]+(?:\/.*)?$/.test(pathname) ? "shell" : "offline-page";
 }
 
 function parseUrl(value: string): URL | undefined {

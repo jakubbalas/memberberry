@@ -2,53 +2,26 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, expect, it, vi } from "vitest";
 import FolderContents from "./FolderContents.svelte";
-import { NoteCatalog } from "./note-catalog.svelte.js";
-import type { CatalogAnswer } from "./catalog.js";
-
-const apps: ReturnType<typeof mount>[] = [];
-afterEach(async () => { for (const app of apps.splice(0)) await unmount(app); document.body.replaceChildren(); });
-async function render(catalog: NoteCatalog, path = "Projects", emptyFolders: readonly string[] = []) {
-  const target = document.createElement("div"); document.body.append(target);
-  const onfolder = vi.fn(); const onopen = vi.fn(); const onclose = vi.fn();
-  const app = mount(FolderContents, { target, props: { path, catalog, emptyFolders, onfolder, onopen, onclose } });
-  apps.push(app); await tick();
-  return { target, onfolder, onopen, onclose };
+import { FolderBrowser } from "./folder-browser.svelte.js";
+const apps:ReturnType<typeof mount>[]=[];
+afterEach(async()=>{for(const app of apps.splice(0))await unmount(app);vi.unstubAllGlobals();document.body.replaceChildren();});
+function reply(path:string,files:readonly string[]=[],status=200):Response{return new Response(JSON.stringify(status===200?{path,folders:[],files:files.map(name=>({name,path:`${path}/${name}`}))}:{error:"not_found"}),{status,headers:{"content-type":"application/json"}});}
+async function render(path="Projects",browser=new FolderBrowser()){
+ const target=document.createElement("div");document.body.append(target);const onfolder=vi.fn(),onopen=vi.fn(),onclose=vi.fn();
+ apps.push(mount(FolderContents,{target,props:{path,vault:"personal",vaultLabel:"Personal",browser,onfolder,onopen,onclose}}));await tick();return {target,onfolder,onopen,onclose,browser};
 }
-
-it("requests a not-yet-loaded catalog and shows loading until its contents arrive", async () => {
-  let resolve: (answer: CatalogAnswer) => void = () => { throw new Error("uninitialized request"); };
-  const pending = new Promise<CatalogAnswer>((done) => { resolve = done; });
-  const load = vi.fn(() => pending);
-  const catalog = new NoteCatalog({ vault: "personal", load, replica: async () => undefined });
-  const view = await render(catalog);
-  expect(view.target.querySelector('[role="status"]')?.textContent).toBe("Loading folder contents…");
-  expect(load).toHaveBeenCalledTimes(1);
-  resolve({ kind: "ok", notes: [{ path: "Projects/Plan.md", title: "Plan", conflicts: 0 }] });
-  await vi.waitFor(() => expect(catalog.ready).toBe(true)); await tick();
-  expect(view.target.querySelector('[role="status"]')).toBeNull();
-  expect(view.target.querySelector('button[title="Projects/Plan.md"]')?.textContent).toContain("Plan");
+it("requests an uncached shallow listing and shows loading until its contents arrive",async()=>{
+ let resolve=(_v:Response):void=>{throw new Error("uninitialized");};const pending=new Promise<Response>(r=>{resolve=r;});const request=vi.fn(()=>pending);vi.stubGlobal("fetch",request);const view=await render();
+ expect(view.target.querySelector('[role="status"]')?.textContent).toBe("Loading folder contents…");expect(request).toHaveBeenCalledTimes(1);
+ resolve(reply("Projects",["Plan.md"]));await vi.waitFor(()=>expect(view.target.textContent).toContain("Plan.md"));expect(view.target.querySelector('[role="status"]')).toBeNull();
 });
-
-it("removes listed notes and reports an unavailable folder after access is denied", async () => {
-  let answer: CatalogAnswer = { kind: "ok", notes: [{ path: "Projects/Private.md", title: "Private", conflicts: 0 }] };
-  const catalog = new NoteCatalog({ vault: "personal", load: async () => answer, replica: async () => undefined });
-  await catalog.refresh();
-  const view = await render(catalog);
-  expect(view.target.querySelector('button[title="Projects/Private.md"]')).not.toBeNull();
-  answer = { kind: "denied" }; await catalog.refresh(); await tick();
-  expect(view.target.querySelector('button[title="Projects/Private.md"]')).toBeNull();
-  expect(view.target.querySelector('[role="status"]')?.textContent).toBe("This folder is no longer available.");
+it("removes listed filenames immediately after authoritative directory access denial",async()=>{
+ let denied=false;vi.stubGlobal("fetch",vi.fn(async()=>reply("Projects",["Private.md"],denied?404:200)));const view=await render();
+ await vi.waitFor(()=>expect(view.target.textContent).toContain("Private.md"));denied=true;await view.browser.navigate("personal","Projects");await tick();
+ expect(view.target.textContent).not.toContain("Private.md");expect(view.target.querySelector('[role="alert"]')?.textContent).toContain("unavailable");
 });
-
-it("distinguishes an existing empty folder from a missing folder and offers parent navigation", async () => {
-  const catalog = new NoteCatalog({ vault: "personal", load: async () => ({ kind: "ok", notes: [] }), replica: async () => undefined });
-  await catalog.refresh();
-  const view = await render(catalog, "Projects/Empty", ["Projects/Empty"]);
-  expect(view.target.textContent).toContain("This folder is empty.");
-  expect(document.activeElement).toBe(view.target.querySelector("h1"));
-  view.target.querySelector<HTMLButtonElement>("nav button")?.click();
-  expect(view.onfolder).toHaveBeenCalledWith("Projects");
-  view.target.querySelector<HTMLButtonElement>('[aria-label="Close folder view"]')?.click();
-  expect(view.onclose).toHaveBeenCalledTimes(1);
-  expect(view.onopen).not.toHaveBeenCalled();
+it("renders an existing empty directory and conditional parent navigation without opening an editor",async()=>{
+ vi.stubGlobal("fetch",vi.fn(async()=>reply("Projects/Empty")));const view=await render("Projects/Empty");await vi.waitFor(()=>expect(view.target.textContent).toContain("0 folders found"));
+ expect(document.activeElement).toBe(view.target.querySelector("h1"));[...view.target.querySelectorAll("button")].find(b=>b.textContent?.includes("Go to parent folder"))?.click();expect(view.onfolder).toHaveBeenCalledWith("Projects");
+ view.target.querySelector<HTMLButtonElement>('[aria-label="Close folder view"]')?.click();expect(view.onclose).toHaveBeenCalledTimes(1);expect(view.onopen).not.toHaveBeenCalled();
 });

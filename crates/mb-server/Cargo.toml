@@ -40,6 +40,7 @@ zstd = "0.13"
 yrs.workspace = true
 
 [dev-dependencies]
+proptest = "1"
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "macros", "time", "sync"] }
 tokio-tungstenite = "0.29"
@@ -48,6 +49,23 @@ tempfile = "3"
 [lints]
 workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# why: descriptor-relative, no-follow directory reads prevent check/use symlink escapes.
+# This uses the already-locked rustix package, without adding unsafe code to mb-server.
+rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# why: the denial test checks the effective uid before launching its unprivileged subprocess.
+rustix = { version = "1", features = ["process"] }
+
 [[bench]]
 name = "sync"
+harness = false
+
+[[bench]]
+name = "watch"
+harness = false
+
+[[bench]]
+name = "shallow_directory"
 harness = false

@@ -9,6 +9,13 @@ use mb_core::{Access, NotePath, Role, Username};
 
 use crate::{Error, Vault};
 
+#[cfg(target_os = "linux")]
+mod directory;
+#[cfg(target_os = "linux")]
+pub use directory::{
+    DirectoryEntry, DirectoryError, DirectoryListing, DirectorySnapshot, validate_directory_token,
+};
+
 /// A vault view constrained to one authenticated user and one validated ACL.
 #[derive(Debug, Clone)]
 pub struct AuthorizedVault<'a> {
@@ -56,6 +63,9 @@ impl<'a> AuthorizedVault<'a> {
                     .and_then(Path::to_str)
                     .is_some_and(|relative| self.may_read_subtree(relative))
             {
+                continue;
+            }
+            if !self.vault.directory_included(&directory) {
                 continue;
             }
             let entries = std::fs::read_dir(&directory)

@@ -53,22 +53,55 @@ function type(editor: Editor, text: string): void {
 }
 
 describe("note editor keyboard input", () => {
-  it("Enter after a nonempty bullet starts a sibling bullet", () => {
-    const editor = open({ type: "doc", content: [bullet("First")] });
+  it.each(["bullet_list", "ordered_list"])("Enter after a nonempty %s item starts a sibling item", (kind) => {
+    const editor = open({ type: "doc", content: [{ type: kind, content: [item("First")] }] });
     cursorAt(editor, "First");
     editor.commands.keyboardShortcut("Enter");
     type(editor, "Second");
-    expect(editor.getJSON()).toMatchObject({ content: [{ type: "bullet_list", content: [
+    expect(editor.getJSON()).toMatchObject({ content: [{ type: kind, content: [
       { type: "list_item", content: [{ type: "paragraph", content: [{ text: "First" }] }] },
       { type: "list_item", content: [{ type: "paragraph", content: [{ text: "Second" }] }] },
     ] }] });
   });
 
-  it("Enter on an empty final bullet exits the list", () => {
-    const editor = open({ type: "doc", content: [bullet("First", "")] });
+  it.each(["bullet_list", "ordered_list"])("Enter on an empty final %s item exits the list", (kind) => {
+    const editor = open({ type: "doc", content: [{ type: kind, content: [item("First"), item("")] }] });
     editor.commands.setTextSelection(editor.state.doc.content.size - 2);
     editor.commands.keyboardShortcut("Enter");
-    expect(editor.getJSON().content?.map((node) => node.type)).toEqual(["bullet_list", "paragraph"]);
+    expect(editor.getJSON().content?.map((node) => node.type)).toEqual([kind, "paragraph"]);
+  });
+
+  it("Enter in the middle of a numbered item splits its text and retains the list start", () => {
+    const editor = open({ type: "doc", content: [{ type: "ordered_list", attrs: { start: 7 }, content: [item("FirstSecond"), item("Last")] }] });
+    cursorAt(editor, "FirstSecond");
+    editor.commands.setTextSelection(editor.state.selection.from - "Second".length);
+    editor.commands.keyboardShortcut("Enter");
+    expect(editor.getJSON()).toMatchObject({ content: [{ type: "ordered_list", attrs: { start: 7 }, content: [
+      item("First"), item("Second"), item("Last"),
+    ] }] });
+  });
+
+  it.each(["bullet_list", "ordered_list"])("Enter continues a nested numbered list inside %s", (outer) => {
+    const editor = open({ type: "doc", content: [{ type: outer, content: [{ type: "list_item", content: [
+      { type: "paragraph", content: [{ type: "text", text: "Parent" }] },
+      { type: "ordered_list", content: [item("Nested")] },
+    ] }] }] });
+    cursorAt(editor, "Nested");
+    editor.commands.keyboardShortcut("Enter");
+    type(editor, "Next");
+    expect(editor.getJSON()).toMatchObject({ content: [{ type: outer, content: [{ type: "list_item", content: [
+      { type: "paragraph", content: [{ type: "text", text: "Parent" }] },
+      { type: "ordered_list", content: [item("Nested"), item("Next")] },
+    ] }] }] });
+  });
+
+  it("Enter does not change a read-only numbered list", () => {
+    const editor = open({ type: "doc", content: [{ type: "ordered_list", content: [item("Fixed")] }] });
+    cursorAt(editor, "Fixed");
+    editor.setEditable(false);
+    const before = editor.getJSON();
+    editor.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(editor.getJSON()).toEqual(before);
   });
 
   it("Tab nests a bullet beneath its preceding sibling", () => {

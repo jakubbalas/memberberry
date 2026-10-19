@@ -1,4 +1,4 @@
-//! `server.toml` — bind address and the vault registry (`SPEC.md` §4.1, §6.1).
+//! `server.toml` — bind address, vault registry and optional folder locations (§4.1, §6.1).
 //!
 //! Server-owned and never inside a vault, so a vault stays exactly the human-meaningful
 //! artifacts plus `access.toml`.
@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 use crate::vault::{Slug, Vault};
+use crate::vault_locations::VaultLocation;
 
 /// Development default (AGENTS.md §5.1). Loopback is the safe development default even
 /// with authentication, so a first run never exposes a private vault to the local network.
@@ -32,11 +33,42 @@ pub struct ServerConfig {
     /// Address to listen on. Defaults to [`DEFAULT_BIND`].
     #[serde(default)]
     pub bind: Option<String>,
+    /// Existing registered vaults, unchanged by location configuration.
     #[serde(default, rename = "vaults")]
     pub vaults: Vec<VaultEntry>,
+    /// Explicit server directories available to the future administrator folder picker.
+    /// Empty by default; parsing validates syntax without opening or enumerating roots.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_locations"
+    )]
+    pub vault_locations: Vec<VaultLocation>,
     /// Directory containing Vite's production build. Relative paths resolve from the server.
     #[serde(default)]
     pub web_root: Option<String>,
+}
+
+fn deserialize_locations<'de, D>(deserializer: D) -> Result<Vec<VaultLocation>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let locations = Vec::<VaultLocation>::deserialize(deserializer)?;
+    validate_location_ids(&locations).map_err(serde::de::Error::custom)?;
+    Ok(locations)
+}
+
+fn validate_location_ids(locations: &[VaultLocation]) -> Result<(), Error> {
+    let mut ids = std::collections::HashSet::new();
+    for location in locations {
+        if !ids.insert(location.id()) {
+            return Err(Error::Config(format!(
+                "duplicate vault location id `{}`",
+                location.id().as_str()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// One `[[vaults]]` entry.
@@ -51,6 +83,32 @@ pub struct VaultEntry {
     /// Where content-addressed media objects live. Local storage is the default.
     #[serde(default, skip_serializing_if = "MediaBackendConfig::is_local")]
     pub media: MediaBackendConfig,
+    /// Note-root selection; omitted legacy entries keep automatic `notes/` discovery.
+    #[serde(default, skip_serializing_if = "NotesLayout::is_auto")]
+    pub notes_layout: NotesLayout,
+    /// Opt-in service-identity folder filtering; content ACLs still apply separately.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ignore_non_writable_folders: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Persisted note-root selection, independent of later filesystem layout changes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotesLayout {
+    /// Legacy behavior: use `notes/` when it exists, otherwise the vault root.
+    #[default]
+    Auto,
+    /// Use the exact registered root, including Markdown in its ordinary children.
+    Root,
+}
+
+impl NotesLayout {
+    fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
 }
 
 /// A vault's media backend (`SPEC.md` §12.1).
@@ -111,7 +169,9 @@ impl ServerConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Config`] for malformed TOML or an unknown key. `deny_unknown_fields`
+    /// Returns [`Error::Config`] for malformed TOML, an unknown key or invalid/duplicate
+    /// location entries. Location validation is structural only, with no filesystem reads.
+    /// `deny_unknown_fields`
     /// is deliberate: a typo in a config key that is silently ignored is a setting the user
     /// believes is applied and is not.
     pub fn parse(toml_text: &str) -> Result<Self, Error> {
@@ -138,8 +198,9 @@ impl ServerConfig {
     ///
     /// # Errors
     ///
-    /// Fails only if the config cannot be represented, which the types make impossible.
+    /// Fails if programmatic edits introduced duplicate location ids or TOML serialization fails.
     pub fn to_toml(&self) -> Result<String, Error> {
+        validate_location_ids(&self.vault_locations)?;
         toml::to_string_pretty(self).map_err(|e| Error::Config(e.to_string()))
     }
 
@@ -170,7 +231,11 @@ impl ServerConfig {
             }
             let name = entry.name.clone().unwrap_or_else(|| slug.to_string());
             let root = expand_home(&entry.path, home);
-            opened.push(Vault::open(slug, name, root)?.with_media_backend(entry.media.clone()));
+            opened.push(
+                Vault::open_with_layout(slug, name, root, entry.notes_layout)?
+                    .with_media_backend(entry.media.clone())
+                    .with_non_writable_folders_ignored(entry.ignore_non_writable_folders),
+            );
         }
         Ok(opened)
     }

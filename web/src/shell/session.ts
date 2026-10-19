@@ -68,6 +68,7 @@ export async function startWorkspace(
       // Flush before destroy: `destroy` cancels the pending write, and the last thing the
       // user did is exactly the thing most worth keeping. `final` because this runs from
       // `pagehide`, where an ordinary fetch is aborted as the document goes away.
+      transport.save(store.current);
       await transport.flush({ final: true });
       transport.destroy();
     },

@@ -877,6 +877,12 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .home-notes ul { list-style: none; padding: 0; }
 .home-notes li button { display: flex; align-items: center; gap: var(--space-5); width: 100%; min-height: var(--touch-target-min); padding: var(--space-5) var(--space-4); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; }
 .home-notes li button:hover { background: var(--surface-hover); }
+.folder-contents .folder-row { display: flex; align-items: center; gap: var(--space-5); width: 100%; min-height: var(--touch-target-min); padding: var(--space-5) var(--space-4); color: var(--text-primary); background: transparent; border: 0; border-bottom: 1px solid var(--border-subtle); text-align: left; cursor: pointer; }
+.folder-contents :is(h1, li button span) { white-space: pre-wrap; overflow-wrap: anywhere; }
+.folder-contents li { border-bottom: 1px solid var(--border-subtle); }
+.folder-contents > header { display: flex; align-items: flex-start; gap: var(--space-4); }
+.folder-contents > header h1 { min-width: 0; flex: 1; }
+.folder-contents > header button { flex-shrink: 0; }
 .home-notes li span { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: var(--space-2); }
 .home-notes strong { font: var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui); overflow-wrap: anywhere; }
 .home-notes strong small { color: var(--text-muted); font: inherit; }

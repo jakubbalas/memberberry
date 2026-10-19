@@ -55,11 +55,37 @@
   z-index: 101;
   pointer-events: none;
 }
+.block-selection-layer {
+  position: fixed;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+.block-selection-highlight,
+.block-selection-marquee {
+  position: absolute;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--note-color-purple) 15%, transparent);
+}
+.block-selection-marquee {
+  border: 1px solid var(--note-color-purple);
+  background: color-mix(in srgb, var(--note-color-purple) 12%, transparent);
+}
+.block-selection-status {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.is-selecting-blocks,
+.is-selecting-blocks * { user-select: none; }
 @media (pointer: coarse) {
   .block-handles, .block-drop-indicator { display: none !important; }
   .block-handles-host .ProseMirror { padding-inline-start: 0; }
 }
 @media print {
-  .block-handles, .block-move-menu, .block-drop-indicator { display: none !important; }
+  .block-handles, .block-move-menu, .block-drop-indicator, .block-selection-layer, .block-selection-status { display: none !important; }
   .block-handles-host .ProseMirror { padding-inline-start: 0; }
 }

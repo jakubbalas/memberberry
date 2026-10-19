@@ -1,4 +1,5 @@
 import { IDBFactory } from "fake-indexeddb";
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { openOfflineStore, type OfflineStore } from "./db.js";
@@ -96,5 +97,31 @@ describe("manifest validation", () => {
       reply(JSON.stringify({ segments: [{ zoneId: "bad", aclHash: epoch }] })),
     );
     expect(answer).toEqual({ kind: "unreachable" });
+  });
+});
+
+describe("content revisions", () => {
+  const contentHash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+  const syncBytes = (bytes: Uint8Array, binary: Uint8Array | "offline" = bytes) => {
+    let calls = 0;
+    return syncClientIndex({ vault: "v", store, validate: async () => undefined, fetch: async () => {
+      if (++calls === 1) return reply(JSON.stringify({ segments: [{ zoneId: zone, aclHash: epoch, contentHash: contentHash(bytes) }] }));
+      if (binary === "offline") throw new TypeError("network disappeared");
+      return reply(new Uint8Array(binary));
+    } });
+  };
+  it("refreshes edited note content while the zone and permission epoch stay unchanged", async () => {
+    await syncBytes(new Uint8Array([1]));
+    await syncBytes(new Uint8Array([2]));
+    expect((await store.searchSegments("v")).map(segment => [...segment.bytes])).toEqual([[2]]);
+  });
+  it("removes obsolete segment content before an unreachable replacement", async () => {
+    await syncBytes(new Uint8Array([1]));
+    const result = await syncBytes(new Uint8Array([2]), "offline");
+    expect([result, (await store.searchSegments("v")).length]).toEqual(["unreachable", 0]);
+  });
+  it("refuses binary content that does not match the manifest digest", async () => {
+    const result = await syncBytes(new Uint8Array([1]), new Uint8Array([2]));
+    expect([result, (await store.searchSegments("v")).length]).toEqual(["unreachable", 0]);
   });
 });

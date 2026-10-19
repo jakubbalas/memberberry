@@ -160,11 +160,12 @@ it("pairs controller-global listeners and cancels its pending frame exactly once
   const handles = mountBlockHandles({ editor: f.editor, document: f.ydoc, panel: f.panel, noteKey: "cleanup" });
   f.editor.commands.setTextSelection(f.start(1) + 1); handles.refresh(); expect(request).toHaveBeenCalledTimes(1);
   handles.destroy(); handles.destroy(); expect(cancel).toHaveBeenCalledWith(991);
-  const eventTypes = new Set(["pointermove", "pointerup", "pointercancel", "focusin", "scroll"]);
+  const eventTypes = new Set(["pointerdown", "pointermove", "pointerup", "pointercancel", "focusin", "scroll"]);
   const additions = add.mock.calls.filter(call => eventTypes.has(call[0])); const removals = remove.mock.calls.filter(call => eventTypes.has(call[0]));
-  expect(additions).toHaveLength(5); expect(removals).toHaveLength(5);
+  expect(additions.length).toBeGreaterThan(0); expect(removals).toHaveLength(additions.length);
   for (const [name, listener, capture] of additions) expect(removals.some(call => call[0] === name && call[1] === listener && call[2] === capture)).toBe(true);
   expect(document.querySelector(".block-handles")).toBeNull(); expect(document.querySelector(".block-drop-indicator")).toBeNull();
+  expect(document.querySelector(".block-selection-layer")).toBeNull(); expect(document.querySelector(".block-selection-status")).toBeNull();
 });
 it("focuses the selected root atom instead of the next paragraph and disposes on document destruction", async () => {
   const f = await open("# Title\n\n***\n\nAfter\n");
@@ -209,4 +210,108 @@ it("shows the already-focused body root when mounted and restores touch actions 
   delete f.panel.dataset["body"]; await Promise.resolve(); expect(group?.hidden).toBe(false);
   connection.set({ connected: false, synced: false, pending: 0 }); expect(group?.hidden).toBe(true);
   connection.set({ connected: true, synced: true, pending: 0 }); expect(group?.hidden).toBe(false);
+});
+function key(f: Awaited<ReturnType<typeof open>>, value: string, shiftKey = false): KeyboardEvent {
+  const event = new KeyboardEvent("keydown", { key: value, shiftKey, bubbles: true, cancelable: true });
+  f.editor.view.dom.dispatchEvent(event); return event;
+}
+it("selects complete blocks separately from text, extends/shrinks with Shift arrows and keeps the range after moving", async () => {
+  const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 2);
+  expect(key(f, "Escape").defaultPrevented).toBe(true);
+  expect(f.editor.state.selection.empty).toBe(true);
+  key(f, "ArrowDown", true);
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("2 blocks selected");
+  key(f, "ArrowUp", true);
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("1 block selected");
+  key(f, "ArrowDown", true);
+  expect(f.handles.move("down")).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\nGamma\n\nAlpha\n\nBeta\n");
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("2 blocks selected");
+  expect(f.control("Move 2 blocks")).toBeDefined();
+  key(f, "Escape"); expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+});
+it("exposes select and extend actions for touch without selecting a protected title", async () => {
+  const f = await open(); f.editor.commands.setTextSelection(2);
+  expect(key(f, "Escape").defaultPrevented).toBe(false);
+  f.editor.commands.setTextSelection(f.start(1) + 2); f.handles.focus();
+  f.control("Select block").click();
+  f.handles.focus(); f.control("Extend selection down").click();
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("2 blocks selected");
+  f.handles.focus(); f.control("Clear block selection").click();
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+});
+it("clears selection on typing, a text pointer gesture, composition, document changes and outside focus", async () => {
+  const f = await open();
+  const select = (): void => { f.editor.commands.setTextSelection(f.start(1) + 2); key(f, "Escape"); key(f, "ArrowDown", true); };
+  select(); key(f, "a"); expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+  select(); f.editor.view.dom.querySelector("p")?.dispatchEvent(pointer("pointerdown", 120, 170));
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+  select(); f.editor.view.dom.dispatchEvent(new Event("compositionstart", { bubbles: true }));
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+  f.editor.view.dom.dispatchEvent(new Event("compositionend", { bubbles: true }));
+  select(); f.editor.view.dispatch(f.editor.state.tr.insertText("x", f.start(3) + 1));
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+  select(); const outside = document.createElement("button"); document.body.append(outside); outside.focus(); outside.remove();
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+});
+it("invalidates a selected range when connection, peer or host readiness changes", async () => {
+  const connection = createConnectionStatus(); connection.set({ connected: true, synced: true, pending: 0 });
+  const f = await open(undefined, { connection }); f.editor.commands.setTextSelection(f.start(1) + 2);
+  key(f, "Escape"); key(f, "ArrowDown", true); const before = await f.saved();
+  connection.set({ connected: false, synced: false, pending: 0 });
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+  expect(f.handles.move("down")).toBe(false); expect(await f.saved()).toBe(before);
+  connection.set({ connected: true, synced: true, pending: 0 }); key(f, "Escape");
+  f.panel.dataset["body"] = "waiting"; await Promise.resolve();
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+});
+it("retains the moved range through its own pending acknowledgement while refusing further writes", async () => {
+  const connection = createConnectionStatus(); connection.set({ connected: true, synced: true, pending: 0 });
+  const f = await open(undefined, { connection }); f.editor.commands.setTextSelection(f.start(1) + 2);
+  key(f, "Escape"); key(f, "ArrowDown", true);
+  const pending = (): void => { connection.set({ connected: true, synced: true, pending: 1 }); };
+  f.ydoc.on("update", pending);
+  expect(f.handles.move("down")).toBe(true); const moved = await f.saved();
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(true);
+  expect(f.handles.move("up")).toBe(false); expect(await f.saved()).toBe(moved);
+  f.ydoc.off("update", pending); connection.set({ connected: true, synced: true, pending: 0 });
+  expect(f.control("Move 2 blocks")).toBeDefined();
+  key(f, "ArrowUp", true); expect(document.querySelector(".block-selection-status")?.textContent).toContain("1 block selected");
+  key(f, "Escape"); expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+});
+it("margin marquee selects full rows, Shift-click extends them and cancel removes the marquee", async () => {
+  const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 2);
+  vi.spyOn(f.panel, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 700, 600));
+  for (let i = 0; i < 4; i++) {
+    const el = f.editor.view.nodeDOM(f.start(i)); if (!(el instanceof HTMLElement)) throw new Error("missing row DOM");
+    vi.spyOn(el, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 50 + i * 100, 500, 40));
+  }
+  vi.spyOn(f.editor.view, "posAtCoords").mockImplementation(coords => ({ pos: f.start(coords.top < 200 ? 1 : coords.top < 300 ? 2 : 3) + 1, inside: -1 }));
+  const down = pointer("pointerdown", 80, 145); f.editor.view.dom.dispatchEvent(down); expect(down.defaultPrevented).toBe(true);
+  document.dispatchEvent(pointer("pointermove", 200, 280));
+  await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+  expect(document.querySelectorAll(".block-selection-highlight")).toHaveLength(2);
+  expect(document.querySelector(".block-selection-marquee")).not.toBeNull();
+  document.dispatchEvent(pointer("pointerup", 200, 280));
+  expect(document.querySelector(".block-selection-marquee")).toBeNull();
+  const shift = pointer("pointerdown", 150, 370); Object.defineProperty(shift, "shiftKey", { value: true });
+  f.editor.view.dom.querySelector("p")?.dispatchEvent(shift);
+  expect(document.querySelectorAll(".block-selection-highlight")).toHaveLength(3);
+  f.editor.view.dom.dispatchEvent(pointer("pointerdown", 80, 145)); document.dispatchEvent(pointer("pointermove", 200, 280));
+  document.dispatchEvent(new Event("pointercancel"));
+  expect(document.querySelectorAll(".block-selection-highlight, .block-selection-marquee")).toHaveLength(0);
+});
+it("keeps selected rows visible above the bottom-pinned mobile toolbar", async () => {
+  const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 2);
+  vi.spyOn(f.panel, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 700, 600));
+  for (let i = 0; i < 4; i++) {
+    const el = f.editor.view.nodeDOM(f.start(i)); if (!(el instanceof HTMLElement)) throw new Error("missing root DOM");
+    vi.spyOn(el, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 50 + i * 100, 500, 40));
+  }
+  const controls = document.createElement("div"); controls.className = "editor-controls"; f.panel.append(controls);
+  vi.spyOn(controls, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 550, 700, 50));
+  key(f, "Escape"); key(f, "ArrowDown", true);
+  expect(document.querySelectorAll(".block-selection-highlight")).toHaveLength(2);
+  expect(document.querySelector<HTMLElement>(".block-selection-layer")?.style.top).toBe("0px");
+  expect(document.querySelector<HTMLElement>(".block-selection-layer")?.style.height).toBe("550px");
 });

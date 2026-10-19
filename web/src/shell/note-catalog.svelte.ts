@@ -32,6 +32,7 @@ export class NoteCatalog {
   #request = 0;
   #deniedThrough = 0;
   #reconciling: Promise<void> = Promise.resolve();
+  #answerKind: "ok" | "denied" | "unreachable" = "unreachable";
 
   constructor(options: NoteCatalogOptions) {
     this.#vault = options.vault;
@@ -52,6 +53,9 @@ export class NoteCatalog {
   get loading(): boolean {
     return this.#state === "loading";
   }
+
+  /** Whether the latest accepted catalog freshly authorized background reads. */
+  get authorized(): boolean { return this.#answerKind === "ok"; }
 
   /**
    * Fetches the list if nothing has yet.
@@ -79,6 +83,7 @@ export class NoteCatalog {
     // why: a newer network failure cannot supersede a denial. Every denial invalidates
     // requests already in flight; only a request begun afterwards can restore the list.
     if (answer.kind === "denied") {
+      this.#answerKind = "denied";
       this.#deniedThrough = this.#request;
       this.#notes = [];
     } else if (request !== this.#request) return;
@@ -92,6 +97,7 @@ export class NoteCatalog {
           : await replica.reconcile(this.#vault, answer);
       if (request !== this.#request) return;
       // why: an offline read already in progress can still return pre-purge metadata.
+      this.#answerKind = request <= this.#deniedThrough ? "denied" : answer.kind;
       this.#notes = request <= this.#deniedThrough ? [] : notes;
       this.#state = "ready";
     };

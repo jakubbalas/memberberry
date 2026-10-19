@@ -34,6 +34,14 @@ export function readHomeBootstrap(element: HTMLElement): HomeBootstrap | undefin
   return { vault, user, ...(theme === undefined ? {} : { theme }) };
 }
 
+/** The offline shell can resume a vault home using the remembered display label. */
+export function offlineHomeBootstrap(pathname: string, storage: UserStore | undefined): HomeBootstrap | undefined {
+  const match = /^\/v\/([^/]+)\/?$/.exec(pathname);
+  const user = read(storage);
+  if (match?.[1] === undefined || user === undefined) return undefined;
+  try { return { vault: decodeURIComponent(match[1]), user }; } catch { return undefined; }
+}
+
 /**
  * Reads the bootstrap off the mount element.
  *

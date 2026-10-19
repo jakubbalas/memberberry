@@ -27,7 +27,6 @@ import type { MediaRenderContext } from "./schema.js";
 import { assertTableToolsReady, mountTableTools } from "./table-tools.js";
 import { mountSelectionMenu } from "./selection-menu.js";
 import { createSingleEditorGate } from "./single-editor.js";
-import { createBlockMover, type BlockMover } from "./block-move.js";
 import { mountBlockHandles } from "./block-handles.js";
 import "./block-handles.css";
 import "./selection-menu.css";
@@ -101,10 +100,8 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
 
   // why: the old adjacent swap bypassed the single-editor gate (SPEC §8.4); More's Move
   // actions go through the same gated mover as the block handles.
-  let mover: BlockMover | undefined;
   const moveSelectedBlock = (direction: "up" | "down"): boolean => {
-    const token = mover?.capture(options.editor.state.selection.from);
-    return token !== undefined && mover !== undefined && mover.move(token, direction);
+    return blockHandles?.move(direction) ?? false;
   };
   for (const [label, action] of [
     ["Text", () => insertBlock(options.editor, "paragraph")],
@@ -129,6 +126,10 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     control.addEventListener("click", () => { action(); if (closes) more.open = false; });
     secondary.append(control);
   }
+  const blockActions = button("Block actions", "Select or move blocks");
+  blockActions.hidden = options.noteKey === undefined;
+  blockActions.addEventListener("click", () => { blockHandles?.focus(); more.open = false; });
+  secondary.append(blockActions);
   toolbar.append(sourceToggle);
   secondary.append(copy, print, html);
   const canInsert = (): boolean => !shellDestroyed && !sourceVisible && !sourcePending && !terminal()
@@ -200,7 +201,6 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     ...(options.connection === undefined ? {} : { connection: options.connection }),
     canInteract: () => !sourceVisible && !sourcePending && !shellDestroyed && !terminal(),
   };
-  mover = movement === undefined ? undefined : createBlockMover(movement);
   const blockHandles = movement === undefined ? undefined : mountBlockHandles({ ...movement, panel: options.panel,
     onInsertBelow: (start) => slash.show(start), onTurnInto: (start) => slash.show(start, true) });
   const selectionMenu = mountSelectionMenu({ editor: options.editor, panel: options.panel,
@@ -505,7 +505,6 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       tableTools.destroy();
       selectionMenu.destroy();
       blockHandles?.destroy();
-      mover?.destroy();
       blockGate?.destroy();
       slash.destroy();
       insertControl.removeEventListener("click", onInsert);

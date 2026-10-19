@@ -324,3 +324,46 @@ fn maintaining_a_vault_whose_notes_root_disappeared_reports_rather_than_panics()
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("listing notes"), "{errors:?}");
 }
+
+#[cfg(unix)]
+#[test]
+fn targeted_indexing_removes_a_note_replaced_by_a_symlink() {
+    let dir = TempDir::new("index-link-replacement");
+    dir.write("Shared.md", "# Shared\n");
+    dir.write("Real/Source.md", "# Original\n\n[[Shared]]\n");
+    let vault = vault(&dir);
+    let registry = IndexRegistry::default();
+    assert!(
+        registry
+            .maintain(std::iter::once(&vault), &Changes::All)
+            .is_empty()
+    );
+    assert_eq!(sources(&registry, &vault, "Shared.md"), ["Real/Source.md"]);
+    let hidden = dir.write(".hidden/Secret.md", "# Hidden\n\n[[Shared]]\n");
+    std::fs::remove_file(dir.path().join("Real/Source.md")).expect("remove");
+    std::os::unix::fs::symlink(hidden, dir.path().join("Real/Source.md")).expect("link");
+    let changed = Changes::Only(BTreeSet::from([dir.path().join("Real/Source.md")]));
+    assert!(
+        registry
+            .maintain(std::iter::once(&vault), &changed)
+            .is_empty()
+    );
+    assert!(
+        sources(&registry, &vault, "Shared.md").is_empty(),
+        "stale or linked content stayed indexed"
+    );
+    std::fs::remove_file(dir.path().join("Real/Source.md")).expect("remove link");
+    std::fs::remove_dir(dir.path().join("Real")).expect("remove real");
+    std::os::unix::fs::symlink(dir.path().join(".hidden"), dir.path().join("Real"))
+        .expect("directory link");
+    let changed = Changes::Only(BTreeSet::from([dir.path().join("Real/Secret.md")]));
+    assert!(
+        registry
+            .maintain(std::iter::once(&vault), &changed)
+            .is_empty()
+    );
+    assert!(
+        sources(&registry, &vault, "Shared.md").is_empty(),
+        "directory link target was indexed"
+    );
+}

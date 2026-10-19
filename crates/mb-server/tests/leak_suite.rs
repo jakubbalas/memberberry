@@ -10,12 +10,196 @@
 
 mod support;
 
+#[cfg(target_os = "linux")]
+#[allow(dead_code)] // why: the leak target uses a subset of these shared test helpers.
+#[path = "support/http_safety.rs"]
+mod safety;
+
 use mb_core::{Access, Member, Role, Username};
 use mb_server::Vault;
 use mb_server::repository::AuthorizedVault;
 use mb_server::sync::ConnectionId;
 use mb_server::vault::Slug;
 use support::TempDir;
+
+#[cfg(target_os = "linux")]
+#[path = "support/vault_discovery.rs"]
+mod discovery_fixture;
+#[cfg(target_os = "linux")]
+#[path = "support/folder_ui_cases.rs"]
+mod folder_ui_cases;
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_html_entry_is_signed_admin_filtered_before_io_and_static_assets_are_not_json_authority() {
+    folder_ui_cases::html_gate();
+}
+
+#[cfg(target_os = "linux")]
+#[path = "support/policy_layout_leak_cases.rs"]
+mod policy_layout_leak_cases;
+#[cfg(target_os = "linux")]
+#[path = "support/project_registration_cases.rs"]
+mod registration_cases;
+#[cfg(target_os = "linux")]
+#[path = "support/vault_registration.rs"]
+mod registration_fixture;
+#[cfg(target_os = "linux")]
+#[path = "support/shallow_leak_cases.rs"]
+mod shallow_leak_cases;
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_policy_layout_refusal_preserves_legacy_deny_and_never_adopts_or_discloses() {
+    policy_layout_leak_cases::refuses_ambiguous_policy_without_adoption_or_disclosure();
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_policy_layout_guard_precedes_descendant_io_with_real_observer_control() {
+    policy_layout_leak_cases::strict_authority_and_initial_refusal_have_real_no_io_controls();
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_policy_layout_selected_root_only_preserves_scoped_denial_without_notes() {
+    policy_layout_leak_cases::selected_root_only_and_no_notes_scoped_policy_controls();
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_policy_layout_malformed_selected_policy_has_no_nested_fallback() {
+    policy_layout_leak_cases::malformed_selected_policy_is_not_rescued_by_shadow();
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn e30_shallow_directory_names_are_repository_acl_filtered_without_content_or_denial_leaks() {
+    shallow_leak_cases::shallow_acl();
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn e31_immediate_mkdir_is_strict_signed_admin_filtered_before_io_and_not_registration() {
+    shallow_leak_cases::mkdir_gate();
+}
+#[cfg(target_os = "linux")]
+#[path = "support/project_registration_strict_cases.rs"]
+mod strict_registration_cases;
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_strict_registration_wire_ambiguity_refuses_without_storage_or_leaks() {
+    strict_registration_cases::strict_wire_gate();
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_write_preview_and_registration_gate_refuses_before_fs_without_leaks() {
+    registration_cases::write_gate_is_neutral_and_observer_has_positive_control();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_read_discovery_authenticates_before_opening_config_or_directories() {
+    use discovery_fixture::{Server, json};
+    use rustix::fs::inotify;
+    let s = Server::new(true);
+    let watch = inotify::init(inotify::CreateFlags::NONBLOCK).expect("observer");
+    for path in [
+        s.dir.path().join("server.toml"),
+        s.dir.path().join("Projects"),
+        s.dir.path().join("Projects/Registered"),
+    ] {
+        inotify::add_watch(
+            &watch,
+            path,
+            inotify::WatchFlags::OPEN | inotify::WatchFlags::ACCESS,
+        )
+        .expect("watch");
+    }
+    let routes = [
+        "/api/v1/vault-locations",
+        "/api/v1/vault-locations/projects/directories?path=Registered/PrivateChildName",
+        "/api/v1/vault-locations/projects/status?path=Public",
+    ];
+    let denied = |headers: &str| {
+        for route in routes {
+            let (status, body, _) = s.get(route, headers);
+            assert_eq!(status, 404);
+            assert_eq!(json(&body), serde_json::json!({"error":"not_found"}));
+        }
+        let mut bytes = [std::mem::MaybeUninit::uninit(); 4096];
+        let mut reader = inotify::Reader::new(&watch, &mut bytes);
+        assert!(
+            matches!(reader.next(), Err(rustix::io::Errno::AGAIN)),
+            "denied request opened/read config or a location"
+        );
+    };
+    for headers in [
+        "",
+        &s.user,
+        &s.admin_bearer,
+        &s.user_bearer,
+        "Cookie: mb_session=invalid\r\n",
+    ] {
+        denied(headers);
+    }
+    let auth = s.auth();
+    auth.set_admin(s.admin_id, false).expect("demote");
+    denied(&s.admin);
+    auth.set_admin(s.admin_id, true).expect("restore admin");
+    auth.set_disabled(s.admin_id, true).expect("disable");
+    denied(&s.admin);
+    auth.set_disabled(s.admin_id, false).expect("enable");
+    auth.revoke_session(&s.session).expect("revoke");
+    denied(&s.admin);
+    let fresh = auth
+        .create_session(s.admin_id, 4_102_444_800)
+        .expect("fresh session");
+    let header = format!(
+        "Cookie: mb_session={}\r\n",
+        auth.signed_session_cookie(&fresh).expect("cookie")
+    );
+    assert_eq!(s.get("/api/v1/vault-locations", &header).0, 200);
+    let mut bytes = [std::mem::MaybeUninit::uninit(); 4096];
+    assert!(
+        inotify::Reader::new(&watch, &mut bytes).next().is_ok(),
+        "positive control: observer detects authorized config access"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_read_admin_metadata_never_discloses_registered_children_or_content_acl_bypass() {
+    use discovery_fixture::{Server, json};
+    let s = Server::new(true);
+    for route in [
+        "/api/v1/vault-locations",
+        "/api/v1/vault-locations/projects/directories?path=",
+        "/api/v1/vault-locations/projects/status?path=Registered",
+    ] {
+        let (status, body, _) = s.get(route, &s.admin);
+        assert_eq!(status, 200);
+        for secret in [
+            "PrivateChildName",
+            "PrivateTitle",
+            "PrivateBody",
+            "PrivateLabel",
+            s.dir.path().to_str().expect("path"),
+        ] {
+            assert!(!body.contains(secret));
+        }
+    }
+    for path in [
+        "Registered",
+        "Registered%2FPrivateChildName",
+        "Registered%2FAbsent",
+    ] {
+        let (status, body, _) = s.get(
+            &format!("/api/v1/vault-locations/projects/directories?path={path}"),
+            &s.admin,
+        );
+        assert_eq!(status, 404);
+        assert_eq!(json(&body), serde_json::json!({"error":"not_found"}));
+    }
+    assert_eq!(
+        s.get("/api/v1/vaults/private/notes", &s.admin).0,
+        404,
+        "server admin is not a content member"
+    );
+}
 
 #[test]
 fn e14_folder_moves_deny_hidden_descendants_and_destinations_without_partial_moves() {
@@ -1047,6 +1231,7 @@ fn e2_schema_refresh_withholds_content_before_note_state_is_opened() {
                 schema_version,
                 outbound,
             },
+            &|_, _, _| true,
         );
         assert!(result.is_err());
         assert!(inbox.try_recv().is_err(), "no metadata or body on refusal");
@@ -1067,6 +1252,7 @@ fn e2_schema_refresh_withholds_content_before_note_state_is_opened() {
                 schema_version: Some(current),
                 outbound,
             },
+            &|_, _, _| true,
         )
         .expect("current editor admitted");
     assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Admitted { .. })));
@@ -1074,6 +1260,78 @@ fn e2_schema_refresh_withholds_content_before_note_state_is_opened() {
     assert_eq!(
         std::fs::read_to_string(dir.path().join("Private.md")).expect("source"),
         "KEEP PRIVATE BODY\n"
+    );
+}
+
+/// E3: a subscription's fresh external import must not broadcast to a revoked reader.
+#[test]
+fn e3_first_sync_external_refresh_rechecks_existing_recipients() {
+    use mb_server::sync::{SchemaSubscription, ServerFrame, SyncRegistry, current_schema_version};
+    let dir = TempDir::new("leak-fresh-sync-import");
+    let note = dir.write("One.md", "old body\n");
+    dir.write("access.toml", "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[members]]\nuser = \"bob\"\nrole = \"viewer\"\n");
+    let vault = Vault::open(Slug::parse("personal").unwrap(), "Personal", dir.path()).unwrap();
+    let canonical = vault.canonical_note("One.md").unwrap();
+    let registry = SyncRegistry::default();
+    let alice = Username::parse("alice").unwrap();
+    let bob = Username::parse("bob").unwrap();
+    let (allowed, mut allowed_inbox) = tokio::sync::mpsc::unbounded_channel();
+    let (revoked, mut revoked_inbox) = tokio::sync::mpsc::unbounded_channel();
+    registry
+        .subscribe(
+            &vault,
+            &canonical,
+            "One.md",
+            &alice,
+            ConnectionId::issue(),
+            allowed,
+        )
+        .unwrap();
+    registry
+        .subscribe(
+            &vault,
+            &canonical,
+            "One.md",
+            &bob,
+            ConnectionId::issue(),
+            revoked,
+        )
+        .unwrap();
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    std::fs::write(note, "fresh private external body\n").unwrap();
+    let (outbound, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    registry
+        .subscribe_versioned(
+            &vault,
+            &canonical,
+            SchemaSubscription {
+                note: "One.md",
+                user: &alice,
+                connection: ConnectionId::issue(),
+                outbound,
+                schema_version: Some(current_schema_version().unwrap()),
+            },
+            &|_, note, reader| {
+                mb_server::AccessFile::load(vault.root())
+                    .unwrap()
+                    .policy()
+                    .effective_role(reader, &mb_core::NotePath::parse(note).unwrap())
+                    != Role::None
+            },
+        )
+        .unwrap();
+    assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Admitted { .. })));
+    assert!(matches!(inbox.try_recv(), Ok(ServerFrame::Sync { .. })));
+    assert!(matches!(
+        allowed_inbox.try_recv(),
+        Ok(ServerFrame::Update { .. })
+    ));
+    assert!(
+        revoked_inbox.try_recv().is_err(),
+        "revoked recipients receive neither body nor metadata"
     );
 }
 
@@ -2279,4 +2537,21 @@ fn e25_static_export_contains_no_unreadable_note_or_graph_edge() {
     assert!(!graph.contains("Private/Salary.html"), "{graph}");
     assert!(search.contains("readable-copy"), "{search}");
     assert!(graph.contains("Shared.html"), "{graph}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_symlink_adoption_never_reads_or_publishes_link_targets() {
+    registration_cases::symlinks_are_skipped_without_reading_targets();
+}
+
+#[cfg(target_os = "linux")]
+#[path = "support/folder_exclusion_cases.rs"]
+mod folder_exclusion_cases;
+#[cfg(target_os = "linux")]
+#[test]
+fn e29_non_writable_folder_opt_in_never_reads_or_discloses_excluded_descendants() {
+    folder_exclusion_cases::checked_option_filters_without_reading_or_repairing(
+        "e29_non_writable_folder_opt_in_never_reads_or_discloses_excluded_descendants",
+    );
 }

@@ -105,6 +105,8 @@ export interface SearchZone {
   readonly vault: string;
   readonly zoneId: string;
   readonly aclHash: string;
+  /** Changes with segment bytes even when the permitted zone and ACL stay the same. */
+  readonly contentHash?: string;
 }
 
 /** Validated compact-index bytes for one currently permitted ACL zone. */
@@ -265,7 +267,7 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
       const current = Array.isArray(existing) ? existing.flatMap(readSearchZone) : [];
       for (const zone of current) {
         const replacement = permitted.get(zone.zoneId);
-        if (replacement?.aclHash === zone.aclHash) continue;
+        if (replacement?.aclHash === zone.aclHash && replacement?.contentHash === zone.contentHash) continue;
         await promised(zoneStore.delete([vault, zone.zoneId]));
         await promised(segmentStore.delete([vault, zone.zoneId]));
       }
@@ -273,7 +275,7 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
       for (const zone of zones) {
         await promised(zoneStore.put({ ...zone }));
         const segment = readSearchSegment(await promised(segmentStore.get([vault, zone.zoneId])))[0];
-        if (segment?.aclHash !== zone.aclHash) needed.push(zone);
+        if (segment?.aclHash !== zone.aclHash || segment?.contentHash !== zone.contentHash) needed.push(zone);
       }
       await completed(whole);
       return needed;
@@ -284,7 +286,7 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
       const allowed = readSearchZone(
         await promised(zoneStore.get([segment.vault, segment.zoneId])),
       )[0];
-      if (allowed?.aclHash !== segment.aclHash) {
+      if (allowed?.aclHash !== segment.aclHash || allowed?.contentHash !== segment.contentHash) {
         whole.abort();
         return false;
       }
@@ -303,7 +305,7 @@ export async function openOfflineStore(factory: Factory): Promise<OfflineStore> 
         transaction(SEARCH_SEGMENTS, "readonly").index(BY_VAULT).getAll(vault),
       );
       return (Array.isArray(segments) ? segments.flatMap(readSearchSegment) : []).filter(
-        (segment) => permitted.get(segment.zoneId)?.aclHash === segment.aclHash,
+        (segment) => permitted.get(segment.zoneId)?.aclHash === segment.aclHash && permitted.get(segment.zoneId)?.contentHash === segment.contentHash,
       );
     },
     async deleteVault(vault: string): Promise<void> {
@@ -404,10 +406,11 @@ function readPin(record: unknown): PinnedNote[] {
 
 function readSearchZone(record: unknown): SearchZone[] {
   if (typeof record !== "object" || record === null) return [];
-  const { vault, zoneId, aclHash } = record as Record<string, unknown>;
+  const { vault, zoneId, aclHash, contentHash } = record as Record<string, unknown>;
   if (typeof vault !== "string" || typeof zoneId !== "string" || typeof aclHash !== "string") return [];
   if (vault === "" || !/^[a-f0-9]{64}$/.test(zoneId) || !/^[a-f0-9]{64}$/.test(aclHash)) return [];
-  return [{ vault, zoneId, aclHash }];
+  if (contentHash !== undefined && (typeof contentHash !== "string" || !/^[a-f0-9]{64}$/.test(contentHash))) return [];
+  return [{ vault, zoneId, aclHash, ...(typeof contentHash === "string" ? { contentHash } : {}) }];
 }
 
 function readSearchSegment(record: unknown): SearchSegment[] {

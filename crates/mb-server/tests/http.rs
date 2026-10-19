@@ -14,8 +14,23 @@
     clippy::panic
 )]
 
+#[cfg(unix)]
+#[path = "support/http_safety.rs"]
+mod safety;
 mod support;
 
+#[cfg(unix)]
+#[test]
+fn safety_child_success_with_unmatched_filter_is_not_completion_proof() {
+    let output = safety::unmatched_output();
+    assert!(output.status.success(), "zero tests exit successfully");
+    assert!(
+        !safety::completed(&output, "no_such_http_safety_test"),
+        "zero executed tests cannot prove HTTP safety assertions"
+    );
+}
+
+use sha2::Digest;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
@@ -61,28 +76,46 @@ fn server_rendered_pages_identify_the_existing_application_icon() {
     );
 }
 
+#[test]
+fn vault_list_has_one_new_vault_action_including_on_an_empty_server() {
+    let server = TestServer::authenticated(vec![]);
+    let (status, body) = server.get("/");
+    assert!(is_ok(&status), "{status}");
+    assert_eq!(body.matches("href=\"/vaults/new\"").count(), 1);
+    assert!(body.contains(">New vault</a>"));
+    assert!(!body.contains("href=\"/vaults/add\""));
+    assert!(body.contains(">Log out</a>"));
+}
+
 #[cfg(unix)]
 #[test]
 fn onboarding_failed_config_write_removes_the_unpublished_vault_and_allows_retry() {
-    use std::os::unix::fs::PermissionsExt;
+    const TEST: &str =
+        "onboarding_failed_config_write_removes_the_unpublished_vault_and_allows_retry";
+    if safety::run_unprivileged(TEST) {
+        return;
+    }
     let directory = TempDir::new("config-write-failure");
     let server = managed_server(&directory, true, true);
-    let permissions = std::fs::metadata(directory.path())
-        .expect("metadata")
-        .permissions();
-    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o555))
-        .expect("read-only config parent");
+    let denied_mode = safety::FixtureMode::set(directory.path(), 0o555);
+    assert_config_temporary_create_denied(directory.path());
+    #[cfg(target_os = "linux")]
+    let creation = safety::CreationTrace::new(&directory.path().join("vaults"));
     let denied = management_post(
         &server,
         "/vaults/new",
         "name=Test&slug=personal",
         "http://localhost",
     );
-    std::fs::set_permissions(directory.path(), permissions).expect("restore permissions");
-    assert!(denied.0.contains("409"));
+    drop(denied_mode);
+    assert!(denied.0.contains("409"), "{}", denied.0);
+    #[cfg(target_os = "linux")]
+    creation.assert_created_then_removed("personal");
     assert!(!directory.path().join("vaults/personal").exists());
     assert!(!directory.path().join("server.toml").exists());
     assert!(server.state.is_empty());
+    assert_eq!(server.get("/v/personal"), server.get("/v/missing"));
+    assert_no_config_temporary_files(directory.path());
     assert!(
         management_post(
             &server,
@@ -93,6 +126,161 @@ fn onboarding_failed_config_write_removes_the_unpublished_vault_and_allows_retry
         .0
         .contains("303")
     );
+    assert_created_vault_is_durable_and_owner_only(&directory, &server, 1);
+    server.stop();
+    safety::mark_completed(TEST);
+}
+
+#[cfg(unix)]
+#[test]
+fn onboarding_config_write_failure_preserves_prior_registration_content_and_policy() {
+    const TEST: &str =
+        "onboarding_config_write_failure_preserves_prior_registration_content_and_policy";
+    if safety::run_unprivileged(TEST) {
+        return;
+    }
+    let directory = TempDir::new("config-write-prior");
+    let prior_root = directory.path().join("vaults/prior");
+    let note = "# Kept\nPriorPrivateBody\n";
+    let policy = "[[members]]\nuser = 'alice'\nrole = 'owner'\n";
+    directory.write("vaults/prior/notes/Kept.md", note);
+    directory.write("vaults/prior/access.toml", policy);
+    let configuration = format!(
+        "bind = '127.0.0.1:9010'\nweb_root = 'custom/web'\n\
+         [[vault_locations]]\nid = 'projects'\nname = 'Projects 📚'\npath = '/missing-projects'\n\
+         [[vaults]]\nslug = 'prior'\nname = 'Prior'\npath = '{}'\n",
+        prior_root.display()
+    );
+    directory.write("server.toml", &configuration);
+    let prior = Vault::open(Slug::parse("prior").expect("slug"), "Prior", &prior_root)
+        .expect("prior vault");
+    let server = managed_server_with_vaults(&directory, true, true, vec![prior]);
+    let denied_mode = safety::FixtureMode::set(directory.path(), 0o555);
+    assert_config_temporary_create_denied(directory.path());
+    #[cfg(target_os = "linux")]
+    let creation = safety::CreationTrace::new(&directory.path().join("vaults"));
+    let denied = management_post(
+        &server,
+        "/vaults/new",
+        "name=Test&slug=personal",
+        "http://localhost",
+    );
+    drop(denied_mode);
+    assert!(denied.0.contains("409"), "{}", denied.0);
+    #[cfg(target_os = "linux")]
+    creation.assert_created_then_removed("personal");
+    assert!(!directory.path().join("vaults/personal").exists());
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("server.toml")).expect("config"),
+        configuration
+    );
+    assert_eq!(
+        std::fs::read_to_string(prior_root.join("notes/Kept.md")).expect("note"),
+        note
+    );
+    assert_eq!(
+        std::fs::read_to_string(prior_root.join("access.toml")).expect("policy"),
+        policy
+    );
+    assert_eq!(server.state.len(), 1);
+    assert!(server.get("/v/prior").0.contains("200"));
+    assert_eq!(server.get("/v/personal"), server.get("/v/missing"));
+    let reopened = mb_server::ServerConfig::load(&directory.path().join("server.toml"))
+        .expect("fresh config")
+        .open_vaults(None)
+        .expect("fresh registered vaults");
+    assert_eq!(reopened.len(), 1);
+    assert_eq!(reopened[0].slug().as_str(), "prior");
+    assert_no_config_temporary_files(directory.path());
+    assert!(
+        management_post(
+            &server,
+            "/vaults/new",
+            "name=Test&slug=personal",
+            "http://localhost"
+        )
+        .0
+        .contains("303")
+    );
+    let saved =
+        mb_server::ServerConfig::load(&directory.path().join("server.toml")).expect("saved");
+    assert_eq!(saved.vaults.len(), 2);
+    assert_eq!(saved.bind.as_deref(), Some("127.0.0.1:9010"));
+    assert_eq!(saved.web_root.as_deref(), Some("custom/web"));
+    assert_eq!(saved.vault_locations[0].name(), "Projects 📚");
+    assert_eq!(saved.vaults[0].slug, "prior");
+    assert_eq!(saved.vaults[0].path, prior_root.to_str().expect("path"));
+    assert_eq!(
+        std::fs::read_to_string(prior_root.join("notes/Kept.md")).expect("note"),
+        note
+    );
+    assert_eq!(
+        std::fs::read_to_string(prior_root.join("access.toml")).expect("policy"),
+        policy
+    );
+    assert_created_vault_is_durable_and_owner_only(&directory, &server, 2);
+    server.stop();
+    safety::mark_completed(TEST);
+}
+
+#[cfg(unix)]
+fn assert_config_temporary_create_denied(parent: &std::path::Path) {
+    let probe = parent.join("server.fixture-probe.tmp");
+    let error = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .expect_err("fixture must actually deny temporary config creation");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(!probe.exists());
+    println!("HTTP safety: temporary config create genuinely PermissionDenied");
+}
+
+#[cfg(unix)]
+fn assert_no_config_temporary_files(parent: &std::path::Path) {
+    for entry in std::fs::read_dir(parent).expect("config parent") {
+        let name = entry.expect("entry").file_name();
+        assert!(
+            !name.to_string_lossy().ends_with(".tmp"),
+            "config scratch leaked: {name:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn assert_created_vault_is_durable_and_owner_only(
+    directory: &TempDir,
+    server: &TestServer,
+    count: usize,
+) {
+    let root = directory.path().join("vaults/personal");
+    assert!(root.join("notes").is_dir());
+    let saved =
+        mb_server::ServerConfig::load(&directory.path().join("server.toml")).expect("saved");
+    assert_eq!(saved.vaults.len(), count);
+    assert_eq!(saved.open_vaults(None).expect("fresh reopen").len(), count);
+    assert_eq!(server.state.len(), count);
+    let personal = saved
+        .vaults
+        .iter()
+        .find(|entry| entry.slug == "personal")
+        .expect("personal");
+    assert_eq!(personal.path, root.to_str().expect("path"));
+    let expected =
+        mb_server::access::AccessFile::parse("[[members]]\nuser = 'alice'\nrole = 'owner'\n")
+            .expect("owner-only");
+    assert_eq!(
+        mb_server::access::AccessFile::load(&root).expect("created policy"),
+        expected
+    );
+    assert!(server.get("/v/personal").0.contains("200"));
+    assert!(
+        server
+            .request("GET", "/v/personal", "", "")
+            .0
+            .contains("404")
+    );
+    assert_no_config_temporary_files(directory.path());
 }
 
 #[test]
@@ -126,7 +314,8 @@ fn onboarding_creation_requires_an_origin_and_preserves_unrelated_configuration(
     let directory = TempDir::new("configuration-preservation");
     directory.write(
         "server.toml",
-        "bind = \"127.0.0.1:9010\"\nweb_root = \"custom/web\"\n",
+        "bind = \"127.0.0.1:9010\"\nweb_root = \"custom/web\"\n\
+         [[vault_locations]]\nid = \"projects\"\nname = \"Projects 📚\"\npath = \"/not-mounted-yet/projects\"\n",
     );
     let server = managed_server(&directory, true, true);
     assert!(
@@ -149,14 +338,24 @@ fn onboarding_creation_requires_an_origin_and_preserves_unrelated_configuration(
         mb_server::ServerConfig::load(&directory.path().join("server.toml")).expect("config");
     assert_eq!(config.bind.as_deref(), Some("127.0.0.1:9010"));
     assert_eq!(config.web_root.as_deref(), Some("custom/web"));
+    let location = config.vault_locations.first().expect("preserved location");
+    assert_eq!(location.id().as_str(), "projects");
+    assert_eq!(location.name(), "Projects 📚");
+    assert_eq!(
+        location.path(),
+        std::path::Path::new("/not-mounted-yet/projects")
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn unreadable_vault_shows_recovery_guidance_only_to_its_member() {
-    use std::os::unix::fs::PermissionsExt;
+    const TEST: &str = "unreadable_vault_shows_recovery_guidance_only_to_its_member";
+    if safety::run_unprivileged(TEST) {
+        return;
+    }
     let directory = TempDir::new("unreadable-vault");
-    directory.write("notes/Welcome.md", "# Welcome");
+    directory.write("notes/Welcome.md", "# Welcome\nUnreadablePrivateBody");
     directory.write(
         "access.toml",
         "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
@@ -169,21 +368,57 @@ fn unreadable_vault_shows_recovery_guidance_only_to_its_member() {
     .expect("vault");
     let server = TestServer::authenticated(vec![vault]);
     let notes = directory.path().join("notes");
-    let original = std::fs::metadata(&notes).expect("metadata").permissions();
-    std::fs::set_permissions(&notes, std::fs::Permissions::from_mode(0o000))
-        .expect("deny directory");
+    let denied_mode = safety::FixtureMode::set(&notes, 0);
+    let error = std::fs::read_dir(&notes).expect_err("notes source must actually be unreadable");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    let error = std::fs::read_to_string(notes.join("Welcome.md"))
+        .expect_err("note body must actually be unreadable");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    println!("HTTP safety: notes directory and body genuinely PermissionDenied");
     let member = server.get("/v/personal");
     let guest = server.request("GET", "/v/personal", "", "");
-    std::fs::set_permissions(&notes, original).expect("restore directory");
+    let absent = server.request("GET", "/v/missing", "", "");
+    drop(denied_mode);
     assert!(member.0.contains("503"), "{}", member.0);
     assert!(member.1.contains("folder cannot be read"));
     assert!(!member.1.contains(directory.path().to_str().expect("path")));
     assert!(guest.0.contains("404"));
     assert!(!guest.1.contains("folder cannot be read"));
+    assert_eq!(
+        guest, absent,
+        "unreadable and unknown vaults are indistinguishable to guests"
+    );
+    for body in [&member.1, &guest.1] {
+        for private in [
+            "Welcome",
+            "UnreadablePrivateBody",
+            directory.path().to_str().expect("path"),
+        ] {
+            assert!(
+                !body.contains(private),
+                "unavailable response disclosed {private}"
+            );
+        }
+    }
     assert!(server.get("/v/personal").0.contains("200"));
+    assert_eq!(
+        std::fs::read_to_string(notes.join("Welcome.md")).expect("restored note"),
+        "# Welcome\nUnreadablePrivateBody"
+    );
+    server.stop();
+    safety::mark_completed(TEST);
 }
 
 fn managed_server(directory: &TempDir, initialized: bool, allow_setup: bool) -> TestServer {
+    managed_server_with_vaults(directory, initialized, allow_setup, vec![])
+}
+
+fn managed_server_with_vaults(
+    directory: &TempDir,
+    initialized: bool,
+    allow_setup: bool,
+    vaults: Vec<Vault>,
+) -> TestServer {
     let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
     let cookie = if initialized {
         let user = auth
@@ -203,7 +438,7 @@ fn managed_server(directory: &TempDir, initialized: bool, allow_setup: bool) -> 
     } else {
         String::new()
     };
-    let state = AppState::authenticated(vec![], auth)
+    let state = AppState::authenticated(vaults, auth)
         .expect("state")
         .with_vault_management(directory.path().join("server.toml"), allow_setup)
         .expect("management");
@@ -313,6 +548,39 @@ fn onboarding_vault_creation_is_live_durable_and_grants_only_its_creator() {
     assert_eq!(reopened.len(), 1);
     assert_eq!(reopened.first().expect("vault").root(), vault.root());
     server.tick();
+}
+
+#[test]
+fn onboarding_blank_or_omitted_address_generates_distinct_managed_vaults() {
+    let directory = TempDir::new("onboarding-auto-address");
+    let server = managed_server(&directory, true, true);
+    for form in [
+        "name=My+notebook".to_owned(),
+        "name=My+notebook&slug=".to_owned(),
+        "name=Caf%C3%A9".to_owned(),
+        "name=%F0%9F%93%9A".to_owned(),
+        format!("name={}", "a".repeat(120)),
+    ] {
+        let (head, _) = management_post(&server, "/vaults/new", &form, "http://localhost");
+        assert!(head.contains("303"), "{head}");
+    }
+    let config = mb_server::ServerConfig::load(&directory.path().join("server.toml"))
+        .expect("persisted registry");
+    assert_eq!(config.vaults.len(), 5);
+    assert_ne!(config.vaults[0].slug, config.vaults[1].slug);
+    assert!(config.vaults[2].slug.starts_with("cafe-"));
+    assert!(config.vaults[3].slug.starts_with("vault-"));
+    assert_eq!(config.vaults[4].slug.len(), 64);
+    for entry in config.vaults {
+        assert!(Slug::parse(&entry.slug).is_ok());
+        let vault = server.state.vault(&entry.slug).expect("live vault");
+        assert!(
+            vault
+                .notes_root()
+                .ends_with(format!("vaults/{}/notes", entry.slug))
+        );
+        assert!(vault.root().join("access.toml").is_file());
+    }
 }
 
 #[test]
@@ -2601,6 +2869,7 @@ fn pwa_web_root() -> TempDir {
     dir.write("manifest.webmanifest", "{\"name\":\"Memberberry\"}");
     dir.write("icon.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
     dir.write("assets/index-abc123.js", "console.log('editor')");
+    dir.write("assets/pwa/icon-192.png", "PNG test bytes");
     dir.write("secret.txt", "not part of the bundle");
     dir
 }
@@ -2698,6 +2967,14 @@ fn the_service_worker_and_its_manifest_are_served_from_the_root() {
 
     let (icon_status, _) = server.request("GET", "/icon.svg", "", "");
     assert!(is_ok(&icon_status), "{icon_status}");
+    assert!(
+        server
+            .headers("/assets/pwa/icon-192.png")
+            .contains("image/png")
+    );
+    let (_, landing) = server.get("/");
+    assert!(landing.contains("rel=\"manifest\" href=\"/manifest.webmanifest\""));
+    assert!(landing.contains("crossorigin=\"use-credentials\""));
 }
 
 #[test]
@@ -4666,10 +4943,14 @@ fn client_search_manifest_and_segments_are_acl_filtered_and_never_cached() {
     assert_eq!(segments.len(), 1, "the owner has one root zone");
     let zone_id = segments[0]["zoneId"].as_str().expect("zone ID");
     let acl_hash = segments[0]["aclHash"].as_str().expect("ACL hash");
+    let content_hash = segments[0]["contentHash"]
+        .as_str()
+        .expect("content revision");
 
     let route = format!("/api/v1/vaults/v/search/segments/{zone_id}?acl_hash={acl_hash}");
     let (head, bytes) = server.get_raw(&route, "");
     assert!(head.contains("200"), "{head}");
+    assert_eq!(content_hash, format!("{:x}", sha2::Sha256::digest(&bytes)));
     assert!(head.contains("cache-control: no-store"), "{head}");
     assert!(
         head.contains("application/vnd.memberberry.search-index;version=1"),

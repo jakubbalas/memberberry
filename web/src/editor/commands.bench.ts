@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * Keystroke-path microbenchmark for the new inline-code input rule against plain text.
+ * Keystroke-path microbenchmarks for inline-code input and list continuation.
  * Run with one worker and short sample windows when checking a local change.
  * Host/jsdom timings include document reset, exclude layout and device input-to-paint,
  * and do not establish SPEC §21's mid-range Android performance budget.
@@ -41,4 +41,16 @@ describe("editor typing through input rules", () => {
       throw new Error("inline-code input rule did not run");
     }
   }, { time: 100, warmupTime: 50 });
+});
+
+describe("list continuation", () => {
+  for (const kind of ["bullet_list", "ordered_list"]) {
+    bench(`Enter in ${kind}`, () => {
+      editor.commands.setContent({ type: "doc", content: [{ type: kind, content: [{ type: "list_item", content: [
+        { type: "paragraph", content: [{ type: "text", text: "Item" }] },
+      ] }] }] });
+      editor.commands.setTextSelection(7);
+      editor.commands.keyboardShortcut("Enter");
+    }, { time: 100, warmupTime: 50 });
+  }
 });

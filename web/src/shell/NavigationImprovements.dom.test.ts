@@ -25,7 +25,7 @@ const memory = () => {
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 async function render(options: { chrome?: Pick<Storage, "getItem" | "setItem">; user?: string; mode?: "desktop" | "mobile"; noNotes?: boolean; createNote?: typeof createNote } = {}) {
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(String(input).endsWith("/folders") ? { folders: ["Empty/Nested", "Projects/Empty"] } : []))));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {const url=String(input);const path=new URL(url,"http://localhost").searchParams.get("path")??"";return new Response(JSON.stringify(url.includes("/directory?")?{path,folders:path==="Projects"?[{name:"Empty",path:"Projects/Empty"}]:[],files:path==="Projects"?[{name:"raw.md",path:"Projects/raw.md"}]:[]}:url.endsWith("/folders")?{folders:["Empty/Nested","Projects/Empty"]}:[]),{headers:{"content-type":"application/json"}});}));
   const ids = sessionIds();
   const store = new WorkspaceStore({ initial: createWorkspace("personal", ids), ids });
   const catalog = new NoteCatalog({ vault: "personal", load: async () => ({ kind: "ok", notes: options.noNotes ? [] : [{ path: "Projects/raw.md", title: "Readable heading", conflicts: 0 }] }), replica: async () => undefined });
@@ -58,14 +58,14 @@ it("opens folder contents and nested empty folders without opening an editor or 
     expect(button(view.target, "Open in main panel")).toBeDefined();
     button(view.target, "Open in main panel")?.click(); await flush();
     expect(view.target.querySelector(".folder-contents h1")?.textContent).toBe("Projects");
-    expect(view.target.querySelector(".folder-contents")?.textContent).toContain("Readable heading");
+    await vi.waitFor(()=>expect(view.target.querySelector(".folder-contents")?.textContent).toContain("raw.md"));
     expect(view.opened).toEqual([]);
     expect(view.store.tabs).toEqual([]);
     const folder = view.target.querySelector<HTMLElement>(".folder-contents");
     button(folder ?? view.target, "Open folder Empty")?.click(); await flush();
-    expect(view.target.querySelector(".folder-contents")?.textContent).toContain("This folder is empty.");
-    button(view.target, "Up to Projects")?.click(); await flush();
-    button(view.target.querySelector<HTMLElement>(".folder-contents") ?? view.target, "Readable heading")?.click(); await flush();
+    await vi.waitFor(()=>expect(view.target.querySelector(".folder-contents")?.textContent).toContain("0 folders found"));
+    button(view.target, "Go to parent folder")?.click(); await flush();
+    await vi.waitFor(()=>expect(button(view.target.querySelector<HTMLElement>(".folder-contents") ?? view.target, "raw.md")).toBeDefined());button(view.target.querySelector<HTMLElement>(".folder-contents") ?? view.target, "raw.md")?.click(); await flush();
     expect(view.store.activeTab?.note).toBe("Projects/raw.md");
     expect(view.target.querySelector(".folder-contents")).toBeNull();
   } finally { await view.teardown(); }
