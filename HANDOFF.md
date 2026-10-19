@@ -1,6 +1,6 @@
 # Handoff — selected-block keys and full combined-release verification
 
-Updated 2026-10-19T14:53:00+02:00. Canonical task:
+Updated 2026-10-19T14:57:00+02:00. Canonical task:
 ../tasks/open/t-021-selected-block-keys-and-full-checks.md. Checkout
 `/var/home/paul/clawd/projects/memberberry/selection-keys-20261019`, branch
 `fix/block-selection-keys-20261019`, baseline `22d1a75`. Includes the previously deployed
@@ -38,13 +38,31 @@ mouse-only mobile exclusions, zero retries. All four specs passed. Full `make e2
 
 ## Live state and next action
 
-Live remains the healthy `memberberry-memberberry:editor-dates-20261019` image
-`sha256:e3c75cfc75de13ac25301f3e3e0ed98c2194f1b506087ef490ab5133c6df1935`.
-Freeze/commit the tested source and deploy under Paul's existing authorization. Fresh runbook/evidence:
-`../integration-evidence-20261019/selection-keys/`. Guarded operations require every gate
-stage and all four rebuilt browser specs. Fresh preflight still matches the healthy
-runtime and all five registrations. Writer-stopped backups/deployment have not run yet.
-No GitHub publication, live note write or user-account/policy change is part of this task.
+Deployed and finally verified healthy at 2026-10-19T14:57:34+02:00:
+`memberberry-memberberry:selection-keys-20261019`, image
+`sha256:61913e3cc218b9199a349df840399384f33538826c9921df8ab6d90da304398d`. Tested/frozen source is
+`6a4753722a6487b86fa70c918ae5219b78f8d13d` (774 inputs). A later HANDOFF-only commit is operational
+documentation. All 389 frontend files and the unchanged backend match the package.
+Five registrations, 749 Markdown files, 5 policies, config/credentials/media and runtime/
+Compose settings remain unchanged. Seven fresh writer-stopped private same-disk backups
+and 65 saved-CRDT compatibility checks pass. Previous e3c75cfc… remains retained under
+`memberberry-memberberry:before-selection-keys-20261019`. No old-data restore or user-
+account/policy change. Do not replay deployment or restore older notes/replicas.
+
+Live real desktop/mobile browsers verify login/CSP, eleven exact served assets per viewport
+and protected-entry denial, with zero POSTs/errors. Public Chromium reaches existing
+Cloudflare Access sign-in (200). Final guarded verification rechecks bytes/data/settings.
+Normal signed-in/device acceptance remains Paul’s review; no production editor write or
+synthetic live session was used. No GitHub publication. Previous release/source checkout
+remains preserved; its runtime/test inputs and HEAD match the prior receipt.
+
+Next: Paul closes old tabs/installed windows and reopens
+https://memberberry.quantanex.space to test dates, numbering, highlighting, Delete and
+Tab/Shift+Tab. Full manual E2E remains pending. Runbook, coverage table, exact command
+exits and recovery receipts: `../integration-evidence-20261019/selection-keys/README.md`.
+Key machine receipts: verification-summary.json, browser-runs.json, package.json,
+backup-manifest.json, sidecar-compatibility.json, deployment-final-verification.json,
+live-browser-result.json and public-browser-result.json. These are current t-021 receipts.
 
 ## Reproduction and limits
 
