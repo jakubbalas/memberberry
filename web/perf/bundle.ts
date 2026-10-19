@@ -1,7 +1,7 @@
 /**
  * The critical-path bundle, measured off disk.
  *
- * `SPEC.md` §21.2 budgets "initial JS + WASM, gzip (excl. lazy Excalidraw)" at 350 KB. This
+ * `SPEC.md` §21.2 budgets "initial JS + WASM, gzip (excl. lazy Excalidraw)" at 500 KiB. This
  * is the one §21 metric that is fully deterministic: the same build produces the same byte
  * count on every machine, so unlike every timing figure it can gate CI without a baseline
  * for the runner it happens to be on.

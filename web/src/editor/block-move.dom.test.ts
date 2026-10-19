@@ -87,6 +87,77 @@ function textPosition(editor: Editor, text: string): number {
   if (found === undefined) throw new Error(`missing fixture text ${text}`);
   return found;
 }
+it.each([
+  ["First\\\nSecond\nThird", "First", "Second\nThird"],
+  ["First\nSecond\\\nThird", "Third", "First\nSecond"],
+  ["First\\\nSecond\nThird", "Second", "First\\\nThird"],
+])("deleting an explicit line retains the surviving separators (%s, %s)", async (body, removed, result) => {
+  const f = await open(`# Title\n\n${body}\n`);
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "delete-line" }); cleanups.push(mover.destroy);
+  const token = mover.captureRange(textPosition(f.editor, removed), textPosition(f.editor, removed));
+  if (!token) throw new Error("missing line capture");
+  expect(mover.edit(token, "delete")).toBe(true); expect(await f.saved()).toBe(`# Title\n\n${result}\n`);
+});
+it("deleting every nested item removes its list without removing its parent item", async () => {
+  const f = await open("# Title\n\n- Parent\n  - Alpha\n  - Beta\n- Last\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "delete-nested" }); cleanups.push(mover.destroy);
+  const token = mover.captureRange(textPosition(f.editor, "Alpha"), textPosition(f.editor, "Beta"));
+  if (!token) throw new Error("missing nested capture");
+  expect(mover.edit(token, "delete")).toBe(true); expect(await f.saved()).toBe("# Title\n\n- Parent\n- Last\n");
+});
+it("deleting the first numbered item preserves unselected text anchors and the list start", async () => {
+  const f = await open("# Title\n\n7. Alpha\n1. Beta ^kept-item\n1. Gamma\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "delete-anchor" }); cleanups.push(mover.destroy);
+  const token = mover.captureRange(textPosition(f.editor, "Alpha"), textPosition(f.editor, "Alpha"));
+  if (!token) throw new Error("missing list capture");
+  expect(mover.edit(token, "delete")).toBe(true);
+  expect(f.editor.state.doc.child(1).attrs).toMatchObject({ start: 7 });
+  expect(f.editor.state.doc.child(1).firstChild?.firstChild?.attrs["anchor"]).toBe("kept-item");
+  const reopened = await open(await f.saved()); expect(reopened.editor.getJSON()).toEqual(f.editor.getJSON());
+});
+it("highlighted edits refuse a forged/stale token and loss of runtime editability", async () => {
+  const f = await open(); let available = true;
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "edit-refusal", canInteract: () => available }); cleanups.push(mover.destroy);
+  const token = mover.captureRange(f.start(1), f.start(2)); if (!token) throw new Error("missing edit capture");
+  const before = await f.saved();
+  expect(mover.edit({ ...token }, "delete")).toBe(false);
+  available = false; expect(mover.edit(token, "delete")).toBe(false); available = true;
+  f.editor.setEditable(false); expect(mover.edit(token, "delete")).toBe(false); f.editor.setEditable(true);
+  expect(await f.saved()).toBe(before);
+  f.editor.commands.insertContentAt(f.start(1) + 1, "changed ");
+  const changed = await f.saved(); expect(mover.edit(token, "delete")).toBe(false); expect(await f.saved()).toBe(changed);
+});
+it.each(["pending", "offline", "peer"])("highlighted Delete refuses newly %s captures", async reason => {
+  const f = await open(); const connection = createConnectionStatus(); connection.set({ connected: true, synced: true, pending: 0 });
+  const awareness = new Awareness(f.ydoc); cleanups.push(() => awareness.destroy());
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "edit-state", connection, awareness }); cleanups.push(mover.destroy);
+  const token = mover.captureRange(f.start(1), f.start(2)); if (!token) throw new Error("missing edit capture");
+  const before = await f.saved();
+  if (reason === "peer") awareness.getStates().set(f.ydoc.clientID + 1, { user: "peer" });
+  else connection.set(reason === "pending" ? { connected: true, synced: true, pending: 1 } : { connected: false, synced: false, pending: 0 });
+  expect(mover.edit(token, "delete")).toBe(false); expect(await f.saved()).toBe(before);
+});
+it("mixed and first-item indentation refuses the entire capture without partial restructuring", async () => {
+  const f = await open("# Title\n\n- Alpha\n- Beta\n\nAfter\n");
+  const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "indent-refusal" }); cleanups.push(mover.destroy);
+  const first = mover.captureRange(textPosition(f.editor, "Alpha"), textPosition(f.editor, "Beta"));
+  const mixed = mover.captureRange(textPosition(f.editor, "Beta"), textPosition(f.editor, "After"));
+  if (!first || !mixed) throw new Error("missing refused capture");
+  const before = await f.saved();
+  expect(mover.edit(first, "indent")).toBe(false); expect(mover.edit(mixed, "indent")).toBe(false); expect(await f.saved()).toBe(before);
+});
+it("deletion preserves unselected paragraphs and isolated undo across arbitrary contiguous ranges", async () => {
+  await fc.assert(fc.asyncProperty(fc.integer({ min: 1, max: 8 }), fc.nat(100), fc.nat(100), async (count, left, length) => {
+    const f = await open("# Title\n\n" + Array.from({ length: count }, (_, i) => `Row ${i} α🌍\n\n`).join(""));
+    const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: `delete-property-${f.ydoc.clientID}` }); cleanups.push(mover.destroy);
+    const start = left % count; const size = 1 + length % (count - start);
+    const token = mover.captureRange(f.start(start + 1), f.start(start + size)); if (!token) throw new Error("missing property capture");
+    const before = await f.saved(); expect(mover.edit(token, "delete")).toBe(true);
+    const expected = Array.from({ length: count }, (_, i) => `Row ${i} α🌍`).filter((_text, i) => i < start || i >= start + size);
+    expect(f.editor.state.doc.content.content.slice(1).map(node => node.textContent)).toEqual(expected.length ? expected : [""]);
+    expect(undo(f.editor.state)).toBe(true); expect(await f.saved()).toBe(before);
+  }), { seed: 20261019, numRuns: 40 });
+});
 it("moves a contiguous mixed range in order, saves/reopens it and undoes it in one step", async () => {
   const f = await open("# Title\n\nBefore\n\n- **Alpha**\n- Beta\n\nMiddle\n\nAfter\n");
   const mover = createBlockMover({ editor: f.editor, document: f.ydoc, noteKey: "mixed-range" }); cleanups.push(mover.destroy);

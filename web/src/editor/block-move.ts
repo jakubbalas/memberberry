@@ -1,13 +1,14 @@
 /** Bounded reorder for the explicitly limited single-editor-per-note scope. */
 import type { Editor } from "@tiptap/core";
 import type { Node as PMNode } from "@tiptap/pm/model";
-import { NodeSelection, TextSelection } from "@tiptap/pm/state";
+import { EditorState, NodeSelection, Selection, TextSelection, type Transaction } from "@tiptap/pm/state";
+import { liftListItem, sinkListItem } from "@tiptap/pm/schema-list";
 import { yUndoPluginKey } from "y-prosemirror";
 import type { Doc, UndoManager } from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import type { ConnectionStatus } from "./collaboration.js";
 import { createSingleEditorGate } from "./single-editor.js";
-import { captureMoveUnits, reorderMoveUnits, type MoveUnits } from "./block-move-units.js";
+import { captureMoveUnits, removeMoveUnits, reorderMoveUnits, type MoveUnits } from "./block-move-units.js";
 
 /** One note/editor lifetime. noteKey must include vault identity, not a title/path label. */
 export interface BlockMoveOptions {
@@ -25,8 +26,12 @@ export interface BlockMoveToken { readonly label: string; readonly index: number
 export interface BlockMoveTarget { readonly start: number; readonly end: number; readonly inline: boolean }
 /** Distinguishes document invalidation from a known readiness-state change. */
 export type BlockMoveChange = "document" | "safety";
+/** Keyboard mutations over the exact highlighted structural range. */
+export type BlockEditAction = "delete" | "indent" | "outdent";
 /** Bounded mutation API; boundaries index the exact captured, pre-delete movement units. */
 export interface BlockMover {
+  /** Delete or change list nesting in one isolated, readiness-checked undo step. */
+  edit(token: BlockMoveToken, action: BlockEditAction): boolean;
   /** Capture an individual list item/explicit line, or a complete non-list root. */
   capture(pos: number): BlockMoveToken | undefined;
   /** Capture a contiguous range in one movement scope; the protected title is excluded. */
@@ -186,6 +191,55 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     return applied;
   };
   const history = (yUndoPluginKey.getState(editor.state) as { undoManager: UndoManager } | undefined)?.undoManager;
+  const edit = (token: BlockMoveToken, action: BlockEditAction): boolean => {
+    if (!isCurrent(token)) return false;
+    const saved = captures.get(token);
+    if (!saved) return false;
+    const plan = saved.plan ?? captureMoveUnits(saved.doc, token.start, true)?.plan;
+    const index = plan?.units.findIndex(unit => unit.start === token.start) ?? -1;
+    const first = plan?.units[index]; const last = plan?.units[index + token.count - 1];
+    if (!plan || !first || !last || index < 0) return false;
+    let transaction: Transaction | undefined;
+    let nextRange: { anchor: number; head: number } | undefined;
+    if (action === "delete") {
+      transaction = editor.state.tr;
+      if (!removeMoveUnits(transaction, plan, index, token.count)) return false;
+      transaction.setSelection(Selection.near(transaction.doc.resolve(Math.min(token.start, transaction.doc.content.size))));
+    } else {
+      const rows = plan.units.slice(index, index + token.count);
+      if (!first.parent || first.inline || !["bullet_list", "ordered_list"].includes(first.parent.type.name)
+        || rows.some(row => row.parent !== first.parent || row.node.type !== first.node.type)) return false;
+      // why: lifting a root task into prose would discard its checkbox/status/date attributes.
+      if (action === "outdent" && first.node.type.name === "task_item" && saved.doc.resolve(first.start).depth === 1) return false;
+      const from = Selection.findFrom(saved.doc.resolve(first.start + 1), 1, true)?.from;
+      const to = Selection.findFrom(saved.doc.resolve(last.end - 1), -1, true)?.to;
+      const lastText = Selection.findFrom(saved.doc.resolve(last.start + 1), 1, true)?.from;
+      if (from === undefined || to === undefined || lastText === undefined || from >= first.end || to <= last.start || lastText >= last.end || from > to) return false;
+      // why: run the standard list command against the full capture without first changing
+      // the live caret or invoking collaboration plugins on a speculative selection.
+      const state = EditorState.create({ doc: saved.doc, selection: TextSelection.create(saved.doc, from, to) });
+      const command = action === "indent" ? sinkListItem(first.node.type) : liftListItem(first.node.type);
+      if (!command(state, result => { transaction = result; }) || !transaction) return false;
+      // why: the command includes each item's subtree, but recapturing at its last
+      // descendant would switch selection scopes and lose the highlighted sibling group.
+      nextRange = { anchor: transaction.mapping.map(from, 1), head: transaction.mapping.map(lastText, 1) };
+      transaction.setSelection(Selection.near(transaction.doc.resolve(nextRange.anchor)));
+    }
+    const originalTitle = title(saved.doc);
+    if (originalTitle ? !transaction.doc.firstChild?.eq(originalTitle) : title(transaction.doc) !== undefined) return false;
+    if (transaction.doc.eq(saved.doc) || !isCurrent(token)) return false;
+    transaction.setStoredMarks([]);
+    const selection = editor.state.selection;
+    history?.stopCapturing();
+    try { editor.view.dispatch(transaction); } finally { history?.stopCapturing(); }
+    if (!editor.state.doc.eq(transaction.doc)) return false;
+    if (nextRange) movedRanges.set(token, { doc: transaction.doc, generation, ...nextRange });
+    history?.undoStack[history.undoStack.length - 1]?.meta.set(MOVED_SELECTION, {
+      before: { doc: saved.doc, anchor: selection.anchor, head: selection.head },
+      after: { doc: transaction.doc, anchor: transaction.selection.anchor, head: transaction.selection.head }, kind: "text",
+    } satisfies MovedSelection);
+    return true;
+  };
   /** Puts the selection back inside the moved root once undo or redo has restored it. */
   const restoreMovedSelection = ({ stackItem, type }: { stackItem: { meta: Map<unknown, unknown> }; type: "undo" | "redo" }): void => {
     const moved = stackItem.meta.get(MOVED_SELECTION) as MovedSelection | undefined;
@@ -239,5 +293,5 @@ export function createBlockMover(options: BlockMoveOptions): BlockMover {
     saved.doc.forEach((node, start) => units.push({ start, end: start + node.nodeSize, inline: false }));
     return units;
   };
-  return { capture, captureRange, moved, move, drop, isCurrent, isPending, canDrop, targets, subscribe, destroy };
+  return { capture, captureRange, moved, move, drop, edit, isCurrent, isPending, canDrop, targets, subscribe, destroy };
 }

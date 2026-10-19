@@ -272,7 +272,10 @@ assignments stable and record new ones here before adding a listener:
 | `9016` | Isolated PWA browser fixture (t-014); loopback only |
 | `9014` | Existing editor preview; owned by another task |
 | `9015` | Existing folder preview; owned by another task |
-| `9017`-`9020` | Available for supporting services |
+| `9017` | Reserved by another supporting fixture; check ownership before use |
+| `9018` | Isolated typed-numbered-list fixture (t-018) |
+| `9019` | Isolated relative-date fixture (t-019) |
+| `9020` | Combined editor release/selected-key fixture (t-020/t-021); loopback only |
 
 Production ports remain explicit deployment configuration. Tests that do not need a stable
 address should ask the OS for an ephemeral port instead of consuming this range.

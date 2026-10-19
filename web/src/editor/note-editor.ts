@@ -25,6 +25,7 @@ import { pdfViews } from "./pdf-view.js";
 import { emojiInputRules } from "./commands.js";
 import { emojiAutocomplete } from "./emoji-autocomplete.js";
 import { documentLinks } from "./links.js";
+import { dateMentions } from "./date-mentions.js";
 import { documentLinkAutocomplete, type DocumentLinkLoader } from "./document-link-autocomplete.js";
 import { fetchNotes } from "../shell/catalog.js";
 import { emojiCatalog } from "../emoji-catalog.js";
@@ -124,6 +125,7 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
         }),
         protectedTitleExtension,
         memberberryInputRules,
+        dateMentions,
         emojiInputRules(catalog),
         emojiAutocomplete(catalog),
         documentLinks(options.noteId),

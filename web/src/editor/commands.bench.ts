@@ -41,6 +41,13 @@ describe("editor typing through input rules", () => {
       throw new Error("inline-code input rule did not run");
     }
   }, { time: 100, warmupTime: 50 });
+  bench("typed numbered-list marker", () => {
+    type("1. Item");
+    const list = editor.getJSON().content?.[0];
+    if (list?.type !== "ordered_list" || list.attrs?.["start"] !== 1 || list.content?.length !== 1 || editor.state.doc.textContent !== "Item") {
+      throw new Error("typed numbered-list input did not create one numbered item");
+    }
+  }, { time: 100, warmupTime: 50 });
 });
 
 describe("list continuation", () => {

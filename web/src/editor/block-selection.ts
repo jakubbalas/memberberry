@@ -15,6 +15,7 @@ interface Options {
 /** A contiguous selection shares exactly the same units and safety checks as movement. */
 export interface BlockSelection {
   current(): BlockMoveToken | undefined;
+  selecting(): boolean;
   select(token: BlockMoveToken): void;
   extend(direction: -1 | 1): void;
   clear(): void;
@@ -33,7 +34,7 @@ interface Marquee {
   endY: number;
   active: boolean;
 }
-/** Mounts margin-drag, Shift-click and keyboard selection with clipped purple overlays. */
+/** Mounts blank-space drag, Shift-click and keyboard selection with clipped purple overlays. */
 export function mountBlockSelection(options: Options): BlockSelection {
   const { editor, panel, mover } = options;
   const dom = editor.view.dom; const document = dom.ownerDocument;
@@ -91,12 +92,16 @@ export function mountBlockSelection(options: Options): BlockSelection {
   };
   const set = (token: BlockMoveToken | undefined): void => {
     selected = token;
-    const message = token ? `${token.count} ${token.count === 1 ? "block" : "blocks"} selected. Drag the handle or use Move up/down. Shift+↑/↓ extends; Escape clears.` : "";
+    const message = token ? `${token.count} ${token.count === 1 ? "block" : "blocks"} selected. Delete removes; Tab/Shift+Tab changes supported list nesting. Shift+↑/↓ extends; Escape clears.` : "";
     if (status.textContent !== message) status.textContent = message;
     dom.classList.toggle("has-block-selection", token !== undefined);
     render(); options.changed(token);
   };
-  const cancelMarquee = (): void => { marquee = undefined; dom.classList.remove("is-selecting-blocks"); };
+  const cancelMarquee = (): void => {
+    const wasSelecting = marquee !== undefined;
+    marquee = undefined; dom.classList.remove("is-selecting-blocks");
+    if (wasSelecting) options.changed(current());
+  };
   const clear = (): void => {
     cancelMarquee(); anchor = undefined; head = undefined; ownPending = false;
     if (selected) set(undefined); else render();
@@ -127,10 +132,25 @@ export function mountBlockSelection(options: Options): BlockSelection {
     try { return editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos; }
     catch { return undefined; }
   };
+  const hitsContent = (event: PointerEvent, pos: number, fallback: Rect | undefined): boolean => {
+    const resolved = editor.state.doc.resolve(pos);
+    if (!resolved.parent.inlineContent) return true;
+    // why: block boxes span the pane, including blank space after text. Only the glyphs
+    // beside the nearest caret (including wrapped/marked text and inline atoms) own text drags.
+    const from = editor.view.domAtPos(Math.max(resolved.start(), pos - 1));
+    const to = editor.view.domAtPos(Math.min(resolved.end(), pos + 1));
+    const range = document.createRange();
+    range.setStart(from.node, from.offset); range.setEnd(to.node, to.offset);
+    // why: non-layout DOM hosts have no Range geometry; retain their native-text fallback.
+    if (typeof range.getClientRects !== "function") return !fallback || fallback.right <= fallback.left
+      || (event.clientX >= fallback.left && event.clientX <= fallback.right && event.clientY >= fallback.top && event.clientY <= fallback.bottom);
+    return Array.from(range.getClientRects()).some(rect => rect.right > rect.left
+      && event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom);
+  };
   const down = (event: PointerEvent): void => {
     const target = event.target;
     if (!(target instanceof window.Node)) return;
-    if (target instanceof window.Element && (target.closest("[data-editing-ui]") || (panel.contains(target) && target.closest(".editor-more")))) return;
+    if (target instanceof window.Element && (target.closest("[data-editing-ui]") || (panel.contains(target) && target.closest(".editor-more, .editor-controls")))) return;
     if (!dom.contains(target) && !panel.contains(target)) { clear(); return; }
     if (event.button !== 0 || event.pointerType === "touch") { clear(); return; }
     if (target instanceof window.Element && target.closest("button, input, a, [contenteditable=false]")) { clear(); return; }
@@ -139,11 +159,13 @@ export function mountBlockSelection(options: Options): BlockSelection {
     if (event.shiftKey && current() && token) {
       event.preventDefault(); extendTo(token.start); editor.view.focus(); return;
     }
-    // why: only blank margin/gap gestures start the marquee. A drag beginning in text
-    // belongs to native text selection, including within already highlighted blocks.
+    // why: blank space belongs to row selection across the entire pane; a drag beginning
+    // on rendered content still belongs to native text selection.
     const rect = token && options.rect(token);
     const margin = rect && (event.clientX < rect.left || event.clientX > rect.right);
-    if (!margin && target !== dom && target !== panel && !((target instanceof window.Element) && target.classList.contains("editor-surface"))) { clear(); return; }
+    const blankRoot = target === dom || target === panel || target instanceof window.Element && target.classList.contains("editor-surface");
+    if (!margin && !blankRoot && pos !== undefined && hitsContent(event, pos, rect)) { clear(); return; }
+    if (pos === undefined && !blankRoot) { clear(); return; }
     clear();
     const title = editor.state.doc.firstChild;
     const seed = token ?? mover.capture(editor.state.selection.head)
@@ -151,18 +173,21 @@ export function mountBlockSelection(options: Options): BlockSelection {
     if (!seed) return;
     const scope = mover.captureRange(seed.start, seed.start); if (!scope) return;
     event.preventDefault();
-    editor.view.dispatch(editor.state.tr.setSelection(Selection.near(editor.state.doc.resolve(scope.start))));
+    // why: a plain click in blank space must still place the caret at the clicked row.
+    editor.view.dispatch(editor.state.tr.setSelection(Selection.near(editor.state.doc.resolve(pos ?? scope.start))));
     editor.view.focus();
     marquee = { pointer: event.pointerId, x: event.clientX, y: event.clientY, endX: event.clientX, endY: event.clientY, units: mover.targets(scope), token: scope, active: false };
+    options.changed(undefined);
   };
   const updateMarquee = (): void => {
     if (!marquee || !mover.isCurrent(marquee.token)) { clear(); return; }
     const top = Math.min(marquee.y, marquee.endY); const bottom = Math.max(marquee.y, marquee.endY);
-    const left = Math.min(marquee.x, marquee.endX); const right = Math.max(marquee.x, marquee.endX);
     const hits = marquee.units.filter(unit => {
       if (unit.start === 0 && editor.state.doc.firstChild?.type.name === "heading" && editor.state.doc.firstChild.attrs["level"] === 1) return false;
       const rect = options.rect(unit);
-      return rect && rect.bottom > top && rect.top < bottom && rect.right > left && rect.left < right;
+      // why: these are complete rows; a vertical drag in either blank margin need not
+      // cross back over the text to select the rows it passes.
+      return rect && rect.bottom > top && rect.top < bottom;
     });
     const first = hits[0]; const last = hits.at(-1);
     if (first && last) {
@@ -184,7 +209,7 @@ export function mountBlockSelection(options: Options): BlockSelection {
   };
   const cancel = (): void => { if (marquee) clear(); };
   const keydown = (event: KeyboardEvent): void => {
-    if (event.defaultPrevented || options.dragging()) return;
+    if (event.defaultPrevented || options.dragging() || event.isComposing || editor.view.composing) return;
     if (event.ctrlKey || event.metaKey) { if (!["Control", "Meta"].includes(event.key)) clear(); return; }
     if (event.altKey) return;
     if (event.key === "Escape" && !selected && panel.querySelector(".block-catalog:not([hidden])")) return;
@@ -193,6 +218,17 @@ export function mountBlockSelection(options: Options): BlockSelection {
       else if (editor.state.selection.empty) {
         const token = mover.capture(editor.state.selection.head);
         if (token) { event.preventDefault(); select(token); }
+      }
+    } else if (selected && ["Delete", "Backspace", "Tab"].includes(event.key)) {
+      event.preventDefault();
+      const token = current();
+      if (!token) clear();
+      else {
+        const action = event.key === "Tab" ? event.shiftKey ? "outdent" : "indent" : "delete";
+        if (mover.edit(token, action)) {
+          if (action === "delete") clear(); else moved(token);
+          editor.view.focus();
+        }
       }
     } else if (current() && event.shiftKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
       event.preventDefault(); extend(event.key === "ArrowUp" ? -1 : 1);
@@ -236,5 +272,5 @@ export function mountBlockSelection(options: Options): BlockSelection {
     window.visualViewport?.removeEventListener("resize", schedule); window.visualViewport?.removeEventListener("scroll", schedule);
     dom.classList.remove("has-block-selection", "is-selecting-blocks"); layer.remove(); status.remove();
   };
-  return { current, select, extend, clear, render, refresh, moved, destroy };
+  return { current, selecting: () => marquee !== undefined, select, extend, clear, render, refresh, moved, destroy };
 }

@@ -2,70 +2,78 @@
 
 ## Current state (2026-10-19)
 
-Local branch `integrate/pr-5` integrates PR #5 at
-`2c715985e2b75c948c74c569383a98ef6d627dfc` into the note-cover main commit
-`c0410f041a25df8c65b17958fc5f08411c8dd963`. The user authorized the local
-merge commit; main has not moved and nothing has been pushed.
+Local branch `integrate/pr-6` integrates PR #6 at
+`af6ea5e4f08c92e64eb7785bf4ab22aba49a4c00` into main at
+`69458126f4db9b46d444e3f824200713b11c9d1b`. PR #5's integration is already
+on GitHub main. The user authorized the local PR #6 merge commit, including the
+approved bundle budgets. Nothing has been pushed in this iteration.
 
-The two textual conflicts were HANDOFF.md and crates/mb-server/benches/sync.rs.
-The benchmark resolution retains and registers both cover extraction and opt-in
-non-writable-folder resolution benchmarks. This handoff replaces the fork's
-deployment-specific instructions with the state of this checkout.
+Only HANDOFF.md conflicted. Application code and SPEC.md merged automatically,
+retaining note covers and PR #5 alongside relative date mentions, typed numbered
+list markers, full-pane block selection, Delete/Backspace and grouped Tab/Shift+Tab.
+The new behavior is documented in SPEC §8.4. The fork's deployment/evidence paths
+are not reproduction instructions for this machine.
 
-The combined source contains Markdown-backed note covers, server-folder vault
-discovery/registration, shallow folder browsing/creation, grouped block selection
-and movement, numbered-list Return, and PWA install/resume/refresh/update controls.
-SPEC.md merged automatically and retains both contracts, including cover §12.5,
-PWA §7.4 and the new permission enforcement entries. Editor-shell integration
-also merged automatically; focused shell/movement/cover tests and the cover browser
-regression pass on the combined source.
+The user also approved a 950 KiB (972,800-byte) operational bundle ceiling.
+SPEC §21 records the allowance and comparison; the user then revised the long-term
+optimization goal to 500 KiB (512,000 bytes). The operational ceiling remains 950 KiB.
+The bundle gate passes on the current local build.
 
 ## Verification
 
-Focused local integration verification passes:
+Focused PR #6 integration verification:
 
-- 361 frontend tests across 22 files: cover, editor shell, block movement/handles,
-  PWA, admin folder/new-vault flows and folder shell components.
-- All 42 macOS-enabled permission leak tests, including E11 covers and the PR's
-  revoked-reader sync regression. Linux-only folder/registration leak cases are
-  compiled out here; their evidence remains the PR-head Linux CI result.
-- The focused HTTP cover authorization test passes (one test).
-- Rebuilt note-cover.spec.ts passes on desktop and mobile (two browser cases),
-  using the rebuilt combined-source CLI and a disposable server on 9012.
-- Production web build and frontend typecheck pass (zero Svelte errors/warnings).
-  Build output is in local/debug/pr-5-integration-build.log.
-- The sync benchmark target compiles with both benchmarks retained. Focused
-  rustfmt and staged whitespace checks pass.
+- 322 tests pass across nine editor files: relative-date seeded round-trips,
+  date controls, block handles/movement, input rules, autocomplete, note editor,
+  editor shell and covers.
+- Production build and frontend typecheck pass with zero Svelte errors/warnings.
+- Rebuilt date-mentions.spec.ts passes all eight desktop/mobile cases, including
+  readable Markdown persistence, source/code exclusions, date editing and typed lists.
+- Rebuilt block-selection.spec.ts passes 15 cases; three pre-existing mouse-only
+  mobile cases remain skipped. Native text selection screenshots were inspected.
+  The first run had 14 passes, one failure and three exclusions: its reverse text
+  drag began within the previous native highlight and invoked macOS text drag-and-drop.
+  The test now collapses the caret before each direction and verifies that setup;
+  the same forward/backward Alpha assertions pass. No application behavior, retry
+  setting or assertion was relaxed. This is an observed red/green setup correction.
+- Build logs: local/debug/pr-6-date-build.log, pr-6-selection-build.log and
+  pr-6-selection-fixed-build.log. Browser screenshots/traces live in web/test-results/.
+- Staged whitespace checks pass; Git reports no unresolved files.
+- Bundle-gate configuration: all 50 focused breach/verdict/bundle/report tests pass.
+  The 500 KiB target lookup test first failed against 350 KiB before the target changed.
+  New boundary tests first failed under the old ceiling; they now prove 972,800
+  passes and 972,801 fails for both device classes. The focused local bundle-only
+  gate passes at 921,198 bytes; log: local/debug/pr-6-bundle-950kib.log.
 
-Rust build/check emits an incoming PR warning on macOS: directory_path_included
-in crates/mb-server/src/vault.rs:131 is unused because its callers are Linux-only.
-Left open to keep this conflict resolution focused; a warnings-as-errors check
-on macOS would need this addressed. Vite also retains its vendor directive/chunk
-size warnings. No performance or bundle-budget acceptance is claimed.
+Actual PR-head CI was checked: check, web and fuzz-build pass, but perf FAILS at
+the Critical-path bundle budget step. Its server/browser runtime steps were skipped.
+Job: https://github.com/jakubbalas/memberberry/actions/runs/39267288362/job/118110073455
+That historical CI result predates the user-approved ceiling increase and has not
+been rerun remotely. No bundle optimization or physical-device acceptance is claimed.
 
-PR-head GitHub CI was independently checked: check, web, perf and fuzz-build all
-passed on 2c71598. This is evidence for the PR head, not for this combined branch.
-The PR reports 763 focused frontend cases, 92 selected Rust cases and 31 browser
-passes before publication; its later CI reports full Rust/frontend tests and
-coverage floors passing. These are upstream results, not local reruns.
+The PR author reports full Rust/frontend checks and coverage floors plus four
+rebuilt browser specs (41 passes, five existing mouse-only mobile exclusions).
+Those results predate this combined checkout and are not local reruns. No
+single zero-exit full make check rerun is claimed by the author after repairing
+two autocomplete listener assertions; the repaired complete web-check passed.
 
-Main's preceding cover work passed focused cover/shell/uploader tests, seeded
-metadata properties, extraction/round-trip tests, E11 leak and HTTP tests, and a
-rebuilt desktop/mobile note-cover browser spec. Its mutation probes caught missing
-cover extraction, stale uploads and missing clipboard/drop listeners. Local prior
-evidence is in local/debug/note-cover-*.log; those results predate this integration.
+Prior local PR #5 integration verification passed 361 frontend tests, all 42
+macOS-enabled leak cases, one HTTP cover-permission case and desktop/mobile cover
+browser cases, plus build/typecheck and sync benchmark compilation. These results
+predate PR #6; backend sources are unchanged by this PR.
 
-Full `make check` and local coverage measurement are deferred, not requested.
-Full `make e2e` remains user-run and pending. The PR's perf job enforces bundle
-size but reports browser timing/memory with --report-only; green CI is not
-physical-device performance acceptance. Main previously recorded an optimized
-bundle-size failure; the combined branch's bundle gate has not been rechecked.
+Full `make check` and local coverage measurement remain deferred, not requested.
+Full `make e2e` remains user-run and pending. Physical-device performance acceptance
+is unconfirmed. The combined branch's local bundle gate passes with the approved
+ceiling and existing generated WASM; fresh optimized CI validation remains pending.
+Main previously recorded an optimized bundle-size failure. PR perf timing/memory runs
+with --report-only and does not establish budget acceptance.
 
 ## Next
 
-Review the local integration merge before merging into main. Manual full E2E
-and user feedback remain pending.
-No deployment or remote merge is authorized by the current local integration task.
+Review the local integration merge and obtain fresh CI for the approved bundle ceiling.
+Focused integration verification passes;
+main and remote refs remain unchanged by this local integration.
 
 ## Local development and gotchas
 
@@ -91,6 +99,11 @@ No deployment or remote merge is authorized by the current local integration tas
 
 ## Current limits and open items
 
+- PR #5 introduced a macOS unused-method warning for directory_path_included
+  (crates/mb-server/src/vault.rs:131); its callers are Linux-only. It remains open.
+- New date/block behavior has the limits in SPEC §8.4: relative words are English,
+  timed ISO values are local wall-clock values without a timezone offset, plain ISO
+  dates also receive relative presentation, and unsupported block ranges stay unchanged.
 - Covers decorate authenticated panes and browser print/PDF; anonymous shares and
   browser HTML exports omit the banner. Markdown/vault exports retain metadata.
   Offline uploads retain the old cover until completion and require the note to

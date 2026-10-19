@@ -155,9 +155,11 @@ describe("document-link IntelliSense", () => {
   });
 
   it.each(["scroll", "resize"])("closes on viewport %s and removes its listener on teardown", async (eventName) => {
+    const editor = await mount();
+    // why: date controls also watch the viewport for the editor's lifetime. Only
+    // registrations made by this popup should be released when the popup closes.
     const add = vi.spyOn(window, "addEventListener");
     const remove = vi.spyOn(window, "removeEventListener");
-    const editor = await mount();
     editor.commands.insertContent("[[road");
     await suggestions();
     const registrations = add.mock.calls.filter(([name]) => name === eventName);
@@ -193,13 +195,15 @@ describe("document-link IntelliSense", () => {
     const old = Object.getOwnPropertyDescriptor(window, "visualViewport");
     Object.defineProperty(window, "visualViewport", { configurable: true, value: viewport });
     try {
+      const editor = await mount();
+      // The editor's persistent viewport observers belong to their own lifecycle tests.
       const add = vi.spyOn(viewport, "addEventListener");
       const remove = vi.spyOn(viewport, "removeEventListener");
-      const editor = await mount();
       editor.commands.insertContent("[[road");
       await suggestions();
       viewport.dispatchEvent(new Event("resize"));
       expect(popup()).toBeNull();
+      expect(add.mock.calls.length).toBeGreaterThan(0);
       for (const [name, listener, capture] of add.mock.calls) expect(remove).toHaveBeenCalledWith(name, listener, capture);
     } finally {
       if (old === undefined) Reflect.deleteProperty(window, "visualViewport");

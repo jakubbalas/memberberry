@@ -1,10 +1,10 @@
 {
   "critical-bundle-gzip": {
     "recorded": {
-      "mobile": 741471,
-      "desktop": 741471
+      "mobile": 972800,
+      "desktop": 972800
     },
-    "reason": "SPEC §21.1: M13 measures 741,471 bytes gzip against the 350 KB budget after wasm-opt. The required critical path contains the editor/CRDT WASM, M9 offline search codec, shell search and task panes, and M13 template plus daily/weekly/monthly calendar-note support. M13 adds 13,152 bytes over the prior 728,319-byte M9/M14 baseline. The uncommitted wasm-opt=false setting was removed: it inflated this same build to 770,740 bytes and contradicted SPEC §21.1. Remaining levers are a size-tuned WASM profile, wasm-opt -Oz, or splitting heavy crates out of the initial module. Tolerance stays 0%, so any further growth fails. Earlier baseline history remains in git rather than in this operational exception file."
+    "reason": "SPEC §21: the user approved a 950 KiB (972,800-byte) operational ceiling on 2026-10-19 for the expanded editor, covers, folder setup and PWA feature set, with a revised 500 KiB (512,000-byte) long-term goal. This is an explicitly approved allowance, not a measured optimized baseline: local main and PR #6 builds with identical dependencies and existing WASM measured 916,381 and 921,198 bytes gzip, respectively, a 4,817-byte increase. The allowance leaves 51,602 bytes (5.6%) above that local candidate; a fresh optimized CI measurement and physical-device acceptance are not claimed. Byte tolerance remains 0%, so one byte above 972,800 fails. Lazy Excalidraw/graph exclusions and all other performance gates remain unchanged."
   },
   "keystroke-to-paint": {
     "recorded": {

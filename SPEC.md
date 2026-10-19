@@ -2367,6 +2367,10 @@ exactly the devices nobody tried.
   editor session and is separate from server version history (§18).
 - In bulleted and numbered lists, Enter after a nonempty item starts a sibling item
   (the next number in a numbered list); Enter on an empty final item leaves the list.
+  Typing a period-delimited numbered marker followed by a space at the start of a body
+  paragraph (for example `1. ` or `7. `, up to nine digits) starts a numbered list at that
+  number. A marker continuing the preceding list's sequence joins that list. The period
+  alone, decimals, numbers within ordinary text and markers in code remain literal.
   Tab nests a bullet below its preceding sibling, and
   Shift-Tab outdents it. Other focusable controls retain their ordinary Tab behavior.
 - Typing paired single backticks in ordinary text creates the inline `code` mark;
@@ -2520,10 +2524,30 @@ Not yet: an independent
 review and a physical-phone pass of drag.
 
 **Multi-block selection (2026-10-18).** At Paul’s request, block selection is separate
-from native text highlighting. On fine pointers, drag a rectangle from the blank editor
-margin/gaps across complete movement units. The rectangle and selected rows use translucent
+from native text highlighting. On fine pointers, drag from blank space anywhere across the
+writing pane, including either margin, gaps and the unused width after rendered text inside
+a paragraph or list row. Vertical movement selects complete movement units by the rows crossed,
+in either direction, without requiring the rectangle to cross text horizontally. A plain click
+in blank space still places the caret at that row. Movement handles hide during the gesture
+and return for its selected group on release; they also hide during native text highlighting.
+The rectangle and selected rows use translucent
 Memberberry purple tokens in every theme. A gesture beginning in text retains native text
 selection. Shift-click extends an existing block selection to an endpoint.
+
+**Selected-block keyboard actions (2026-10-19, t-021).** Delete or Backspace on a
+purple block selection removes the complete captured range in one isolated undo step.
+List items and explicit paragraph lines are removed with their structural separators;
+unselected text, task metadata, surviving list anchors/numbering and the protected title
+remain intact. Deleting the last body block leaves an empty paragraph for continued typing.
+Tab nests supported selected sibling list items together under their preceding item;
+Shift+Tab lifts them together. Bulleted, numbered and task items are supported where the
+schema admits the whole operation. A root task is not lifted into prose, since that would
+discard its status/date attributes. Mixed scopes, incompatible item types, first items
+with no preceding sibling and unsupported prose ranges remain unchanged; the keys are
+consumed while a block selection exists so they cannot edit only the native caret.
+Successful nesting preserves the selected range for further actions. Native text
+selections retain their ordinary behavior. These structural actions reuse movement's
+current-document, editability, readiness and single-editor checks and collaborative undo.
 
 Escape on a collapsed body caret selects its movement unit; Shift-Up/Down extends or shrinks
 the contiguous range, and Escape clears it. The block menu offers Select block, Extend
@@ -2583,6 +2607,40 @@ permission-filtered catalog (E5); selecting a note inserts an ordinary Markdown 
 Image and Emoji reuse the existing upload and picker flows. Template insertion remains
 reachable. File attachments, linked-note creation, TOCs, toggle headings and the other
 deferred/excluded screenshot items are not added by this catalogue request.
+
+**Relative date mentions (2026-10-19, t-019).** Typing `@now`, `@today`, `@yesterday`
+or `@tomorrow` at a word boundary opens a local date chooser. Enter or Tab accepts the
+selected suggestion; Space accepts an exact keyword and preserves the separator.
+Arrow keys select suggestions, pointer/touch selects directly and Escape leaves the
+trigger literal. Code, links, math and the protected title do not complete mentions.
+Confirmation captures a fixed local calendar value, stored as ordinary `YYYY-MM-DD`
+text or, for `@now`, `YYYY-MM-DD HH:mm` text. Time precision is one minute. Timed
+values are local wall-clock values without a timezone offset, not portable instants.
+No schema, wire revision, Markdown parser or serializer change is needed.
+
+Valid standalone ISO dates/datetimes in rich-editor body text, including those inserted
+by the existing Date command, render as muted, keyboard-focusable `@` date buttons.
+Consequently an existing plain ISO date in prose also receives relative presentation;
+source mode, exported content and copied document slices retain the original ISO text.
+Code, math, link text, escaped dates, identifiers, timestamps with zone/seconds and the
+protected title remain literal. Dates split by ordinary formatting still render once.
+Today, Yesterday and Tomorrow take precedence; differences of two through seven local
+calendar days, inclusive, show Last/Next weekday. Beyond that, show a localized full
+month/day/year date. Optional times use the browser's local time format. Day comparisons
+use calendar fields rather than elapsed hours, preserving the boundary across DST.
+Labels refresh at minute boundaries and on visibility/focus return without editing note
+content or generating a Yjs document update. Relative words are English; calendar and
+clock formatting follow the browser locale.
+
+Hover and the accessible name expose the absolute human-readable date and optional
+time. Clicking a date, or activating its focused button with Enter/Space, opens a modal
+with Date, Include time and Time fields. Save validates local calendar fields and
+replaces the captured ISO text in one undoable edit. Cancel/Escape leaves it unchanged.
+A document change or loss of editability invalidates the captured modal. Read-only
+editors display relative dates but cannot edit them. Arrows traverse a date as a unit;
+Backspace/Delete at its boundary removes the complete date. Source editing remains
+the way to author literal ISO text directly. There are no reminders, relative task
+metadata changes, external lookups or dependencies in this feature.
 
 **Turn into…** reuses the existing complete-text-block conversion engine and its
 single-editor gate, with a visible warning and a fresh invocation check. Mobile users can
@@ -4030,6 +4088,20 @@ branch HEAD, built against the same optimized WASM and installed dependencies, m
 budget and the unchanged 741,471-byte exception ceiling. The bundle gate remains failing;
 this feature does not rebaseline it or claim physical-device performance compliance.
 
+**Approved operational bundle ceiling, 2026-10-19.** The user approved raising the
+enforced initial JS + WASM allowance to **950 KiB (972,800 bytes)** on both device
+classes for the expanded editor, covers, folder setup and PWA feature set. The
+**500 KiB (512,000-byte)** target in §21.2 is the user-approved long-term optimization
+goal, replacing the original 350 KiB target on the same date. This supersedes
+the historical 741,471-byte exception above; it is a deliberate allowance rather
+than a newly measured optimized baseline. With identical installed dependencies
+and the same existing generated WASM, local main and PR #6 builds measure 916,381
+and 921,198 bytes gzip, respectively: PR #6 adds 4,817 bytes (0.53%), leaving
+51,602 bytes (5.6%) below the approved ceiling. These local totals do not replace
+a fresh optimized CI measurement or physical-device validation. The byte tolerance
+remains zero: 972,800 bytes passes and 972,801 bytes fails. Each PR must still report
+its measured bundle-size change; lazy-asset exclusions and runtime budgets are unchanged.
+
 ### 21.1 Reference devices
 
 **t-002c watcher-signal microbenchmark, 2026-10-10.** Criterion release benches in the
@@ -4182,7 +4254,7 @@ the p95 interval between frames while the camera moves on every one of them: an 
 paints nothing and would report a perfect 16 ms whatever the renderer cost. It does **not**
 include the force layout, which has settled before the measurement starts and runs in a
 worker — §21.2 budgets the frame rate of the picture, not how long it takes to arrange it.
-| Initial JS + WASM, gzip (excl. lazy Excalidraw) | **< 350 KB** | same |
+| Initial JS + WASM, gzip (excl. lazy Excalidraw) | **< 500 KiB** | same |
 | Client search index, 10k notes | < 10 MB typical, **< 15 MB hard ceiling** | same |
 | Peak memory, 10k-note vault, index loaded | < 250 MB | < 400 MB |
 | Server memory, idle, 10k notes | — | < 150 MB |
@@ -5022,7 +5094,7 @@ index.
 - [x] `y-prosemirror` + `y-indexeddb` binding; restore-before-mount lifecycle tests
 - [x] Blocks: paragraph, headings, lists, tasks, quote, code, divider, callout, table
 - [x] Task metadata chips + date picker + slash commands
-- [x] Slash menu; Markdown input rules (`## `, `- `, `- [ ] `, `> `, ` ``` `)
+- [x] Slash menu; Markdown input rules (`## `, `- `, `1. `, `- [ ] `, `> `, ` ``` `)
 - [x] Mobile: touch drag handles, block toolbar, `VisualViewport` keyboard handling
 - [x] Source view + copy-as-markdown via WASM; long-note virtualization
 

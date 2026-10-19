@@ -12,12 +12,18 @@ export type BlockKind = "paragraph" | "heading" | "bullet_list" | "ordered_list"
 export const memberberryInputRules = Extension.create({
   name: "memberberryInputRules",
   addInputRules() {
-    const { heading, bullet_list, blockquote } = this.editor.schema.nodes;
+    const { heading, bullet_list, ordered_list, blockquote } = this.editor.schema.nodes;
     const code = this.editor.schema.marks["code"];
     if (heading === undefined || bullet_list === undefined || blockquote === undefined) return [];
     return [
       textblockTypeInputRule({ find: /^(#{1,6})\s$/, type: heading, getAttributes: (match) => ({ level: match[1]?.length ?? 1 }) }),
       wrappingInputRule({ find: /^-\s$/, type: bullet_list }),
+      ...(ordered_list === undefined ? [] : [wrappingInputRule({
+        find: /^(\d{1,9})\.\s$/, type: ordered_list,
+        getAttributes: (match) => ({ start: Number(match[1]) }),
+        // why: preserve an explicitly restarted list instead of joining every adjacent list.
+        joinPredicate: (match, before) => Number(before.attrs["start"]) + before.childCount === Number(match[1]),
+      })]),
       wrappingInputRule({ find: /^>\s$/, type: blockquote }),
       codeFenceRule(),
       taskRule(),

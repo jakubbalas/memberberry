@@ -120,8 +120,8 @@ export const BUDGETS: readonly Budget[] = [
     id: "critical-bundle-gzip",
     metric: "Initial JS + WASM, gzip (excl. lazy Excalidraw)",
     unit: "bytes",
-    mobile: 350 * 1024,
-    desktop: 350 * 1024,
+    mobile: 500 * 1024,
+    desktop: 500 * 1024,
   },
   {
     id: "server-memory-idle",

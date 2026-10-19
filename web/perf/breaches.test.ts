@@ -10,6 +10,8 @@
 import { describe, expect, it } from "vitest";
 
 import { loadBreaches, parseBreaches, recordedFor } from "./breaches.js";
+import { budgetFor } from "./budgets.js";
+import { judge } from "./verdict.js";
 
 const VALID = {
   "critical-bundle-gzip": {
@@ -74,6 +76,17 @@ describe("parsing the breach file", () => {
 });
 
 describe("the repository's own breach file", () => {
+  it.each(["mobile", "desktop"] as const)("enforces the approved 950 KiB ceiling for %s", device => {
+    const breaches = loadBreaches(new URL("./breaches.json", import.meta.url).pathname);
+    const budget = budgetFor("critical-bundle-gzip", device);
+    if (budget === undefined) throw new Error("missing bundle budget");
+    const recorded = recordedFor(breaches, "critical-bundle-gzip", device);
+    if (recorded === undefined) throw new Error("missing approved bundle ceiling");
+    const verdict = (measured: number) => judge({ measured, budget, unit: "bytes", recorded });
+
+    expect([972_799, 972_800, 972_801].map(measured => verdict(measured).fails)).toEqual([false, false, true]);
+  });
+
   it("parses, so `make perf` cannot fail on its own configuration", () => {
     const breaches = loadBreaches(new URL("./breaches.json", import.meta.url).pathname);
 

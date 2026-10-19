@@ -53,6 +53,57 @@ function type(editor: Editor, text: string): void {
 }
 
 describe("note editor keyboard input", () => {
+  it.each([0, 1, 7, 999999999])("typing %s. followed by a space starts a numbered list at that number", (start) => {
+    const editor = open({ type: "doc", content: [{ type: "paragraph" }] });
+    type(editor, `${start}. `);
+    expect(editor.getJSON()).toMatchObject({ content: [{ type: "ordered_list", attrs: { start }, content: [item("")] }] });
+  });
+
+  it("Enter continues a numbered list created by typing and an empty item exits", () => {
+    const editor = open({ type: "doc", content: [{ type: "paragraph" }] });
+    type(editor, "1. First");
+    editor.commands.keyboardShortcut("Enter"); type(editor, "Second");
+    editor.commands.keyboardShortcut("Enter"); editor.commands.keyboardShortcut("Enter"); type(editor, "Outside");
+    expect(editor.getJSON()).toMatchObject({ content: [
+      { type: "ordered_list", attrs: { start: 1 }, content: [item("First"), item("Second")] },
+      { type: "paragraph", content: [{ type: "text", text: "Outside" }] },
+    ] });
+  });
+
+  it.each(["1.", "1.2 ", "Version 1. ", "\\1. ", "1234567890. "])("keeps %j as literal paragraph text", (text) => {
+    const editor = open({ type: "doc", content: [{ type: "paragraph" }] });
+    type(editor, text);
+    expect(editor.getJSON()).toMatchObject({ content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
+  });
+
+  it("keeps a typed numbered marker literal inside a fenced code block", () => {
+    const editor = open({ type: "doc", content: [{ type: "code_block" }] });
+    type(editor, "1. literal");
+    expect(editor.getJSON()).toMatchObject({ content: [{ type: "code_block", content: [{ type: "text", text: "1. literal" }] }] });
+  });
+
+  it("allows automatic list conversion to be undone back to its literal marker", () => {
+    const editor = open({ type: "doc", content: [{ type: "paragraph" }] });
+    type(editor, "1. ");
+    expect(editor.commands.undoInputRule()).toBe(true);
+    expect(editor.getJSON()).toMatchObject({ content: [{ type: "paragraph", content: [{ type: "text", text: "1. " }] }] });
+  });
+
+  it.each([9, 1])("joins a preceding numbered list only when the typed %s. continues its sequence", (start) => {
+    const editor = open({ type: "doc", content: [
+      { type: "ordered_list", attrs: { start: 7 }, content: [item("First"), item("Second")] },
+      { type: "paragraph" },
+    ] });
+    editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+    type(editor, `${start}. Next`);
+    expect(editor.getJSON()).toMatchObject({ content: start === 9 ? [
+      { type: "ordered_list", attrs: { start: 7 }, content: [item("First"), item("Second"), item("Next")] },
+    ] : [
+      { type: "ordered_list", attrs: { start: 7 }, content: [item("First"), item("Second")] },
+      { type: "ordered_list", attrs: { start: 1 }, content: [item("Next")] },
+    ] });
+  });
+
   it.each(["bullet_list", "ordered_list"])("Enter after a nonempty %s item starts a sibling item", (kind) => {
     const editor = open({ type: "doc", content: [{ type: kind, content: [item("First")] }] });
     cursorAt(editor, "First");

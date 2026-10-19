@@ -30,7 +30,8 @@ describe("the budget table", () => {
   });
 
   it("looks a budget up by id and device", () => {
-    expect(budgetFor("critical-bundle-gzip", "mobile")).toBe(350 * 1024);
+    expect(budgetFor("critical-bundle-gzip", "mobile")).toBe(500 * 1024);
+    expect(budgetFor("critical-bundle-gzip", "desktop")).toBe(500 * 1024);
     expect(budgetFor("keystroke-to-paint", "desktop")).toBe(16);
     expect(budgetFor("nothing-like-this", "mobile")).toBeUndefined();
     expect(budget("nothing-like-this")).toBeUndefined();

@@ -215,6 +215,72 @@ function key(f: Awaited<ReturnType<typeof open>>, value: string, shiftKey = fals
   const event = new KeyboardEvent("keydown", { key: value, shiftKey, bubbles: true, cancelable: true });
   f.editor.view.dom.dispatchEvent(event); return event;
 }
+function selectTextBlocks(f: Awaited<ReturnType<typeof open>>, first: string, count = 1): void {
+  let pos: number | undefined;
+  f.editor.state.doc.descendants((node, start) => { if (pos === undefined && node.isText && node.text?.trim() === first) pos = start; });
+  if (pos === undefined) f.editor.state.doc.descendants((node, start) => { if (pos === undefined && node.isText && node.text?.startsWith(first)) pos = start; });
+  if (pos === undefined) throw new Error(`missing selected text ${first}`);
+  f.editor.commands.setTextSelection(pos); key(f, "Escape");
+  for (let i = 1; i < count; i++) key(f, "ArrowDown", true);
+}
+it.each(["Delete", "Backspace"])("%s deletes highlighted paragraphs as complete blocks and is undoable", async value => {
+  const f = await open(); selectTextBlocks(f, "Alpha", 2);
+  expect(key(f, value).defaultPrevented).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\nGamma\n");
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+  f.editor.commands.keyboardShortcut("Mod-z"); expect(await f.saved()).toBe("# Title\n\nAlpha\n\nBeta\n\nGamma\n");
+});
+it("deleting the entire highlighted body preserves the title and an editable empty paragraph", async () => {
+  const f = await open(); selectTextBlocks(f, "Alpha", 3); key(f, "Delete");
+  expect(f.editor.getJSON()).toMatchObject({ content: [{ type: "heading", content: [{ text: "Title" }] }, { type: "paragraph" }] });
+});
+it("Delete removes only selected list items, preserving neighbouring task metadata and list structure", async () => {
+  const initial = "# Title\n\n- [ ] Keep 📅 2026-10-20\n- [x] Remove ✅ 2026-10-19\n- Last\n\nAfter\n";
+  const f = await open(initial); selectTextBlocks(f, "Remove"); key(f, "Delete");
+  expect(await f.saved()).toBe("# Title\n\n- [ ] Keep 📅 2026-10-20\n- Last\n\nAfter\n");
+});
+it("Delete spans selected list items and paragraphs without merging unrelated text", async () => {
+  const f = await open("# Title\n\nBefore\n\n- A\n- B\n\nMiddle\n\nAfter\n"); selectTextBlocks(f, "B", 2); key(f, "Delete");
+  expect(await f.saved()).toBe("# Title\n\nBefore\n\n- A\n\nAfter\n");
+});
+it("Delete removes an explicit highlighted line with its separator", async () => {
+  const f = await open("# Title\n\nFirst\\\nSecond\\\nThird\n");
+  vi.spyOn(f.editor.view, "coordsAtPos").mockReturnValue({ left: 100, right: 120, top: 100, bottom: 120 });
+  selectTextBlocks(f, "Second"); key(f, "Delete");
+  expect(await f.saved()).toBe("# Title\n\nFirst\\\nThird\n");
+});
+it.each(["-", "1."])("Tab and Shift+Tab move a highlighted %s list range as one undoable group", async marker => {
+  const initial = `# Title\n\n${marker} Parent\n${marker} Alpha\n${marker} Beta\n${marker} Last\n`;
+  const f = await open(initial); selectTextBlocks(f, "Alpha", 2);
+  expect(key(f, "Tab").defaultPrevented).toBe(true);
+  const list = f.editor.state.doc.child(1);
+  expect(list.firstChild?.child(1).textContent).toBe("AlphaBeta");
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("2 blocks selected");
+  expect(key(f, "Tab", true).defaultPrevented).toBe(true); expect(await f.saved()).toBe(initial);
+  f.editor.commands.keyboardShortcut("Mod-z"); expect(f.editor.state.doc.child(1).firstChild?.child(1).textContent).toBe("AlphaBeta");
+});
+it("Tab and Shift+Tab preserve selected task statuses, dates and priorities", async () => {
+  const initial = "# Title\n\n- [ ] Parent\n- [x] Alpha 📅 2026-10-20 ⏫ ✅ 2026-10-19\n- [ ] Beta\n";
+  const f = await open(initial); const canonical = await f.saved(); selectTextBlocks(f, "Alpha", 2); key(f, "Tab");
+  expect(f.editor.state.doc.child(1).firstChild?.child(1).firstChild?.attrs).toMatchObject({ status: "done", due: "2026-10-20", priority: "high", done: "2026-10-19" });
+  key(f, "Tab", true); expect(await f.saved()).toBe(canonical);
+});
+it("Tab retains complete highlighted items with nested children so Shift+Tab lifts the whole group", async () => {
+  const initial = "# Title\n\n- Parent\n- Alpha\n  - Child\n- Beta\n  - Last child\n- After\n";
+  const f = await open(initial); const before = await f.saved(); selectTextBlocks(f, "Alpha", 2); key(f, "Tab");
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("2 blocks selected");
+  key(f, "Tab", true); expect(await f.saved()).toBe(before);
+});
+it("unsupported block indentation is consumed without partial edits or losing the highlighted range", async () => {
+  const f = await open(); selectTextBlocks(f, "Alpha", 2); const before = await f.saved();
+  expect(key(f, "Tab").defaultPrevented).toBe(true); expect(await f.saved()).toBe(before);
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("2 blocks selected");
+});
+it("Shift+Tab never drops task metadata by lifting top-level task items into paragraphs", async () => {
+  const initial = "# Title\n\n- [x] Alpha 📅 2026-10-20\n- [ ] Beta\n";
+  const f = await open(initial); selectTextBlocks(f, "Alpha", 2);
+  expect(key(f, "Tab", true).defaultPrevented).toBe(true); expect(await f.saved()).toBe(initial);
+});
 it("selects complete blocks separately from text, extends/shrinks with Shift arrows and keeps the range after moving", async () => {
   const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 2);
   expect(key(f, "Escape").defaultPrevented).toBe(true);
@@ -300,6 +366,75 @@ it("margin marquee selects full rows, Shift-click extends them and cancel remove
   f.editor.view.dom.dispatchEvent(pointer("pointerdown", 80, 145)); document.dispatchEvent(pointer("pointermove", 200, 280));
   document.dispatchEvent(new Event("pointercancel"));
   expect(document.querySelectorAll(".block-selection-highlight, .block-selection-marquee")).toHaveLength(0);
+});
+
+it.each([
+  { x: 400, reverse: false, gap: false, label: "blank space inside a paragraph" },
+  { x: 650, reverse: false, gap: false, label: "the right margin without crossing back over text" },
+  { x: 80, reverse: false, gap: false, label: "the left margin without crossing over text" },
+  { x: 400, reverse: true, gap: false, label: "blank space dragged upwards" },
+  { x: 400, reverse: false, gap: true, label: "a gap between paragraphs at a block boundary" },
+])("selects rows from $label and keeps the grabber hidden until release", async ({ x, reverse, gap }) => {
+  const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 2);
+  vi.spyOn(f.panel, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 700, 600));
+  for (let i = 0; i < 4; i++) {
+    const el = f.editor.view.nodeDOM(f.start(i)); if (!(el instanceof HTMLElement)) throw new Error("missing row DOM");
+    vi.spyOn(el, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 50 + i * 100, 500, 40));
+  }
+  const createRange = document.createRange.bind(document);
+  vi.spyOn(document, "createRange").mockImplementation(() => {
+    const range = createRange();
+    // why: jsdom has no glyph geometry; the real-browser regression supplies that boundary.
+    Object.defineProperty(range, "getClientRects", { value: () => [new DOMRect(100, 150, 55, 40), new DOMRect(100, 250, 45, 40)] });
+    return range;
+  });
+  vi.spyOn(f.editor.view, "posAtCoords").mockImplementation(coords => ({ pos: f.start(coords.top < 200 ? 1 : 2) + (gap || coords.left < 100 ? 0 : 1), inside: -1 }));
+  const startY = gap ? 145 : reverse ? 280 : 160; const endY = reverse ? 160 : 280;
+  const row = f.editor.view.dom.querySelectorAll("p")[reverse ? 1 : 0]; if (!row) throw new Error("missing paragraph");
+  (gap ? f.editor.view.dom : row).dispatchEvent(pointer("pointerdown", x, startY));
+  document.dispatchEvent(pointer("pointermove", x + 2, endY));
+  await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+  expect(document.querySelectorAll(".block-selection-highlight")).toHaveLength(2);
+  expect(f.group.hidden).toBe(true);
+  document.dispatchEvent(pointer("pointerup", x + 2, endY));
+  expect(document.querySelector(".block-selection-marquee")).toBeNull();
+  expect(f.group.hidden).toBe(false);
+  expect(f.control("Move 2 blocks")).toBeDefined();
+  expect(await f.saved()).toBe("# Title\n\nAlpha\n\nBeta\n\nGamma\n");
+});
+
+it("does not intercept a drag on rendered text inside a paragraph", async () => {
+  const f = await open();
+  const row = f.editor.view.dom.querySelector("p"); if (!row) throw new Error("missing paragraph");
+  vi.spyOn(row, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 150, 500, 40));
+  vi.spyOn(f.editor.view, "posAtCoords").mockReturnValue({ pos: f.start(1) + 2, inside: -1 });
+  const createRange = document.createRange.bind(document);
+  vi.spyOn(document, "createRange").mockImplementation(() => {
+    const range = createRange();
+    Object.defineProperty(range, "getClientRects", { value: () => [new DOMRect(100, 150, 55, 40)] });
+    return range;
+  });
+  const down = pointer("pointerdown", 120, 170); row.dispatchEvent(down);
+  document.dispatchEvent(pointer("pointermove", 150, 180));
+  expect(down.defaultPrevented).toBe(false);
+  expect(document.querySelector(".block-selection-marquee")).toBeNull();
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+});
+
+it("hides the grabber for native text highlighting and restores it for a collapsed caret", async () => {
+  const f = await open();
+  f.editor.commands.setTextSelection({ from: f.start(1) + 1, to: f.start(1) + 4 });
+  f.handles.refresh();
+  await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+  expect(f.group.hidden).toBe(true);
+  // Keyboard access to movement remains available while the floating grabber is hidden.
+  expect(f.handles.focus()).toBe(true);
+  expect(f.menu.hidden).toBe(false);
+  f.menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  f.editor.commands.setTextSelection(f.start(1) + 2);
+  f.handles.refresh();
+  await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+  expect(f.group.hidden).toBe(false);
 });
 it("keeps selected rows visible above the bottom-pinned mobile toolbar", async () => {
   const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 2);
