@@ -2,6 +2,15 @@
 
 ## Current state (2026-10-19)
 
+The latest iteration rewrites README.md as the project introduction: purpose, important
+features, local and production setup, storage, existing-vault registration, development,
+and documentation links. The old Status section and implementation history are removed.
+This is documentation-only; behavior and SPEC.md are unchanged. Documentation diff,
+relative links, and commands were reviewed against the repository. No application tests
+were needed; full checks, coverage, and manual full E2E remain deferred/pending below.
+
+The existing integration state and its verification/open items remain relevant:
+
 Local branch `integrate/pr-6` integrates PR #6 at
 `af6ea5e4f08c92e64eb7785bf4ab22aba49a4c00` into main at
 `69458126f4db9b46d444e3f824200713b11c9d1b`. PR #5's integration is already
@@ -71,9 +80,9 @@ with --report-only and does not establish budget acceptance.
 
 ## Next
 
-Review the local integration merge and obtain fresh CI for the approved bundle ceiling.
-Focused integration verification passes;
-main and remote refs remain unchanged by this local integration.
+Review the README presentation changes alongside the local integration merge, then
+obtain fresh CI for the approved bundle ceiling. Focused integration verification
+passes; main and remote refs remain unchanged by this documentation iteration.
 
 ## Local development and gotchas
 
