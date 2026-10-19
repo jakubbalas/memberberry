@@ -301,6 +301,75 @@ it("margin marquee selects full rows, Shift-click extends them and cancel remove
   document.dispatchEvent(new Event("pointercancel"));
   expect(document.querySelectorAll(".block-selection-highlight, .block-selection-marquee")).toHaveLength(0);
 });
+
+it.each([
+  { x: 400, reverse: false, gap: false, label: "blank space inside a paragraph" },
+  { x: 650, reverse: false, gap: false, label: "the right margin without crossing back over text" },
+  { x: 80, reverse: false, gap: false, label: "the left margin without crossing over text" },
+  { x: 400, reverse: true, gap: false, label: "blank space dragged upwards" },
+  { x: 400, reverse: false, gap: true, label: "a gap between paragraphs at a block boundary" },
+])("selects rows from $label and keeps the grabber hidden until release", async ({ x, reverse, gap }) => {
+  const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 2);
+  vi.spyOn(f.panel, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 700, 600));
+  for (let i = 0; i < 4; i++) {
+    const el = f.editor.view.nodeDOM(f.start(i)); if (!(el instanceof HTMLElement)) throw new Error("missing row DOM");
+    vi.spyOn(el, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 50 + i * 100, 500, 40));
+  }
+  const createRange = document.createRange.bind(document);
+  vi.spyOn(document, "createRange").mockImplementation(() => {
+    const range = createRange();
+    // why: jsdom has no glyph geometry; the real-browser regression supplies that boundary.
+    Object.defineProperty(range, "getClientRects", { value: () => [new DOMRect(100, 150, 55, 40), new DOMRect(100, 250, 45, 40)] });
+    return range;
+  });
+  vi.spyOn(f.editor.view, "posAtCoords").mockImplementation(coords => ({ pos: f.start(coords.top < 200 ? 1 : 2) + (gap || coords.left < 100 ? 0 : 1), inside: -1 }));
+  const startY = gap ? 145 : reverse ? 280 : 160; const endY = reverse ? 160 : 280;
+  const row = f.editor.view.dom.querySelectorAll("p")[reverse ? 1 : 0]; if (!row) throw new Error("missing paragraph");
+  (gap ? f.editor.view.dom : row).dispatchEvent(pointer("pointerdown", x, startY));
+  document.dispatchEvent(pointer("pointermove", x + 2, endY));
+  await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+  expect(document.querySelectorAll(".block-selection-highlight")).toHaveLength(2);
+  expect(f.group.hidden).toBe(true);
+  document.dispatchEvent(pointer("pointerup", x + 2, endY));
+  expect(document.querySelector(".block-selection-marquee")).toBeNull();
+  expect(f.group.hidden).toBe(false);
+  expect(f.control("Move 2 blocks")).toBeDefined();
+  expect(await f.saved()).toBe("# Title\n\nAlpha\n\nBeta\n\nGamma\n");
+});
+
+it("does not intercept a drag on rendered text inside a paragraph", async () => {
+  const f = await open();
+  const row = f.editor.view.dom.querySelector("p"); if (!row) throw new Error("missing paragraph");
+  vi.spyOn(row, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 150, 500, 40));
+  vi.spyOn(f.editor.view, "posAtCoords").mockReturnValue({ pos: f.start(1) + 2, inside: -1 });
+  const createRange = document.createRange.bind(document);
+  vi.spyOn(document, "createRange").mockImplementation(() => {
+    const range = createRange();
+    Object.defineProperty(range, "getClientRects", { value: () => [new DOMRect(100, 150, 55, 40)] });
+    return range;
+  });
+  const down = pointer("pointerdown", 120, 170); row.dispatchEvent(down);
+  document.dispatchEvent(pointer("pointermove", 150, 180));
+  expect(down.defaultPrevented).toBe(false);
+  expect(document.querySelector(".block-selection-marquee")).toBeNull();
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+});
+
+it("hides the grabber for native text highlighting and restores it for a collapsed caret", async () => {
+  const f = await open();
+  f.editor.commands.setTextSelection({ from: f.start(1) + 1, to: f.start(1) + 4 });
+  f.handles.refresh();
+  await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+  expect(f.group.hidden).toBe(true);
+  // Keyboard access to movement remains available while the floating grabber is hidden.
+  expect(f.handles.focus()).toBe(true);
+  expect(f.menu.hidden).toBe(false);
+  f.menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  f.editor.commands.setTextSelection(f.start(1) + 2);
+  f.handles.refresh();
+  await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+  expect(f.group.hidden).toBe(false);
+});
 it("keeps selected rows visible above the bottom-pinned mobile toolbar", async () => {
   const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 2);
   vi.spyOn(f.panel, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 700, 600));

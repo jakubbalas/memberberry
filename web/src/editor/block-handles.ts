@@ -126,7 +126,8 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     const rect = unitRect(token);
     if (!rect) { hide(); return; }
     const bounds = paneBounds();
-    if (rect.bottom < bounds.top || rect.top > bounds.bottom) { group.hidden = true; close(); } else group.hidden = false;
+    if (rect.bottom < bounds.top || rect.top > bounds.bottom) { group.hidden = true; close(); }
+    else group.hidden = selection.selecting() || editor.state.selection instanceof TextSelection && !editor.state.selection.empty;
     const groupRect = group.getBoundingClientRect();
     // why: pin to the gutter's start so the clearance from the text is the CSS gutter's alone.
     const gutter = dom.getBoundingClientRect().left;
@@ -154,12 +155,14 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   const schedule = (): void => { if (!destroyed && token && frame === undefined) frame = window.requestAnimationFrame(position); };
   const show = (next: BlockMoveToken | undefined): void => {
     if (!next) { hide(); return; }
-    token = next; group.hidden = false; grip.setAttribute("aria-label", next.label); grip.title = `${next.label} (drag or open actions)`;
+    token = next; group.hidden = selection.selecting() || editor.state.selection instanceof TextSelection && !editor.state.selection.empty;
+    grip.setAttribute("aria-label", next.label); grip.title = `${next.label} (drag or open actions)`;
     menu.setAttribute("aria-label", next.label); syncControls(); schedule();
   };
   const selection = mountBlockSelection({ editor, panel, mover, rect: unitRect, dragging: () => drag !== undefined, changed: next => { if (next) show(next); else refresh(); } });
   const refresh = (): void => {
     if (destroyed || applying || handingOff) return;
+    if (selection.selecting()) { group.hidden = true; close(); return; }
     if (drag || !menu.hidden) { if (!token || !mover.isCurrent(token)) hide(); return; }
     const caret = editor.state.selection;
     show(selection.current() ?? mover.capture(caret instanceof NodeSelection ? caret.from : caret.head));
@@ -215,7 +218,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
   const expandDown = (): void => { close(); selection.extend(1); editor.view.focus(); };
   const clearBlocks = (): void => { close(); selection.clear(); editor.view.focus(); };
   const hover = (event: PointerEvent): void => {
-    if (drag || selection.current() || !menu.hidden || event.pointerType === "touch" || !(event.target instanceof window.Node) || !dom.contains(event.target)) return;
+    if (drag || event.buttons !== 0 || selection.selecting() || selection.current() || !menu.hidden || event.pointerType === "touch" || !(event.target instanceof window.Node) || !dom.contains(event.target)) return;
     // why: the gutter and the gaps between blocks are the editor root's own padding/margins;
     // posAtDOM(root, 0) there is the title, so crossing the gap to the handles hid them.
     // Resolve the root under the pointer's row instead, and keep the current one if none.

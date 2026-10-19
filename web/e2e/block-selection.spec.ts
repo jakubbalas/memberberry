@@ -6,6 +6,56 @@ import { E2E_VAULT } from "./environment.js";
 import { expect, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
+test("blank drags across the pane select rows without the grabber obstructing selection", async ({ page }, info) => {
+  test.skip(info.project.name === "mobile", "touch retains native scrolling and menu selection");
+  await signIn(page);
+  const path = `Full pane ${randomUUID()}.md`;
+  const initial = "# Title\n\nAlpha **marked** text\n\n- Beta\n\nGamma\n\nAfter\n";
+  expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path, content: initial } })).ok()).toBe(true);
+  await page.goto(`/v/personal/${encodeURIComponent(path)}`);
+  const editor = page.locator(EDITOR);
+  const alpha = editor.locator("p").filter({ hasText: "Alpha" });
+  const gamma = editor.getByText("Gamma", { exact: true });
+  await alpha.click();
+  const [first, last, pane] = await Promise.all([alpha.boundingBox(), gamma.boundingBox(), editor.boundingBox()]);
+  if (!first || !last || !pane) throw new Error("missing pane geometry");
+  for (const gesture of [
+    { x: first.x + first.width - 15, reverse: false },
+    { x: first.x + first.width / 2, reverse: true },
+    { x: first.x - 8, reverse: false },
+    { x: pane.x + pane.width + 5, reverse: true },
+  ]) {
+    const top = first.y + first.height / 2; const bottom = last.y + last.height / 2;
+    await page.mouse.move(gesture.x, gesture.reverse ? bottom : top); await page.mouse.down();
+    await page.mouse.move(gesture.x, gesture.reverse ? top : bottom, { steps: 12 });
+    await expect(page.locator(".block-selection-highlight")).toHaveCount(3);
+    await expect(page.locator(".block-handles")).toHaveJSProperty("hidden", true);
+    await page.mouse.up();
+    await expect(page.getByRole("button", { name: "Move 3 blocks", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+  }
+  // A click at the right of a paragraph remains an ordinary caret placement.
+  await page.mouse.click(first.x + first.width - 15, first.y + first.height / 2);
+  await page.keyboard.type("!");
+  const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
+  await expect.poll(disk).toBe(initial.replace("marked** text", "marked** text!"));
+  await page.keyboard.press("ControlOrMeta+z"); await expect.poll(disk).toBe(initial);
+  const glyphs = await alpha.evaluate(element => {
+    const text = element.firstChild; if (!text) throw new Error("missing text");
+    const range = document.createRange(); range.setStart(text, 0); range.setEnd(text, 5);
+    const box = range.getBoundingClientRect(); return { left: box.left, right: box.right, y: box.top + box.height / 2 };
+  });
+  for (const reverse of [false, true]) {
+    await page.mouse.move(reverse ? glyphs.right - 1 : glyphs.left + 1, glyphs.y); await page.mouse.down();
+    await page.mouse.move(reverse ? glyphs.left + 1 : glyphs.right - 1, glyphs.y, { steps: 8 }); await page.mouse.up();
+    await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("Alpha");
+    await expect(page.locator(".block-selection-highlight")).toHaveCount(0);
+    await expect(page.locator(".block-handles")).toHaveJSProperty("hidden", true);
+  }
+  await page.screenshot({ path: info.outputPath("native-text-selection.png") });
+  await expect.poll(disk).toBe(initial);
+});
+
 test("margin marquee selects bullets and a paragraph and drags them together", async ({ page }, info) => {
   test.skip(info.project.name === "mobile", "touch uses the block menu without taking over scrolling");
   await signIn(page);
@@ -35,6 +85,38 @@ test("margin marquee selects bullets and a paragraph and drags them together", a
   await expect.poll(disk, { timeout: 15_000 }).toBe("# Title\n\nBefore\n\nAfter\n\n- **Alpha**\n- Beta\n\nMiddle\n");
   await page.keyboard.press("ControlOrMeta+z"); await expect.poll(disk).toBe(initial);
   await page.reload(); await expect(editor).toContainText("Middle");
+});
+
+test("wrapped Unicode text keeps native glyph selection and blank-space row selection separate", async ({ page }, info) => {
+  test.skip(info.project.name === "mobile", "touch retains native text selection and scrolling");
+  await signIn(page);
+  const path = `Wrapped selection ${randomUUID()}.md`;
+  const initial = `# Title\n\n${"Wide α🌍 text ".repeat(16)}tail\n\nAfter\n`;
+  expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path, content: initial } })).ok()).toBe(true);
+  await page.goto(`/v/personal/${encodeURIComponent(path)}`);
+  const editor = page.locator(EDITOR); const paragraph = editor.locator("p").filter({ hasText: "Wide" });
+  await expect(paragraph).toBeVisible();
+  const geometry = await paragraph.evaluate(element => {
+    const range = document.createRange(); range.selectNodeContents(element);
+    const rects = Array.from(range.getClientRects()); const last = rects.at(-1);
+    if (!last || rects.length < 2) throw new Error("fixture must wrap onto multiple visual lines");
+    const box = element.getBoundingClientRect();
+    return { left: last.left, right: last.right, y: last.top + last.height / 2, blank: box.right - 8 };
+  });
+  expect(geometry.blank).toBeGreaterThan(geometry.right);
+  const after = await editor.getByText("After", { exact: true }).boundingBox(); if (!after) throw new Error("missing endpoint");
+  await page.mouse.move(geometry.blank, geometry.y); await page.mouse.down();
+  await page.mouse.move(geometry.blank, after.y + after.height / 2, { steps: 8 });
+  await expect(page.locator(".block-selection-highlight")).toHaveCount(2);
+  await expect(page.locator(".block-handles")).toHaveJSProperty("hidden", true);
+  await page.mouse.up(); await page.screenshot({ path: info.outputPath("wrapped-purple-selection.png") });
+  await page.keyboard.press("Escape");
+  await page.mouse.move(geometry.left + 1, geometry.y); await page.mouse.down();
+  await page.mouse.move(geometry.right - 1, geometry.y, { steps: 8 }); await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toContain("tail");
+  await expect(page.locator(".block-selection-highlight")).toHaveCount(0);
+  await expect(page.locator(".block-handles")).toHaveJSProperty("hidden", true);
+  expect(readFileSync(join(E2E_VAULT, path), "utf8")).toBe(initial);
 });
 
 test("keyboard and touch menus select a range, move it once and clear with Escape", async ({ page }, info) => {

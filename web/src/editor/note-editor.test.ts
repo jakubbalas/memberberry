@@ -54,6 +54,7 @@ describe("startNoteEditor", () => {
       extensions: expect.arrayContaining([
         expect.objectContaining({ name: "memberberryYjs" }),
         expect.objectContaining({ name: "tableRowHandles" }),
+        expect.objectContaining({ name: "memberberryDateMentions" }),
       ]),
       editable: true,
     });
