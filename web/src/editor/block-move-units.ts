@@ -91,6 +91,17 @@ export function reorderMoveUnits(tr: Transaction, plan: MoveUnits, index: number
   const moved = new Set(rows.splice(index, count));
   if (moved.size !== count || count < 1) return undefined;
   rows.splice(boundary > index ? boundary - count : boundary, 0, ...moved);
+  return replaceMoveUnits(tr, plan, rows, moved);
+}
+
+/** Removes complete captured units, including their list wrappers and line separators. */
+export function removeMoveUnits(tr: Transaction, plan: MoveUnits, index: number, count: number): boolean {
+  if (!Number.isInteger(index) || !Number.isInteger(count) || index < 0 || count < 1 || index + count > plan.units.length) return false;
+  const rows = plan.units.filter((_row, at) => at < index || at >= index + count);
+  return replaceMoveUnits(tr, plan, rows, new Set(), true) !== undefined;
+}
+
+function replaceMoveUnits(tr: Transaction, plan: MoveUnits, rows: readonly MoveUnit[], moved: ReadonlySet<MoveUnit>, deleting = false): UnitMoveResult | undefined {
   const nodes: PMNode[] = [];
   const locations = new Map<MoveUnit, number>();
   const numbering = new Map<PMNode, number>();
@@ -108,7 +119,7 @@ export function reorderMoveUnits(tr: Transaction, plan: MoveUnits, index: number
     }
     const resident = group.find(row => !moved.has(row));
     const parent = resident?.parent ?? first.parent;
-    const ownsAnchor = group.some(row => row.parent === parent && row.childIndex === 0);
+    const ownsAnchor = deleting || group.some(row => row.parent === parent && row.childIndex === 0);
     const attrs: Record<string, unknown> = { ...parent.attrs, ...(ownsAnchor ? {} : { anchor: null }) };
     if (!first.inline && parent.type.name === "ordered_list") {
       // why: numbering belongs to the resulting list, not to the original item offsets.
@@ -130,7 +141,7 @@ export function reorderMoveUnits(tr: Transaction, plan: MoveUnits, index: number
       locations.set(row, offset);
       if (row.inline) {
         row.node.forEach(node => children.push(node)); offset += row.node.content.size;
-        if (g < group.length - 1) { const separator = breaks[g]; if (!separator) return undefined; children.push(separator); offset += separator.nodeSize; }
+        if (g < group.length - 1) { const separator = breaks[deleting ? row.childIndex : g]; if (!separator) return undefined; children.push(separator); offset += separator.nodeSize; }
       } else { children.push(row.node); offset += row.node.nodeSize; }
     }
     const node = parent.type.createChecked(attrs, Fragment.fromArray(children), parent.marks);
@@ -138,9 +149,15 @@ export function reorderMoveUnits(tr: Transaction, plan: MoveUnits, index: number
   }
   if (plan.parent.type.name !== "doc") {
     // why: nested items stay within their own list; moving a parent still carries its subtree.
-    if (nodes.length !== 1) return undefined;
+    if (nodes.length > 1 || (!deleting && nodes.length !== 1)) return undefined;
     tr.replaceWith(plan.from, plan.from + plan.parent.nodeSize, nodes);
   } else {
+    if (deleting && (nodes.length === 0 || (nodes.length === 1 && nodes[0]?.type.name === "heading" && nodes[0].attrs["level"] === 1))) {
+      const paragraph = tr.doc.type.schema.nodes["paragraph"];
+      if (!paragraph) return undefined;
+      // why: deleting the last body block must leave a place to type below the protected title.
+      nodes.push(paragraph.createChecked());
+    }
     let prefix = 0; let suffix = 0; let from = 0; let to = plan.parent.content.size;
     while (prefix < nodes.length && prefix < plan.parent.childCount && nodes[prefix]?.eq(plan.parent.child(prefix))) { from += plan.parent.child(prefix).nodeSize; prefix++; }
     while (suffix < nodes.length - prefix && suffix < plan.parent.childCount - prefix && nodes[nodes.length - 1 - suffix]?.eq(plan.parent.child(plan.parent.childCount - 1 - suffix))) { to -= plan.parent.child(plan.parent.childCount - 1 - suffix).nodeSize; suffix++; }

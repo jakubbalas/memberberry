@@ -215,6 +215,72 @@ function key(f: Awaited<ReturnType<typeof open>>, value: string, shiftKey = fals
   const event = new KeyboardEvent("keydown", { key: value, shiftKey, bubbles: true, cancelable: true });
   f.editor.view.dom.dispatchEvent(event); return event;
 }
+function selectTextBlocks(f: Awaited<ReturnType<typeof open>>, first: string, count = 1): void {
+  let pos: number | undefined;
+  f.editor.state.doc.descendants((node, start) => { if (pos === undefined && node.isText && node.text?.trim() === first) pos = start; });
+  if (pos === undefined) f.editor.state.doc.descendants((node, start) => { if (pos === undefined && node.isText && node.text?.startsWith(first)) pos = start; });
+  if (pos === undefined) throw new Error(`missing selected text ${first}`);
+  f.editor.commands.setTextSelection(pos); key(f, "Escape");
+  for (let i = 1; i < count; i++) key(f, "ArrowDown", true);
+}
+it.each(["Delete", "Backspace"])("%s deletes highlighted paragraphs as complete blocks and is undoable", async value => {
+  const f = await open(); selectTextBlocks(f, "Alpha", 2);
+  expect(key(f, value).defaultPrevented).toBe(true);
+  expect(await f.saved()).toBe("# Title\n\nGamma\n");
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(false);
+  f.editor.commands.keyboardShortcut("Mod-z"); expect(await f.saved()).toBe("# Title\n\nAlpha\n\nBeta\n\nGamma\n");
+});
+it("deleting the entire highlighted body preserves the title and an editable empty paragraph", async () => {
+  const f = await open(); selectTextBlocks(f, "Alpha", 3); key(f, "Delete");
+  expect(f.editor.getJSON()).toMatchObject({ content: [{ type: "heading", content: [{ text: "Title" }] }, { type: "paragraph" }] });
+});
+it("Delete removes only selected list items, preserving neighbouring task metadata and list structure", async () => {
+  const initial = "# Title\n\n- [ ] Keep 📅 2026-10-20\n- [x] Remove ✅ 2026-10-19\n- Last\n\nAfter\n";
+  const f = await open(initial); selectTextBlocks(f, "Remove"); key(f, "Delete");
+  expect(await f.saved()).toBe("# Title\n\n- [ ] Keep 📅 2026-10-20\n- Last\n\nAfter\n");
+});
+it("Delete spans selected list items and paragraphs without merging unrelated text", async () => {
+  const f = await open("# Title\n\nBefore\n\n- A\n- B\n\nMiddle\n\nAfter\n"); selectTextBlocks(f, "B", 2); key(f, "Delete");
+  expect(await f.saved()).toBe("# Title\n\nBefore\n\n- A\n\nAfter\n");
+});
+it("Delete removes an explicit highlighted line with its separator", async () => {
+  const f = await open("# Title\n\nFirst\\\nSecond\\\nThird\n");
+  vi.spyOn(f.editor.view, "coordsAtPos").mockReturnValue({ left: 100, right: 120, top: 100, bottom: 120 });
+  selectTextBlocks(f, "Second"); key(f, "Delete");
+  expect(await f.saved()).toBe("# Title\n\nFirst\\\nThird\n");
+});
+it.each(["-", "1."])("Tab and Shift+Tab move a highlighted %s list range as one undoable group", async marker => {
+  const initial = `# Title\n\n${marker} Parent\n${marker} Alpha\n${marker} Beta\n${marker} Last\n`;
+  const f = await open(initial); selectTextBlocks(f, "Alpha", 2);
+  expect(key(f, "Tab").defaultPrevented).toBe(true);
+  const list = f.editor.state.doc.child(1);
+  expect(list.firstChild?.child(1).textContent).toBe("AlphaBeta");
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("2 blocks selected");
+  expect(key(f, "Tab", true).defaultPrevented).toBe(true); expect(await f.saved()).toBe(initial);
+  f.editor.commands.keyboardShortcut("Mod-z"); expect(f.editor.state.doc.child(1).firstChild?.child(1).textContent).toBe("AlphaBeta");
+});
+it("Tab and Shift+Tab preserve selected task statuses, dates and priorities", async () => {
+  const initial = "# Title\n\n- [ ] Parent\n- [x] Alpha 📅 2026-10-20 ⏫ ✅ 2026-10-19\n- [ ] Beta\n";
+  const f = await open(initial); const canonical = await f.saved(); selectTextBlocks(f, "Alpha", 2); key(f, "Tab");
+  expect(f.editor.state.doc.child(1).firstChild?.child(1).firstChild?.attrs).toMatchObject({ status: "done", due: "2026-10-20", priority: "high", done: "2026-10-19" });
+  key(f, "Tab", true); expect(await f.saved()).toBe(canonical);
+});
+it("Tab retains complete highlighted items with nested children so Shift+Tab lifts the whole group", async () => {
+  const initial = "# Title\n\n- Parent\n- Alpha\n  - Child\n- Beta\n  - Last child\n- After\n";
+  const f = await open(initial); const before = await f.saved(); selectTextBlocks(f, "Alpha", 2); key(f, "Tab");
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("2 blocks selected");
+  key(f, "Tab", true); expect(await f.saved()).toBe(before);
+});
+it("unsupported block indentation is consumed without partial edits or losing the highlighted range", async () => {
+  const f = await open(); selectTextBlocks(f, "Alpha", 2); const before = await f.saved();
+  expect(key(f, "Tab").defaultPrevented).toBe(true); expect(await f.saved()).toBe(before);
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("2 blocks selected");
+});
+it("Shift+Tab never drops task metadata by lifting top-level task items into paragraphs", async () => {
+  const initial = "# Title\n\n- [x] Alpha 📅 2026-10-20\n- [ ] Beta\n";
+  const f = await open(initial); selectTextBlocks(f, "Alpha", 2);
+  expect(key(f, "Tab", true).defaultPrevented).toBe(true); expect(await f.saved()).toBe(initial);
+});
 it("selects complete blocks separately from text, extends/shrinks with Shift arrows and keeps the range after moving", async () => {
   const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 2);
   expect(key(f, "Escape").defaultPrevented).toBe(true);

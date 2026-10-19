@@ -92,7 +92,7 @@ export function mountBlockSelection(options: Options): BlockSelection {
   };
   const set = (token: BlockMoveToken | undefined): void => {
     selected = token;
-    const message = token ? `${token.count} ${token.count === 1 ? "block" : "blocks"} selected. Drag the handle or use Move up/down. Shift+↑/↓ extends; Escape clears.` : "";
+    const message = token ? `${token.count} ${token.count === 1 ? "block" : "blocks"} selected. Delete removes; Tab/Shift+Tab changes supported list nesting. Shift+↑/↓ extends; Escape clears.` : "";
     if (status.textContent !== message) status.textContent = message;
     dom.classList.toggle("has-block-selection", token !== undefined);
     render(); options.changed(token);
@@ -209,7 +209,7 @@ export function mountBlockSelection(options: Options): BlockSelection {
   };
   const cancel = (): void => { if (marquee) clear(); };
   const keydown = (event: KeyboardEvent): void => {
-    if (event.defaultPrevented || options.dragging()) return;
+    if (event.defaultPrevented || options.dragging() || event.isComposing || editor.view.composing) return;
     if (event.ctrlKey || event.metaKey) { if (!["Control", "Meta"].includes(event.key)) clear(); return; }
     if (event.altKey) return;
     if (event.key === "Escape" && !selected && panel.querySelector(".block-catalog:not([hidden])")) return;
@@ -218,6 +218,17 @@ export function mountBlockSelection(options: Options): BlockSelection {
       else if (editor.state.selection.empty) {
         const token = mover.capture(editor.state.selection.head);
         if (token) { event.preventDefault(); select(token); }
+      }
+    } else if (selected && ["Delete", "Backspace", "Tab"].includes(event.key)) {
+      event.preventDefault();
+      const token = current();
+      if (!token) clear();
+      else {
+        const action = event.key === "Tab" ? event.shiftKey ? "outdent" : "indent" : "delete";
+        if (mover.edit(token, action)) {
+          if (action === "delete") clear(); else moved(token);
+          editor.view.focus();
+        }
       }
     } else if (current() && event.shiftKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
       event.preventDefault(); extend(event.key === "ArrowUp" ? -1 : 1);

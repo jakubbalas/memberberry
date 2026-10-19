@@ -2534,6 +2534,21 @@ The rectangle and selected rows use translucent
 Memberberry purple tokens in every theme. A gesture beginning in text retains native text
 selection. Shift-click extends an existing block selection to an endpoint.
 
+**Selected-block keyboard actions (2026-10-19, t-021).** Delete or Backspace on a
+purple block selection removes the complete captured range in one isolated undo step.
+List items and explicit paragraph lines are removed with their structural separators;
+unselected text, task metadata, surviving list anchors/numbering and the protected title
+remain intact. Deleting the last body block leaves an empty paragraph for continued typing.
+Tab nests supported selected sibling list items together under their preceding item;
+Shift+Tab lifts them together. Bulleted, numbered and task items are supported where the
+schema admits the whole operation. A root task is not lifted into prose, since that would
+discard its status/date attributes. Mixed scopes, incompatible item types, first items
+with no preceding sibling and unsupported prose ranges remain unchanged; the keys are
+consumed while a block selection exists so they cannot edit only the native caret.
+Successful nesting preserves the selected range for further actions. Native text
+selections retain their ordinary behavior. These structural actions reuse movement's
+current-document, editability, readiness and single-editor checks and collaborative undo.
+
 Escape on a collapsed body caret selects its movement unit; Shift-Up/Down extends or shrinks
 the contiguous range, and Escape clears it. The block menu offers Select block, Extend
 selection up/down and Clear block selection, also reached on touch through More → Block

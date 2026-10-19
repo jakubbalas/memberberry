@@ -6,6 +6,85 @@ import { E2E_VAULT } from "./environment.js";
 import { expect, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
+test("Delete removes the complete highlighted mixed range and undo restores it", async ({ page }, info) => {
+  await signIn(page);
+  const path = `Delete selection ${info.project.name} ${randomUUID()}.md`;
+  const initial = "# Title\n\nBefore\n\n- Alpha\n- Beta\n\nMiddle\n\nAfter\n";
+  expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path, content: initial } })).ok()).toBe(true);
+  await page.goto(`/v/personal/${encodeURIComponent(path)}`);
+  const editor = page.locator(EDITOR); await editor.getByText("Alpha", { exact: true }).click();
+  await page.keyboard.press("Escape"); await page.keyboard.press("Shift+ArrowDown"); await page.keyboard.press("Shift+ArrowDown");
+  await expect(page.locator(".block-selection-highlight")).toHaveCount(3);
+  await page.keyboard.press("Delete");
+  const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
+  await expect.poll(disk, { timeout: 15_000 }).toBe("# Title\n\nBefore\n\nAfter\n");
+  await expect(editor.locator("h1")).toHaveText("Title");
+  await expect(page.locator(".block-selection-highlight")).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+z"); await expect.poll(disk).toBe(initial);
+  await page.reload(); await expect(editor.locator("ul li")).toHaveText(["Alpha", "Beta"]);
+});
+
+for (const [marker, tag] of [["-", "ul"], ["1.", "ol"]]) {
+  test(`Tab and Shift+Tab indent and outdent highlighted ${tag} items together`, async ({ page }, info) => {
+    await signIn(page);
+    const path = `Indent selection ${tag} ${info.project.name} ${randomUUID()}.md`;
+    const initial = `# Title\n\n${marker} Parent\n${marker} Alpha\n${marker} Beta\n${marker} Last\n`;
+    expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path, content: initial } })).ok()).toBe(true);
+    await page.goto(`/v/personal/${encodeURIComponent(path)}`);
+    const editor = page.locator(EDITOR);
+    const select = async (): Promise<void> => {
+      // why: reload restores a local body before the single-editor sync gate is ready.
+      await expect(page.getByRole("button", { name: "Move list item", exact: true, includeHidden: true })).toBeEnabled();
+      await editor.getByText("Alpha", { exact: true }).click();
+      await expect.poll(() => editor.evaluate(element => {
+        const model = (element as HTMLElement & { editor?: { state: { selection: { empty: boolean; $head: { parent: { textContent: string } } } } } }).editor;
+        return model?.state.selection.empty && model.state.selection.$head.parent.textContent;
+      })).toBe("Alpha");
+      await page.keyboard.press("Escape"); await page.keyboard.press("Shift+ArrowDown");
+      await expect(page.locator(".block-selection-highlight")).toHaveCount(2);
+    };
+    await select(); await page.keyboard.press("Tab");
+    const root = editor.locator(`:scope > ${tag}`);
+    const nested = root.locator(":scope > li").first().locator(`:scope > ${tag} > li`);
+    await expect(nested).toHaveText(["Alpha", "Beta"]);
+    const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
+    await expect.poll(disk, { timeout: 15_000 }).toMatch(/Parent\n(?:[ \t]*\n)* {2,}/);
+    await page.reload(); await expect(nested).toHaveText(["Alpha", "Beta"]);
+    await select(); await page.keyboard.press("Shift+Tab");
+    await expect(root.locator(":scope > li")).toHaveText(["Parent", "Alpha", "Beta", "Last"]);
+    await expect.poll(disk).toBe(initial);
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect(nested).toHaveText(["Alpha", "Beta"]);
+    await expect.poll(disk).toMatch(/Parent\n(?:[ \t]*\n)* {2,}/);
+    await page.screenshot({ path: info.outputPath(`selected-${tag}-indent.png`) });
+  });
+}
+
+test("group indentation keeps nested children highlighted for a following Shift+Tab", async ({ page }, info) => {
+  await signIn(page);
+  const path = `Nested indent selection ${info.project.name} ${randomUUID()}.md`;
+  const initial = "# Title\n\n- Parent\n\n- Alpha\n\n  - Child\n\n- Beta\n\n  - Last child\n\n- After\n";
+  expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path, content: initial } })).ok()).toBe(true);
+  await page.goto(`/v/personal/${encodeURIComponent(path)}`);
+  const editor = page.locator(EDITOR);
+  await editor.getByText("Alpha", { exact: true }).click();
+  await page.keyboard.press("Escape"); await page.keyboard.press("Shift+ArrowDown");
+  await expect(page.locator(".block-selection-highlight")).toHaveCount(2);
+  const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
+  await page.keyboard.press("Tab");
+  await expect(page.locator(".block-selection-highlight")).toHaveCount(2);
+  await expect(editor.locator(":scope > ul > li")).toHaveCount(2);
+  await expect.poll(disk, { timeout: 15_000 }).not.toBe(initial);
+  await expect(page.getByRole("button", { name: "Move 2 blocks", exact: true, includeHidden: true })).toBeEnabled();
+  await page.keyboard.press("Shift+Tab");
+  await expect(editor.locator(":scope > ul > li")).toHaveCount(4);
+  await expect(editor.locator("ul ul li > p")).toHaveText(["Child", "Last child"]);
+  await expect.poll(disk).toBe(initial);
+  await page.reload();
+  await expect(editor.locator(":scope > ul > li")).toHaveCount(4);
+  await expect(editor.locator("ul ul li > p")).toHaveText(["Child", "Last child"]);
+});
+
 test("blank drags across the pane select rows without the grabber obstructing selection", async ({ page }, info) => {
   test.skip(info.project.name === "mobile", "touch retains native scrolling and menu selection");
   await signIn(page);

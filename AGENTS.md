@@ -275,7 +275,7 @@ assignments stable and record new ones here before adding a listener:
 | `9017` | Reserved by another supporting fixture; check ownership before use |
 | `9018` | Isolated typed-numbered-list fixture (t-018) |
 | `9019` | Isolated relative-date fixture (t-019) |
-| `9020` | Combined editor/date release fixture (t-020); loopback only |
+| `9020` | Combined editor release/selected-key fixture (t-020/t-021); loopback only |
 
 Production ports remain explicit deployment configuration. Tests that do not need a stable
 address should ask the OS for an ephemeral port instead of consuming this range.
