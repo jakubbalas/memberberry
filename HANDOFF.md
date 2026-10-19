@@ -1,7 +1,7 @@
 # Handoff — selected-block keys and full combined-release verification
 
-Updated 2026-10-19T16:12:59+02:00. Canonical task:
-../tasks/open/t-021-selected-block-keys-and-full-checks.md. Checkout
+Updated 2026-10-19T16:15:12+02:00. Canonical task:
+../tasks/open/t-022-publish-editor-release-pr.md (release evidence: t-021). Checkout
 `/var/home/paul/clawd/projects/memberberry/selection-keys-20261019`, branch
 `fix/block-selection-keys-20261019`, baseline `22d1a75`. Includes the previously deployed
 relative dates, typed numbered lists and full-pane highlighting.
@@ -52,14 +52,22 @@ account/policy change. Do not replay deployment or restore older notes/replicas.
 Live real desktop/mobile browsers verify login/CSP, eleven exact served assets per viewport
 and protected-entry denial, with zero POSTs/errors. Public Chromium reaches existing
 Cloudflare Access sign-in (200). Final guarded verification rechecks bytes/data/settings.
-Paul reports testing the deployed release and confirms it looks good; no production editor write or
-synthetic live session was used. PR publication is authorized and in progress; no merge or existing-PR closure requested. Previous release/source checkout
-remains preserved; its runtime/test inputs and HEAD match the prior receipt.
+Paul reports testing the deployed release and confirms it looks good. Assistant smoke
+checks used no production editor write or synthetic live session. Previous release/source
+checkout remains preserved; its runtime/test inputs and HEAD match the prior receipt.
 
-Next: publish this tested branch as a new upstream PR under Paul’s explicit request
-(t-022). PR #5 is still open at `2c71598`; the new PR includes that unmerged baseline and
-will link its incremental editor diff. Full automated make e2e remains unconfirmed. Runbook, coverage table, exact command
-exits and recovery receipts: `../integration-evidence-20261019/selection-keys/README.md`.
+Published ready-for-review [PR #6](https://github.com/jakubbalas/memberberry/pull/6) from
+`quantanex-tech:fix/block-selection-keys-20261019` to `jakubbalas:main`. GitHub reports
+mergeable; automatic check/web/perf/fuzz-build CI started. No independent approval or
+merge is claimed. PR #5 is still open at `2c71598`; #6 includes that unmerged baseline,
+with its 24-file incremental editor diff linked in the description. No existing PR closed
+or changed. Publication adds only handoff documentation to the exact tested runtime/tests.
+
+Next: inspect PR #6's automatic checks and upstream review. Upstream permission is READ;
+a maintainer handles approval/merge. Full automated make e2e remains unconfirmed, separate
+from Paul's live acceptance. Publication receipts: `../integration-evidence-20261019/pr-editor/`.
+Release runbook, coverage, command exits and recovery receipts:
+`../integration-evidence-20261019/selection-keys/README.md`.
 Key machine receipts: verification-summary.json, browser-runs.json, package.json,
 backup-manifest.json, sidecar-compatibility.json, deployment-final-verification.json,
 live-browser-result.json and public-browser-result.json. These are current t-021 receipts.
