@@ -1769,6 +1769,33 @@ fn an_authenticated_viewer_does_not_receive_notes_denied_by_access_toml() {
 }
 
 #[test]
+fn cover_media_is_readable_only_through_an_authorized_note_reference() {
+    let dir = TempDir::new("http-cover-media");
+    let vault = vault(&dir, "v", "V");
+    let store = mb_server::media::LocalStore::new(&vault);
+    let public = store.put(b"public cover", "png").expect("public cover");
+    let private = store.put(b"private cover", "png").expect("private cover");
+    dir.write(
+        "Public.md",
+        &format!("---\ncover: {public}\n---\n# Public\n"),
+    );
+    dir.write(
+        "Private/Secret.md",
+        &format!("---\ncover: {private}\n---\n# Private\n"),
+    );
+    dir.write("access.toml", "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n\n[[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n");
+    let server = TestServer::authenticated(vec![vault]);
+    let (status, body) = server.get(&format!("/api/v1/vaults/v/media/{public}"));
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains("public cover"), "{body}");
+    let denied = server.get(&format!("/api/v1/vaults/v/media/{private}"));
+    let missing = format!("media/cc/cc/{}.png", "c".repeat(64));
+    let absent = server.get(&format!("/api/v1/vaults/v/media/{missing}"));
+    assert!(is_not_found(&denied.0), "{}", denied.0);
+    assert_eq!(denied.1, absent.1);
+}
+
+#[test]
 fn media_upload_is_content_addressed_but_not_readable_until_referenced() {
     let dir = TempDir::new("http-media");
     let vault = vault(&dir, "v", "V");

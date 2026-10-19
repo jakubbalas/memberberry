@@ -61,7 +61,7 @@ pub struct Extracted {
     /// Every `^block-id` defined in the note, with the text of the block that carries it.
     pub anchors: Vec<AnchoredBlock>,
     pub tasks: Vec<TaskRef>,
-    /// Destinations of images and links into `media/`, backing `media_refs` (E11).
+    /// Destinations of covers, images and links into `media/`, backing `media_refs` (E11).
     pub media: Vec<String>,
     /// Display metadata for indexed media rows; Markdown remains the source of truth.
     pub media_refs: Vec<MediaRef>,
@@ -78,6 +78,9 @@ pub struct Extracted {
 #[must_use]
 pub fn extract(doc: &Document) -> Extracted {
     let mut out = Extracted::default();
+    if let Some(crate::frontmatter::YamlValue::Scalar(cover)) = doc.frontmatter.extra.get("cover") {
+        record_media(cover, "Note cover", &mut out);
+    }
     for tag in &doc.frontmatter.tags {
         push_unique(&mut out.tags, tag.clone());
     }

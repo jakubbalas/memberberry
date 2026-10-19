@@ -816,7 +816,7 @@ ships.
 | E8 | Backlinks & unlinked mentions | Filtered by readable set — titles leak otherwise. **M8:** a backlink from a note the caller cannot read is absent, and an unreadable *target* has no backlinks because it does not exist for them (§6.5); the route answers a denial exactly as it answers an unknown vault. **M9 adds unlinked mentions to the same response and the same three filters**, with the readable set entering the Tantivy query as a required exact-path clause rather than filtering its results (E5). A mention discloses more than a backlink if the filter is lost — a backlink row leaks a title and the block a link sits in, whereas a mention has no link to have been found by, so what puts it on screen is only that a private note happens to use a word, and the row then quotes that note's prose. It is a second code path (Tantivy, not SQLite) to the same data, so it has its own leak-suite case. |
 | E9 | Graph | Nodes and edges filtered by readable set; edges into unreadable notes are dropped entirely. **M8:** link resolution draws candidates from the filtered view, so an edge into an unreadable note is never formed — which also means one link can resolve differently for two users (§9.1). The local-graph route (§9.4) is the same three filters as `backlinks`: membership plus a readable *origin* through `AuthorizedVault` (E1), a `Reader` built from the live ACL so every node comes from the readable set (E5), and resolution against readable candidates only. What is left is a **ghost** — an unreadable target and one nobody has written are one node, one shape, one label taken from the source note's own text, because §6.5 does not allow the picture to tell them apart. An unreadable origin answers exactly as a missing one does. **M8, the whole-vault route** (`GET /api/v1/vaults/{slug}/graph`) has no origin to resolve, so its filters are membership on the vault and the readable set — every readable note is a node and nothing else is. Two things it discloses that the neighbourhood does not, and both are filtered: a node carries the note's **tags** and its **word count**, and the reply carries a **total** so a capped picture can say "showing 2,000 of 10,431". The total is counted over the readable set, because a count of the whole vault is a way of asking how many notes exist (§6.5). |
 | E10 | History & versions | Same role as the note. |
-| E11 | **Media** | Content addressing is *not* authorization. `media_refs(note_id, path, original_name)` backs the check: a user may fetch a blob only if it is referenced by a note they can read. The sole pre-reference exception is a five-minute grant scoped to the authenticated editor who uploaded those same bytes, bridging the upload and the note's indexed save; it never grants another user access. Easy to miss; it is a real leak if missed. |
+| E11 | **Media** | Content addressing is *not* authorization. `media_refs(note_id, path, original_name)` backs the check: a user may fetch a blob only if it is referenced by a note they can read, including a frontmatter `cover` image (§12.5). The sole pre-reference exception is a five-minute grant scoped to the authenticated editor who uploaded those same bytes, bridging the upload and the note's indexed save; it never grants another user access. Easy to miss; it is a real leak if missed. |
 | E12 | Tasks & task views | Filtered by readable set. |
 | E13 | Share links | A separate anonymous path with its own rules (§17). The authenticated management routes authorize the exact note before creation and scope listing/revocation to the creator; bearer tokens are never returned by list. The `/s/<token>` renderer re-authenticates the opaque token, then re-checks the link creator's current enabled account and readable set before reading the note. Its media route requires the signed share-session cookie, re-checks the same creator-readable set, and permits only media referenced by the shared note. Expiry, revocation and password failures are neutral unavailable responses. Anonymous share and media requests are bounded independently by token and by the trusted peer IP supplied by the server connection layer; forwarded headers are not trusted. |
 | E14 | **Rename / link rewrite** | §6.6. **M8:** the one operation that reads outside the caller's readable set, on purpose — a link left broken in a note they cannot see is worse. What contains it: the note being renamed is resolved through the *caller's* `AuthorizedVault`, so an unreadable one answers exactly as a missing one; both ends need `editor` or better, and a tag rename needs vault-wide `owner`; the privileged read is an ordinary index `Reader` holding a synthetic `owner` ACL, so E5 is untouched; and the reply counts only notes the caller can read, with the full list going to the audit log (§6.9). Shape checks on the new name run *before* authorization, existence checks after, so a rename cannot be used to probe for notes. Folder moves also require write access at both paths for every descendant before mutation, with neutral denial for hidden descendants and symlinked paths; empty folders use the same checks. |
@@ -2844,6 +2844,61 @@ links and gain a read-only same-origin `<object>` preview in the editor. Queue r
 enough identity to replace an optimistic blob URL after a page reload as well as after a
 same-page reconnect.
 
+### 12.5 Note cover images
+
+Authenticated note panes can display an optional wide, cropped banner above the title.
+Editors use **Add cover** to upload PNG, JPEG, GIF or WebP through the existing vault media
+uploader; **Change cover**, **Remove cover**, and a keyboard-operable **Reposition** slider
+remain available on desktop and touch layouts. Once a cover is set, these controls are
+collapsed into an **Edit cover** button over the image. On desktop the button appears when
+hovering the cover or focusing its controls with the keyboard; it stays visible while the
+controls are open. Touch layouts keep the button visible. Enter/Space opens the controls;
+Escape closes them and returns focus to the button, including when a pointer click left
+keyboard focus in the editor or on the page body. Without a cover, a compact empty
+area above the title reveals a centered, rounded, theme-accented **+ Add cover** button
+on hover or keyboard focus; touch keeps the button visible. Its source chooser is centered
+beneath it and offers **Choose from files** and **Paste from clipboard** options.
+Actions are stacked in equal-width, left-aligned rows, with the helper text aligned below
+a divider. Clicking or tapping outside either cover menu dismisses it without consuming
+the pointer event or moving focus away from the chosen target. Pointers inside the menu
+leave it open so file selection, clipboard actions and repositioning remain usable.
+Clipboard access is attempted only on request; denied or unavailable access offers the
+paste shortcut or file selection, and a clipboard without an image gets an explicit message.
+The paste shortcut works while a cover control has focus, including with the menu closed.
+Only image bytes are accepted; clipboard text, HTML and image URLs are never fetched.
+Viewers see the banner without edit controls or an empty target.
+No remote image service, URL fetch or new dependency is involved.
+
+Dragging an image over the note highlights the cover area with **Drop image to set cover**.
+Only dropping onto that area assigns a cover; body drops continue through the existing
+inline-image flow. Nested drag transitions retain the highlight until the drag leaves
+the note, completes or is cancelled. File selection, clipboard input and cover drops
+share the same upload, offline, format validation and stale-destination checks. Desktop
+files with an empty MIME type are accepted by supported filename extension, with the
+server still verifying their bytes. Clipboard reads in flight are discarded if the
+destination changes or loses edit readiness before the read completes.
+
+The Markdown frontmatter stores `cover: media/aa/bb/<hash>.png` and optional
+`cover_position: "50"` (vertical percentage, 0–100; default 50). These are ordinary scalar
+extra keys (§4.5), merged per key through the existing `frontmatter` Y.Map (§5.6); no schema
+revision is needed. The image retains its intrinsic bytes; repositioning changes only the
+display crop. Invalid or external paths are never fetched. Invalid positions use 50;
+numeric values above 100 clamp to 100. Removing a cover removes both keys; the existing
+unreferenced-media policy applies to its bytes.
+
+Extraction indexes scalar `cover` references alongside body media for E11, exports and
+garbage collection. A cover referenced only by a denied note grants no access, even if its
+hash is known. Cached metadata is not rendered while the note body is waiting. Pending
+uploads fail closed after a cover changes, is removed, loses edit readiness, or closes.
+Offline uploads retain the previous cover until the upload finishes, and never put an
+optimistic blob URL into frontmatter. A queued cover must finish while its note remains
+open to be attached; a closed note needs a new selection. This avoids persisting transient
+references as the only copy of an intended setting.
+
+This first version decorates authenticated note panes and browser print/PDF. Anonymous
+share rendering and browser HTML exports continue to render the note body without the
+banner; vault/Markdown exports retain the frontmatter and authorized referenced media.
+
 ---
 
 ## 13. Excalidraw
@@ -3857,6 +3912,19 @@ Three things worth knowing before changing any of it:
   clock costs a parse rather than a wrong answer.
 
 ---
+
+### 21.9 Measured: note covers
+
+Laptop-only microbenchmarks (2026-10-19; not Android budget evidence):
+`cargo bench -p mb-server --bench sync -- 'extract/covers' --sample-size 10
+--measurement-time 1 --warm-up-time 1` measures pure extraction on prepared documents.
+Ten paragraphs take 643–649 ns without a cover and 690–695 ns with one; 2,000 paragraphs
+take 131–133 µs without and 142–152 µs with one. These compare uncovered and covered
+documents in the same build, not a previous application version.
+`web/src/editor/note-cover.bench.ts` measures an unchanged banner refresh at about
+0.0003 ms in jsdom. Refreshes cache their displayed state and leave the banner DOM
+unchanged during ordinary typing. Neither benchmark measures browser paint or device
+performance; the existing §21.2 budgets remain unchanged.
 
 ## 22. Testing strategy
 

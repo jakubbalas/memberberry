@@ -265,6 +265,50 @@ fn media_destinations_are_collected_from_images_and_links() {
 }
 
 #[test]
+fn cover_frontmatter_is_an_indexed_media_reference() {
+    let extracted = ex("---\ncover: media/ab/cd/cover.png\n---\n# Note\n");
+    assert_eq!(extracted.media, vec!["media/ab/cd/cover.png"]);
+    assert_eq!(extracted.media_refs[0].original_name, "Note cover");
+}
+
+#[test]
+fn malformed_or_external_covers_grant_no_media_reference() {
+    for cover in [
+        "https://example.com/image.png",
+        "[media/a.png]",
+        "../secret.png",
+        "",
+    ] {
+        assert!(
+            ex(&format!("---\ncover: {cover}\n---\n# Note\n"))
+                .media
+                .is_empty()
+        );
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config {
+        cases: 64,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(20261019),
+        ..proptest::test_runner::Config::default()
+    })]
+
+    #[test]
+    fn cover_references_survive_markdown_roundtrip(
+        hash in "[a-f0-9]{64}", position in 0u8..=100,
+    ) {
+        let path = format!("media/{}/{}/{hash}.png", &hash[..2], &hash[2..4]);
+        let markdown = format!("---\ncover: {path}\ncover_position: {position}\n---\n# 🌄 منظر\n");
+        let parsed = mb_core::parse(&markdown);
+        let canonical = mb_core::to_markdown(&parsed);
+        let reparsed = mb_core::parse(&canonical);
+        proptest::prop_assert_eq!(mb_core::extract(&reparsed).media, vec![path]);
+        proptest::prop_assert_eq!(reparsed.frontmatter, parsed.frontmatter);
+    }
+}
+
+#[test]
 fn code_block_words_are_counted() {
     // Code is prose for word-count purposes; a note that is mostly code is not empty.
     assert_eq!(ex("```rust\nfn main() {}\n```\n").word_count, 3);

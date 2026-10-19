@@ -68,6 +68,7 @@ const SCRATCH_PURPOSES: readonly string[] = [
   "media",
   "media-drop",
   "media-offline",
+  "note-cover",
   // Edited offline *and* on disk at the same time, which is §3.5's collision. Two, because
   // the second one resolves the conflict and a resolution is not repeatable.
   "conflict",

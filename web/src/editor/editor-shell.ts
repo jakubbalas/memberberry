@@ -20,6 +20,7 @@ import type { TaskChipField, TaskPriority } from "./task-metadata.js";
 import { expandTemplate } from "../notes.js";
 import { openTemplatePalette, TEMPLATE_EVENT, templateContext, type TemplateEventDetail } from "../shell/templates.js";
 import type { MediaUploader } from "./media-upload.js";
+import { mountNoteCover } from "./note-cover.js";
 import { mountEmojiPicker, type EmojiChoices, type EmojiImportOptions } from "./emoji-picker.js";
 import { downloadHtml, printPanel, standaloneHtml } from "./export.js";
 import type { MediaRenderContext } from "./schema.js";
@@ -212,7 +213,12 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     ...(blockGate === undefined ? {} : { gate: blockGate }),
     ...(media === undefined ? {} : { image: () => media.openImage() }),
     emoji: () => toolbar.querySelector<HTMLButtonElement>(".emoji-picker-toggle")?.click() });
-  const blocksReload = (): boolean => sourceVisible || sourcePending || selectionMenu.hasOpenDraft() || slash.hasOpenDraft()
+  const cover = options.media === undefined ? undefined : mountNoteCover({
+    editor: options.editor, document: options.document, panel: options.panel, status: options.status,
+    vault: options.media.vault, uploader: options.mediaUploader, canEdit: canInsert,
+    onPendingChange: refreshReloadControls,
+  });
+  const blocksReload = (): boolean => sourceVisible || sourcePending || selectionMenu.hasOpenDraft() || slash.hasOpenDraft() || cover?.hasPending() === true
     || (options.connection?.state.pending ?? 0) > 0;
   reloadBlockers.add(blocksReload);
   const canReload = (): boolean => ![...reloadBlockers].some((blocks) => blocks());
@@ -235,6 +241,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
   source.addEventListener("input", onSourceInput);
   const unsubscribeRefresh = options.connection?.subscribe(() => {
     if (terminal()) selectionMenu.requireRefresh();
+    cover?.refresh();
     refreshReloadControls();
   });
   renderReload();
@@ -307,6 +314,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
    * task being selected; neither is a property of having a note open.
    */
   const refreshControls = (): void => {
+    cover?.refresh();
     inspector.sync(options.editor.isActive("task_item") ? options.editor.getAttributes("task_item") : null);
     slash.sync();
   };
@@ -358,12 +366,14 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       options.editor.view.dom.hidden = false;
       sourceToggle.setAttribute("aria-pressed", "false");
       sourceVisible = false;
+      cover?.refresh();
       options.status.textContent = "Markdown source applied.";
       refreshReloadControls();
       return;
     }
     if (sourcePending || shellDestroyed || options.editor.isDestroyed) return;
     sourcePending = true;
+    cover?.refresh();
     slash.hide();
     refreshReloadControls();
     selectionMenu.refresh();
@@ -375,6 +385,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     source.focus();
     sourceToggle.setAttribute("aria-pressed", "true");
     sourceVisible = true;
+    cover?.refresh();
     refreshReloadControls();
   };
   const onCopy = async (): Promise<void> => {
@@ -488,6 +499,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       imageClickCleanup?.();
       imageEditorControl?.remove();
       media?.destroy();
+      cover?.destroy();
       imageEditor?.destroy();
       emoji.destroy();
       tableTools.destroy();

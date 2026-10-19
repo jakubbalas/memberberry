@@ -665,6 +665,39 @@ fn e11_media_from_an_unreadable_note_is_not_fetchable() {
     );
 }
 
+/// E11 also protects header images stored in Markdown frontmatter.
+#[test]
+fn e11_cover_from_an_unreadable_note_is_not_fetchable() {
+    let public = format!("media/aa/aa/{}.png", "a".repeat(64));
+    let private = format!("media/bb/bb/{}.png", "b".repeat(64));
+    let mut index = mb_index::Index::in_memory().expect("index");
+    for (path, cover) in [("Shared.md", &public), ("Private/Salary.md", &private)] {
+        let markdown = format!("---\ncover: {cover}\n---\n# Note\n");
+        index
+            .upsert(&mb_index::NoteInput {
+                path: path.to_string(),
+                stamp: mb_index::Stamp::from_parts(markdown.len() as u64, 1),
+                markdown,
+            })
+            .expect("upsert cover");
+    }
+    let alice = Username::parse("alice").expect("username");
+    let access = Access::new(
+        vec![Member {
+            user: alice.clone(),
+            role: Role::Viewer,
+        }],
+        vec![mb_core::Rule {
+            path: mb_core::NotePath::parse("Private").expect("path"),
+            grants: std::collections::BTreeMap::from([(alice.clone(), Role::None)]),
+        }],
+    )
+    .expect("policy");
+    let reader = index.reader(&access, &alice).expect("reader");
+    assert!(reader.references_media(&public).expect("readable cover"));
+    assert!(!reader.references_media(&private).expect("denied cover"));
+}
+
 /// E13: public links remain capped by the creator's current ACL, and bearer states are opaque.
 #[test]
 fn e13_share_links_never_expand_creator_access_or_survive_revocation() {

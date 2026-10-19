@@ -191,11 +191,34 @@ fn vault_lookup(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn extract_covers(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("extract/covers");
+    for blocks in [10, 2_000] {
+        let markdown = body(blocks);
+        let plain = mb_core::parse(&markdown);
+        let covered = mb_core::parse(&format!(
+            "---\ncover: media/aa/aa/{}.png\ncover_position: 50\n---\n{markdown}",
+            "a".repeat(64)
+        ));
+        for (name, document) in [("plain", &plain), ("cover", &covered)] {
+            group.bench_with_input(
+                BenchmarkId::new(name, blocks),
+                document,
+                |bench, document| {
+                    bench.iter(|| black_box(mb_core::extract(black_box(document))));
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     accept_update,
     materialize,
     encode_frame,
-    vault_lookup
+    vault_lookup,
+    extract_covers
 );
 criterion_main!(benches);
