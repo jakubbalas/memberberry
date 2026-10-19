@@ -1,6 +1,6 @@
 # Handoff — selected-block keys and full combined-release verification
 
-Updated 2026-10-19T14:57:00+02:00. Canonical task:
+Updated 2026-10-19T16:12:59+02:00. Canonical task:
 ../tasks/open/t-021-selected-block-keys-and-full-checks.md. Checkout
 `/var/home/paul/clawd/projects/memberberry/selection-keys-20261019`, branch
 `fix/block-selection-keys-20261019`, baseline `22d1a75`. Includes the previously deployed
@@ -52,13 +52,13 @@ account/policy change. Do not replay deployment or restore older notes/replicas.
 Live real desktop/mobile browsers verify login/CSP, eleven exact served assets per viewport
 and protected-entry denial, with zero POSTs/errors. Public Chromium reaches existing
 Cloudflare Access sign-in (200). Final guarded verification rechecks bytes/data/settings.
-Normal signed-in/device acceptance remains Paul’s review; no production editor write or
-synthetic live session was used. No GitHub publication. Previous release/source checkout
+Paul reports testing the deployed release and confirms it looks good; no production editor write or
+synthetic live session was used. PR publication is authorized and in progress; no merge or existing-PR closure requested. Previous release/source checkout
 remains preserved; its runtime/test inputs and HEAD match the prior receipt.
 
-Next: Paul closes old tabs/installed windows and reopens
-https://memberberry.quantanex.space to test dates, numbering, highlighting, Delete and
-Tab/Shift+Tab. Full manual E2E remains pending. Runbook, coverage table, exact command
+Next: publish this tested branch as a new upstream PR under Paul’s explicit request
+(t-022). PR #5 is still open at `2c71598`; the new PR includes that unmerged baseline and
+will link its incremental editor diff. Full automated make e2e remains unconfirmed. Runbook, coverage table, exact command
 exits and recovery receipts: `../integration-evidence-20261019/selection-keys/README.md`.
 Key machine receipts: verification-summary.json, browser-runs.json, package.json,
 backup-manifest.json, sidecar-compatibility.json, deployment-final-verification.json,
@@ -77,6 +77,6 @@ are physical copies. Existing servers/source worktrees are preserved.
 Rust runtime/backend/WASM sources are unchanged. Backend SHA256
 `b1e75eec57ec9a0bd90ea2c610f6d980f9b9d5144b922a1789ac9955ba2ba44d` and note-WASM SHA256
 `a05707f0f27f38b9040cd44095183ff454442d63ec5e0e5e1d24d688d77c5108` remain the previously
-verified artifacts; no backend rebuild is claimed. Normal signed-in/device acceptance,
-full manual E2E, independent review and physical-device budgets remain open. Inherited
+verified artifacts; no backend rebuild is claimed. Paul confirms live acceptance for his tested flow. Full automated E2E, independent
+review and physical-device budgets remain unconfirmed. Inherited
 limits remain in `../release-20261018/HANDOFF.md`.
