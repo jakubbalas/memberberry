@@ -1582,6 +1582,8 @@ workspace calls, including the pinned New note action and empty-vault home.
 The file-list New note action creates inside the folder selected by pointer or keyboard,
 or beside a selected note. Without a tree selection it defaults to the vault root;
 the command palette defaults beside the open note. The prompt displays the destination.
+The folder-row **New note** menu action defaults inside that exact folder, including
+empty and nested folders, regardless of the active note or previous tree selection.
 A name containing `/` remains an explicit vault-relative path and overrides that default.
 `POST /v/{slug}/new` remains the no-bundle server-rendered fallback form.
 It answers `303` to the new note, so the browser lands on it with a `GET` and a
@@ -2115,8 +2117,10 @@ right-click (and Shift+F10/ContextMenu): Open in new tab, Rename, Delete when av
 and Add/Remove bookmark. Bookmark stars are no longer separate row buttons. Tree actions
 remain reachable through the tree's single-tab-stop keyboard model.
 
-Every folder row has a three-dot menu with **Open in main panel** and **Move folder**;
-right-click and Shift+F10 open the same keyboard-operable menu. Opening a folder presents
+Every folder row has a three-dot menu with **New note**, **Open in main panel** and
+**Move folder**; right-click and Shift+F10/ContextMenu open the same keyboard-operable menu.
+New note opens the existing creation dialog targeting that folder (§6.10), then opens
+the created note for editing. Opening a folder presents
 its authorized immediate subfolders and notes, an empty state, parent navigation, and Close.
 This is a temporary folder contents view, not a note or a new persisted tab type: no fake
 Markdown is created, existing note tabs are retained, and its URL is the vault Home URL.

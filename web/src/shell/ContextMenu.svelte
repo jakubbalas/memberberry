@@ -4,6 +4,8 @@
     readonly x: number;
     readonly y: number;
     readonly label?: string;
+    /** Opens the note creation dialog for the folder whose menu is open. */
+    readonly oncreate?: (() => void) | undefined;
     readonly onrename?: (() => void) | undefined;
     readonly onopennewtab?: (() => void) | undefined;
     readonly onopenmain?: (() => void) | undefined;
@@ -17,7 +19,7 @@
     readonly ondismiss: () => void;
   }
 
-  const { open, x, y, label = "Note actions", onrename, onopennewtab, onopenmain, onmove, ondelete, onbookmark, bookmarked = false, options = [], ondismiss }: Props = $props();
+  const { open, x, y, label = "Note actions", oncreate, onrename, onopennewtab, onopenmain, onmove, ondelete, onbookmark, bookmarked = false, options = [], ondismiss }: Props = $props();
   let menu = $state<HTMLElement | undefined>(undefined);
   let left = $state(0);
   let top = $state(0);
@@ -85,6 +87,9 @@
 
 {#if open}
   <div class="note-context-menu" role="menu" tabindex="-1" aria-label={label} bind:this={menu} style={`left: ${left}px; top: ${top}px`}>
+    {#if oncreate !== undefined}
+      <button type="button" role="menuitem" tabindex="-1" onclick={() => activate(oncreate)}>New note</button>
+    {/if}
     {#if onopenmain !== undefined}
       <button type="button" role="menuitem" tabindex="-1" onclick={() => activate(onopenmain)}>Open in main panel</button>
     {/if}

@@ -1,88 +1,53 @@
 # Handoff
 
-## Current state (2026-10-19)
+## Current state (2026-10-29)
 
-The latest iteration rewrites README.md as the project introduction: purpose, important
-features, local and production setup, storage, existing-vault registration, development,
-and documentation links. The old Status section and implementation history are removed.
-This is documentation-only; behavior and SPEC.md are unchanged. Documentation diff,
-relative links, and commands were reviewed against the repository. No application tests
-were needed; full checks, coverage, and manual full E2E remain deferred/pending below.
+Folder rows now offer **New note** first in their context menu, shared by right-click,
+the three-dot button, Shift+F10 and ContextMenu. It opens the existing naming dialog
+inside the exact targeted folder, including empty/nested folders, then opens the created
+note for editing. The existing create endpoint, server authorization and Markdown storage
+are reused. SPEC §6.10 and §8.2 describe the behavior. No backend or read path changed.
 
-The existing integration state and its verification/open items remain relevant:
+The folder-menu change is local. No deployment or push was performed.
 
-Local branch `integrate/pr-6` integrates PR #6 at
-`af6ea5e4f08c92e64eb7785bf4ab22aba49a4c00` into main at
-`69458126f4db9b46d444e3f824200713b11c9d1b`. PR #5's integration is already
-on GitHub main. The user authorized the local PR #6 merge commit, including the
-approved bundle budgets. Nothing has been pushed in this iteration.
-
-Only HANDOFF.md conflicted. Application code and SPEC.md merged automatically,
-retaining note covers and PR #5 alongside relative date mentions, typed numbered
-list markers, full-pane block selection, Delete/Backspace and grouped Tab/Shift+Tab.
-The new behavior is documented in SPEC §8.4. The fork's deployment/evidence paths
-are not reproduction instructions for this machine.
-
-The user also approved a 950 KiB (972,800-byte) operational bundle ceiling.
-SPEC §21 records the allowance and comparison; the user then revised the long-term
-optimization goal to 500 KiB (512,000 bytes). The operational ceiling remains 950 KiB.
-The bundle gate passes on the current local build.
+The checkout on main retains the prior integration of PR #6,
+including PR #5, note covers, relative dates, typed numbered lists and block selection.
+The prior README rewrite is also present. The approved operational bundle ceiling and
+long-term optimization target remain as documented in SPEC §21.
 
 ## Verification
 
-Focused PR #6 integration verification:
+- All four new folder-menu DOM cases first failed because New note was absent, then
+  passed with the implementation: three-dot click, right-click, Shift+F10 and ContextMenu.
+  They verify the nested destination differs from the open note, menu dismissal,
+  dialog input focus and no incidental folder expansion or note navigation.
+- 134 focused tests pass across NoteTree.dom.test.ts, ContextMenu.dom.test.ts,
+  create.test.ts, CommandCenter.dom.test.ts, FolderNavigation.dom.test.ts and
+  NavigationImprovements.dom.test.ts. Existing creation refusal, validation, folder
+  navigation, keyboard navigation, dismissal and listener-cleanup tests are included.
+- Production frontend build passes. Typecheck passes with zero Svelte errors/warnings.
+  Build has the existing dependency directive and large-chunk warnings.
+- Rebuilt folder-new-note.spec.ts passes all four desktop/mobile cases with one worker
+  and no retries. Covers desktop right-click, mobile three-dot tap, keyboard creation,
+  empty nested Unicode/RTL/emoji folder paths, destination/focus, editable new notes,
+  and actual Markdown persistence. Desktop/mobile menu screenshots were inspected.
+- The initial browser invocation could not bind loopback 9012 inside the sandbox;
+  the rebuilt focused run with sandbox escalation passed. Build log:
+  local/debug/folder-new-note-build.log. Screenshots: web/test-results/.
 
-- 322 tests pass across nine editor files: relative-date seeded round-trips,
-  date controls, block handles/movement, input rules, autocomplete, note editor,
-  editor shell and covers.
-- Production build and frontend typecheck pass with zero Svelte errors/warnings.
-- Rebuilt date-mentions.spec.ts passes all eight desktop/mobile cases, including
-  readable Markdown persistence, source/code exclusions, date editing and typed lists.
-- Rebuilt block-selection.spec.ts passes 15 cases; three pre-existing mouse-only
-  mobile cases remain skipped. Native text selection screenshots were inspected.
-  The first run had 14 passes, one failure and three exclusions: its reverse text
-  drag began within the previous native highlight and invoked macOS text drag-and-drop.
-  The test now collapses the caret before each direction and verifies that setup;
-  the same forward/backward Alpha assertions pass. No application behavior, retry
-  setting or assertion was relaxed. This is an observed red/green setup correction.
-- Build logs: local/debug/pr-6-date-build.log, pr-6-selection-build.log and
-  pr-6-selection-fixed-build.log. Browser screenshots/traces live in web/test-results/.
-- Staged whitespace checks pass; Git reports no unresolved files.
-- Bundle-gate configuration: all 50 focused breach/verdict/bundle/report tests pass.
-  The 500 KiB target lookup test first failed against 350 KiB before the target changed.
-  New boundary tests first failed under the old ceiling; they now prove 972,800
-  passes and 972,801 fails for both device classes. The focused local bundle-only
-  gate passes at 921,198 bytes; log: local/debug/pr-6-bundle-950kib.log.
+Full make check and local coverage measurement are deferred, not requested.
+Full make e2e remains user-run and pending. No full-suite result is claimed.
 
-Actual PR-head CI was checked: check, web and fuzz-build pass, but perf FAILS at
-the Critical-path bundle budget step. Its server/browser runtime steps were skipped.
-Job: https://github.com/jakubbalas/memberberry/actions/runs/39267288362/job/118110073455
-That historical CI result predates the user-approved ceiling increase and has not
-been rerun remotely. No bundle optimization or physical-device acceptance is claimed.
-
-The PR author reports full Rust/frontend checks and coverage floors plus four
-rebuilt browser specs (41 passes, five existing mouse-only mobile exclusions).
-Those results predate this combined checkout and are not local reruns. No
-single zero-exit full make check rerun is claimed by the author after repairing
-two autocomplete listener assertions; the repaired complete web-check passed.
-
-Prior local PR #5 integration verification passed 361 frontend tests, all 42
-macOS-enabled leak cases, one HTTP cover-permission case and desktop/mobile cover
-browser cases, plus build/typecheck and sync benchmark compilation. These results
-predate PR #6; backend sources are unchanged by this PR.
-
-Full `make check` and local coverage measurement remain deferred, not requested.
-Full `make e2e` remains user-run and pending. Physical-device performance acceptance
-is unconfirmed. The combined branch's local bundle gate passes with the approved
-ceiling and existing generated WASM; fresh optimized CI validation remains pending.
-Main previously recorded an optimized bundle-size failure. PR perf timing/memory runs
-with --report-only and does not establish budget acceptance.
+Prior integration verification, not rerun for this frontend-only change: 322 focused
+editor tests, rebuilt date/block-selection browser specs, and local bundle gate passed.
+The earlier PR-head perf CI failed at its old bundle ceiling; no fresh remote CI result
+is claimed after the approved budget update. Physical-device acceptance is unconfirmed.
 
 ## Next
 
-Review the README presentation changes alongside the local integration merge, then
-obtain fresh CI for the approved bundle ceiling. Focused integration verification
-passes; main and remote refs remain unchanged by this documentation iteration.
+Review the folder-menu change. Full E2E is manual: make e2e. Fresh full checks,
+coverage and remote CI remain deferred until requested; no new feature work is required
+for the folder-menu action.
 
 ## Local development and gotchas
 
@@ -132,7 +97,7 @@ passes; main and remote refs remain unchanged by this documentation iteration.
   brackets are slow. Existing multi-client/browser coverage remains limited.
 - Tables: no offscreen drag autoscroll, column deletion/resizing or headerless mode.
 - Inbox: no offline filtered query, live refresh, remembered filters or timezone-aware dates.
-- Creation: no folder-row note creation or template picker; creation is not audited (§6.10).
+- Creation: no template picker; creation is not audited (§6.10).
 - Unlinked mentions: silent 50-block cap; no conversion/highlight/live refresh.
 - Offline: caps are not configurable; eviction is per visible vault; pins are device-local;
   no folder pins or offline media. Shared static precache across browser-profile users,

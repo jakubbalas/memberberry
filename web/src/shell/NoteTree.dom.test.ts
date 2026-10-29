@@ -197,6 +197,36 @@ it.each(["pointer", "keyboard"])("creates inside the folder selected by %s", asy
   }
 });
 
+it.each(["click", "contextmenu", "Shift+F10", "ContextMenu"])("opens New note in the targeted nested folder with %s", async (gesture) => {
+  const view = render({ open: ["Projects/Roadmap.md"] });
+  try {
+    await flush();
+    rows().find((row) => row.title === "Archive")?.click();
+    await flush();
+    const folder = rows().find((row) => row.title === "Archive/2019");
+    if (folder === undefined) throw new Error("expected nested folder");
+    if (gesture === "click") folder.querySelector<HTMLButtonElement>(".folder-actions")?.click();
+    else if (gesture === "contextmenu") folder.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    else {
+      await press("ArrowDown");
+      tree()?.focus();
+      tree()?.dispatchEvent(new KeyboardEvent("keydown", { key: gesture === "Shift+F10" ? "F10" : "ContextMenu", shiftKey: gesture === "Shift+F10", bubbles: true, cancelable: true }));
+    }
+    await flush();
+    const create = [...target.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent === "New note");
+    expect(create).toBeDefined();
+    create?.click();
+    await flush();
+    expect(target.querySelector(".rename-subject")?.textContent).toBe("In Archive/2019/");
+    expect(target.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(target.querySelector(".rename-input"));
+    expect(folder.getAttribute("aria-expanded")).toBe("false");
+    expect(view.store.activeTab?.note).toBe("Projects/Roadmap.md");
+  } finally {
+    await view.teardown();
+  }
+});
+
 it.each([
   { selected: undefined, destination: "At the vault root" },
   { selected: "Archive/2019", destination: "In Archive/2019/" },

@@ -28,7 +28,7 @@
     readonly onopen: (path: string, newTab?: boolean) => void;
     /** Empty folders already filtered by the server. */
     readonly emptyFolders?: readonly string[];
-    /** Opens note creation from the file-list heading. */
+    /** Opens note creation from the file-list heading or a folder menu. */
     readonly oncreate?: (from: string) => void;
     /** Opens folder creation from the file-list heading. */
     readonly onfolder?: () => void;
@@ -421,6 +421,10 @@
   label="Folder actions"
   x={context.x}
   y={context.y}
+  oncreate={oncreate === undefined ? undefined : () => {
+    if (context !== undefined) oncreate(`${context.path}/`);
+    context = undefined;
+  }}
   onopenmain={onopenfolder === undefined ? undefined : () => {
     if (context !== undefined) onopenfolder(context.path);
     context = undefined;
