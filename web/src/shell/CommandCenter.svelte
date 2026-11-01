@@ -646,6 +646,7 @@
 
 <NamePrompt
   open={renaming !== undefined}
+  emoji={renaming?.kind !== "tag"}
   title={promptTitle(renaming)}
   subject={promptSubject(renaming)}
   label={promptLabel(renaming)}

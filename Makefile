@@ -154,6 +154,7 @@ deployment-check: ## Validate the container, Compose, and backup contracts
 
 .PHONY: dev-check
 dev-check: ## Validate the development-process supervisor
+	@python3 scripts/dev-test.py
 	@python3 scripts/dev.py --self-test
 
 .PHONY: backup

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import shutil
 import signal
 import subprocess
 import sys
@@ -91,8 +90,9 @@ def stop(process: subprocess.Popen[bytes] | None) -> None:
 def prepare_frontend() -> None:
     subprocess.run(["make", "wasm"], cwd=ROOT, check=True)
     subprocess.run(["npm", "--prefix", "web", "install", "--silent"], cwd=ROOT, check=True)
-    (ROOT / "web/dist").mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ROOT / "web/index.html", ROOT / "web/dist/index.html")
+    # why: 9010 serves dist directly; source HTML points at TypeScript URLs it cannot serve.
+    # Vite on 9011 rewrites this compiled shell to use HMR without corrupting the build.
+    subprocess.run(["npm", "--prefix", "web", "run", "build"], cwd=ROOT, check=True)
 
 
 def backend_command() -> list[str]:

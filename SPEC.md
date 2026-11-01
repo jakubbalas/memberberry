@@ -3405,8 +3405,16 @@ autocompletes to 🎉; `:partyparrot:` stays textual. Both are picker-inserted i
 ### 11.4 Picker
 
 Grid with search, frequently-used, category tabs, **Custom section first**, skin-tone
-selector. Inline autocomplete on `:` + 2 characters, fuzzy, keyboard-navigable. Mobile:
+selector. Inline editor autocomplete on `:` + 2 characters, fuzzy, keyboard-navigable. Mobile:
 bottom sheet.
+
+Note/folder naming dialogs offer the offline Unicode catalog immediately on `:`, including
+at the start of a name or after `/` in a nested path. Arrow keys select; Enter inserts the
+literal glyph without submitting the form; the first Escape dismisses suggestions. Pointer
+and touch selection return focus to the name field. Exact-name destructive confirmations
+never autocomplete. Folder labels in the note tree and folder contents resolve recognized
+Unicode shortcodes/aliases for display without rewriting the underlying directory path;
+unknown and custom shortcodes remain literal. No Markdown interpretation is applied to names.
 
 ---
 
@@ -4831,6 +4839,12 @@ full `make e2e` runs manually; a commit request does not trigger an assistant-ru
 suite. The assistant runs it only when explicitly asked to do so and reports pending manual
 validation and known failures honestly. Coverage requirements remain unchanged.
 `AGENTS.md` §5.2 defines the workflow.
+
+`make dev` prepares WASM and frontend dependencies, then builds the compiled frontend before
+starting either server. Port 9010 serves that build directly; port 9011 rewrites its authenticated
+HTML to source-module URLs for Vite HMR. Development startup never copies source HTML into
+`web/dist/index.html`: the backend cannot serve TypeScript URLs. Frontend preparation failure
+aborts startup rather than leaving a running server with a blank shell.
 
 **CI cadence (2026-09-15).** E2E is excluded from automatic push and pull-request runs by
 user decision. The separate `.github/workflows/e2e.yml` workflow, **E2E (manual)**, is started

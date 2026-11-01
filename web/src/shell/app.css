@@ -1211,3 +1211,5 @@ button:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visib
 }
 
 .trash-pane button { min-height: var(--control-height); padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--surface-note); font: inherit; cursor: pointer; }
+
+.name-emoji-suggestions { display: grid; max-height: 16rem; overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-raised); }

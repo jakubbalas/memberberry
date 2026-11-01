@@ -10,6 +10,9 @@
   visible rows — walk the tree twice and they disagree the moment a folder closes.
 -->
 <script lang="ts">
+  import { emojiCatalog } from "../emoji-catalog.js";
+  import type { EmojiEntry } from "../notes.js";
+  import { emojiName } from "./name-emoji.js";
   import Icon from "./Icon.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import type { Bookmarks } from "./bookmarks.svelte.js";
@@ -66,6 +69,16 @@
   $effect(() => {
     catalog.ensure();
     bookmarks.ensure();
+  });
+
+  let nameCatalog = $state<readonly EmojiEntry[]>([]);
+  $effect(() => {
+    if (!rows.some(row => row.node.kind === "folder" && row.node.name.includes(":"))) return;
+    let active = true;
+    void emojiCatalog().then(entries => { if (active) nameCatalog = entries; }).catch(() => {
+      // why: names remain readable as literal shortcodes when the offline catalog cannot load.
+    });
+    return () => { active = false; };
   });
 
   const tree = $derived(buildTree(catalog.notes, emptyFolders));
@@ -175,7 +188,7 @@
 
   const basename = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
   const label = (row: (typeof rows)[number]): string =>
-    row.node.kind === "note" ? (showFilenames ? basename(row.node.path) : row.node.title ?? row.node.name) : row.node.name;
+    row.node.kind === "note" ? (showFilenames ? basename(row.node.path) : row.node.title ?? row.node.name) : emojiName(row.node.name, nameCatalog);
 
   const icon = (row: (typeof rows)[number]): string | undefined =>
     row.node.kind === "note" && row.node.icon !== undefined && row.node.icon !== null && row.node.icon !== ""

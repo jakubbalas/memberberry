@@ -13,6 +13,12 @@
   phrased as "notes you can see"**, because that is precisely what the server counted (§6.5).
 -->
 <script lang="ts">
+  import { tick } from "svelte";
+  import { emojiCatalog } from "../emoji-catalog.js";
+  import { emojiSuggestions } from "../emoji-suggestions.js";
+  import type { EmojiEntry } from "../notes.js";
+  import { nameEmojiQuery } from "./name-emoji.js";
+
   interface Props {
     readonly open: boolean;
     /** "Rename note" or "Rename tag" — also the dialog's accessible name. */
@@ -24,6 +30,8 @@
     readonly initial: string;
     /** Set while the request is in flight; the form is disabled and says so. */
     readonly busy?: boolean | undefined;
+    /** Note/folder names offer Unicode suggestions; tag prompts opt out. */
+    readonly emoji?: boolean | undefined;
     /** A refusal from the server, or from the client's own check of the typed name. */
     readonly error?: string | undefined;
     /** Shown above the buttons when the action reaches further than the thing named. */
@@ -42,6 +50,7 @@
     label,
     initial,
     busy = false,
+    emoji = true,
     error,
     warning,
     confirm = "Rename",
@@ -53,12 +62,56 @@
   let dialog = $state<HTMLDialogElement | undefined>(undefined);
   let input = $state<HTMLInputElement | undefined>(undefined);
   let name = $state("");
+  const suggestionsId = $props.id();
+  let catalog = $state<readonly EmojiEntry[]>([]);
+  let query = $state<ReturnType<typeof nameEmojiQuery>>();
+  let selected = $state(0);
+  let loading = false;
+  let disposed = false;
+  const suggestions = $derived(open && emoji && !busy && query !== undefined
+    ? emojiSuggestions(catalog, query.text) : []);
+
+  $effect(() => () => { disposed = true; });
+  $effect(() => { if (!open || busy) query = undefined; });
+
+  function updateQuery(): void {
+    query = !disposed && open && emoji && !busy && input != null && document.activeElement === input
+      ? nameEmojiQuery(input.value, input.selectionStart, input.selectionEnd) : undefined;
+    selected = 0;
+    if (query === undefined || catalog.length > 0 || loading) return;
+    loading = true;
+    void emojiCatalog().then(entries => { if (!disposed) catalog = entries; }).catch(() => {
+      // why: offline catalog failure must leave naming usable; a later query retries.
+    }).finally(() => { loading = false; });
+  }
+
+  async function choose(index: number): Promise<void> {
+    const entry = suggestions[index], range = query;
+    if (entry === undefined || range === undefined || input == null || busy) return;
+    name = `${name.slice(0, range.from)}${entry.glyph}${name.slice(range.to)}`;
+    query = undefined;
+    await tick();
+    if (disposed || !open || input == null) return;
+    input.focus();
+    input.setSelectionRange(range.from + entry.glyph.length, range.from + entry.glyph.length);
+  }
+
+  function emojiKey(event: KeyboardEvent): void {
+    if (event.isComposing || suggestions.length === 0) return;
+    if (["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation();
+      if (event.key === "Escape") query = undefined;
+      else if (event.key === "Enter") void choose(selected);
+      else selected = (selected + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length;
+    } else if (event.key === "Tab") query = undefined;
+  }
 
   $effect(() => {
     const element = dialog;
     if (element === undefined) return;
     if (open && !element.open) {
       name = initial;
+      query = undefined;
       element.showModal();
       input?.focus();
       // Selected rather than merely focused: the commonest rename replaces the name outright,
@@ -99,8 +152,27 @@
         aria-describedby={warning === undefined ? undefined : "rename-warning"}
         bind:this={input}
         bind:value={name}
+        role={emoji ? "combobox" : undefined}
+        aria-autocomplete={emoji ? "list" : undefined}
+        aria-expanded={emoji ? suggestions.length > 0 : undefined}
+        aria-controls={suggestions.length > 0 ? suggestionsId : undefined}
+        aria-activedescendant={suggestions.length > 0 ? `${suggestionsId}-${selected}` : undefined}
+        oninput={updateQuery}
+        onclick={updateQuery}
+        onselect={updateQuery}
+        onkeyup={(event) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) updateQuery(); }}
+        onkeydown={emojiKey}
+        onblur={(event) => { if (!(event.relatedTarget instanceof Element) || !event.relatedTarget.closest(`#${CSS.escape(suggestionsId)}`)) query = undefined; }}
       />
     </label>
+
+    {#if suggestions.length > 0}
+      <div class="name-emoji-suggestions" id={suggestionsId} role="listbox" aria-label="Emoji suggestions">
+        {#each suggestions as entry, index (entry.shortcode)}
+          <button type="button" class="emoji-autocomplete-item" id={`${suggestionsId}-${index}`} role="option" aria-selected={index === selected} tabindex="-1" onmousedown={(event) => event.preventDefault()} onclick={() => void choose(index)}>{entry.glyph} :{entry.shortcode}:</button>
+        {/each}
+      </div>
+    {/if}
 
     {#if warning !== undefined}
       <p class="rename-warning" id="rename-warning">{warning}</p>

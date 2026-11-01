@@ -3,6 +3,7 @@ import { mount, tick, unmount } from "svelte";
 import { afterEach, expect, it, vi } from "vitest";
 import FolderContents from "./FolderContents.svelte";
 import { FolderBrowser } from "./folder-browser.svelte.js";
+vi.mock("../emoji-catalog.js", () => ({ emojiCatalog: async () => [{ shortcode: "tada", glyph: "🎉", aliases: [], category: "activities", supportsSkinTone: false }] }));
 const apps:ReturnType<typeof mount>[]=[];
 afterEach(async()=>{for(const app of apps.splice(0))await unmount(app);vi.unstubAllGlobals();document.body.replaceChildren();});
 function reply(path:string,files:readonly string[]=[],status=200):Response{return new Response(JSON.stringify(status===200?{path,folders:[],files:files.map(name=>({name,path:`${path}/${name}`}))}:{error:"not_found"}),{status,headers:{"content-type":"application/json"}});}
@@ -24,4 +25,13 @@ it("renders an existing empty directory and conditional parent navigation withou
  vi.stubGlobal("fetch",vi.fn(async()=>reply("Projects/Empty")));const view=await render("Projects/Empty");await vi.waitFor(()=>expect(view.target.textContent).toContain("0 folders found"));
  expect(document.activeElement).toBe(view.target.querySelector("h1"));[...view.target.querySelectorAll("button")].find(b=>b.textContent?.includes("Go to parent folder"))?.click();expect(view.onfolder).toHaveBeenCalledWith("Projects");
  view.target.querySelector<HTMLButtonElement>('[aria-label="Close folder view"]')?.click();expect(view.onclose).toHaveBeenCalledTimes(1);expect(view.onopen).not.toHaveBeenCalled();
+});
+
+it("resolves folder headings and child labels without changing navigation paths",async()=>{
+ vi.stubGlobal("fetch",vi.fn(async()=>new Response(JSON.stringify({path:":tada: Projects",folders:[{name:":tada: Child",path:":tada: Projects/:tada: Child"}],files:[]}),{headers:{"content-type":"application/json"}})));
+ const view=await render(":tada: Projects");
+ await vi.waitFor(()=>expect(view.target.querySelector("h1")?.textContent).toBe("🎉 Projects"));
+ await vi.waitFor(()=>expect(view.browser.listing,view.browser.error).toBeDefined());
+ const child=await vi.waitFor(()=>{const button=[...view.target.querySelectorAll("button")].find(entry=>entry.getAttribute("aria-label")==="Open folder 🎉 Child");expect(button).toBeDefined();return button;});
+ child?.click();expect(view.onfolder).toHaveBeenCalledWith(":tada: Projects/:tada: Child");
 });
