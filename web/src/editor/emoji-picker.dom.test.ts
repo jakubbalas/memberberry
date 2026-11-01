@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Editor } from "@tiptap/core";
 
 import { mountEmojiPicker, mergeEmojiChoices, type EmojiChoice } from "./emoji-picker.js";
@@ -27,6 +27,105 @@ const choices: readonly EmojiChoice[] = [
 ];
 
 describe("emoji picker", () => {
+  describe("dismissal", () => {
+    let root: HTMLElement;
+    let toggle: HTMLButtonElement;
+    let panel: HTMLElement;
+    let search: HTMLInputElement;
+    let outside: HTMLButtonElement;
+    let picker: ReturnType<typeof mountEmojiPicker>;
+
+    beforeEach(() => {
+      root = document.createElement("div");
+      outside = document.createElement("button");
+      outside.textContent = "Outside";
+      document.body.append(root, outside);
+      picker = mountEmojiPicker(fakeEditor().editor, root, choices);
+      const button = root.querySelector<HTMLButtonElement>(".emoji-picker-toggle");
+      const dialog = root.querySelector<HTMLElement>(".emoji-picker");
+      const input = root.querySelector<HTMLInputElement>("input[type='search']");
+      if (button === null || dialog === null || input === null) throw new Error("picker controls missing");
+      toggle = button;
+      panel = dialog;
+      search = input;
+      toggle.click();
+    });
+
+    afterEach(() => {
+      picker.destroy();
+      root.remove();
+      outside.remove();
+    });
+
+    it("closes on an outside pointer press without consuming the target's interaction", () => {
+      const pressed = vi.fn((event: Event) => event.stopPropagation());
+      outside.addEventListener("pointerdown", pressed);
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+      outside.dispatchEvent(event);
+      outside.focus();
+      expect(panel.hidden).toBe(true);
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(pressed).toHaveBeenCalledOnce();
+      expect(event.defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it.each(["inside", "outside"])("closes on Escape with focus %s and restores focus to the toggle", (location) => {
+      const target = location === "inside" ? search : outside;
+      target.focus();
+      const escaped = vi.fn();
+      target.addEventListener("keydown", escaped);
+      const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      expect(panel.hidden).toBe(true);
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(document.activeElement).toBe(toggle);
+      expect(event.defaultPrevented).toBe(true);
+      expect(escaped).not.toHaveBeenCalled();
+    });
+
+    it("keeps inside pointer interactions open and lets the toggle close and reopen it", () => {
+      search.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      root.querySelector<HTMLButtonElement>("[aria-label='Show custom emoji']")?.click();
+      expect(panel.hidden).toBe(false);
+      toggle.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      toggle.click();
+      expect(panel.hidden).toBe(true);
+      toggle.click();
+      expect(panel.hidden).toBe(false);
+      expect(document.activeElement).toBe(search);
+    });
+
+    it("ignores Escape while closed without moving focus", () => {
+      toggle.click();
+      outside.focus();
+      const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      outside.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it("removes document dismissal listeners on teardown", () => {
+      picker.destroy();
+      outside.focus();
+      outside.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      outside.dispatchEvent(event);
+      expect(panel.hidden).toBe(false);
+      expect(event.defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(outside);
+    });
+  });
+
+  it("offers image, folder and pack management controls without a Slack export importer", () => {
+    const toolbar = document.createElement("div");
+    const picker = mountEmojiPicker(fakeEditor().editor, toolbar, [], { vault: "vault" });
+    expect([...toolbar.querySelectorAll(".emoji-import-controls button")].map((button) => button.textContent)).toEqual([
+      "Import custom emoji", "Import emoji folder", "Manage custom packs",
+    ]);
+    picker.destroy();
+  });
+
   it("opens a file picker for individual images and ZIPs, including after a folder import", () => {
     const toolbar = document.createElement("div");
     const picker = mountEmojiPicker(fakeEditor().editor, toolbar, [], { vault: "vault" });
@@ -222,13 +321,13 @@ describe("emoji picker", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uploads a Slack export with its alias in the manifest", async () => {
+  it("renames an imported image whose filename collides with an existing alias", async () => {
     const { editor } = fakeEditor();
     const toolbar = document.createElement("div");
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
     vi.spyOn(window, "prompt")
-      .mockReturnValueOnce("slack-emoji")
+      .mockReturnValueOnce("custom-emoji")
       .mockReturnValueOnce("party-bird");
     const picker = mountEmojiPicker(editor, toolbar, [
       { shortcode: "existing", glyph: "🎉", category: "activities", custom: false, aliases: ["parrot"] },
@@ -236,17 +335,12 @@ describe("emoji picker", () => {
     document.body.append(toolbar);
     const input = toolbar.querySelector<HTMLInputElement>(".emoji-import-controls input");
     if (input === null) throw new Error("import input missing");
-    const files = [
-      new File([JSON.stringify({ partyparrot: "https://slack.test/partyparrot.png", parrot: "alias:partyparrot" })], "emoji.json"),
-      new File([new Uint8Array([1, 2, 3])], "partyparrot.png", { type: "image/png" }),
-    ];
+    const files = [new File([new Uint8Array([1, 2, 3])], "parrot.png", { type: "image/png" })];
     Object.defineProperty(input, "files", { configurable: true, value: files });
-    toolbar.querySelector<HTMLButtonElement>("[aria-label='Import a local Slack emoji export']")?.click();
-    expect(input.hasAttribute("webkitdirectory")).toBe(true);
     input.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { manifest: { emoji: Array<{ aliases: string[] }> } };
-    expect(body.manifest.emoji[0]?.aliases).toEqual(["party-bird"]);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { manifest: { emoji: Array<{ shortcode: string; file: string }> } };
+    expect(body.manifest.emoji).toEqual([{ shortcode: "party-bird", file: "party-bird.png", aliases: [] }]);
     picker.destroy();
     vi.restoreAllMocks();
   });

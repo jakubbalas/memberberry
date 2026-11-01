@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { zipSync } from "fflate";
 
-import { emojiPackUploadBody, normalizeShortcode, planEmojiImport, planSlackEmojiImport, readEmojiImport } from "./emoji-import.js";
+import { emojiPackUploadBody, normalizeShortcode, planEmojiImport, readEmojiImport } from "./emoji-import.js";
 
 describe("emoji import", () => {
   it("normalizes filenames to server-safe shortcodes", () => {
@@ -32,37 +32,20 @@ describe("emoji import", () => {
     });
   });
 
-  it("imports Slack emoji JSON locally and preserves aliases without fetching URLs", () => {
-    const plan = planSlackEmojiImport([
-      { name: "emoji.json", bytes: new TextEncoder().encode(JSON.stringify({ partyparrot: "https://slack.test/partyparrot.png", parrot: "alias:partyparrot" })) },
-      { name: "partyparrot.png", bytes: new Uint8Array([9]), type: "image/png" },
-    ], new Set());
-    expect(plan.invalid).toEqual([]);
-    expect(plan.assets).toEqual([{ shortcode: "partyparrot", file: "partyparrot.png", bytes: new Uint8Array([9]), type: "image/png", aliases: ["parrot"] }]);
-    expect(JSON.parse(emojiPackUploadBody("slack", plan)).manifest.emoji[0].aliases).toEqual(["parrot"]);
-  });
-
-  it("reports Slack names that normalize to the same shortcode without dropping either image", () => {
-    const plan = planSlackEmojiImport([
-      {
-        name: "emoji.json",
-        bytes: new TextEncoder().encode(JSON.stringify({
-          "Party Parrot": "https://slack.test/first.png",
-          "party-parrot": "https://slack.test/second.png",
-        })),
-      },
-      { name: "first.png", bytes: new Uint8Array([1]), type: "image/png" },
-      { name: "second.png", bytes: new Uint8Array([2]), type: "image/png" },
-    ], new Set());
-
-    expect(plan.assets.map((asset) => asset.shortcode)).toEqual(["party-parrot", "party-parrot"]);
-    expect(plan.assets.map((asset) => [...asset.bytes])).toEqual([[1], [2]]);
-    expect(plan.collisions).toEqual(["party-parrot"]);
-  });
-
   it("reads image entries from a ZIP while ignoring path traversal", async () => {
     const archive = zipSync({ "emoji/wave.png": new Uint8Array([7]), "../secret.png": new Uint8Array([8]), "folder/": new Uint8Array() });
     const sources = await readEmojiImport([new File([archive], "pack.zip", { type: "application/zip" })]);
     expect(sources).toEqual([{ name: "emoji/wave.png", bytes: new Uint8Array([7]), type: "image/png" }]);
+  });
+
+  it("uses image filenames and reports JSON metadata as unsupported", () => {
+    const plan = planEmojiImport([
+      { name: "emoji.json", bytes: new TextEncoder().encode(JSON.stringify({ renamed: "wave.png", alias: "alias:renamed" })) },
+      { name: "wave.png", bytes: new Uint8Array([7]), type: "image/png" },
+    ], new Set());
+    expect(plan).toEqual({
+      assets: [{ shortcode: "wave", file: "wave.png", bytes: new Uint8Array([7]), type: "image/png", aliases: [] }],
+      collisions: [], invalid: ["emoji.json"],
+    });
   });
 });

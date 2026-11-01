@@ -2,40 +2,55 @@
 
 ## Current state (2026-11-01)
 
-The emoji importer now opens a file chooser for individual images and ZIPs. It previously
-always enabled webkitdirectory, causing macOS to gray out individual PNGs and archives.
-Import emoji folder has its own button; Slack export keeps directory selection. SPEC §11.2
-records the chooser behavior.
+The emoji picker closes on outside pointer presses and Escape, including after focus moves
+outside. Outside interactions continue normally; Escape returns focus to the Emoji toggle
+and is consumed only while the picker is open. Document listeners are removed on editor
+teardown. SPEC §11.4 records the behavior.
 
-The same change includes the earlier quick-find alignment fix. Quick find follows
-the editor's workspace grid tracks through sidebar resizing/collapse, with compact controls
-and a mobile touch target. SPEC §8.2 records that layout contract.
+The dedicated Slack emoji export importer is removed: button, selection mode, JSON parser,
+alias-import logic and its helpers. Image, folder and ZIP import still derive shortcodes
+from filenames. Existing pack aliases still participate in collision detection. SPEC §11.2,
+M10 and decision A32 reflect the requested scope.
+
+PNG chooser and quick-find alignment fixes are committed as 65db429. The importer opens
+individual files/ZIPs through Import custom emoji, with a separate Import emoji folder
+button. Quick find follows the editor through sidebar resizing/collapse (SPEC §8.2).
 
 Formatting shortcuts are committed as 83d5e42. Earlier clipboard, folder Rename/Delete,
 emoji naming and dev-startup work is also committed. No push, deployment or live-vault
-operation was performed for either current change.
+operation was performed for the current changes.
 
 ## Verification
 
-- 20 focused emoji-import/picker tests pass, covering file/folder chooser switching,
-  teardown, PNG upload, cancelled/invalid/empty selections, ZIP decoding, Slack aliases,
-  collisions and pack management. The chooser regression failed against the old code
-  before the fix was written.
-- Rebuilt emoji-import.spec.ts passes both desktop/mobile cases against the disposable
-  real server: native file chooser configuration, PNG upload and decoding, reload from the
-  installed pack, insertion as a Markdown shortcode on disk, and folder/file switching.
+- 26 focused emoji-import/picker tests pass, covering outside dismissal, Escape inside and
+  outside, focus restoration, event propagation, closed-picker behavior, listener teardown,
+  file/folder chooser switching, PNG upload, cancelled/invalid/empty selections, ZIP decoding,
+  filename/alias collisions, unsupported JSON metadata and pack management. The new control-list test
+  failed with the Slack button present before the removal was written. Dismissal regressions
+  also failed against the old implementation. Tests for deleted Slack-only behavior were
+  removed; general collision coverage is retained.
+- Rebuilt emoji-import.spec.ts passes all four desktop/mobile cases against the disposable
+  real server: outside mouse click/mobile tap, Escape before/after focus leaves the picker,
+  focus restoration and toggle keyboard activation, native file chooser configuration, PNG
+  upload and decoding, reload from the installed pack, insertion as a Markdown shortcode
+  on disk, and folder/file switching.
+  The updated spec also checks the absence of a Slack import button.
   Screenshots were visually inspected. Chromium verifies chooser configuration and file
   selection; the macOS native dialog itself is not driven by this test.
+  The first run's extra mobile pointer-toggle check failed because the bottom sheet covers
+  the toolbar toggle. The corrected test uses its keyboard action; outside mobile dismissal
+  is verified with a real tap. That initial failure is in emoji-dismiss-browser-before.log.
 - Production frontend build and TypeScript/Svelte typecheck (zero errors/warnings) pass.
-  Existing dependency directive and large-chunk build warnings remain. The first browser
-  attempt could not bind the sandboxed listener; the escalated loopback run passed.
+  Existing dependency directive and large-chunk build warnings remain. Browser verification
+  uses an escalated disposable loopback server.
 - Prior quick-find verification: 55 TopBar/Workspace DOM tests, 14 desktop/mobile browser
   cases, inspected screenshots and make token-check passed. Its two viewport-specific
   exclusions remain: desktop drawer layout and mobile side-by-side panels.
 - Prior shortcut verification remains valid: 166 focused tests, seeded Unicode properties,
   caret mutation probe, desktop/mobile shortcut browser cases and mounted DOM benchmarks.
 
-Fresh logs: local/debug/emoji-import-{tests,typecheck,build,browser}.log. Screenshots:
+Fresh logs: local/debug/emoji-dismiss-{before,tests,typecheck,build,browser}.log. Previous
+removal logs remain at local/debug/remove-slack-*.log. Screenshots:
 web/test-results/emoji-import-an-individual-be562-ted-as-a-Markdown-shortcode-{desktop,mobile}/png-imported.png.
 Prior quick-find logs remain in local/debug/quick-find-*.log; shortcut logs remain under
 local/debug/format-shortcuts-*.log. Browser test-results are overwritten by subsequent runs.

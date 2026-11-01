@@ -1,6 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { emojiCatalog } from "../emoji-catalog.js";
-import { emojiPackUploadBody, normalizeShortcode, planEmojiImport, planSlackEmojiImport, readEmojiImport, type EmojiImportAsset } from "./emoji-import.js";
+import { emojiPackUploadBody, normalizeShortcode, planEmojiImport, readEmojiImport, type EmojiImportAsset } from "./emoji-import.js";
 
 /** One item shown by the emoji picker. */
 export interface EmojiChoice {
@@ -285,14 +285,21 @@ export function mountEmojiPicker(
     render();
   };
   const onKeyDown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape") {
+    if (!panel.hidden && event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
       close();
       toggle.focus();
     }
   };
+  const onOutsidePointer = (event: PointerEvent): void => {
+    if (!panel.hidden && event.target instanceof Node && !wrapper.contains(event.target)) close();
+  };
   toggle.addEventListener("click", onToggle);
   search.addEventListener("input", onSearch);
-  panel.addEventListener("keydown", onKeyDown);
+  // why: dismissal must work after focus leaves the picker and before other controls consume events.
+  document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener("pointerdown", onOutsidePointer, true);
   renderCategories();
   render();
   return {
@@ -301,7 +308,8 @@ export function mountEmojiPicker(
       loading?.abort();
       toggle.removeEventListener("click", onToggle);
       search.removeEventListener("input", onSearch);
-      panel.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("pointerdown", onOutsidePointer, true);
       importer?.destroy();
       wrapper.remove();
     },
@@ -318,7 +326,6 @@ function mountEmojiImporter(
   controls.className = "emoji-import-controls";
   const button = importButton("Import custom emoji", "Import custom emoji from images or ZIP files");
   const folderButton = importButton("Import emoji folder", "Import custom emoji from a folder");
-  const slackButton = importButton("Import Slack export", "Import a local Slack emoji export");
   const manageButton = importButton("Manage custom packs", "Manage vault custom emoji packs");
   const input = document.createElement("input");
   input.type = "file";
@@ -328,19 +335,16 @@ function mountEmojiImporter(
   const management = document.createElement("div");
   management.className = "emoji-pack-management";
   management.hidden = true;
-  controls.append(button, folderButton, slackButton, manageButton, input, management);
+  controls.append(button, folderButton, manageButton, input, management);
   const setStatus = (message: string): void => {
     if (options.status !== undefined) options.status.textContent = message;
   };
-  let mode: "images" | "slack" = "images";
   const onButton = (): void => {
-    mode = "images";
     // why: directory selection disables individual images and ZIPs in the native chooser.
     input.removeAttribute("webkitdirectory");
     input.click();
   };
-  const onFolderButton = (): void => { mode = "images"; input.setAttribute("webkitdirectory", ""); input.click(); };
-  const onSlackButton = (): void => { mode = "slack"; input.setAttribute("webkitdirectory", ""); input.click(); };
+  const onFolderButton = (): void => { input.setAttribute("webkitdirectory", ""); input.click(); };
   const onManageButton = (): void => {
     management.hidden = !management.hidden;
     if (!management.hidden) void loadManagedPacks();
@@ -349,7 +353,7 @@ function mountEmojiImporter(
     const files = input.files === null ? [] : [...input.files];
     input.value = "";
     if (files.length === 0) return;
-    void importEmojiFiles(files, mode);
+    void importEmojiFiles(files);
   };
   const loadManagedPacks = async (): Promise<void> => {
     management.replaceChildren();
@@ -396,16 +400,16 @@ function mountEmojiImporter(
     onDeleted(pack);
     setStatus(`Deleted ${pack} emoji pack.`);
   };
-  const importEmojiFiles = async (files: readonly File[], importMode: "images" | "slack"): Promise<void> => {
+  const importEmojiFiles = async (files: readonly File[]): Promise<void> => {
     try {
       const sources = await readEmojiImport(files);
       const existing = new Set(getChoices().flatMap((choice) => [choice.shortcode, ...(choice.aliases ?? [])]));
-      const plan = importMode === "slack" ? planSlackEmojiImport(sources, existing) : planEmojiImport(sources, existing);
+      const plan = planEmojiImport(sources, existing);
       if (plan.assets.length === 0) {
         setStatus("No supported, non-empty emoji images found.");
         return;
       }
-      const requestedPackName = window.prompt("Pack name", importMode === "slack" ? "slack-emoji" : "custom-emoji");
+      const requestedPackName = window.prompt("Pack name", "custom-emoji");
       const packName = requestedPackName === null ? undefined : normalizeShortcode(requestedPackName);
       if (packName === undefined) {
         setStatus("Import cancelled: use a simple pack name.");
@@ -436,7 +440,6 @@ function mountEmojiImporter(
   };
   button.addEventListener("click", onButton);
   folderButton.addEventListener("click", onFolderButton);
-  slackButton.addEventListener("click", onSlackButton);
   manageButton.addEventListener("click", onManageButton);
   input.addEventListener("change", onChange);
   return {
@@ -444,7 +447,6 @@ function mountEmojiImporter(
     destroy: () => {
       button.removeEventListener("click", onButton);
       folderButton.removeEventListener("click", onFolderButton);
-      slackButton.removeEventListener("click", onSlackButton);
       manageButton.removeEventListener("click", onManageButton);
       input.removeEventListener("change", onChange);
     },
@@ -474,15 +476,8 @@ function resolveCollisions(assets: readonly EmojiImportAsset[], existing: Readon
     const shortcode = resolveName(asset.shortcode, used);
     if (shortcode === undefined) return undefined;
     used.add(shortcode);
-    const aliases: string[] = [];
-    for (const alias of asset.aliases) {
-      const resolvedAlias = resolveName(alias, used);
-      if (resolvedAlias === undefined) return undefined;
-      used.add(resolvedAlias);
-      aliases.push(resolvedAlias);
-    }
     const extension = asset.file.split(".").pop() ?? "png";
-    resolved.push({ ...asset, shortcode, file: `${shortcode}.${extension}`, aliases });
+    resolved.push({ ...asset, shortcode, file: `${shortcode}.${extension}` });
   }
   return resolved;
 }

@@ -1,4 +1,4 @@
-/** Browser-side folder and ZIP import for the server-owned emoji pack format. */
+/** Browser-side image, folder and ZIP import for the server-owned emoji pack format. */
 
 const IMAGE_EXTENSIONS = new Set(["gif", "jpg", "jpeg", "png", "webp"]);
 const SHORTCODE = /^[a-z0-9][a-z0-9_+-]*$/;
@@ -69,68 +69,6 @@ export function emojiPackUploadBody(packName: string, plan: EmojiImportPlan): st
   });
 }
 
-/** Converts a local Slack export (`emoji.json` plus image files) into the pack format. */
-export function planSlackEmojiImport(
-  sources: readonly EmojiImportSource[],
-  existingShortcodes: ReadonlySet<string>,
-): EmojiImportPlan {
-  const manifest = sources.find((source) => basename(source.name).toLowerCase() === "emoji.json");
-  if (manifest === undefined) return { assets: [], collisions: [], invalid: ["emoji.json"] };
-  let values: unknown;
-  try {
-    values = JSON.parse(new TextDecoder().decode(manifest.bytes)) as unknown;
-  } catch {
-    return { assets: [], collisions: [], invalid: [manifest.name] };
-  }
-  if (!isStringMap(values)) return { assets: [], collisions: [], invalid: [manifest.name] };
-  const images = new Map<string, EmojiImportSource>();
-  for (const source of sources) {
-    const extension = basename(source.name).split(".").pop()?.toLowerCase() ?? "";
-    if (IMAGE_EXTENSIONS.has(extension) && source.bytes.length > 0) images.set(basename(source.name).toLowerCase(), source);
-  }
-  const aliases = new Map<string, string[]>();
-  const entries: Array<readonly [string, { source: EmojiImportSource; extension: string }]> = [];
-  const invalid: string[] = [];
-  for (const [name, value] of Object.entries(values)) {
-    const shortcode = normalizeShortcode(name);
-    if (shortcode === undefined || value.length === 0) {
-      invalid.push(name);
-      continue;
-    }
-    if (value.startsWith("alias:")) {
-      const target = normalizeShortcode(value.slice("alias:".length));
-      if (target === undefined) invalid.push(name);
-      else aliases.set(target, [...(aliases.get(target) ?? []), shortcode]);
-      continue;
-    }
-    const sourceName = basename(decodeUrlFile(value)).toLowerCase();
-    const source = images.get(sourceName) ?? [...images.entries()].find(([file]) => normalizeShortcode(file.split(".")[0] ?? "") === shortcode)?.[1];
-    if (source === undefined) {
-      invalid.push(name);
-      continue;
-    }
-    const extension = basename(source.name).split(".").pop()?.toLowerCase() ?? "png";
-    entries.push([shortcode, { source, extension }]);
-  }
-  const collisions = new Set<string>();
-  const seen = new Set<string>();
-  const assets = entries.map(([shortcode, entry]) => {
-    const entryAliases = aliases.get(shortcode) ?? [];
-    for (const name of [shortcode, ...entryAliases]) {
-      if (existingShortcodes.has(name) || seen.has(name)) collisions.add(name);
-      seen.add(name);
-    }
-    return {
-      shortcode,
-      file: `${shortcode}.${entry.extension}`,
-      bytes: entry.source.bytes,
-      type: entry.source.type || mimeType(entry.extension),
-      aliases: entryAliases,
-    };
-  });
-  return { assets, collisions: [...collisions].sort(), invalid };
-}
-
 export function normalizeShortcode(value: string): string | undefined {
   const normalized = value.toLowerCase().replace(/[^a-z0-9_+-]+/g, "-").replace(/^-+|-+$/g, "");
   return SHORTCODE.test(normalized) ? normalized : undefined;
@@ -160,19 +98,6 @@ async function unzip(file: File): Promise<readonly EmojiImportSource[]> {
 
 function basename(value: string): string {
   return value.split(/[\\/]/).pop() ?? value;
-}
-
-function isStringMap(value: unknown): value is Record<string, string> {
-  return typeof value === "object" && value !== null
-    && Object.values(value).every((entry) => typeof entry === "string");
-}
-
-function decodeUrlFile(value: string): string {
-  try {
-    return decodeURIComponent(new URL(value).pathname);
-  } catch {
-    return value;
-  }
 }
 
 function mimeType(extension: string): string {

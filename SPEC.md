@@ -3440,7 +3440,6 @@ and history all remain strictly per-vault (A22).
   `PUT /api/v1/vaults/<slug>/emoji/packs/<name>` requires vault owner. Pack names and files are
   validated before an atomic install; existing packs return conflict rather than being silently
   replaced. Folder/zip import remains a picker/CLI convenience on top of this format.
-- **Slack export importer** — that is where an existing custom emoji collection lives.
 - Image bytes are stored beside `pack.json` in the pack directory shown above and served only
   through E22's authorized vault route. They are not note media and do not enter a note's
   content-addressed media namespace (§12).
@@ -3464,7 +3463,11 @@ autocompletes to 🎉; `:partyparrot:` stays textual. Both are picker-inserted i
 
 Grid with search, frequently-used, category tabs, **Custom section first**, skin-tone
 selector. Inline editor autocomplete on `:` + 2 characters, fuzzy, keyboard-navigable. Mobile:
-bottom sheet.
+bottom sheet. Clicking or tapping outside the picker closes it without consuming the
+outside interaction. Escape closes an open picker even after focus moves elsewhere,
+returns focus to its Emoji toggle, and consumes that key so other Escape actions do not
+also fire. Escape has no picker effect while it is closed. Picker controls remain usable
+without dismissal, and its toggle can close or reopen it.
 
 Note/folder naming dialogs offer the offline Unicode catalog immediately on `:`, including
 at the start of a name or after `/` in a nested path. Arrow keys select; Enter inserts the
@@ -5335,7 +5338,7 @@ browser. Nothing will be opening a browser here.
 - [x] Base Unicode pack compiled into WASM; inline `:` autocomplete
 - [x] Picker: search, recents, categories, skin tones, custom-first
 - [x] Server-level shared packs + per-vault overrides, admin-gated (§11.2)
-- [x] Custom pack format + bulk folder/zip upload; Slack export importer
+- [x] Custom pack format + image/folder/zip upload
 - [x] `export --materialize-emoji`
 - [x] Note icons (frontmatter → tree, tabs, title, graph)
 
@@ -5412,6 +5415,7 @@ to replace a product comparison with a description. Do not reverse these without
 | A28 | Invite acceptance | *"it should create a new credential-bearing user"* | An accepted invite always creates a new user account with the invite's scoped role; it never attaches to an existing account (§6.8) |
 | A30 | Clipboard screenshots | *"I want to also have paste from screenshots that are in clipboard"* | Media paste explicitly accepts image data for screenshots currently held in the system clipboard (§12.4, M11) |
 | A31 | Browser-first vault creation | *"When I first start the app, I should be directed on how to create a new vault and I should do it over the UI"* / *"I should be able to make new Vaults from the UI too"* | First-account setup and guided vault creation live in the browser; administrators can add managed Markdown vaults without restarting. CLI registration remains optional for existing folders (§6.1, §6.8). |
+| A32 | Slack emoji export import | *"remove \"Import Slack Export\" functionality, doesn't seem like it makes much sense to have it"* | Remove the dedicated Slack export importer; custom emoji import uses image filenames through image, folder and ZIP upload (§11.2). |
 
 ---
 
