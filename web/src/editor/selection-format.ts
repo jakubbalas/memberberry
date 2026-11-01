@@ -1,6 +1,6 @@
 /** Snapshot-bound inline edits on the Rust-generated Markdown schema. */
 import type { Editor } from "@tiptap/core";
-import type { Node } from "@tiptap/pm/model";
+import type { Mark, MarkType, Node } from "@tiptap/pm/model";
 import { TextSelection, type SelectionBookmark } from "@tiptap/pm/state";
 import { yUndoPluginKey } from "y-prosemirror";
 import { linkDestination } from "./links.js";
@@ -40,6 +40,39 @@ function removes(editor: Editor, token: FormatSelection, action: InlineFormat): 
 }
 /** Refusal is explicit, including when a plugin filters out a transaction. */
 export type FormatResult = "applied" | "unchanged" | "refused";
+
+function incompatibleMarks(name: string, mark: MarkType, existing: Mark): boolean {
+  if (existing.type === mark) return false;
+  // why: native wrappers may surround literal Code; namespace styles must explicitly
+  // gain code compatibility rather than getting it by omitting a schema exclusion.
+  const native = ["strong", "em", "strikethrough", "highlight", "code", "link"];
+  if ((name === "code" || existing.type.name === "code") &&
+      (!native.includes(name) || !native.includes(existing.type.name))) return true;
+  return mark.excludes(existing.type) || existing.type.excludes(mark);
+}
+
+/** Toggles the next typed text's mark at an eligible body caret without inserting content. */
+export function applyCaretFormat(editor: Editor, action: InlineMark, canInteract: () => boolean): FormatResult {
+  if (editor.isDestroyed || !editor.isEditable || !editor.view.editable || editor.view.composing ||
+      !canInteract() || editor.view.dom.hidden) return "refused";
+  const selection = editor.state.selection;
+  if (!(selection instanceof TextSelection) || !selection.empty || !selection.$from.parent.isTextblock) return "refused";
+  const first = editor.state.doc.firstChild;
+  if (first?.type.name === "heading" && first.attrs["level"] === 1 && selection.from < first.nodeSize) return "refused";
+  for (let depth = 1; depth <= selection.$from.depth; depth++) {
+    if (selection.$from.node(depth).type.spec.code) return "refused";
+  }
+  const mark = editor.state.schema.marks[action];
+  if (!mark || !selection.$from.parent.type.allowsMarkType(mark)) return "refused";
+  const current = editor.state.storedMarks ?? selection.$from.marks();
+  const removing = mark.isInSet(current) !== undefined;
+  if (!removing && current.some(existing => incompatibleMarks(action, mark, existing))) return "refused";
+  const transaction = editor.state.tr.setStoredMarks(removing ? mark.removeFromSet(current) : mark.create().addToSet(current));
+  // why: a caret toggle must not join subsequent formatted typing to preceding plain text.
+  yUndoPluginKey.getState(editor.state)?.undoManager.stopCapturing();
+  editor.view.dispatch(transaction);
+  return editor.state.storedMarks === transaction.storedMarks ? "applied" : "refused";
+}
 
 function eligible(editor: Editor, selection: TextSelection, canInteract: () => boolean): boolean {
   if (editor.isDestroyed || !editor.isEditable || !editor.view.editable || editor.view.composing || !canInteract() || editor.view.dom.hidden || selection.empty) return false;
@@ -103,15 +136,7 @@ export function canApplyInlineFormat(editor: Editor, token: FormatSelection, act
     if (action === "code" && node.isInline && !node.isText) safe = false;
     if (!node.isText) return;
     if (!parent?.type.allowsMarkType(mark)) safe = false;
-    if (!removing && node.marks.some((existing) => {
-      if (existing.type === mark) return false;
-      // why: ordinary native wrappers surround literal Code; future namespace styles
-      // must not gain code compatibility merely by omitting their schema exclusion.
-      const native = ["strong", "em", "strikethrough", "highlight", "code", "link"];
-      if ((name === "code" || existing.type.name === "code") &&
-          (!native.includes(name) || !native.includes(existing.type.name))) return true;
-      return mark.excludes(existing.type) || existing.type.excludes(mark);
-    })) safe = false;
+    if (!removing && node.marks.some((existing) => incompatibleMarks(name, mark, existing))) safe = false;
   });
   return safe;
 }

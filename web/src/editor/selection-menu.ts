@@ -2,11 +2,13 @@
 import type { Editor } from "@tiptap/core";
 import { TextSelection, type Transaction } from "@tiptap/pm/state";
 import {
-  applyInlineFormat, canApplyInlineFormat, captureFormatSelection, inlineFormatState,
+  applyCaretFormat, applyInlineFormat, canApplyInlineFormat, captureFormatSelection, inlineFormatState,
   resolveFormatSelection, stylePresets, stylePropertyState, type StyleProperty, type FormatSelection, type InlineFormat, type InlineMark,
 } from "./selection-format.js";
 import { applyBlockFormat, blockFormatState, captureBlockSelection, type BlockFormat } from "./block-format.js";
 import { singleEditorMessages, type SingleEditorGate } from "./single-editor.js";
+import { detectPlatform, formatBinding } from "../shell/hotkeys.js";
+import { FORMAT_SHORTCUTS, formatShortcut } from "./format-shortcuts.js";
 
 /** Mode/body readiness is rechecked both for presentation and mutation. */
 export interface SelectionMenuOptions {
@@ -61,6 +63,7 @@ export function mountSelectionMenu(options: SelectionMenuOptions): SelectionMenu
   const ownerWindow = document.defaultView;
   if (!ownerWindow) throw new Error("selection menu requires a window");
   const window = ownerWindow;
+  const platform = detectPlatform();
   let destroyed = false;
   let refreshRequired = false;
   let composing = false;
@@ -93,6 +96,12 @@ export function mountSelectionMenu(options: SelectionMenuOptions): SelectionMenu
     ["Highlight", "H", "highlight"], ["Inline code", "</>", "code"], ["Underline", "U̲", "mb_underline"],
   ] as const) actions.set(button(label, glyph), action);
   const link = button("Link", "↗");
+  for (const { action, label, binding } of FORMAT_SHORTCUTS) {
+    const control = action === "link" ? link : [...actions].find(([, mark]) => mark === action)?.[0];
+    if (!control) continue;
+    control.title = `${label} (${formatBinding(binding, platform)})`;
+    control.setAttribute("aria-keyshortcuts", `${platform === "mac" ? "Meta" : "Control"}+${binding.shift ? "Shift+" : ""}${binding.key.toUpperCase()}`);
+  }
   link.setAttribute("aria-haspopup", "dialog");
   link.setAttribute("aria-expanded", "false");
   const clear = button("Clear formatting", "T×");
@@ -441,6 +450,34 @@ export function mountSelectionMenu(options: SelectionMenuOptions): SelectionMenu
     } else if (!dom.contains(event.target as Node)) hide();
   };
   const onKey = (event: KeyboardEvent): void => {
+    const shortcut = dom.contains(event.target as Node) && formatShortcut(event, platform);
+    if (shortcut) {
+      const control = event.target instanceof window.Element && event.target.closest("input, textarea, select, button, [contenteditable='false']");
+      if (control && control !== dom) return;
+      event.preventDefault();
+      if (!canInteract() || !editor.isEditable || !editor.view.editable || editor.view.composing || dom.hidden) return;
+      const selection = nativeSelection() ?? editor.state.selection;
+      if (!(selection instanceof TextSelection)) return;
+      // why: a fresh formatting keystroke is explicit intent at the current native range,
+      // even when selectionchange has not yet caught up with the visible highlight.
+      if (selection.empty) {
+        if (shortcut.action === "link") return;
+        if (!selection.eq(editor.state.selection)) editor.view.dispatch(editor.state.tr.setSelection(selection));
+        if (!editor.state.selection.eq(selection) || editor.state.doc !== selection.$from.doc) return;
+        applyCaretFormat(editor, shortcut.action, canInteract);
+      } else {
+        token = captureFormatSelection(editor, canInteract, selection);
+        if (!token) return;
+        invalidated = false;
+        selectionIntent = undefined;
+        if (shortcut.action === "link") {
+          reveal(); syncControls();
+          if (frame !== undefined) window.cancelAnimationFrame(frame);
+          position(); openLink();
+        } else run(shortcut.action);
+      }
+      return;
+    }
     if (dom.contains(event.target as Node) && (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key) || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a"))) beginSelectionIntent(event);
     // why: Alt-Shift-F10 belongs to the block handles; only plain Alt-F10 opens formatting.
     if (event.altKey && !event.shiftKey && event.key === "F10" && dom.contains(event.target as Node)) {

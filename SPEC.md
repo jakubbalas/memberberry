@@ -2382,6 +2382,22 @@ exactly the devices nobody tried.
 - Command palette (Cmd/Ctrl-P) over every registered command.
 - Quick switcher (Cmd/Ctrl-O) — fuzzy over titles, aliases, headings, recent notes.
 - Vault switcher (Cmd/Ctrl-Shift-V).
+- In the editable note body, Cmd/Ctrl-B toggles bold, Cmd/Ctrl-I italic,
+  Cmd/Ctrl-U underline, Cmd/Ctrl-E inline code, Cmd/Ctrl-Shift-X strikethrough and
+  Cmd/Ctrl-Shift-H highlight. A nonempty text selection uses the same guarded formatting
+  action as the contextual toolbar; a collapsed body caret toggles the mark for subsequent
+  typing without inserting placeholder content. Cmd/Ctrl-K opens the existing link editor
+  for a nonempty eligible selection. Alt-F10 still opens the formatting toolbar, including
+  Clear formatting. Toolbar tooltips and `aria-keyshortcuts` advertise the defaults.
+  Shortcuts act only in their own rich-text editor, never source/link fields or other inputs.
+  Title, literal code/math, read-only, waiting/hidden, composing and refresh-required guards
+  apply at dispatch. Unsupported mark combinations refuse without dropping existing marks.
+  A fresh formatting keystroke explicitly targets the current native selection, including
+  when the model selection trails the visible highlight; it does not reuse an old capture.
+  Selection formatting remains an isolated CRDT undo item; caret toggles separate subsequent
+  typing from the preceding undo group. These editor-local defaults are currently fixed,
+  like the editor undo bindings; remapping them remains unfinished under the remapping
+  requirement below. The workspace command registry does not own editor formatting (§8.2).
 - In the editable note body, Cmd/Ctrl-Z undoes local edits; Cmd/Ctrl-Shift-Z or
   Cmd/Ctrl-Y redoes them through the CRDT undo stack. This stack lasts for the open
   editor session and is separate from server version history (§18).
@@ -2432,7 +2448,7 @@ rules out anything that allocates per candidate.
 
 **Defaults**, all remappable: `Mod+P` command palette, `Mod+O` quick switcher,
 `Mod+Shift+V` vault switcher, `Mod+\` and `Mod+Shift+\` split, `Mod+W` close note. **`Mod+B`
-is deliberately unbound** — see §8.2.
+has no workspace binding** because the editor owns Bold — see §8.2 and the editor defaults above.
 
 **Default keymap, audited in M18.** `Mod+P` opens the command palette, `Mod+O` opens the
 quick switcher and `Mod+W` closes the current tab. These bindings live together in

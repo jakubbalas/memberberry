@@ -7,6 +7,7 @@ import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { applyUpdate, Doc, encodeStateAsUpdate } from "yjs";
 import { undo } from "y-prosemirror";
 import { Awareness } from "y-protocols/awareness";
+import * as fc from "fast-check";
 import { load, schema, updateFromMarkdown } from "../notes.js";
 import { createConnectionStatus, createYjsBinding, PROSEMIRROR_ROOT } from "./collaboration.js";
 import { mountEditorShell, type MountEditorShellOptions } from "./editor-shell.js";
@@ -15,6 +16,7 @@ import { createMemberberryExtensions } from "./schema.js";
 import { tableRowHandles } from "./table-tools.js";
 import { editorMarkdown } from "./source.js";
 import { mountSelectionMenu, SINGLE_EDITOR_WARNING } from "./selection-menu.js";
+import { detectPlatform } from "../shell/hotkeys.js";
 
 const cleanups: (() => void)[] = [];
 beforeAll(async () => { await load(readFileSync("src/wasm/mb_bg.wasm")); });
@@ -55,6 +57,219 @@ async function open(markdown = "# Title\n\nFirst body\n\nLater words\n", routed:
   };
   return { panel, editor, ydoc, shell, select, menu, control };
 }
+
+function formatKey(editor: Editor, key: string, shiftKey = false): KeyboardEvent {
+  const event = new KeyboardEvent("keydown", {
+    key, shiftKey, metaKey: detectPlatform() === "mac", ctrlKey: detectPlatform() !== "mac",
+    bubbles: true, cancelable: true,
+  });
+  editor.view.dom.dispatchEvent(event);
+  return event;
+}
+
+it.each([["b", "**Later**"], ["i", "*Later*"]] as const)("formats selected text with Mod+%s and toggles it off", async (key, expected) => {
+  const f = await open();
+  f.select("Later");
+  expect(formatKey(f.editor, key).defaultPrevented).toBe(true);
+  expect(await editorMarkdown(f.ydoc)).toContain(`${expected} words`);
+  formatKey(f.editor, key);
+  expect(await editorMarkdown(f.ydoc)).toContain("Later words");
+});
+
+it.each([
+  ["u", false, 'underline="true"'], ["e", false, "`Later`"],
+  ["X", true, "~~Later~~"], ["H", true, "==Later=="],
+] as const)("toggles the additional formatting shortcut %s", async (key, shift, expected) => {
+  const f = await open();
+  f.select("Later");
+  formatKey(f.editor, key, shift);
+  expect(await editorMarkdown(f.ydoc)).toContain(expected);
+  formatKey(f.editor, key, shift);
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\nLater words\n");
+});
+
+it.each(["b", "i", "u", "e"])("Mod+%s toggles the mark for subsequent caret typing without inserting placeholders", async key => {
+  const f = await open();
+  const { from } = f.select("Later");
+  f.editor.commands.setTextSelection(from);
+  const before = await editorMarkdown(f.ydoc);
+  formatKey(f.editor, key);
+  expect(await editorMarkdown(f.ydoc)).toBe(before);
+  f.editor.view.dispatch(f.editor.state.tr.insertText("New "));
+  formatKey(f.editor, key);
+  f.editor.view.dispatch(f.editor.state.tr.insertText("plain "));
+  const mark = { b: "strong", i: "em", u: "mb_underline", e: "code" }[key];
+  const text: { text: string; marks: string[] }[] = [];
+  f.editor.state.doc.descendants(node => { if (node.isText) text.push({ text: node.text ?? "", marks: node.marks.map(m => m.type.name) }); });
+  expect(text).toContainEqual({ text: "New ", marks: [mark] });
+  expect(text).toContainEqual({ text: "plain Later words", marks: [] });
+});
+
+it("formats a pending native highlight rather than the stale model range", async () => {
+  const f = await open();
+  f.select("First");
+  const text = f.editor.view.dom.querySelectorAll("p")[1]?.firstChild;
+  if (!text) throw new Error("missing text");
+  document.getSelection()?.setBaseAndExtent(text, 0, text, 5);
+  formatKey(f.editor, "b");
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\nFirst body\n\n**Later** words\n");
+});
+
+it("takes the current native caret before formatting subsequent typing", async () => {
+  const f = await open();
+  f.select("First");
+  const text = f.editor.view.dom.querySelectorAll("p")[1]?.firstChild;
+  if (!text) throw new Error("missing text");
+  document.getSelection()?.setBaseAndExtent(text, 0, text, 0);
+  formatKey(f.editor, "b");
+  f.editor.view.dispatch(f.editor.state.tr.insertText("New"));
+  expect(await editorMarkdown(f.ydoc)).toContain("**New**Later words");
+});
+
+it("Mod+K opens the existing link fields, preserves titles and keeps shortcuts out of the draft", async () => {
+  const f = await open('# Title\n\n[Later](https://old.example "authored") words\n');
+  f.select("Later");
+  formatKey(f.editor, "k");
+  const input = f.menu()?.querySelector<HTMLInputElement>("input");
+  expect(document.activeElement).toBe(input);
+  expect(input?.value).toBe("https://old.example");
+  input?.dispatchEvent(new KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true, cancelable: true }));
+  expect(f.editor.view.dom.querySelector("strong")).toBeNull();
+  if (!input) throw new Error("missing link input");
+  input.value = "https://new.example";
+  f.menu()?.querySelector("form")?.dispatchEvent(new Event("submit", { cancelable: true }));
+  expect(await editorMarkdown(f.ydoc)).toBe('# Title\n\n[Later](https://new.example "authored") words\n');
+});
+
+it.each(["selected", "caret"])("refuses formatting in protected titles and literal code at a %s", async kind => {
+  const f = await open("# Title\n\n```\nLiteral\n```\n");
+  const before = await editorMarkdown(f.ydoc);
+  for (const text of ["Title", "Literal"]) {
+    const { from } = f.select(text);
+    if (kind === "caret") f.editor.commands.setTextSelection(from);
+    formatKey(f.editor, "b");
+    expect(f.editor.state.storedMarks ?? []).toEqual([]);
+  }
+  expect(await editorMarkdown(f.ydoc)).toBe(before);
+});
+
+it.each(["readonly", "waiting", "hidden", "composition", "native-composition", "source", "destroyed"])("refuses formatting when the editor is %s", async state => {
+  const f = await open();
+  const { from } = f.select("Later");
+  const before = await editorMarkdown(f.ydoc);
+  if (state === "readonly") f.editor.setEditable(false);
+  if (state === "waiting") f.panel.dataset["body"] = "waiting";
+  if (state === "hidden") f.editor.view.dom.hidden = true;
+  if (state === "composition") f.editor.view.dom.dispatchEvent(new CompositionEvent("compositionstart"));
+  if (state === "source") f.panel.querySelector<HTMLButtonElement>("[aria-label='Toggle Markdown source view']")?.click();
+  if (state === "destroyed") f.shell.destroy();
+  for (const caret of [false, true]) {
+    if (caret) f.editor.commands.setTextSelection(from);
+    if (state === "native-composition") f.editor.view.dom.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "b", ctrlKey: detectPlatform() !== "mac", metaKey: detectPlatform() === "mac", isComposing: true, bubbles: true, cancelable: true,
+    }));
+    else formatKey(f.editor, "b");
+    expect(f.editor.state.storedMarks ?? []).toEqual([]);
+    expect(await editorMarkdown(f.ydoc)).toBe(before);
+  }
+});
+
+it("formatting shortcuts target only their editor and release their listener on teardown", async () => {
+  const f = await open();
+  const other = await open();
+  f.select("Later"); other.select("First");
+  formatKey(f.editor, "b");
+  expect(await editorMarkdown(other.ydoc)).not.toContain("**");
+  expect(await editorMarkdown(f.ydoc)).toContain("**Later**");
+  f.shell.destroy();
+  expect(formatKey(f.editor, "b").defaultPrevented).toBe(false);
+  expect(await editorMarkdown(f.ydoc)).toContain("**Later**");
+});
+
+it.each(["input", "noneditable"])("does not take a formatting key from an embedded %s control", async kind => {
+  const f = await open();
+  f.select("Later");
+  const before = await editorMarkdown(f.ydoc);
+  const control = document.createElement(kind === "input" ? "input" : "span");
+  if (kind === "noneditable") control.contentEditable = "false";
+  // jsdom does not reflect contentEditable into its attribute.
+  if (kind === "noneditable") control.setAttribute("contenteditable", "false");
+  f.editor.view.dom.append(control);
+  const event = new KeyboardEvent("keydown", {
+    key: "b", metaKey: detectPlatform() === "mac", ctrlKey: detectPlatform() !== "mac", bubbles: true, cancelable: true,
+  });
+  control.dispatchEvent(event);
+  control.remove();
+  expect(event.defaultPrevented).toBe(false);
+  expect(await editorMarkdown(f.ydoc)).toBe(before);
+});
+
+it("formats mixed selections completely and isolates one collaborative undo item", async () => {
+  const f = await open("# Title\n\n**Later** words\n");
+  const from = (f.editor.state.doc.firstChild?.nodeSize ?? 0) + 1;
+  f.editor.commands.setTextSelection({ from, to: from + "Later words".length });
+  formatKey(f.editor, "b");
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\n**Later words**\n");
+  undo(f.editor.state);
+  expect(await editorMarkdown(f.ydoc)).toBe("# Title\n\n**Later** words\n");
+});
+
+it.each(["selected", "caret"])("refuses code/namespace combinations without dropping existing marks at a %s", async kind => {
+  const f = await open('# Title\n\n:mb-style[Later]{underline="true"}\n');
+  const { from } = f.select("Later");
+  if (kind === "caret") f.editor.commands.setTextSelection(from + 2);
+  const before = await editorMarkdown(f.ydoc);
+  formatKey(f.editor, "e");
+  expect(await editorMarkdown(f.ydoc)).toBe(before);
+  expect(f.editor.state.storedMarks?.some(mark => mark.type.name === "code") ?? false).toBe(false);
+});
+
+it("does not apply a caret toggle when a plugin rejects its transaction", async () => {
+  const f = await open();
+  const { from } = f.select("Later");
+  f.editor.commands.setTextSelection(from);
+  f.editor.registerPlugin(new Plugin({ filterTransaction: tr => !tr.storedMarksSet }));
+  formatKey(f.editor, "b");
+  f.editor.view.dispatch(f.editor.state.tr.insertText("New"));
+  expect(await editorMarkdown(f.ydoc)).toContain("NewLater words");
+  expect(f.editor.view.dom.querySelector("strong")).toBeNull();
+});
+
+it("refuses both selection and caret shortcuts after a terminal refresh requirement", async () => {
+  const connection = createConnectionStatus();
+  const f = await open(undefined, { connection });
+  const { from } = f.select("Later");
+  connection.set({ connected: false, pending: 0, synced: false, refreshRequired: true });
+  const before = await editorMarkdown(f.ydoc);
+  formatKey(f.editor, "b");
+  f.editor.commands.setTextSelection(from);
+  formatKey(f.editor, "b");
+  expect(await editorMarkdown(f.ydoc)).toBe(before);
+  expect(f.editor.state.storedMarks ?? []).toEqual([]);
+});
+
+it("discovers each binding on its labelled toolbar button", async () => {
+  const f = await open();
+  f.select("Later");
+  const mod = detectPlatform() === "mac" ? "Meta" : "Control";
+  for (const [label, chord] of [["Bold", "B"], ["Italic", "I"], ["Underline", "U"], ["Inline code", "E"], ["Strikethrough", "Shift+X"], ["Highlight", "Shift+H"], ["Link", "K"]] as const) {
+    expect(f.control(label).getAttribute("aria-keyshortcuts")).toBe(`${mod}+${chord}`);
+    expect(f.control(label).title).toContain("(");
+  }
+});
+
+it("toggling twice preserves Unicode body text and canonical Markdown (seed 20261101)", async () => {
+  const unicode = fc.array(fc.constantFrom("A", "é", "界", "ב", "م", "😀", "\u0301", "\u200f"), { minLength: 1, maxLength: 24 }).map(chars => chars.join(""));
+  await fc.assert(fc.asyncProperty(unicode, fc.constantFrom("b", "i", "u", "e", "X", "H"), async (text, key) => {
+    const f = await open(`# Title\n\n${text}\n`);
+    const before = await editorMarkdown(f.ydoc);
+    f.select(text);
+    formatKey(f.editor, key, key === "X" || key === "H");
+    expect(await editorMarkdown(f.ydoc)).not.toBe(before);
+    formatKey(f.editor, key, key === "X" || key === "H");
+    expect(await editorMarkdown(f.ydoc)).toBe(before);
+  }), { seed: 20261101, numRuns: 40 });
+});
 
 it("clears selected marks without changing text and keeps insertion actions under More", async () => {
   const fixture = await open("# Title\n\n**Later** words\n");

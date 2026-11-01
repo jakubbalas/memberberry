@@ -70,7 +70,10 @@ for (const count of sizes) {
           expect(f.editor.state.doc.textContent).not.toBe(before);
           await nativeEdit(f, "");
           expect(f.editor.state.doc.textContent).toBe(before);
-          f.editor.commands.setTextSelection({ from: f.from, to: f.from + 5 });
+          // why: typing invalidates the previous capture; this is deliberate new selection
+          // intent, not permission to revive mapped offsets through an ordinary selectionSet.
+          if (f.menu) expect(f.menu.select({ from: f.from, to: f.from + 5 })).toBe(true);
+          else f.editor.commands.setTextSelection({ from: f.from, to: f.from + 5 });
           expect(f.editor.state.selection.empty).toBe(false);
           if (enabled) expect(document.querySelector<HTMLElement>(".selection-menu")?.hidden).toBe(false);
           f.editor.commands.setTextSelection(f.from + 5);
@@ -94,6 +97,13 @@ for (const count of sizes) {
         if (!fixture) throw new Error("benchmark not prepared");
         fixture.editor.commands.setTextSelection({ from: fixture.from, to: fixture.from + 5 });
         fixture.editor.commands.setTextSelection(fixture.from + 5);
+      }, hooks);
+      bench(`ordinary keydown ${enabled ? "with" : "without"} selection controller`, () => {
+        const fixture = fixtures.get(`${count}:${enabled}`);
+        if (!fixture) throw new Error("benchmark not prepared");
+        const event = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
+        fixture.editor.view.dom.dispatchEvent(event);
+        if (event.defaultPrevented) throw new Error("ordinary typing was intercepted");
       }, hooks);
     }
   });
