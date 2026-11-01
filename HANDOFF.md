@@ -2,62 +2,51 @@
 
 ## Current state (2026-11-01)
 
-The emoji picker closes on outside pointer presses and Escape, including after focus moves
-outside. Outside interactions continue normally; Escape returns focus to the Emoji toggle
-and is consumed only while the picker is open. Document listeners are removed on editor
-teardown. SPEC §11.4 records the behavior.
+The emoji picker now offers only single-image import. Pack management, folder/ZIP import,
+pack-name prompts, bulk-import helpers and their CSS are removed. The unused fflate
+package is removed from package.json and the lockfile. Filenames supply shortcodes; name
+collisions still ask for a unique replacement or cancellation. SPEC §11.2 and A33 record
+this scope.
 
-The dedicated Slack emoji export importer is removed: button, selection mode, JSON parser,
-alias-import logic and its helpers. Image, folder and ZIP import still derive shortcodes
-from filenames. Existing pack aliases still participate in collision detection. SPEC §11.2,
-M10 and decision A32 reflect the requested scope.
+Each image uses the existing authorized upload endpoint with a generated internal storage
+ID. Existing manifests, artwork, shared/vault resolution and administrative API remain
+compatible. No server or read path changed. Pending file reads cannot upload after teardown;
+active requests are aborted and late results cannot update a destroyed picker.
 
-PNG chooser and quick-find alignment fixes are committed as 65db429. The importer opens
-individual files/ZIPs through Import custom emoji, with a separate Import emoji folder
-button. Quick find follows the editor through sidebar resizing/collapse (SPEC §8.2).
-
-Formatting shortcuts are committed as 83d5e42. Earlier clipboard, folder Rename/Delete,
-emoji naming and dev-startup work is also committed. No push, deployment or live-vault
-operation was performed for the current changes.
+Picker outside/Escape dismissal and Slack importer removal are committed as 79a7217.
+PNG chooser and quick-find fixes are in 65db429; formatting shortcuts are in 83d5e42.
+No push, deployment or live-vault operation was performed for the current change.
 
 ## Verification
 
-- 26 focused emoji-import/picker tests pass, covering outside dismissal, Escape inside and
-  outside, focus restoration, event propagation, closed-picker behavior, listener teardown,
-  file/folder chooser switching, PNG upload, cancelled/invalid/empty selections, ZIP decoding,
-  filename/alias collisions, unsupported JSON metadata and pack management. The new control-list test
-  failed with the Slack button present before the removal was written. Dismissal regressions
-  also failed against the old implementation. Tests for deleted Slack-only behavior were
-  removed; general collision coverage is retained.
-- Rebuilt emoji-import.spec.ts passes all four desktop/mobile cases against the disposable
-  real server: outside mouse click/mobile tap, Escape before/after focus leaves the picker,
-  focus restoration and toggle keyboard activation, native file chooser configuration, PNG
-  upload and decoding, reload from the installed pack, insertion as a Markdown shortcode
-  on disk, and folder/file switching.
-  The updated spec also checks the absence of a Slack import button.
-  Screenshots were visually inspected. Chromium verifies chooser configuration and file
-  selection; the macOS native dialog itself is not driven by this test.
-  The first run's extra mobile pointer-toggle check failed because the bottom sheet covers
-  the toolbar toggle. The corrected test uses its keyboard action; outside mobile dismissal
-  is verified with a real tap. That initial failure is in emoji-dismiss-browser-before.log.
-- Production frontend build and TypeScript/Svelte typecheck (zero errors/warnings) pass.
-  Existing dependency directive and large-chunk build warnings remain. Browser verification
-  uses an escalated disposable loopback server.
+- 49 focused emoji-import/picker tests pass. They cover the single-file chooser, no
+  pack-name prompt, successive imports with distinct storage IDs, supported formats,
+  cancelled/multiple/empty/unsupported selections, collisions with existing aliases,
+  replacement cancellation/validation, HTTP 403/409/500 and network/read failures,
+  retry, teardown and late responses. Dismissal/focus behavior remains covered.
+- Encoding properties use seed 20261101 (100 cases), plus a 65,537-byte chunk-boundary
+  case. Tests for removed pack-management and bulk-import behavior were removed.
+  The new single-import UI regressions failed against the previous controls first.
+- Rebuilt emoji-import.spec.ts passes all four desktop/mobile cases against the real,
+  disposable server. It verifies single-file selection, no management/bulk buttons or
+  pack-name prompt, PNG decoding, reload from storage, Markdown shortcode persistence,
+  outside mouse click/mobile tap, Escape inside/outside and toggle keyboard activation.
+  Chromium verifies chooser configuration; it does not operate the native macOS dialog.
+- Production frontend build, TypeScript/Svelte typecheck (zero errors/warnings),
+  make token-check and diff checks pass. Existing dependency directive and large-chunk
+  build warnings remain. Browser verification uses an escalated loopback test server.
 - Prior quick-find verification: 55 TopBar/Workspace DOM tests, 14 desktop/mobile browser
-  cases, inspected screenshots and make token-check passed. Its two viewport-specific
-  exclusions remain: desktop drawer layout and mobile side-by-side panels.
-- Prior shortcut verification remains valid: 166 focused tests, seeded Unicode properties,
-  caret mutation probe, desktop/mobile shortcut browser cases and mounted DOM benchmarks.
+  cases, inspected screenshots and token checks passed. Prior formatting-shortcut
+  verification includes 166 focused tests, properties, browser cases and DOM benchmarks.
 
-Fresh logs: local/debug/emoji-dismiss-{before,tests,typecheck,build,browser}.log. Previous
-removal logs remain at local/debug/remove-slack-*.log. Screenshots:
-web/test-results/emoji-import-an-individual-be562-ted-as-a-Markdown-shortcode-{desktop,mobile}/png-imported.png.
-Prior quick-find logs remain in local/debug/quick-find-*.log; shortcut logs remain under
-local/debug/format-shortcuts-*.log. Browser test-results are overwritten by subsequent runs.
+Fresh logs: local/debug/single-emoji-{before,tests,typecheck,build,browser,tokens}.log.
+Screenshots: web/test-results/emoji-import-an-individual-be562-ted-as-a-Markdown-shortcode-{desktop,mobile}/png-imported.png.
+Older logs remain under local/debug/emoji-dismiss-*, remove-slack-*, quick-find-* and
+format-shortcuts-*. Browser test-results are overwritten by subsequent runs.
 
 Full make check and local coverage measurement are deferred, not requested.
 Full make e2e remains user-run and pending; no full-suite result is claimed.
-No server/read path or enforcement point changed, so server/leak suites were not rerun.
+Server/leak suites were not rerun: existing authorization and read paths are unchanged.
 
 ## Next and open work
 

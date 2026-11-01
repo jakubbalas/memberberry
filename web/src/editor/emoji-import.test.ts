@@ -1,51 +1,53 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
-import { zipSync } from "fflate";
+import fc from "fast-check";
+import { emojiUploadBody, normalizeShortcode, planEmojiImport, readEmojiImport } from "./emoji-import.js";
 
-import { emojiPackUploadBody, normalizeShortcode, planEmojiImport, readEmojiImport } from "./emoji-import.js";
-
-describe("emoji import", () => {
+describe("single emoji import", () => {
   it("normalizes filenames to server-safe shortcodes", () => {
     expect(normalizeShortcode(" Party Parrot! ")).toBe("party-parrot");
     expect(normalizeShortcode("---")).toBeUndefined();
     expect(normalizeShortcode("snow+day_2")).toBe("snow+day_2");
   });
 
-  it("plans supported images and reports invalid files and collisions", () => {
-    const plan = planEmojiImport([
-      { name: "folder/Party Parrot.PNG", bytes: new Uint8Array([1]), type: "image/png" },
-      { name: "party-parrot.jpg", bytes: new Uint8Array([2]), type: "image/jpeg" },
-      { name: "notes.txt", bytes: new Uint8Array([3]), type: "text/plain" },
-      { name: "empty.png", bytes: new Uint8Array(), type: "image/png" },
-    ], new Set(["existing"]));
-    expect(plan.assets.map((asset) => asset.file)).toEqual(["party-parrot.png", "party-parrot.jpg"]);
-    expect(plan.collisions).toEqual(["party-parrot"]);
-    expect(plan.invalid).toEqual(["notes.txt", "empty.png"]);
+  it.each(["PNG", "gif", "jpg", "jpeg", "webp"])("plans one %s image from its filename", (extension) => {
+    expect(planEmojiImport(`Party Parrot.${extension}`, new Uint8Array([7]))).toEqual({
+      shortcode: "party-parrot", file: `party-parrot.${extension.toLowerCase()}`, bytes: new Uint8Array([7]),
+    });
   });
 
-  it("serializes image bytes into the server upload shape", () => {
-    const plan = planEmojiImport([{ name: "wave.gif", bytes: new Uint8Array([0, 255]), type: "image/gif" }], new Set());
-    expect(JSON.parse(emojiPackUploadBody("friendly", plan))).toEqual({
-      manifest: { name: "friendly", version: 1, emoji: [{ shortcode: "wave", file: "wave.gif", aliases: [] }] },
+  it.each(["pack.zip", "emoji.json", "picture.svg", "---.png", "🎉.png", "image"])("rejects unsupported or nameless image %s", (name) => {
+    expect(planEmojiImport(name, new Uint8Array([7]))).toBeUndefined();
+  });
+
+  it("rejects an empty image", () => {
+    expect(planEmojiImport("empty.png", new Uint8Array())).toBeUndefined();
+  });
+
+  it("reads a selected PNG without requiring a directory or manifest", async () => {
+    expect(await readEmojiImport(new File([new Uint8Array([7])], "wave.png", { type: "image/png" }))).toEqual({
+      shortcode: "wave", file: "wave.png", bytes: new Uint8Array([7]),
+    });
+  });
+
+  it("serializes one image into the existing server upload shape", () => {
+    expect(JSON.parse(emojiUploadBody("emoji-123", { shortcode: "wave", file: "wave.gif", bytes: new Uint8Array([0, 255]) }))).toEqual({
+      manifest: { name: "emoji-123", version: 1, emoji: [{ shortcode: "wave", file: "wave.gif", aliases: [] }] },
       files: [{ name: "wave.gif", content_base64: "AP8=" }],
     });
   });
 
-  it("reads image entries from a ZIP while ignoring path traversal", async () => {
-    const archive = zipSync({ "emoji/wave.png": new Uint8Array([7]), "../secret.png": new Uint8Array([8]), "folder/": new Uint8Array() });
-    const sources = await readEmojiImport([new File([archive], "pack.zip", { type: "application/zip" })]);
-    expect(sources).toEqual([{ name: "emoji/wave.png", bytes: new Uint8Array([7]), type: "image/png" }]);
+  it("preserves arbitrary image bytes in the upload encoding", () => {
+    fc.assert(fc.property(fc.uint8Array({ minLength: 1, maxLength: 1024 }), (bytes) => {
+      const body = JSON.parse(emojiUploadBody("emoji-123", { shortcode: "wave", file: "wave.png", bytes })) as { files: Array<{ content_base64: string }> };
+      expect(Uint8Array.from(atob(body.files[0]?.content_base64 ?? ""), (char) => char.charCodeAt(0))).toEqual(bytes);
+    }), { seed: 20261101, numRuns: 100 });
   });
 
-  it("uses image filenames and reports JSON metadata as unsupported", () => {
-    const plan = planEmojiImport([
-      { name: "emoji.json", bytes: new TextEncoder().encode(JSON.stringify({ renamed: "wave.png", alias: "alias:renamed" })) },
-      { name: "wave.png", bytes: new Uint8Array([7]), type: "image/png" },
-    ], new Set());
-    expect(plan).toEqual({
-      assets: [{ shortcode: "wave", file: "wave.png", bytes: new Uint8Array([7]), type: "image/png", aliases: [] }],
-      collisions: [], invalid: ["emoji.json"],
-    });
+  it("preserves image bytes across encoding chunk boundaries", () => {
+    const bytes = Uint8Array.from({ length: 65537 }, (_, index) => index % 256);
+    const body = JSON.parse(emojiUploadBody("emoji-123", { shortcode: "wave", file: "wave.png", bytes })) as { files: Array<{ content_base64: string }> };
+    expect(Uint8Array.from(atob(body.files[0]?.content_base64 ?? ""), (char) => char.charCodeAt(0))).toEqual(bytes);
   });
 });

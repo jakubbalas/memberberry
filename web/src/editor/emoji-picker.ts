@@ -1,6 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { emojiCatalog } from "../emoji-catalog.js";
-import { emojiPackUploadBody, normalizeShortcode, planEmojiImport, readEmojiImport, type EmojiImportAsset } from "./emoji-import.js";
+import { emojiUploadBody, normalizeShortcode, readEmojiImport } from "./emoji-import.js";
 
 /** One item shown by the emoji picker. */
 export interface EmojiChoice {
@@ -233,9 +233,6 @@ export function mountEmojiPicker(
   const importer = importOptions === undefined ? undefined : mountEmojiImporter(importOptions, () => availableChoices, (added) => {
     availableChoices = [...added, ...availableChoices];
     render();
-  }, (pack) => {
-    availableChoices = availableChoices.filter((choice) => choice.category !== pack);
-    render();
   });
   if (importer !== undefined) panel.append(importer.element);
   const loadStatus = document.createElement("p");
@@ -320,144 +317,86 @@ function mountEmojiImporter(
   options: EmojiImportOptions,
   getChoices: () => readonly EmojiChoice[],
   onImported: (choices: readonly EmojiChoice[]) => void,
-  onDeleted: (pack: string) => void,
 ): { element: HTMLElement; destroy(): void } {
   const controls = document.createElement("div");
   controls.className = "emoji-import-controls";
-  const button = importButton("Import custom emoji", "Import custom emoji from images or ZIP files");
-  const folderButton = importButton("Import emoji folder", "Import custom emoji from a folder");
-  const manageButton = importButton("Manage custom packs", "Manage vault custom emoji packs");
+  const button = importButton("Import custom emoji", "Import custom emoji from an image");
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = ".zip,image/gif,image/jpeg,image/png,image/webp";
-  input.multiple = true;
+  input.accept = "image/gif,image/jpeg,image/png,image/webp";
   input.hidden = true;
-  const management = document.createElement("div");
-  management.className = "emoji-pack-management";
-  management.hidden = true;
-  controls.append(button, folderButton, manageButton, input, management);
+  controls.append(button, input);
+  const controller = new AbortController();
+  let destroyed = false;
   const setStatus = (message: string): void => {
-    if (options.status !== undefined) options.status.textContent = message;
+    if (!destroyed && options.status !== undefined) options.status.textContent = message;
   };
-  const onButton = (): void => {
-    // why: directory selection disables individual images and ZIPs in the native chooser.
-    input.removeAttribute("webkitdirectory");
-    input.click();
-  };
-  const onFolderButton = (): void => { input.setAttribute("webkitdirectory", ""); input.click(); };
-  const onManageButton = (): void => {
-    management.hidden = !management.hidden;
-    if (!management.hidden) void loadManagedPacks();
-  };
+  const onButton = (): void => { input.click(); };
   const onChange = (): void => {
     const files = input.files === null ? [] : [...input.files];
     input.value = "";
-    if (files.length === 0) return;
-    void importEmojiFiles(files);
-  };
-  const loadManagedPacks = async (): Promise<void> => {
-    management.replaceChildren();
-    try {
-      const response = await fetch(`/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/packs`, { credentials: "same-origin" });
-      if (!response.ok) {
-        setStatus("Custom pack management is available to vault owners.");
-        return;
-      }
-      const body: unknown = await response.json();
-      if (!Array.isArray(body)) return;
-      for (const value of body) {
-        if (!isPackSummary(value)) continue;
-        const row = document.createElement("div");
-        row.className = "emoji-pack-row";
-        const label = document.createElement("span");
-        label.textContent = `${value.name} (${value.emoji_count})`;
-        const remove = importButton("Delete", `Delete ${value.name} emoji pack`);
-        remove.addEventListener("click", () => void deleteManagedPack(value.name, row));
-        row.append(label, remove);
-        management.append(row);
-      }
-      if (management.childElementCount === 0) management.textContent = "No vault-local packs.";
-    } catch {
-      setStatus("Custom pack management is unavailable.");
-    }
-  };
-  const deleteManagedPack = async (pack: string, row: HTMLElement): Promise<void> => {
-    if (!window.confirm(`Delete the ${pack} emoji pack?`)) return;
-    try {
-      const response = await fetch(`/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/packs/${encodeURIComponent(pack)}`, {
-        method: "DELETE",
-        credentials: "same-origin",
-      });
-      if (!response.ok) {
-        setStatus("The emoji pack could not be deleted.");
-        return;
-      }
-    } catch {
-      setStatus("The emoji pack could not be deleted.");
+    if (files.length === 0 || button.disabled) return;
+    const file = files[0];
+    if (files.length !== 1 || file === undefined) {
+      setStatus("Choose one emoji image.");
       return;
     }
-    row.remove();
-    onDeleted(pack);
-    setStatus(`Deleted ${pack} emoji pack.`);
+    void importEmojiFile(file);
   };
-  const importEmojiFiles = async (files: readonly File[]): Promise<void> => {
+  const importEmojiFile = async (file: File): Promise<void> => {
+    button.disabled = true;
     try {
-      const sources = await readEmojiImport(files);
+      const asset = await readEmojiImport(file);
+      if (destroyed) return;
+      if (asset === undefined) {
+        setStatus("Choose a non-empty PNG, GIF, JPEG or WebP image.");
+        return;
+      }
       const existing = new Set(getChoices().flatMap((choice) => [choice.shortcode, ...(choice.aliases ?? [])]));
-      const plan = planEmojiImport(sources, existing);
-      if (plan.assets.length === 0) {
-        setStatus("No supported, non-empty emoji images found.");
+      const shortcode = resolveName(asset.shortcode, existing);
+      if (shortcode === undefined) {
+        setStatus("Import cancelled.");
         return;
       }
-      const requestedPackName = window.prompt("Pack name", "custom-emoji");
-      const packName = requestedPackName === null ? undefined : normalizeShortcode(requestedPackName);
-      if (packName === undefined) {
-        setStatus("Import cancelled: use a simple pack name.");
-        return;
-      }
-      const resolved = resolveCollisions(plan.assets, existing);
-      if (resolved === undefined) return;
-      const response = await fetch(`/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/packs/${encodeURIComponent(packName)}`, {
+      const extension = asset.file.split(".").pop() ?? "png";
+      const resolved = { ...asset, shortcode, file: `${shortcode}.${extension}` };
+      // why: unique internal storage IDs preserve existing manifests without exposing pack naming in the UI.
+      const storageId = `emoji-${crypto.randomUUID()}`;
+      const response = await fetch(`/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/packs/${storageId}`, {
         method: "PUT",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
-        body: emojiPackUploadBody(packName, { ...plan, assets: resolved }),
+        body: emojiUploadBody(storageId, resolved),
+        signal: controller.signal,
       });
-      if (!response.ok) throw new Error(response.status === 409 ? "That pack already exists." : "Emoji pack upload failed.");
-      const packChoices = resolved.map((asset): EmojiChoice => ({
-        shortcode: asset.shortcode,
+      if (!response.ok) throw new Error(response.status === 409 ? "That emoji already exists. Choose another shortcode." : "Emoji import failed.");
+      if (destroyed) return;
+      onImported([{
+        shortcode,
         glyph: "",
-        category: packName,
+        category: storageId,
         custom: true,
-        aliases: asset.aliases,
-        imageUrl: `/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/${encodeURIComponent(packName)}/${encodeURIComponent(asset.file)}`,
-      }));
-      onImported(packChoices);
-      setStatus(`Imported ${packChoices.length} custom emoji.`);
+        aliases: [],
+        imageUrl: `/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/${storageId}/${encodeURIComponent(resolved.file)}`,
+      }]);
+      setStatus(`Imported :${shortcode}:.`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Emoji import failed.");
+    } finally {
+      button.disabled = false;
     }
   };
   button.addEventListener("click", onButton);
-  folderButton.addEventListener("click", onFolderButton);
-  manageButton.addEventListener("click", onManageButton);
   input.addEventListener("change", onChange);
   return {
     element: controls,
     destroy: () => {
+      destroyed = true;
+      controller.abort();
       button.removeEventListener("click", onButton);
-      folderButton.removeEventListener("click", onFolderButton);
-      manageButton.removeEventListener("click", onManageButton);
       input.removeEventListener("change", onChange);
     },
   };
-}
-
-function isPackSummary(value: unknown): value is { readonly name: string; readonly emoji_count: number } {
-  return typeof value === "object" && value !== null
-    && "name" in value && typeof value.name === "string"
-    && "emoji_count" in value && typeof value.emoji_count === "number"
-    && Number.isInteger(value.emoji_count) && value.emoji_count >= 0;
 }
 
 function importButton(text: string, label: string): HTMLButtonElement {
@@ -467,19 +406,6 @@ function importButton(text: string, label: string): HTMLButtonElement {
   button.textContent = text;
   button.setAttribute("aria-label", label);
   return button;
-}
-
-function resolveCollisions(assets: readonly EmojiImportAsset[], existing: ReadonlySet<string>): EmojiImportAsset[] | undefined {
-  const used = new Set(existing);
-  const resolved: EmojiImportAsset[] = [];
-  for (const asset of assets) {
-    const shortcode = resolveName(asset.shortcode, used);
-    if (shortcode === undefined) return undefined;
-    used.add(shortcode);
-    const extension = asset.file.split(".").pop() ?? "png";
-    resolved.push({ ...asset, shortcode, file: `${shortcode}.${extension}` });
-  }
-  return resolved;
 }
 
 function resolveName(name: string, used: ReadonlySet<string>): string | undefined {

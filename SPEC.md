@@ -3403,8 +3403,9 @@ may be retried by explicitly closing and reopening the picker.
 
 ### 11.2 Custom emoji
 
-**Packs are server-level and shared by every vault** (A21). Uploading a Slack collection
-once makes it available everywhere, which is the whole point.
+Custom emoji support **server-level sharing across vaults** (A21), with optional vault-local
+additions. The picker imports individual images into the current vault (A33). Packs remain
+the storage and administrative API format for compatibility with existing artwork.
 
 ```
 <data-dir>/emoji/packs/my-emoji/     # shared across all vaults — requires server admin
@@ -3430,16 +3431,22 @@ and history all remain strictly per-vault (A22).
 }
 ```
 
-- **Image upload:** the picker's **Import custom emoji** opens a file chooser for one or
-  more PNG, GIF, JPEG or WebP images, or `.zip` archives. **Import emoji folder** opens a
-  separate directory chooser; selecting files must never require directory selection.
-- **Bulk upload:** drag a folder or `.zip`; filenames become shortcodes
-  (`party-parrot.gif` → `:party-parrot:`). Collisions prompt rename-or-overwrite.
+- **Image upload:** the picker's **Import custom emoji** opens a file chooser for one PNG,
+  GIF, JPEG or WebP image. The filename supplies its shortcode
+  (`party-parrot.gif` → `:party-parrot:`); collisions, including existing aliases, prompt
+  for a unique replacement or cancellation. There is no pack-name prompt, pack-management
+  panel, folder import or ZIP import. Cancelled, multiple, unsupported or empty selections
+  upload nothing. Errors are reported without adding a picker entry, and upload can be retried.
+- **Storage compatibility:** each image uses a generated `emoji-<UUID>` storage identifier
+  and a one-entry manifest through the existing vault upload API. Pack identifiers are not
+  part of the import UI. Existing manifests, artwork, authorization and export keep their
+  format. Pending file reads and uploads cannot update a destroyed picker; upload requests
+  are cancelled on teardown.
 - The management API accepts a bounded JSON upload containing the manifest and base64 image
   files: `PUT /api/v1/emoji/packs/<name>` requires server admin, while
   `PUT /api/v1/vaults/<slug>/emoji/packs/<name>` requires vault owner. Pack names and files are
   validated before an atomic install; existing packs return conflict rather than being silently
-  replaced. Folder/zip import remains a picker/CLI convenience on top of this format.
+  replaced. These administrative endpoints remain available independently of the picker.
 - Image bytes are stored beside `pack.json` in the pack directory shown above and served only
   through E22's authorized vault route. They are not note media and do not enter a note's
   content-addressed media namespace (§12).
@@ -5338,7 +5345,7 @@ browser. Nothing will be opening a browser here.
 - [x] Base Unicode pack compiled into WASM; inline `:` autocomplete
 - [x] Picker: search, recents, categories, skin tones, custom-first
 - [x] Server-level shared packs + per-vault overrides, admin-gated (§11.2)
-- [x] Custom pack format + image/folder/zip upload
+- [x] Compatible custom emoji storage + single-image upload (A33)
 - [x] `export --materialize-emoji`
 - [x] Note icons (frontmatter → tree, tabs, title, graph)
 
@@ -5416,6 +5423,7 @@ to replace a product comparison with a description. Do not reverse these without
 | A30 | Clipboard screenshots | *"I want to also have paste from screenshots that are in clipboard"* | Media paste explicitly accepts image data for screenshots currently held in the system clipboard (§12.4, M11) |
 | A31 | Browser-first vault creation | *"When I first start the app, I should be directed on how to create a new vault and I should do it over the UI"* / *"I should be able to make new Vaults from the UI too"* | First-account setup and guided vault creation live in the browser; administrators can add managed Markdown vaults without restarting. CLI registration remains optional for existing folders (§6.1, §6.8). |
 | A32 | Slack emoji export import | *"remove \"Import Slack Export\" functionality, doesn't seem like it makes much sense to have it"* | Remove the dedicated Slack export importer; custom emoji import uses image filenames through image, folder and ZIP upload (§11.2). |
+| A33 | Emoji import UI | *"remove that functinality altogether. Single emoji import is just fine"* | Remove pack management and bulk import from the picker. Import one image with a filename-derived shortcode and no pack-name prompt; preserve existing storage and authorization (§11.2). Supersedes A32's folder/ZIP UI scope. |
 
 ---
 
