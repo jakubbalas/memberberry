@@ -588,7 +588,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/v1/vaults/{slug}/folders",
-            get(folder_index).post(create_folder),
+            get(folder_index)
+                .post(create_folder)
+                .delete(delete_folder)
+                .layer(DefaultBodyLimit::max(8 * 1024)),
         )
         .route(
             "/api/v1/vaults/{slug}/notes",
@@ -2897,6 +2900,88 @@ async fn folder_index(
     match view.empty_folders() {
         Ok(folders) => json_no_store(&FolderList { folders }),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DeleteFolderRequest {
+    path: String,
+    confirmation: Option<String>,
+}
+
+/// Deletes an E32-authorized subtree; confirmation is checked against current contents.
+async fn delete_folder(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<DeleteFolderRequest>,
+) -> Response {
+    use crate::repository::{AuthorizedVault, FolderDeleteError};
+    let Some(vault) = state.vault(&slug) else {
+        return workspace_denied();
+    };
+    let Some(access) = state.access_for(vault.slug()) else {
+        return workspace_denied();
+    };
+    let Some(user) = state.vault_user(vault.slug(), &headers) else {
+        return workspace_denied();
+    };
+    let worker = Arc::clone(&state);
+    let outcome = tokio::task::spawn_blocking(move || {
+        let view = AuthorizedVault::new(&vault, &access, user.clone());
+        let outcome = view.delete_folder(
+            &request.path,
+            request.confirmation.as_deref(),
+            worker.sync_registry(),
+            crate::audit::unix_seconds(),
+        );
+        // why: I/O failure can follow a partial deletion; the derived index must catch up.
+        if !matches!(
+            outcome,
+            Err(FolderDeleteError::Denied | FolderDeleteError::ConfirmationRequired)
+        ) {
+            for error in worker.maintain_index(&Changes::All) {
+                eprintln!("memberberry: folder deletion index refresh failed: {error}");
+            }
+        }
+        if let Ok(notes) = &outcome {
+            for path in notes.iter().chain(std::iter::once(&request.path)) {
+                if let Err(error) = worker.audit_note(AuditAction::NoteDeleted, &user, &vault, path)
+                {
+                    eprintln!("memberberry: folder deletion audit failed: {error}");
+                }
+            }
+        }
+        outcome
+    })
+    .await;
+    match outcome {
+        Ok(Ok(_)) => {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
+        Ok(Err(FolderDeleteError::Denied)) => workspace_denied(),
+        Ok(Err(FolderDeleteError::ConfirmationRequired)) => rename_refused(
+            StatusCode::CONFLICT,
+            "type the folder name to confirm deletion",
+        ),
+        Ok(Err(error @ FolderDeleteError::Unavailable(_))) => {
+            eprintln!("memberberry: {error}");
+            rename_refused(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "folder deletion could not be completed; refresh before trying again",
+            )
+        }
+        Err(error) => {
+            eprintln!("memberberry: folder deletion worker failed: {error}");
+            rename_refused(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "folder deletion could not be completed; refresh before trying again",
+            )
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 /** Editor-local block selection. Its overlays never enter the ProseMirror document. */
 import type { Editor } from "@tiptap/core";
 import { Selection } from "@tiptap/pm/state";
+import { allowsClipboardTransaction, readClipboardSlice, writeClipboardSlice } from "./clipboard.js";
 import type { BlockMover, BlockMoveTarget, BlockMoveToken } from "./block-move.js";
 
 interface Rect { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number }
@@ -11,6 +12,7 @@ interface Options {
   readonly rect: (unit: BlockMoveTarget) => Rect | undefined;
   readonly changed: (token: BlockMoveToken | undefined) => void;
   readonly dragging: () => boolean;
+  readonly canInteract: () => boolean;
 }
 /** A contiguous selection shares exactly the same units and safety checks as movement. */
 export interface BlockSelection {
@@ -92,7 +94,7 @@ export function mountBlockSelection(options: Options): BlockSelection {
   };
   const set = (token: BlockMoveToken | undefined): void => {
     selected = token;
-    const message = token ? `${token.count} ${token.count === 1 ? "block" : "blocks"} selected. Delete removes; Tab/Shift+Tab changes supported list nesting. Shift+↑/↓ extends; Escape clears.` : "";
+    const message = token ? `${token.count} ${token.count === 1 ? "block" : "blocks"} selected. Cmd/Ctrl+C copies; Cmd/Ctrl+X cuts; Delete removes; Tab/Shift+Tab changes supported list nesting. Shift+↑/↓ extends; Escape clears.` : "";
     if (status.textContent !== message) status.textContent = message;
     dom.classList.toggle("has-block-selection", token !== undefined);
     render(); options.changed(token);
@@ -210,7 +212,13 @@ export function mountBlockSelection(options: Options): BlockSelection {
   const cancel = (): void => { if (marquee) clear(); };
   const keydown = (event: KeyboardEvent): void => {
     if (event.defaultPrevented || options.dragging() || event.isComposing || editor.view.composing) return;
-    if (event.ctrlKey || event.metaKey) { if (!["Control", "Meta"].includes(event.key)) clear(); return; }
+    if (event.ctrlKey || event.metaKey) {
+      // why: the browser dispatches copy/cut after keydown. Keep our separate range
+      // alive until that event can write it; its native caret is deliberately collapsed.
+      if (!event.altKey && !event.shiftKey && ["c", "x"].includes(event.key.toLowerCase())) return;
+      if (!["Control", "Meta"].includes(event.key)) clear();
+      return;
+    }
     if (event.altKey) return;
     if (event.key === "Escape" && !selected && panel.querySelector(".block-catalog:not([hidden])")) return;
     if (event.key === "Escape") {
@@ -235,6 +243,52 @@ export function mountBlockSelection(options: Options): BlockSelection {
     } else if (selected && !["Shift", "Control", "Meta", "Alt", "F10", "Tab"].includes(event.key)) clear();
     if (event.defaultPrevented) event.stopImmediatePropagation();
   };
+  const clipboard = (event: ClipboardEvent): void => {
+    const native = editor.state.selection;
+    const original = editor.state.doc;
+    if (!selected && native.empty) return;
+    // why: our highlighted range has only a collapsed native caret. Own the event
+    // until every clipboard format is written, and never delete on write failure.
+    event.preventDefault(); event.stopImmediatePropagation();
+    const token = selected ? current() : undefined;
+    if ((selected && !token) || options.dragging() || editor.view.composing) return;
+    if (event.type === "cut" && (!editor.isEditable || !editor.view.editable || !options.canInteract())) return;
+    try {
+      if (!event.clipboardData) throw new Error("clipboard unavailable");
+      writeClipboardSlice(editor.view, event.clipboardData, token
+        ? editor.state.doc.slice(token.start, token.end, true) : native.content());
+    } catch {
+      status.textContent = "Could not copy the selection. Nothing was cut. Try a smaller selection or retry.";
+      return;
+    }
+    if (event.type === "cut") {
+      if (token) {
+        if (mover.edit(token, "delete")) { clear(); editor.view.focus(); }
+        else status.textContent = "Blocks copied, but could not be cut. Select them again to retry.";
+      } else if (editor.state.doc === original && editor.state.selection.eq(native)
+        && editor.isEditable && editor.view.editable && options.canInteract()) {
+        editor.view.dispatch(editor.state.tr.deleteSelection().scrollIntoView().setMeta("uiEvent", "cut"));
+      } else status.textContent = "Selection copied, but the note changed before it could be cut. Select it again to retry.";
+    }
+  };
+  const paste = (event: ClipboardEvent): void => {
+    if (!event.clipboardData) return;
+    const result = readClipboardSlice(editor.view, event.clipboardData);
+    if (!result) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (!editor.isEditable || !editor.view.editable || !options.canInteract() || editor.view.composing || options.dragging()) return;
+    if ("refused" in result) {
+      status.textContent = "This copied selection is invalid or from an incompatible editor. Nothing was pasted.";
+      return;
+    }
+    try {
+      const transaction = editor.state.tr.replaceSelection(result.slice).scrollIntoView().setMeta("paste", true).setMeta("uiEvent", "paste");
+      if (!allowsClipboardTransaction(editor.view, transaction)) throw new Error("invalid clipboard content");
+      clear(); editor.view.dispatch(transaction);
+    } catch {
+      status.textContent = "This selection could not be pasted here. The note was not changed.";
+    }
+  };
   const refresh = (): void => {
     if (!selected) return;
     if (ownPending && mover.isPending(selected)) return;
@@ -258,6 +312,7 @@ export function mountBlockSelection(options: Options): BlockSelection {
   document.addEventListener("pointercancel", cancel); window.addEventListener("blur", cancel);
   // why: PM's Escape selects a parent and Shift-arrows extend native text before bubble
   // listeners run. Block-selection keys must be owned before those default handlers.
+  dom.addEventListener("copy", clipboard, true); dom.addEventListener("cut", clipboard, true); dom.addEventListener("paste", paste, true);
   dom.addEventListener("keydown", keydown, true); dom.addEventListener("compositionstart", clear);
   document.addEventListener("scroll", schedule, true); window.addEventListener("resize", schedule);
   window.visualViewport?.addEventListener("resize", schedule); window.visualViewport?.addEventListener("scroll", schedule);
@@ -267,6 +322,7 @@ export function mountBlockSelection(options: Options): BlockSelection {
     document.removeEventListener("pointerdown", down, true);
     document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", up);
     document.removeEventListener("pointercancel", cancel); window.removeEventListener("blur", cancel);
+    dom.removeEventListener("copy", clipboard, true); dom.removeEventListener("cut", clipboard, true); dom.removeEventListener("paste", paste, true);
     dom.removeEventListener("keydown", keydown, true); dom.removeEventListener("compositionstart", clear);
     document.removeEventListener("scroll", schedule, true); window.removeEventListener("resize", schedule);
     window.visualViewport?.removeEventListener("resize", schedule); window.visualViewport?.removeEventListener("scroll", schedule);

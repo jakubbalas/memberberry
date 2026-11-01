@@ -2555,3 +2555,11 @@ fn e29_non_writable_folder_opt_in_never_reads_or_discloses_excluded_descendants(
         "e29_non_writable_folder_opt_in_never_reads_or_discloses_excluded_descendants",
     );
 }
+
+#[path = "support/folder_delete_cases.rs"]
+mod folder_delete_cases;
+
+#[test]
+fn e32_folder_delete_authorizes_all_descendants_before_confirmation_or_mutation() {
+    folder_delete_cases::permission_preflight();
+}

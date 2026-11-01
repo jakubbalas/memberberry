@@ -37,3 +37,18 @@ export async function createFolder(vault: string, path: string, request: typeof 
     return { refused: "The server could not be reached." };
   }
 }
+
+/** Deletes a folder after the server authorizes every descendant and checks confirmation. */
+export async function deleteFolder(vault: string, path: string, confirmation?: string, request: typeof fetch = globalThis.fetch): Promise<string | undefined> {
+  if (!validFolder(path)) return "That is not a usable folder name.";
+  try {
+    const response = await request(`/api/v1/vaults/${encodeURIComponent(vault)}/folders`, {
+      method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, confirmation }),
+    });
+    if (response.status === 204) return undefined;
+    if (response.status === 409) return "The folder is not empty. Type its name to confirm deletion.";
+    return "The folder could not be deleted. Check your write access and refresh before trying again.";
+  } catch {
+    return "The server could not be reached. Refresh before trying again.";
+  }
+}

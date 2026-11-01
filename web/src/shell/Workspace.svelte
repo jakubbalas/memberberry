@@ -29,7 +29,7 @@
   import "./navigation.css";
   import { clampSidebarWidths, MIN_SIDEBAR_WIDTH, readSidebarPreferences, sidebarMaximum, writeSidebarPreferences, type SidebarPreferences } from "./sidebar-preferences.js";
   import NamePrompt from "./NamePrompt.svelte";
-  import { createFolder, fetchFolders } from "./folders.js";
+  import { deleteFolder, createFolder, fetchFolders } from "./folders.js";
   import Sidebar from "./Sidebar.svelte";
   import TopBar from "./TopBar.svelte";
   import TagPane from "./TagPane.svelte";
@@ -495,6 +495,20 @@
     void catalog.refresh();
   }
 
+  async function deleteFolderFromTree(path: string, confirmation?: string): Promise<string | undefined> {
+    const viewingFolder = folderPath;
+    const error = await deleteFolder(vaultSlug, path, confirmation);
+    // why: even a failed request can have moved some notes; re-read server state.
+    if (error === undefined) {
+      for (const tab of [...store.tabs]) {
+        if (tab.note.startsWith(`${path}/`)) store.close(tab.id);
+      }
+      if (viewingFolder === path || viewingFolder?.startsWith(`${path}/`)) selectedFolder = undefined;
+    }
+    await Promise.all([catalog.refresh(), refreshFolders()]);
+    return error;
+  }
+
   const panes = $derived(groups(store.current.root).map((group) => group.id));
 
   const titleOf = (path: string): string | null =>
@@ -524,6 +538,7 @@
   }
 
   async function moveFromTree(from: string, to: string, kind: "note" | "folder"): Promise<string | undefined> {
+    const viewingFolder = folderPath;
     const title = catalog.notes.find((note) => note.path === from)?.title;
     const result = kind === "folder" ? await renameFolder(vaultSlug, from, to) : await (renameNote ?? renameNoteRequest)(
       vaultSlug,
@@ -536,8 +551,10 @@
       if (tab.note === from) store.navigate(tab.id, result.ok.to);
       else if (kind === "folder" && tab.note.startsWith(`${from}/`)) store.navigate(tab.id, `${result.ok.to}${tab.note.slice(from.length)}`);
     }
-    void catalog.refresh();
-    void refreshFolders();
+    if (kind === "folder" && (viewingFolder === from || viewingFolder?.startsWith(`${from}/`))) {
+      selectedFolder = { path: `${result.ok.to}${viewingFolder.slice(from.length)}`, workspace: store.current };
+    }
+    await Promise.all([catalog.refresh(), refreshFolders()]);
   }
 
   function renameFromTitle(path: string, title: string): void {
@@ -718,6 +735,7 @@
         onfilenames={(showFilenames) => saveSidebarPreferences({ ...sidebarPreferences, showFilenames })}
         onopen={openNavigationNote}
         ondelete={(path) => void deleteFromTree(path)}
+        ondeletefolder={deleteFolderFromTree}
         onmove={moveFromTree}
         oncreate={(from) => requestPalette({ kind: "create", from }, target ?? window)}
         onfolder={() => { folderError = undefined; folderPrompt = true; }}

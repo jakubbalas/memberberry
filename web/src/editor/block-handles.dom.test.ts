@@ -10,6 +10,7 @@ import { createMemberberryExtensions } from "./schema.js";
 import { mountBlockHandles, type BlockHandlesOptions } from "./block-handles.js";
 import { Awareness } from "y-protocols/awareness";
 import { createConnectionStatus } from "./collaboration.js";
+import { SCHEMA_VERSION } from "./schema-revision.js";
 
 const cleanups: (() => void)[] = [];
 beforeAll(async () => { await load(readFileSync("src/wasm/mb_bg.wasm")); });
@@ -449,4 +450,166 @@ it("keeps selected rows visible above the bottom-pinned mobile toolbar", async (
   expect(document.querySelectorAll(".block-selection-highlight")).toHaveLength(2);
   expect(document.querySelector<HTMLElement>(".block-selection-layer")?.style.top).toBe("0px");
   expect(document.querySelector<HTMLElement>(".block-selection-layer")?.style.height).toBe("550px");
+});
+
+function transfer(f: Awaited<ReturnType<typeof open>>, type: "cut" | "copy" | "paste", data = new Map<string, string>()): { event: Event; data: Map<string, string> } {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", { value: {
+    clearData: () => data.clear(), setData: (kind: string, value: string) => { data.set(kind, value); }, getData: (kind: string) => data.get(kind) ?? "",
+  } });
+  f.editor.view.dom.dispatchEvent(event);
+  return { event, data };
+}
+
+it.each([{ metaKey: true }, { ctrlKey: true }])("cuts the complete highlighted range after its modifier shortcut and pastes into another note (%j)", async modifier => {
+  const source = await open("# Source\n\nBefore\n\n**Alpha** ✨\n\nملاحظات Beta\n\nAfter\n");
+  selectTextBlocks(source, "Alpha", 2);
+  source.editor.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "x", ...modifier, bubbles: true, cancelable: true }));
+  const { event, data } = transfer(source, "cut");
+  expect(event.defaultPrevented).toBe(true);
+  expect(data.get("text/plain")).toBe("Alpha ✨\n\nملاحظات Beta");
+  expect(await source.saved()).toBe("# Source\n\nBefore\n\nAfter\n");
+  const destination = await open("# Destination\n\nHere\n");
+  destination.editor.commands.setTextSelection(destination.start(1) + 1);
+  transfer(destination, "paste", data);
+  expect(await destination.saved()).toBe("# Destination\n\n**Alpha** ✨\n\nملاحظات Beta\n\nHere\n");
+  source.editor.commands.keyboardShortcut("Mod-z");
+  expect(await source.saved()).toBe("# Source\n\nBefore\n\n**Alpha** ✨\n\nملاحظات Beta\n\nAfter\n");
+});
+
+it("copies highlighted blocks without removing them or losing their highlight", async () => {
+  const f = await open(); const before = await f.saved(); selectTextBlocks(f, "Alpha", 2);
+  f.editor.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "c", metaKey: true, bubbles: true }));
+  const copied = transfer(f, "copy");
+  expect(copied.data.get("text/plain")).toBe("Alpha\n\nBeta");
+  expect(await f.saved()).toBe(before);
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(true);
+});
+
+it("cuts native multi-paragraph text and preserves its marks when pasted into another note", async () => {
+  const f = await open("# Source\n\n**Alpha**\n\nBeta\n\nAfter\n");
+  f.editor.commands.setTextSelection({ from: f.start(1) + 1, to: f.start(2) + 1 + "Beta".length });
+  const { data } = transfer(f, "cut");
+  expect(data.get("text/plain")).toBe("Alpha\n\nBeta");
+  expect(await f.saved()).not.toContain("Alpha");
+  const next = await open("# Destination\n\nHere\n");
+  next.editor.commands.setTextSelection(next.start(1) + 1);
+  transfer(next, "paste", data);
+  expect(await next.saved()).toContain("**Alpha**\n\nBeta");
+});
+
+it.each(["text/html", "text/plain", "application/x-memberberry-slice"])("does not remove selected blocks when clipboard writing %s fails", async mime => {
+  const f = await open(); const initial = await f.saved(); selectTextBlocks(f, "Alpha", 2);
+  const event = new Event("cut", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", { value: {
+    clearData: () => undefined,
+    setData: (type: string) => { if (type === mime) throw new Error("clipboard denied"); },
+  } });
+  f.editor.view.dom.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(true);
+  expect(await f.saved()).toBe(initial);
+  expect(f.editor.view.dom.classList.contains("has-block-selection")).toBe(true);
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("Nothing was cut");
+});
+
+it("does not cut selected blocks when the clipboard is unavailable", async () => {
+  const f = await open(); const before = await f.saved(); selectTextBlocks(f, "Alpha", 2);
+  const event = new Event("cut", { bubbles: true, cancelable: true }); f.editor.view.dom.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(true);
+  expect(await f.saved()).toBe(before);
+});
+
+it.each([
+  "# Source\n\nBefore\n\n- **Alpha**\n  - Child\n- [x] Beta 📅 2026-10-20 ⏫ ✅ 2026-10-19\n\nAfter\n",
+  "# Source\n\nBefore\n\n7. **Alpha**\n1. Beta\n\nAfter\n",
+  "# Source\n\nFirst\\\n**Alpha**\\\nBeta\\\nLast\n",
+])("cuts and pastes structural list/line contents without dropping metadata (%s)", async initial => {
+  const source = await open(initial);
+  if (initial.includes("\\\n")) vi.spyOn(source.editor.view, "coordsAtPos").mockReturnValue({ left: 100, right: 120, top: 100, bottom: 120 });
+  selectTextBlocks(source, "Alpha", 2);
+  const copied = transfer(source, "cut");
+  const destination = await open("# Destination\n\nHere\n");
+  destination.editor.commands.setTextSelection(destination.start(1) + 1);
+  transfer(destination, "paste", copied.data);
+  const pasted = await destination.saved();
+  expect(pasted).toContain("**Alpha**"); expect(pasted).toContain("Beta");
+  if (initial.includes("Child")) {
+    expect(pasted).toContain("Child");
+    let taskAttrs: unknown;
+    destination.editor.state.doc.descendants(node => { if (node.type.name === "task_item") taskAttrs = node.attrs; });
+    expect(taskAttrs).toMatchObject({ status: "done", due: "2026-10-20", priority: "high", done: "2026-10-19" });
+  }
+  expect(await source.saved()).not.toContain("Alpha");
+  expect(await source.saved()).not.toContain("Beta");
+});
+
+it.each(["readonly", "waiting", "disconnected"])("never cuts a stale highlighted range after its editor becomes %s", async change => {
+  const connection = createConnectionStatus(); connection.set({ connected: true, synced: true, pending: 0 });
+  const f = await open(undefined, { connection }); const before = await f.saved(); selectTextBlocks(f, "Alpha", 2);
+  if (change === "readonly") f.editor.setEditable(false);
+  else if (change === "waiting") f.panel.dataset["body"] = "waiting";
+  else connection.set({ connected: false, synced: false, pending: 0 });
+  transfer(f, "cut");
+  expect(await f.saved()).toBe(before);
+});
+
+it("pairs copy/cut/paste capture listeners and ignores clipboard events after teardown", async () => {
+  const f = await open(); f.handles.destroy();
+  const add = vi.spyOn(f.editor.view.dom, "addEventListener"), remove = vi.spyOn(f.editor.view.dom, "removeEventListener");
+  const handles = mountBlockHandles({ editor: f.editor, document: f.ydoc, panel: f.panel, noteKey: "clipboard-teardown" });
+  f.editor.commands.setTextSelection(f.start(1) + 1); key(f, "Escape"); key(f, "ArrowDown", true);
+  handles.destroy();
+  const additions = add.mock.calls.filter(([type]) => ["copy", "cut", "paste"].includes(type));
+  expect(additions).toHaveLength(3);
+  for (const [type, listener, capture] of additions) expect(remove.mock.calls.some(call => call[0] === type && call[1] === listener && call[2] === capture)).toBe(true);
+  const copied = transfer(f, "cut"); expect(copied.data.size).toBe(0);
+  expect(await f.saved()).toBe("# Title\n\nAlpha\n\nBeta\n\nGamma\n");
+});
+
+it("keeps a native cut from deleting a selection changed during clipboard writing", async () => {
+  const f = await open(); f.editor.commands.setTextSelection({ from: f.start(1) + 1, to: f.start(1) + 6 });
+  const before = await f.saved(), data = new Map<string, string>();
+  const event = new Event("cut", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", { value: {
+    clearData: () => data.clear(),
+    setData: (type: string, value: string) => {
+      data.set(type, value);
+      f.editor.commands.setTextSelection({ from: f.start(2) + 1, to: f.start(2) + 5 });
+    },
+  } });
+  f.editor.view.dom.dispatchEvent(event);
+  expect(data.get("text/plain")).toBe("Alpha");
+  expect(await f.saved()).toBe(before);
+});
+
+it("refuses incompatible pasted fragments without changing the destination", async () => {
+  const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 1); const before = await f.saved();
+  const data = new Map([["application/x-memberberry-slice", '{"version":9999,"slice":{}}']]);
+  expect(transfer(f, "paste", data).event.defaultPrevented).toBe(true);
+  expect(await f.saved()).toBe(before);
+  expect(document.querySelector(".block-selection-status")?.textContent).toContain("Nothing was pasted");
+});
+
+it("leaves ordinary external plain-text paste working", async () => {
+  const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 1);
+  const data = new Map([["text/plain", "External 🌍 "]]);
+  transfer(f, "paste", data);
+  expect(await f.saved()).toContain("External 🌍 Alpha");
+});
+
+it("allows copying native read-only text but never pastes into that note", async () => {
+  const f = await open(); f.editor.commands.setTextSelection({ from: f.start(1) + 1, to: f.start(1) + 6 });
+  f.editor.setEditable(false); const before = await f.saved();
+  const copied = transfer(f, "copy");
+  expect(copied.data.get("text/plain")).toBe("Alpha");
+  transfer(f, "cut"); transfer(f, "paste", copied.data);
+  expect(await f.saved()).toBe(before);
+});
+
+it("rejects pasted task metadata that the Rust codec cannot materialize without touching the note", async () => {
+  const f = await open(); f.editor.commands.setTextSelection(f.start(1) + 1); const before = await f.saved();
+  const data = new Map([["application/x-memberberry-slice", JSON.stringify({ version: SCHEMA_VERSION, slice: { content: [{ type: "bullet_list", content: [{ type: "task_item", attrs: { status: "todo", due: "not-a-date" }, content: [{ type: "paragraph", content: [{ type: "text", text: "Invalid date" }] }] }] }] } })]]);
+  transfer(f, "paste", data);
+  expect(f.editor.state.doc.textContent).toBe("TitleAlphaBetaGamma");
+  expect(await f.saved()).toBe(before);
 });

@@ -38,3 +38,28 @@ describe("folder requests", () => {
     expect(await createFolder("personal", "Ideas", async () => { throw new Error("offline"); })).toHaveProperty("refused");
   });
 });
+
+it("deletes folders with their exact confirmation through the authenticated endpoint", async () => {
+  const { deleteFolder } = await import("./folders.js");
+  const sent: unknown[] = [];
+  const request: typeof fetch = async (url, options) => {
+    sent.push([url, options?.method, JSON.parse(String(options?.body))]);
+    return new Response(null, { status: 204 });
+  };
+  expect(await deleteFolder("my vault", "Parent/ملاحظات ✨", "ملاحظات ✨", request)).toBeUndefined();
+  expect(sent).toEqual([["/api/v1/vaults/my%20vault/folders", "DELETE", { path: "Parent/ملاحظات ✨", confirmation: "ملاحظات ✨" }]]);
+  expect(await deleteFolder("v", "Empty", undefined, request)).toBeUndefined();
+  expect(sent[1]).toEqual(["/api/v1/vaults/v/folders", "DELETE", { path: "Empty" }]);
+});
+
+it("reports confirmation, permission and network failures and rejects unsafe folder deletion locally", async () => {
+  const { deleteFolder } = await import("./folders.js");
+  let calls = 0;
+  const request: typeof fetch = async () => { calls += 1; return new Response(null, { status: 204 }); };
+  expect(await deleteFolder("v", "../escape", undefined, request)).toBeDefined();
+  expect(calls).toBe(0);
+  for (const status of [200, 404, 409, 503]) {
+    expect(await deleteFolder("v", "Folder", undefined, async () => new Response(null, { status }))).toBeDefined();
+  }
+  expect(await deleteFolder("v", "Folder", undefined, async () => { throw new Error("offline"); })).toContain("Refresh");
+});

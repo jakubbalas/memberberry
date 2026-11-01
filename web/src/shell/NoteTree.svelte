@@ -41,13 +41,15 @@
     readonly onfilenames?: (show: boolean) => void;
     /** Moves a note to the server-owned trash after confirmation. */
     readonly ondelete?: (path: string) => void;
+    /** Deletes an authorized folder; nonempty folders require its exact basename. */
+    readonly ondeletefolder?: (path: string, confirmation?: string) => Promise<string | undefined>;
     /** Moves a note to a vault-relative folder, or to the vault root when empty. */
     readonly onmove?: (from: string, to: string, kind: "note" | "folder") => Promise<string | undefined>;
     readonly target?: EventTarget | undefined;
     readonly expansion?: TreeExpansion;
   }
 
-  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder, onopenfolder, showFilenames = false, onfilenames, ondelete, onmove, target, expansion }: Props = $props();
+  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder, onopenfolder, showFilenames = false, onfilenames, ondelete, ondeletefolder, onmove, target, expansion }: Props = $props();
 
   let expanded = $state<ReadonlySet<string>>(new Set());
   let cursor = $state(0);
@@ -61,6 +63,10 @@
   let moveSubject = $state<string | undefined>(undefined);
   let moveError = $state<string | undefined>(undefined);
   let moveBusy = $state(false);
+  let renameSubject = $state<string | undefined>();
+  let deleteSubject = $state<string | undefined>();
+  let deleteError = $state<string | undefined>();
+  let deleteBusy = $state(false);
 
   $effect(() => {
     expanded = readTreeExpansion(expansion);
@@ -247,10 +253,28 @@
     moveBusy = false;
     if (moveError === undefined) {
       moveSubject = undefined;
+      renameSubject = undefined;
       expanded = new Set([...expanded].map((path) => path === from || path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : path));
       writeTreeExpansion(expansion, expanded);
       const parent = to.slice(0, Math.max(0, to.lastIndexOf("/")));
       if (parent !== "") setExpanded(parent, true);
+    }
+  }
+
+  async function deleteFolder(path: string, confirmation?: string): Promise<void> {
+    if (deleteBusy || ondeletefolder === undefined) return;
+    deleteBusy = true;
+    deleteError = await ondeletefolder(path, confirmation);
+    deleteBusy = false;
+    if (deleteError === undefined) {
+      deleteSubject = undefined;
+      expanded = new Set([...expanded].filter((entry) => entry !== path && !entry.startsWith(`${path}/`)));
+      writeTreeExpansion(expansion, expanded);
+      cursor = Math.min(cursor, Math.max(0, rows.length - 1));
+      treeElement?.focus();
+    } else {
+      // why: the server may discover new contents in a folder listed as empty earlier.
+      deleteSubject = path;
     }
   }
 
@@ -404,7 +428,7 @@
   </section>
 </div>
 
-{#if moveError !== undefined && moveSubject === undefined}<p role="alert">{moveError}</p>{/if}
+{#if moveError !== undefined && moveSubject === undefined && renameSubject === undefined}<p role="alert">{moveError}</p>{/if}
 {#if moveSubject !== undefined}
 <NamePrompt open={true} title="Move folder" subject={`${moveSubject} — leave the destination blank for the vault root.`} label="Destination folder" initial="" busy={moveBusy} error={moveError} confirm="Move" confirming="Moving…" onsubmit={(folder) => {
   const from = moveSubject;
@@ -417,6 +441,25 @@
   const name = from.slice(from.lastIndexOf("/") + 1);
   void move(from, parent === "" ? name : `${parent}/${name}`);
 }} ondismiss={() => { if (!moveBusy) moveSubject = undefined; }} />
+{/if}
+
+{#if renameSubject !== undefined}
+<NamePrompt open={true} title="Rename folder" subject={renameSubject} label="Name" initial={basename(renameSubject)} busy={moveBusy} error={moveError} warning="Links to notes in this folder will also be updated." onsubmit={(name) => {
+  const from = renameSubject;
+  const next = name.trim();
+  if (from === undefined) return;
+  if (!validFolder(next) || next.includes("/") || next === basename(from)) {
+    moveError = "Choose a different folder name without a slash.";
+    return;
+  }
+  void move(from, `${from.slice(0, from.lastIndexOf("/") + 1)}${next}`);
+}} ondismiss={() => { if (!moveBusy) renameSubject = undefined; }} />
+{/if}
+
+{#if deleteSubject !== undefined}
+<NamePrompt open={true} emoji={false} title="Delete folder" subject={deleteSubject} label="Folder name" initial="" requiredName={basename(deleteSubject)} busy={deleteBusy} error={deleteError} warning={`Type ${basename(deleteSubject)} to delete this folder and its contents. Notes will be moved to trash.`} confirm="Delete" confirming="Deleting…" onsubmit={(name) => {
+  if (deleteSubject !== undefined) void deleteFolder(deleteSubject, name);
+}} ondismiss={() => { if (!deleteBusy) deleteSubject = undefined; }} />
 {/if}
 
 {#if settings !== undefined}
@@ -441,6 +484,19 @@
   onopenmain={onopenfolder === undefined ? undefined : () => {
     if (context !== undefined) onopenfolder(context.path);
     context = undefined;
+  }}
+  onrename={onmove === undefined ? undefined : () => {
+    moveError = undefined;
+    renameSubject = context?.path;
+    context = undefined;
+  }}
+  ondelete={ondeletefolder === undefined ? undefined : () => {
+    const path = context?.path;
+    context = undefined;
+    deleteError = undefined;
+    if (path === undefined) return;
+    if (emptyFolders.includes(path)) void deleteFolder(path);
+    else deleteSubject = path;
   }}
   onmove={onmove === undefined ? undefined : () => {
     moveError = undefined;

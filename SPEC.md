@@ -1228,6 +1228,9 @@ supersedes t-004's create-at-registration controls and automatic note-root selec
   file mutation follows refusal. Temporary artifacts clean up only under existing owned-only
   guarantees. Legacy registered Auto/managed/CLI entries are not reinterpreted or migrated.
   This guard is part of E29 and has permanent refusal/revalidation and permission-leak tests.
+- **Current platform limit:** the shallow-directory endpoint below is compiled only on
+  Linux. Other native server builds return 404, so Open in main panel cannot load folder
+  contents there. Sidebar rename/delete and note editing do not use that endpoint.
 - `GET /api/v1/vaults/{slug}/directory?path=<form-encoded-literal-token>` returns exactly
   `{path,folders:[{name,path}],files:[{name,path}]}` from the permission-filtered repository.
   It lists only the requested directory's immediate real visible folders and regular `.md`
@@ -1350,6 +1353,7 @@ ships.
 | E29 | **Project-folder vault discovery, registration and New vault HTML** (§6.1; backend independently reviewed; t-003 interface implemented for review) | `GET /vaults/new` and compatibility `GET /vaults/add` (including bodyless HEAD) are enabled-current-signed-admin HTML entries, filtered before bundle/config/open/stat/probe work; authority is repeated in the blocking read and before publication. The New vault action is server-filtered. Neutral no-store 404 **HTML** is distinct from the existing no-store 404 **JSON** API refusal. Public content-free static JS/CSS assets do not authorize discovery, registration or content; the bare `add-vault.html` bundle is not a public HTML route. `GET /api/v1/vault-locations` and its `/{id}/{directories,status}` read routes plus JSON `/{id}/{preview,register}` POST require a current enabled signed-session server administrator before config/open/stat/canonicalization/discovery/probes. Scoped Bearer or any Authorization header, including alongside a valid cookie, never authorizes management. Both POSTs require unique session authority across all Cookie fields, unique Origin/Host/Content-Type, zero or one Sec-Fetch-Site, literal authority/raw-Origin validation, same origin and reauthentication after waiting and at commit. Identity-bound, expiring single-use confirmations and exact literal input/whole-tree budgets enforce duplicate/alias/ancestor/collision boundaries. Policy preservation includes the approved t-005 S1 compatibility guard: real immediate notes/ plus an existing selected-root ACL with any path-specific rules refuses adoption at preview and repeated confirmation/precommit checks, without policy translation or permission broadening; bounded validation and content-free authorized 409/no-store refusals are leak-tested. The t-013 opt-in is a receipt-bound persisted boolean: native effective-user permission failures on child folders may be skipped, with required root/policy/storage checks retained and excluded descendants absent from all content/index/tree paths and watcher setup/refresh. Real unprivileged no-read observers, strict-off/checked-on controls and a changed-option receipt refusal cover it. Child symbolic links are skipped during adoption without target reads; E1/E5/E30 catalogs, direct content and index reads exclude them, including aliases within the vault. Critical policy/config links still refuse. Atomic config commit, owned-only rollback and live watcher/index publication do not grant content access. E29 real-session/origin/inotify tests include authorized positive controls; no private note names/content, absolute paths or config secrets appear in denials. Registered roots stop read traversal/enumeration and existing-policy-no-admin-content stays neutral on normal filtered APIs. |
 | E30 | **Shallow vault directory browsing** (§6.1; backend reviewed, t-006 UI implementation active) | Immediate folder and `.md` names are read through `AuthorizedVault` with the current caller/ACL, never through an unfiltered feature helper or admin bypass. Denied/unknown directory or vault is neutral. Permission filtering precedes filesystem reads of denied paths and response publication; no titles/bodies, descendant enumeration, symlink/hidden traversal or stale-authority publication. Necessary deeper-grant navigation cannot reopen an explicit denial or manufacture access from absent targets. The persisted t-013 native folder filter is applied after content authority and before excluded-directory reads/navigation. Bounded work/output refuses without partial disclosure. |
 | E31 | **Immediate configured-location folder creation** (§6.1; backend reviewed, t-006 UI implementation active) | Strict enabled signed-session-admin and same-origin/header authority precedes config/filesystem work; repeat after waits and at mkdir/publication. One exact child under a pinned allowed parent, no-follow beneath configured root, current registry/identity checks and no collisions/overlaps. No content grant, ACL/registry creation or registration receipt. Owned-only cleanup; post-create ambiguity never implies rollback or safe replay. Readback verifies the exact child identity before success. |
+| E32 | **Folder deletion** (§8.2) | `DELETE /api/v1/vaults/{slug}/folders` takes `{path, confirmation?}` with an 8 KiB body limit. `AuthorizedVault::delete_folder` requires editor/owner on the folder and every descendant before disclosing confirmation requirements or mutating. Unknown, denied, unsupported, hidden, symlinked and excluded trees receive the same neutral 404; server admin grants no bypass. Full preflight is bounded to 100,000 entries. Any actual note/subfolder requires the exact basename (409 otherwise); empty folders need no confirmation. Every sync room closes before note files move to the existing Markdown trash, followed by nonrecursive directory removal, index reconciliation and deletion auditing. I/O errors can leave partial deletion and return a generic no-store refusal; the client refreshes before retry. |
 
 **Every sync-frame denial is one reply.** An unknown vault, a path that does not resolve,
 a missing ACL and a role of `none` all return the same `not_found` error frame. Sending
@@ -2117,10 +2121,22 @@ right-click (and Shift+F10/ContextMenu): Open in new tab, Rename, Delete when av
 and Add/Remove bookmark. Bookmark stars are no longer separate row buttons. Tree actions
 remain reachable through the tree's single-tab-stop keyboard model.
 
-Every folder row has a three-dot menu with **New note**, **Open in main panel** and
-**Move folder**; right-click and Shift+F10/ContextMenu open the same keyboard-operable menu.
+Every folder row has a three-dot menu with **New note**, **Open in main panel**,
+**Move folder**, **Rename** and **Delete**; right-click and Shift+F10/ContextMenu open the same keyboard-operable menu.
 New note opens the existing creation dialog targeting that folder (§6.10), then opens
-the created note for editing. Opening a folder presents
+the created note for editing. Rename opens a name prompt prefilled with the folder basename,
+keeps its parent, and uses the E14 folder-move operation, including link updates. The current
+workspace redirects open descendant tabs and an open folder contents view to their new paths.
+Delete removes a physically empty folder directly. A folder containing any note or subfolder
+opens a modal requiring its exact basename, case and whitespace included; Cancel/Escape
+aborts and Delete stays disabled until it matches. The server repeats that requirement against
+current contents (E32), including when a previously empty folder acquired contents. Notes go
+to the existing Markdown trash and can be restored individually; empty directories are removed.
+Folder deletion refuses hidden entries, symlinks, non-Markdown files, excluded directories and
+any descendant without editor/owner access before moving any notes. This protects arbitrary
+project files in root-layout vaults. A storage failure can leave some notes in trash; directory
+removal is nonrecursive and never discards newly arrived files. The client refreshes catalogs
+after failure and closes deleted descendant tabs after success. Opening a folder presents
 its authorized immediate subfolders and notes, an empty state, parent navigation, and Close.
 This is a temporary folder contents view, not a note or a new persisted tab type: no fake
 Markdown is created, existing note tabs are retained, and its URL is the vault Home URL.
@@ -2552,6 +2568,25 @@ consumed while a block selection exists so they cannot edit only the native care
 Successful nesting preserves the selected range for further actions. Native text
 selections retain their ordinary behavior. These structural actions reuse movement's
 current-document, editability, readiness and single-editor checks and collaborative undo.
+
+**Cut/copy between notes (2026-10-31).** Cmd/Ctrl-X cuts the complete purple range;
+Cmd/Ctrl-C copies it and retains the highlight. Modifier keydown preserves the range until
+the browser's clipboard event. All clipboard formats must be written before deletion;
+a missing or failed clipboard write leaves the source unchanged and announces the refusal.
+Block cuts reuse the same gated, isolated deletion/undo operation as Delete. Native text
+selections also copy/cut normally, with document/selection readiness rechecked before removal.
+Both selection modes carry standard HTML/plain text plus a transient
+`application/x-memberberry-slice` payload `{version, slice}` using the Rust-owned schema
+revision and ProseMirror slice JSON. In-app paste preserves marks, structural containers,
+explicit breaks, nested lists and task attributes without a second Markdown codec. Unknown
+schema revisions, unknown attributes/types, malformed payloads, open depths outside 0–64
+or payloads above 8,388,608 UTF-16 code units fail closed. Raw attributes and the prospective
+inserted document pass the existing schema admission checks, including Rust/WASM
+materialization of a temporary candidate before the live replica changes. This whole-note
+check happens only for explicit rich paste, never ordinary typing. Ordinary external clipboard
+formats retain the existing paste behavior; this does not implement general rich HTML import.
+Clipboard events/listeners are scoped to each editor and removed on teardown. Content stays
+in canonical Markdown; the clipboard format is neither persisted nor a vault read surface.
 
 Escape on a collapsed body caret selects its movement unit; Shift-Up/Down extends or shrinks
 the contiguous range, and Escape clears it. The block menu offers Select block, Extend
@@ -4750,6 +4785,12 @@ index rather than to a vault with no graph.
 Because §6.4 enumerates the enforcement points, there is a dedicated suite that walks
 them systematically. It is the suite most likely to catch a real security bug.
 
+- **Folder deletion (E32):** a hidden or read-only descendant refuses the entire operation
+  before confirmation disclosure or mutation; outsider/viewer and missing/denied-path probes
+  share the neutral denial. Authorized positive controls reach name confirmation and move
+  all notes into Markdown trash. HTTP tests cover current emptiness, exact Unicode names,
+  stale empty-folder views, unauthenticated refusal and restore; repository tests retain
+  arbitrary files and reject traversal/symlinks before mutation.
 - A **matrix test** over `(role × surface × operation)` asserting every combination either
   succeeds or returns exactly the right denial.
 - **Project-folder management (E29):** real signed-session discovery plus JSON preview/register

@@ -6265,3 +6265,114 @@ fn an_unauthenticated_form_post_creates_nothing() {
     assert!(is_not_found(&status), "{status}");
     assert!(!dir.path().join("Sneaky.md").exists());
 }
+
+#[test]
+fn folder_delete_requires_current_confirmation_and_preserves_markdown_in_trash() {
+    let directory = TempDir::new("http-folder-delete");
+    directory.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    std::fs::create_dir_all(directory.path().join("ملاحظات ✨/Empty")).expect("nested empty");
+    directory.write("ملاحظات ✨/Note.md", "# Keep this\n");
+    let server = TestServer::authenticated(vec![vault(&directory, "personal", "Personal")]);
+    let delete = |body: &str, signed: bool| {
+        let headers = format!(
+            "{}Content-Type: application/json\r\nContent-Length: {}\r\n",
+            if signed { &server.default_headers } else { "" },
+            body.len()
+        );
+        server.request("DELETE", "/api/v1/vaults/personal/folders", &headers, body)
+    };
+    for body in [
+        r#"{"path":"ملاحظات ✨"}"#,
+        r#"{"path":"ملاحظات ✨","confirmation":"wrong"}"#,
+        r#"{"path":"ملاحظات ✨","confirmation":"ملاحظات ✨ "}"#,
+    ] {
+        let response = delete(body, true);
+        assert!(response.0.contains("409"), "{response:?}");
+        assert!(directory.path().join("ملاحظات ✨/Note.md").exists());
+    }
+    let body = r#"{"path":"ملاحظات ✨","confirmation":"ملاحظات ✨"}"#;
+    assert!(is_not_found(&delete(body, false).0));
+    assert!(delete(body, true).0.contains("204"));
+    assert!(!directory.path().join("ملاحظات ✨").exists());
+    let v = vault(&directory, "personal", "Personal");
+    let store = mb_server::trash::TrashStore::new(&v);
+    let entries = store.inspect().expect("trash");
+    assert_eq!(entries.len(), 1);
+    store
+        .restore(&v, &entries[0].id, mb_server::audit::unix_seconds())
+        .expect("restore");
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("ملاحظات ✨/Note.md")).expect("Markdown"),
+        "# Keep this\n"
+    );
+    std::fs::create_dir(directory.path().join("Empty")).expect("empty");
+    assert!(delete(r#"{"path":"Empty"}"#, true).0.contains("204"));
+    assert!(!directory.path().join("Empty").exists());
+    server.stop();
+}
+
+#[test]
+fn folder_delete_never_exposes_denied_descendants_or_grants_server_admin_content_access() {
+    for role in ["editor", "viewer", "none"] {
+        let directory = TempDir::new(&format!("http-folder-delete-{role}"));
+        directory.write("Source/Public.md", "# Public\n");
+        directory.write("Source/Hidden.md", "# Hidden\n");
+        directory.write("ReadOnly/Note.md", "# Read only\n");
+        directory.write("Private/Note.md", "# Private\n");
+        directory.write("access.toml", &format!("[[members]]\nuser = \"alice\"\nrole = \"{role}\"\n[[rules]]\npath = \"Source/Hidden.md\"\ngrant = {{ alice = \"none\" }}\n[[rules]]\npath = \"ReadOnly/Note.md\"\ngrant = {{ alice = \"viewer\" }}\n[[rules]]\npath = \"Private\"\ngrant = {{ alice = \"none\" }}\n"));
+        let server = TestServer::authenticated(vec![vault(&directory, "personal", "Personal")]);
+        let mut refusals = Vec::new();
+        for path in [
+            "Source",
+            "ReadOnly",
+            "Private",
+            "Private/Missing",
+            "Missing",
+        ] {
+            let body = serde_json::json!({"path":path}).to_string();
+            let headers = format!(
+                "{}Content-Type: application/json\r\nContent-Length: {}\r\n",
+                server.default_headers,
+                body.len()
+            );
+            let response =
+                server.request("DELETE", "/api/v1/vaults/personal/folders", &headers, &body);
+            assert!(is_not_found(&response.0), "{role} {path}: {response:?}");
+            refusals.push(response);
+        }
+        assert!(refusals.windows(2).all(|pair| pair[0] == pair[1]));
+        assert!(directory.path().join("Source/Public.md").exists());
+        assert!(directory.path().join("Source/Hidden.md").exists());
+        server.stop();
+    }
+}
+
+#[test]
+fn folder_delete_rechecks_a_previously_empty_folder_and_bounds_request_bodies() {
+    let directory = TempDir::new("http-folder-delete-stale-empty");
+    std::fs::create_dir_all(directory.path().join("Empty")).expect("folder");
+    let server = TestServer::authenticated(vec![vault(&directory, "personal", "Personal")]);
+    let route = "/api/v1/vaults/personal/folders";
+    assert_eq!(server.get(route).1, r#"{"folders":["Empty"]}"#);
+    directory.write("Empty/New.md", "# Arrived after listing\n");
+    for (body, status) in [
+        (r#"{"path":"Empty"}"#.to_string(), "409"),
+        (
+            serde_json::json!({"path":"x".repeat(9000)}).to_string(),
+            "413",
+        ),
+    ] {
+        let headers = format!(
+            "{}Content-Type: application/json\r\nContent-Length: {}\r\n",
+            server.default_headers,
+            body.len()
+        );
+        let response = server.request("DELETE", route, &headers, &body);
+        assert!(response.0.contains(status), "{response:?}");
+    }
+    assert!(directory.path().join("Empty/New.md").exists());
+    server.stop();
+}

@@ -9,6 +9,9 @@ use mb_core::{Access, NotePath, Role, Username};
 
 use crate::{Error, Vault};
 
+mod folder_delete;
+pub use folder_delete::FolderDeleteError;
+
 #[cfg(target_os = "linux")]
 mod directory;
 #[cfg(target_os = "linux")]

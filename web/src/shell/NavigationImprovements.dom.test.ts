@@ -11,6 +11,7 @@ import { WorkspaceStore, sessionIds } from "./workspace-store.svelte.js";
 import { createWorkspace } from "./workspace.js";
 import type { OpenNoteSurfaceOptions } from "./note-surface.js";
 import type { createNote } from "./create.js";
+import type { renameFolder } from "./rename.js";
 
 const navigationCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "navigation.css"), "utf8");
 
@@ -24,8 +25,8 @@ const memory = () => {
 };
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
-async function render(options: { chrome?: Pick<Storage, "getItem" | "setItem">; user?: string; mode?: "desktop" | "mobile"; noNotes?: boolean; createNote?: typeof createNote } = {}) {
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {const url=String(input);const path=new URL(url,"http://localhost").searchParams.get("path")??"";return new Response(JSON.stringify(url.includes("/directory?")?{path,folders:path==="Projects"?[{name:"Empty",path:"Projects/Empty"}]:[],files:path==="Projects"?[{name:"raw.md",path:"Projects/raw.md"}]:[]}:url.endsWith("/folders")?{folders:["Empty/Nested","Projects/Empty"]}:[]),{headers:{"content-type":"application/json"}});}));
+async function render(options: { chrome?: Pick<Storage, "getItem" | "setItem">; user?: string; mode?: "desktop" | "mobile"; noNotes?: boolean; createNote?: typeof createNote; renameFolder?: typeof renameFolder } = {}) {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {const url=String(input);const path=new URL(url,"http://localhost").searchParams.get("path")??"";return new Response(JSON.stringify(url.includes("/directory?")?{path,folders:path==="Projects"?[{name:"Empty",path:"Projects/Empty"}]:[],files:path==="Projects"?[{name:"raw.md",path:"Projects/raw.md"}]:[]}:url.endsWith("/folders")?{folders:["Empty/Nested","Projects/Empty"]}:url.endsWith("/trash")?{entries:[]}:[]),{headers:{"content-type":"application/json"}});}));
   const ids = sessionIds();
   const store = new WorkspaceStore({ initial: createWorkspace("personal", ids), ids });
   const catalog = new NoteCatalog({ vault: "personal", load: async () => ({ kind: "ok", notes: options.noNotes ? [] : [{ path: "Projects/raw.md", title: "Readable heading", conflicts: 0 }] }), replica: async () => undefined });
@@ -33,7 +34,7 @@ async function render(options: { chrome?: Pick<Storage, "getItem" | "setItem">; 
   const target = document.createElement("div");
   document.body.append(target);
   const opened: string[] = [];
-  const app = mount(Workspace, { target, props: { createNote: options.createNote, home: true, store, catalog, bookmarks, session: { user: options.user ?? "alice", vault: "personal" }, mode: options.mode ?? "desktop", chrome: options.chrome ?? memory(), open: async (options: OpenNoteSurfaceOptions) => { opened.push(options.bootstrap?.note ?? ""); return { destroy: async () => undefined }; } } });
+  const app = mount(Workspace, { target, props: { renameFolder: options.renameFolder, createNote: options.createNote, home: true, store, catalog, bookmarks, session: { user: options.user ?? "alice", vault: "personal" }, mode: options.mode ?? "desktop", chrome: options.chrome ?? memory(), open: async (options: OpenNoteSurfaceOptions) => { opened.push(options.bootstrap?.note ?? ""); return { destroy: async () => undefined }; } } });
   await flush();
   return { target, store, opened, teardown: () => unmount(app) };
 }
@@ -180,5 +181,46 @@ it("omits mobile resizing handles and closes navigation after opening folder con
     button(view.target, "Open in main panel")?.click(); await flush();
     expect(view.target.querySelector(".folder-contents h1")?.textContent).toBe("Empty");
     expect(view.target.querySelector<HTMLElement>("#sidebar-left")?.hidden).toBe(true);
+  } finally { await view.teardown(); }
+});
+
+
+it("redirects the current folder view when its folder is renamed", async () => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  const rename = vi.fn(async (_vault: string, _from: string, to: string) => ({ ok: { to, notes: 0, references: 0 } }));
+  const view = await render({ renameFolder: rename });
+  try {
+    view.store.open("Projects/raw.md"); await flush();
+    button(view.target, "Folder actions for Projects")?.click(); await flush();
+    button(view.target, "Open in main panel")?.click(); await flush();
+    button(view.target, "Folder actions for Projects")?.click(); await flush();
+    button(view.target, "Rename")?.click(); await flush();
+    const input = view.target.querySelector<HTMLInputElement>('dialog[aria-label="Rename folder"] input');
+    if (input === null) throw new Error("missing rename prompt");
+    input.value = "Renamed"; input.dispatchEvent(new Event("input", { bubbles: true })); await flush();
+    input.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await flush();
+    expect(view.target.querySelector(".folder-contents h1")?.textContent).toBe("Renamed");
+    expect(view.store.activeTab?.note).toBe("Renamed/raw.md");
+    expect(rename).toHaveBeenCalledWith("personal", "Projects", "Renamed");
+  } finally { await view.teardown(); }
+});
+
+it("closes the current folder view and descendant tabs after folder deletion", async () => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  const view = await render();
+  const request = globalThis.fetch;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => options?.method === "DELETE" ? new Response(null, { status: 204 }) : String(input).endsWith("/trash") ? new Response(JSON.stringify({ entries: [] })) : request(input, options)));
+  try {
+    view.store.open("Projects/raw.md"); await flush();
+    button(view.target, "Folder actions for Projects")?.click(); await flush();
+    button(view.target, "Open in main panel")?.click(); await flush();
+    button(view.target, "Folder actions for Projects")?.click(); await flush();
+    button(view.target, "Delete")?.click(); await flush();
+    const input = view.target.querySelector<HTMLInputElement>('dialog[aria-label="Delete folder"] input');
+    if (input === null) throw new Error("missing delete prompt");
+    input.value = "Projects"; input.dispatchEvent(new Event("input", { bubbles: true })); await flush();
+    input.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await flush(); await flush();
+    expect(view.target.querySelector(".folder-contents")).toBeNull();
+    expect(view.store.tabs).toEqual([]);
   } finally { await view.teardown(); }
 });

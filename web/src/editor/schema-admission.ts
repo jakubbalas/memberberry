@@ -114,7 +114,7 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 /** Checks wire attributes against their actual schema declarations before PM can default/drop them. */
-function validateAttributes(value: unknown): void {
+export function validateAttributes(value: unknown): void {
   const node = object(value);
   const type = node["type"];
   if (typeof type !== "string") throw new SchemaRefreshRequired();

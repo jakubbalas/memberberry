@@ -159,7 +159,7 @@ export function mountBlockHandles(options: BlockHandlesOptions): BlockHandles {
     grip.setAttribute("aria-label", next.label); grip.title = `${next.label} (drag or open actions)`;
     menu.setAttribute("aria-label", next.label); syncControls(); schedule();
   };
-  const selection = mountBlockSelection({ editor, panel, mover, rect: unitRect, dragging: () => drag !== undefined, changed: next => { if (next) show(next); else refresh(); } });
+  const selection = mountBlockSelection({ editor, panel, mover, canInteract, rect: unitRect, dragging: () => drag !== undefined, changed: next => { if (next) show(next); else refresh(); } });
   const refresh = (): void => {
     if (destroyed || applying || handingOff) return;
     if (selection.selecting()) { group.hidden = true; close(); return; }

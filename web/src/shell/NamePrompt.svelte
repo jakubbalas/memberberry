@@ -32,6 +32,8 @@
     readonly busy?: boolean | undefined;
     /** Note/folder names offer Unicode suggestions; tag prompts opt out. */
     readonly emoji?: boolean | undefined;
+    /** Requires an exact typed match for destructive confirmation. */
+    readonly requiredName?: string | undefined;
     /** A refusal from the server, or from the client's own check of the typed name. */
     readonly error?: string | undefined;
     /** Shown above the buttons when the action reaches further than the thing named. */
@@ -51,6 +53,7 @@
     initial,
     busy = false,
     emoji = true,
+    requiredName,
     error,
     warning,
     confirm = "Rename",
@@ -123,7 +126,7 @@
 
   function submit(event: Event): void {
     event.preventDefault();
-    if (busy) return;
+    if (busy || (requiredName !== undefined && name !== requiredName)) return;
     onsubmit(name);
   }
 </script>
@@ -133,6 +136,7 @@
   aria-label={title}
   bind:this={dialog}
   onclose={ondismiss}
+  oncancel={(event) => { if (busy) event.preventDefault(); }}
   onclick={(event) => {
     if (event.target === dialog) ondismiss();
   }}
@@ -186,7 +190,7 @@
       <button type="button" class="rename-cancel" onclick={ondismiss} disabled={busy}>
         Cancel
       </button>
-      <button type="submit" class="rename-confirm" disabled={busy}>
+      <button type="submit" class="rename-confirm" disabled={busy || (requiredName !== undefined && name !== requiredName)}>
         {busy ? confirming : confirm}
       </button>
     </div>
