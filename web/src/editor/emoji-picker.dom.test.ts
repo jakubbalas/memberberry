@@ -27,6 +27,29 @@ const choices: readonly EmojiChoice[] = [
 ];
 
 describe("emoji picker", () => {
+  it("opens a file picker for individual images and ZIPs, including after a folder import", () => {
+    const toolbar = document.createElement("div");
+    const picker = mountEmojiPicker(fakeEditor().editor, toolbar, [], { vault: "vault" });
+    const input = toolbar.querySelector<HTMLInputElement>(".emoji-import-controls input");
+    if (input === null) throw new Error("import input missing");
+    const selections: boolean[] = [];
+    vi.spyOn(input, "click").mockImplementation(() => { selections.push(input.hasAttribute("webkitdirectory")); });
+    const buttons = [...toolbar.querySelectorAll<HTMLButtonElement>(".emoji-import-controls button")];
+    const files = buttons.find((button) => button.textContent === "Import custom emoji");
+    const folder = buttons.find((button) => button.textContent === "Import emoji folder");
+    files?.click();
+    folder?.click();
+    files?.click();
+    expect(selections).toEqual([false, true, false]);
+    expect(input.accept.split(",")).toEqual(expect.arrayContaining([".zip", "image/png"]));
+    expect(input.multiple).toBe(true);
+    picker.destroy();
+    files?.click();
+    folder?.click();
+    expect(selections).toHaveLength(3);
+    vi.restoreAllMocks();
+  });
+
   it("loads once on demand and preserves a query typed while loading", async () => {
     let release: (entries: readonly EmojiChoice[]) => void = () => undefined;
     const pending = new Promise<readonly EmojiChoice[]>((resolve) => { release = resolve; });
@@ -179,6 +202,26 @@ describe("emoji picker", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    { name: "cancelled selection", files: [], message: "" },
+    { name: "unsupported file", files: [new File(["text"], "notes.txt", { type: "text/plain" })], message: "No supported, non-empty emoji images found." },
+    { name: "empty image", files: [new File([], "empty.png", { type: "image/png" })], message: "No supported, non-empty emoji images found." },
+  ])("does not upload a $name", async ({ files, message }) => {
+    const toolbar = document.createElement("div");
+    const status = document.createElement("div");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const picker = mountEmojiPicker(fakeEditor().editor, toolbar, [], { vault: "vault", status });
+    const input = toolbar.querySelector<HTMLInputElement>(".emoji-import-controls input");
+    if (input === null) throw new Error("import input missing");
+    Object.defineProperty(input, "files", { configurable: true, value: files });
+    input.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(status.textContent).toBe(message));
+    expect(fetchMock).not.toHaveBeenCalled();
+    picker.destroy();
+    vi.unstubAllGlobals();
+  });
+
   it("uploads a Slack export with its alias in the manifest", async () => {
     const { editor } = fakeEditor();
     const toolbar = document.createElement("div");
@@ -199,6 +242,7 @@ describe("emoji picker", () => {
     ];
     Object.defineProperty(input, "files", { configurable: true, value: files });
     toolbar.querySelector<HTMLButtonElement>("[aria-label='Import a local Slack emoji export']")?.click();
+    expect(input.hasAttribute("webkitdirectory")).toBe(true);
     input.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { manifest: { emoji: Array<{ aliases: string[] }> } };

@@ -24,6 +24,48 @@ async function openWorkspace(page: import("@playwright/test").Page): Promise<voi
   await expect(page.locator(EDITOR).first()).toBeVisible();
 }
 
+test("quick find alignment follows the editor through sidebar resizing and collapse", async ({ page }, info) => {
+  await openWorkspace(page);
+  const find = page.getByRole("button", { name: "Quick find", exact: true });
+  const check = async () => {
+    const [search, main] = await Promise.all([find.boundingBox(), page.locator(".workspace-main").boundingBox()]);
+    if (!search || !main) throw new Error("missing quick find or editor panel");
+    if (info.project.name === "desktop") {
+      expect(Math.abs(search.x + search.width / 2 - (main.x + main.width / 2)), "Quick find is centered over the editor panel").toBeLessThanOrEqual(1);
+    }
+    for (const selector of [".topbar-brand", ".topbar-vault", ".topbar-end", '.sidebar-toggle[data-side="left"]']) {
+      const control = await page.locator(selector).boundingBox();
+      if (!control) throw new Error(`missing ${selector}`);
+      expect(search.x + search.width <= control.x + 1 || search.x >= control.x + control.width - 1, `Quick find does not overlap ${selector}`).toBe(true);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+    await expect(find).toBeInViewport();
+  };
+  await check();
+  await page.screenshot({ path: info.outputPath("quick-find-aligned.png") });
+  if (info.project.name === "desktop") {
+    for (const width of [1280, 1024]) {
+      await page.setViewportSize({ width, height: 800 });
+      for (const side of ["Context", "Navigation"]) {
+        const divider = page.getByRole("separator", { name: `Resize ${side}`, exact: true });
+        await divider.focus();
+        await divider.press("End");
+        await check();
+        const opposite = side === "Context" ? "Navigation" : "Context";
+        await page.getByRole("button", { name: `Hide ${opposite}`, exact: true }).click();
+        await check();
+        await page.getByRole("button", { name: `Show ${opposite}`, exact: true }).click();
+        await divider.press("Home");
+      }
+    }
+    await page.getByRole("button", { name: "Hide Navigation", exact: true }).click();
+    await page.getByRole("button", { name: "Hide Context", exact: true }).click();
+    await check();
+  }
+  await find.click();
+  await expect(page.getByRole("combobox", { name: "Open a note" })).toBeFocused();
+});
+
 test("spans the window at the top, above the panels and the document", async ({ page }) => {
   await openWorkspace(page);
 

@@ -316,25 +316,31 @@ function mountEmojiImporter(
 ): { element: HTMLElement; destroy(): void } {
   const controls = document.createElement("div");
   controls.className = "emoji-import-controls";
-  const button = importButton("Import custom emoji", "Import custom emoji from a folder or ZIP file");
+  const button = importButton("Import custom emoji", "Import custom emoji from images or ZIP files");
+  const folderButton = importButton("Import emoji folder", "Import custom emoji from a folder");
   const slackButton = importButton("Import Slack export", "Import a local Slack emoji export");
   const manageButton = importButton("Manage custom packs", "Manage vault custom emoji packs");
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ".zip,image/gif,image/jpeg,image/png,image/webp";
   input.multiple = true;
-  input.setAttribute("webkitdirectory", "");
   input.hidden = true;
   const management = document.createElement("div");
   management.className = "emoji-pack-management";
   management.hidden = true;
-  controls.append(button, slackButton, manageButton, input, management);
+  controls.append(button, folderButton, slackButton, manageButton, input, management);
   const setStatus = (message: string): void => {
     if (options.status !== undefined) options.status.textContent = message;
   };
-  let mode: "folder" | "slack" = "folder";
-  const onButton = (): void => { mode = "folder"; input.click(); };
-  const onSlackButton = (): void => { mode = "slack"; input.click(); };
+  let mode: "images" | "slack" = "images";
+  const onButton = (): void => {
+    mode = "images";
+    // why: directory selection disables individual images and ZIPs in the native chooser.
+    input.removeAttribute("webkitdirectory");
+    input.click();
+  };
+  const onFolderButton = (): void => { mode = "images"; input.setAttribute("webkitdirectory", ""); input.click(); };
+  const onSlackButton = (): void => { mode = "slack"; input.setAttribute("webkitdirectory", ""); input.click(); };
   const onManageButton = (): void => {
     management.hidden = !management.hidden;
     if (!management.hidden) void loadManagedPacks();
@@ -390,7 +396,7 @@ function mountEmojiImporter(
     onDeleted(pack);
     setStatus(`Deleted ${pack} emoji pack.`);
   };
-  const importEmojiFiles = async (files: readonly File[], importMode: "folder" | "slack"): Promise<void> => {
+  const importEmojiFiles = async (files: readonly File[], importMode: "images" | "slack"): Promise<void> => {
     try {
       const sources = await readEmojiImport(files);
       const existing = new Set(getChoices().flatMap((choice) => [choice.shortcode, ...(choice.aliases ?? [])]));
@@ -429,6 +435,7 @@ function mountEmojiImporter(
     }
   };
   button.addEventListener("click", onButton);
+  folderButton.addEventListener("click", onFolderButton);
   slackButton.addEventListener("click", onSlackButton);
   manageButton.addEventListener("click", onManageButton);
   input.addEventListener("change", onChange);
@@ -436,6 +443,7 @@ function mountEmojiImporter(
     element: controls,
     destroy: () => {
       button.removeEventListener("click", onButton);
+      folderButton.removeEventListener("click", onFolderButton);
       slackButton.removeEventListener("click", onSlackButton);
       manageButton.removeEventListener("click", onManageButton);
       input.removeEventListener("change", onChange);

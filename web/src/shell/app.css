@@ -733,21 +733,23 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .topbar {
   grid-area: topbar;
   z-index: 4;
-  display: flex;
+  display: grid;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: var(--space-4);
+  column-gap: 0;
   min-width: 0;
-  padding: 0 var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface-canvas);
 }
 .topbar-side { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.topbar-start { grid-column: 1 / 3; grid-row: 1; justify-self: start; padding-left: var(--space-3); }
+/* why: inheriting the workspace tracks follows real sidebar sizes without duplicating
+   their state or measuring layout in JavaScript. Side controls may span an empty track. */
+.topbar-center { grid-column: 2; grid-row: 1; display: flex; justify-content: center; min-width: 0; container-type: inline-size; pointer-events: none; }
 .topbar-brand { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: var(--space-4); min-width: var(--touch-target-min); min-height: var(--touch-target-min); padding: 0 var(--space-3); border-radius: var(--radius-sm); color: var(--text-primary); text-decoration: none; font: var(--weight-bold) var(--text-sm)/var(--leading-flat) var(--font-ui); }
 .topbar-brand .mb-icon { color: var(--accent-primary); }
 .topbar-brand:hover { background: var(--surface-hover); }
-/* Pushed right even when the middle is empty, so the bar's shape does not depend on whether
-   a note happens to be open. */
-.topbar-end { margin-left: auto; }
+.topbar-end { grid-column: 2 / 4; grid-row: 1; justify-self: end; padding-right: var(--space-3); }
 
 .topbar-vault {
   display: flex;
@@ -770,6 +772,9 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .topbar-vault-caret { width: var(--space-5); height: var(--space-5); color: var(--text-muted); }
 
 .topbar-find {
+  /* why: the alignment wrapper spans the editor column, including collapsed-side controls;
+     only the actual button may intercept pointer events. */
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -784,6 +789,12 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
   transition: border-color var(--motion-quick), color var(--motion-quick);
 }
 .topbar-find:hover { border-color: var(--accent-primary); color: var(--text-primary); }
+/* A narrow editor column leaves only room for the labelled search icon between the
+   session controls, especially when the opposite sidebar is wide and this one is closed. */
+@container (max-width: 767.98px) {
+  .topbar-find { min-width: var(--control-height); justify-content: center; padding: 0; }
+  .topbar-find-label, .topbar-kbd { display: none; }
+}
 .topbar-kbd {
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
@@ -809,6 +820,13 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
   cursor: pointer;
 }
 .theme-select:hover { border-color: var(--border-subtle); background: var(--surface-note); }
+
+@media (min-width: 768px) and (max-width: 1199.98px) {
+  .topbar-brand span { display: none; }
+  .topbar-start { gap: var(--space-1); }
+  .topbar-vault { gap: var(--space-2); padding-inline: var(--space-2); }
+  .theme-select { max-width: 8rem; }
+}
 
 /* ---------------------------------------------------------------- sidebars */
 
@@ -1167,6 +1185,9 @@ button:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visib
     grid-template-areas: "topbar" "main";
     grid-template-columns: minmax(0, 1fr);
   }
+  .topbar { display: flex; gap: var(--space-2); padding-inline: var(--space-3); }
+  .topbar-start, .topbar-end { padding: 0; }
+  .topbar-center { flex: 0 0 var(--touch-target-min); margin-left: auto; }
   .sidebar-frame { position: absolute; z-index: 3; top: var(--topbar-height); bottom: 0; grid-area: auto; }
   .sidebar-frame[data-side="left"] { left: 0; }
   .sidebar-frame[data-side="right"] { right: 0; }

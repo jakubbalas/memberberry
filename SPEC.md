@@ -2193,7 +2193,11 @@ vault switcher, quick find, and appearance.
 - **Quick find is the §8.4 command, not a second implementation.** The button dispatches
   `memberberry:palette` (`palette.ts`) and `CommandCenter` opens the quick switcher on it, so
   the keystroke and the control are one command. The bar writes the keystroke the way this
-  platform writes it.
+  platform writes it. On desktop the control is centered above the main editor area using
+  the workspace's actual grid tracks, following sidebar resize/collapse without layout
+  measurements in JavaScript. Narrow editor columns show the labelled search icon to avoid
+  colliding with session controls; mobile retains a 44px search target between the identity
+  and appearance controls. The alignment wrapper does not intercept other controls' clicks.
 - **Two surfaces, and that is the whole depth model.** Chrome is `--surface-canvas` and the
   document is `--surface-note`. The note was a card — a bordered, rounded, shadowed panel
   inside a pane that is already a frame — so a split drew four nested rectangles before a
@@ -3426,6 +3430,9 @@ and history all remain strictly per-vault (A22).
 }
 ```
 
+- **Image upload:** the picker's **Import custom emoji** opens a file chooser for one or
+  more PNG, GIF, JPEG or WebP images, or `.zip` archives. **Import emoji folder** opens a
+  separate directory chooser; selecting files must never require directory selection.
 - **Bulk upload:** drag a folder or `.zip`; filenames become shortcodes
   (`party-parrot.gif` → `:party-parrot:`). Collisions prompt rename-or-overwrite.
 - The management API accepts a bounded JSON upload containing the manifest and base64 image

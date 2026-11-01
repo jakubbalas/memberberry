@@ -62,7 +62,7 @@
 </script>
 
 <header class="topbar">
-  <div class="topbar-side">
+  <div class="topbar-side topbar-start">
     <button
       type="button"
       class="icon-button sidebar-toggle"
@@ -94,9 +94,7 @@
     </a>
   </div>
 
-  <div class="topbar-side topbar-end">
-    <InstallControl />
-    <UpdateControl reload={onupdate} />
+  <div class="topbar-center">
     {#if onfind !== undefined}
       <button type="button" class="topbar-find" aria-label="Quick find" onclick={() => onfind()}>
         <Icon name="search" />
@@ -104,7 +102,11 @@
         {#if findHint !== undefined}<kbd class="topbar-kbd">{findHint}</kbd>{/if}
       </button>
     {/if}
+  </div>
 
+  <div class="topbar-side topbar-end">
+    <InstallControl />
+    <UpdateControl reload={onupdate} />
     <ThemePicker {vault} {vaultTheme} storage={themeStorage} />
 
     <button
