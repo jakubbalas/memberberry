@@ -3,7 +3,7 @@
 const IMAGE_EXTENSIONS = new Set(["gif", "jpg", "jpeg", "png", "webp"]);
 const SHORTCODE = /^[a-z0-9][a-z0-9_+-]*$/;
 
-/** One image ready to upload under its filename-derived shortcode. */
+/** One image ready to upload with a suggested shortcode. */
 export interface EmojiImportAsset {
   readonly shortcode: string;
   readonly file: string;
@@ -15,12 +15,12 @@ export async function readEmojiImport(file: File): Promise<EmojiImportAsset | un
   return planEmojiImport(file.name, new Uint8Array(await file.arrayBuffer()));
 }
 
-/** Validates one image filename and derives its shortcode. Empty images are rejected. */
+/** Validates an image and suggests a shortcode. Unicode-only names use an editable fallback. */
 export function planEmojiImport(name: string, bytes: Uint8Array): EmojiImportAsset | undefined {
   const extension = name.split(".").pop()?.toLowerCase() ?? "";
   const stem = name.slice(0, Math.max(0, name.length - extension.length - 1));
-  const shortcode = normalizeShortcode(stem);
-  if (!IMAGE_EXTENSIONS.has(extension) || shortcode === undefined || bytes.length === 0) return undefined;
+  const shortcode = normalizeShortcode(stem) ?? "custom-emoji";
+  if (!IMAGE_EXTENSIONS.has(extension) || bytes.length === 0) return undefined;
   return { shortcode, file: `${shortcode}.${extension}`, bytes };
 }
 

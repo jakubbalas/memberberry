@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { existsSync, readFileSync } from "node:fs";
-import { Editor } from "@tiptap/core";
+import { Editor, type Extensions } from "@tiptap/core";
 import { NodeSelection } from "@tiptap/pm/state";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { applyUpdate, Doc, encodeStateAsUpdate, XmlElement, XmlText } from "yjs";
@@ -11,15 +11,16 @@ import { mountBlockHandles, type BlockHandlesOptions } from "./block-handles.js"
 import { Awareness } from "y-protocols/awareness";
 import { createConnectionStatus } from "./collaboration.js";
 import { SCHEMA_VERSION } from "./schema-revision.js";
+import { emojiAutocomplete } from "./emoji-autocomplete.js";
 
 const cleanups: (() => void)[] = [];
 beforeAll(async () => { await load(readFileSync("src/wasm/mb_bg.wasm")); });
 afterEach(() => { for (const close of cleanups.splice(0)) close(); vi.restoreAllMocks(); });
-async function open(markdown = "# Title\n\nAlpha\n\nBeta\n\nGamma\n", extra: Partial<Omit<BlockHandlesOptions, "editor" | "document" | "panel">> = {}) {
+async function open(markdown = "# Title\n\nAlpha\n\nBeta\n\nGamma\n", extra: Partial<Omit<BlockHandlesOptions, "editor" | "document" | "panel">> = {}, extensions: Extensions = []) {
   const panel = document.createElement("section"); panel.className = "note-pane";
   const surface = document.createElement("div"); panel.append(surface); document.body.append(panel);
   const ydoc = new Doc(); applyUpdate(ydoc, await updateFromMarkdown(markdown));
-  const editor = new Editor({ element: surface, editorProps: { handleScrollToSelection: () => true }, extensions: [...createMemberberryExtensions(await schema()), createYjsBinding(ydoc.getXmlFragment(PROSEMIRROR_ROOT))] });
+  const editor = new Editor({ element: surface, editorProps: { handleScrollToSelection: () => true }, extensions: [...createMemberberryExtensions(await schema()), ...extensions, createYjsBinding(ydoc.getXmlFragment(PROSEMIRROR_ROOT))] });
   const handles = mountBlockHandles({ editor, document: ydoc, panel, noteKey: `fixture-${ydoc.clientID}`, ...extra });
   cleanups.push(() => { handles.destroy(); editor.destroy(); ydoc.destroy(); panel.remove(); });
   const start = (index: number) => { let pos = 0; for (let i = 0; i < index; i++) pos += editor.state.doc.child(i).nodeSize; return pos; };
@@ -33,6 +34,23 @@ async function open(markdown = "# Title\n\nAlpha\n\nBeta\n\nGamma\n", extra: Par
   const saved = () => markdownFromUpdate(encodeStateAsUpdate(ydoc));
   return { editor, ydoc, panel, handles, start, control, saved, group, menu };
 }
+it("lets Escape dismiss emoji suggestions without selecting the block", async () => {
+  const f = await open("# Title\n\nBody\n", {}, [emojiAutocomplete([
+    { shortcode: "tada", glyph: "🎉", category: "activities", aliases: [], supportsSkinTone: false },
+  ])]);
+  f.editor.commands.setTextSelection(f.start(1) + 1);
+  f.editor.view.focus();
+  f.editor.commands.insertContent(":t");
+  expect(document.querySelector(".emoji-autocomplete")).not.toBeNull();
+  const before = f.editor.state.selection;
+  f.editor.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  expect(f.control("Clear block selection").hidden).toBe(true);
+  expect(f.editor.state.selection.eq(before)).toBe(true);
+  expect(document.querySelector(".emoji-autocomplete")).toBeNull();
+  f.editor.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  expect(f.control("Clear block selection").hidden).toBe(false);
+});
+
 it("offers a collapsed-caret keyboard/touch menu outside content, moves real Yjs text and returns editing focus", async () => {
   const f = await open(); f.editor.commands.setTextSelection(f.start(2) + 3);
   const key = new KeyboardEvent("keydown", { key: "F10", altKey: true, shiftKey: true, bubbles: true, cancelable: true });

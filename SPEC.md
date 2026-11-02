@@ -3432,9 +3432,13 @@ and history all remain strictly per-vault (A22).
 ```
 
 - **Image upload:** the picker's **Import custom emoji** opens a file chooser for one PNG,
-  GIF, JPEG or WebP image. The filename supplies its shortcode
-  (`party-parrot.gif` → `:party-parrot:`); collisions, including existing aliases, prompt
-  for a unique replacement or cancellation. There is no pack-name prompt, pack-management
+  GIF, JPEG or WebP image. Every import prompts for an editable **Emoji shortcode**,
+  prefilled from the filename (`party-parrot.gif` → `party-parrot`). Names without an ASCII
+  shortcode suggestion use `custom-emoji`, which the user can replace (A34). Entered names
+  use the same normalization as filenames, including lowercase and optional surrounding
+  colons. Cancellation, empty/invalid names and collisions with existing shortcodes or
+  aliases upload nothing; invalid/duplicate names report that a unique shortcode is required.
+  There is no pack-name prompt, pack-management
   panel, folder import or ZIP import. Cancelled, multiple, unsupported or empty selections
   upload nothing. Errors are reported without adding a picker entry, and upload can be retried.
 - **Storage compatibility:** each image uses a generated `emoji-<UUID>` storage identifier
@@ -3469,7 +3473,13 @@ autocompletes to 🎉; `:partyparrot:` stays textual. Both are picker-inserted i
 ### 11.4 Picker
 
 Grid with search, frequently-used, category tabs, **Custom section first**, skin-tone
-selector. Inline editor autocomplete on `:` + 2 characters, fuzzy, keyboard-navigable. Mobile:
+selector. Inline editor autocomplete opens on `:` plus one following character at the start
+of a text block or after whitespace, showing up to eight catalog entries. A bare colon
+keeps it closed; deleting the query back to just `:` closes it. Additional characters filter
+by fuzzy shortcode/alias matching. Arrow keys
+select, Enter or Tab inserts, and Escape dismisses without changing the typed text or
+selecting its containing block. The list stays within the viewport, flips above the caret
+when needed and scrolls if available height is limited. Mobile:
 bottom sheet. Clicking or tapping outside the picker closes it without consuming the
 outside interaction. Escape closes an open picker even after focus moves elsewhere,
 returns focus to its Emoji toggle, and consumes that key so other Escape actions do not
@@ -5424,6 +5434,8 @@ to replace a product comparison with a description. Do not reverse these without
 | A31 | Browser-first vault creation | *"When I first start the app, I should be directed on how to create a new vault and I should do it over the UI"* / *"I should be able to make new Vaults from the UI too"* | First-account setup and guided vault creation live in the browser; administrators can add managed Markdown vaults without restarting. CLI registration remains optional for existing folders (§6.1, §6.8). |
 | A32 | Slack emoji export import | *"remove \"Import Slack Export\" functionality, doesn't seem like it makes much sense to have it"* | Remove the dedicated Slack export importer; custom emoji import uses image filenames through image, folder and ZIP upload (§11.2). |
 | A33 | Emoji import UI | *"remove that functinality altogether. Single emoji import is just fine"* | Remove pack management and bulk import from the picker. Import one image with a filename-derived shortcode and no pack-name prompt; preserve existing storage and authorization (§11.2). Supersedes A32's folder/ZIP UI scope. |
+| A34 | Custom shortcode selection | *"I want to be able to manually select (or overwrite) the custom shortcode"* | Prompt for the shortcode on every image import, using the filename only as an editable suggestion (§11.2). Supersedes A33's automatic filename-derived shortcode. |
+| A35 | Inline emoji trigger | *"lets leave it on 1 character"* | Open inline suggestions after one character following the colon, such as `:s`. A bare colon keeps them closed (§11.4). |
 
 ---
 

@@ -3,6 +3,7 @@ import type { Editor } from "@tiptap/core";
 import { Selection } from "@tiptap/pm/state";
 import { allowsClipboardTransaction, readClipboardSlice, writeClipboardSlice } from "./clipboard.js";
 import type { BlockMover, BlockMoveTarget, BlockMoveToken } from "./block-move.js";
+import { hasEmojiSuggestions } from "./emoji-autocomplete.js";
 
 interface Rect { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number }
 interface Options {
@@ -220,7 +221,8 @@ export function mountBlockSelection(options: Options): BlockSelection {
       return;
     }
     if (event.altKey) return;
-    if (event.key === "Escape" && !selected && panel.querySelector(".block-catalog:not([hidden])")) return;
+    // why: an open chooser owns its first Escape; selecting the block here would make Backspace delete it.
+    if (event.key === "Escape" && !selected && (hasEmojiSuggestions(editor) || panel.querySelector(".block-catalog:not([hidden])"))) return;
     if (event.key === "Escape") {
       if (selected || marquee) { event.preventDefault(); clear(); }
       else if (editor.state.selection.empty) {

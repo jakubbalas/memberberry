@@ -2,6 +2,7 @@
 
 import { Editor } from "@tiptap/core";
 import { describe, expect, it } from "vitest";
+import fc from "fast-check";
 
 import { createMemberberryExtensions } from "./schema.js";
 import { emojiAutocomplete, emojiSuggestions } from "./emoji-autocomplete.js";
@@ -27,6 +28,13 @@ function editor(): Editor {
 }
 
 describe("editor commands", () => {
+  it("returns the first eight catalog entries in order for an empty emoji query", () => {
+    fc.assert(fc.property(fc.array(fc.string(), { maxLength: 30 }), (names) => {
+      const catalog = names.map((shortcode) => ({ shortcode, glyph: "🎉", aliases: [], category: "activities", supportsSkinTone: false }));
+      expect(emojiSuggestions(catalog, "")).toEqual(catalog.slice(0, 8));
+    }), { seed: 20261102, numRuns: 100 });
+  });
+
   it("ranks inline emoji suggestions by a fuzzy shortcode query", () => {
     const catalog = [
       { shortcode: "partyparrot", glyph: "🦜", category: "animals", aliases: [], supportsSkinTone: false },
@@ -35,7 +43,24 @@ describe("editor commands", () => {
     expect(emojiSuggestions(catalog, "ppr").map((entry) => entry.shortcode)).toEqual(["partyparrot"]);
   });
 
-  it("opens inline suggestions and replaces the shortcode with a literal glyph", () => {
+  it.each([":", " :", "😀 :", "مرحبا :"])("keeps inline suggestions closed for a bare colon in %j", (text) => {
+    const view = new Editor({
+      element: document.createElement("div"),
+      extensions: [...createMemberberryExtensions(CONTRACT), emojiAutocomplete([
+        { shortcode: "tada", glyph: "🎉", category: "activities", aliases: [], supportsSkinTone: false },
+      ])],
+    });
+    document.body.append(view.view.dom);
+    try {
+      view.view.dom.focus();
+      view.commands.insertContent(text);
+      expect(document.querySelector(".emoji-autocomplete")).toBeNull();
+    } finally {
+      view.destroy();
+    }
+  });
+
+  it.each([" :t", "😀 :t", "مرحبا :t", ":t", ":ta"])("opens inline suggestions after one character in %j and inserts a literal glyph", (text) => {
     const view = new Editor({
       element: document.createElement("div"),
       extensions: [...createMemberberryExtensions(CONTRACT), emojiAutocomplete([
@@ -44,10 +69,10 @@ describe("editor commands", () => {
     });
     document.body.append(view.view.dom);
     view.view.dom.focus();
-    view.commands.insertContent(":ta");
+    view.commands.insertContent(text);
     expect(document.querySelector(".emoji-autocomplete-item")?.textContent).toContain(":tada:");
     view.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    expect(view.getText()).toBe("🎉");
+    expect(view.getText()).toBe(`${text.slice(0, text.lastIndexOf(":"))}🎉`);
     view.destroy();
   });
 

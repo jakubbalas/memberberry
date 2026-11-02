@@ -61,6 +61,7 @@ const SCRATCH_PURPOSES: readonly string[] = [
   "task-toggle",
   "emoji-picker",
   "emoji-import",
+  "emoji-colon",
   "outline",
   // A rename moves a file and rewrites another one, so it needs both ends to itself (§6.6).
   "rename",

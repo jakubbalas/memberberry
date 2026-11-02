@@ -1,48 +1,60 @@
 # Handoff
 
-## Current state (2026-11-01)
+## Current state (2026-11-02)
 
-The emoji picker now offers only single-image import. Pack management, folder/ZIP import,
-pack-name prompts, bulk-import helpers and their CSS are removed. The unused fflate
-package is removed from package.json and the lockfile. Filenames supply shortcodes; name
-collisions still ask for a unique replacement or cancellation. SPEC §11.2 and A33 record
-this scope.
+Inline emoji suggestions now open after one character following a colon, such as :t, at
+the start of a text block or after whitespace. A bare colon stays closed; deleting back to
+the bare colon closes suggestions. SPEC §11.4 and A35 record the user's final preference.
+The shared empty-query helper still serves immediate-colon name dialogs without ranking
+the whole catalog. Escape yields to the inline chooser before block selection can consume
+it; a second Escape still performs normal block selection. The popup is kept within the
+viewport, flips above the caret when needed and scrolls when height is limited.
 
-Each image uses the existing authorized upload endpoint with a generated internal storage
-ID. Existing manifests, artwork, shared/vault resolution and administrative API remain
-compatible. No server or read path changed. Pending file reads cannot upload after teardown;
-active requests are aborted and late results cannot update a destroyed picker.
+The same change includes manual shortcode selection: every valid image import prompts
+with a filename-derived suggestion (custom-emoji for Unicode/punctuation-only names).
+Cancellation, invalid names and existing shortcode/alias collisions upload nothing.
+SPEC §11.2/A34 records it. Replacing existing artwork remains unconfirmed.
 
-Picker outside/Escape dismissal and Slack importer removal are committed as 79a7217.
-PNG chooser and quick-find fixes are in 65db429; formatting shortcuts are in 83d5e42.
-No push, deployment or live-vault operation was performed for the current change.
+Single-image import and pack-UI removal are committed as 60d7b20. Existing storage,
+artwork, resolution, authorization and administrative API remain compatible. No server/read
+path changed, and no push, deployment or live-vault operation was performed here.
 
 ## Verification
 
-- 49 focused emoji-import/picker tests pass. They cover the single-file chooser, no
-  pack-name prompt, successive imports with distinct storage IDs, supported formats,
-  cancelled/multiple/empty/unsupported selections, collisions with existing aliases,
-  replacement cancellation/validation, HTTP 403/409/500 and network/read failures,
-  retry, teardown and late responses. Dismissal/focus behavior remains covered.
-- Encoding properties use seed 20261101 (100 cases), plus a 65,537-byte chunk-boundary
-  case. Tests for removed pack-management and bulk-import behavior were removed.
-  The new single-import UI regressions failed against the previous controls first.
-- Rebuilt emoji-import.spec.ts passes all four desktop/mobile cases against the real,
-  disposable server. It verifies single-file selection, no management/bulk buttons or
-  pack-name prompt, PNG decoding, reload from storage, Markdown shortcode persistence,
-  outside mouse click/mobile tap, Escape inside/outside and toggle keyboard activation.
-  Chromium verifies chooser configuration; it does not operate the native macOS dialog.
-- Production frontend build, TypeScript/Svelte typecheck (zero errors/warnings),
-  make token-check and diff checks pass. Existing dependency directive and large-chunk
-  build warnings remain. Browser verification uses an escalated loopback test server.
+- 145 focused tests pass across commands, block handles, emoji import/picker and name
+  prompts. They cover bare-colon suppression, one-letter queries, whitespace, Unicode/RTL
+  context,
+  glyph insertion, empty-query order/limit properties, first/second Escape ownership,
+  manual shortcode selection, validation, failure/retry and teardown.
+- The latest bare-colon suppression regression failed against the immediately-opening
+  implementation before setting the one-character threshold. The mounted Escape regression
+  failed when the block-selection capture handler stole the key. The
+  mobile bounds regression first measured the popup extending to x=431px in a 412px viewport.
+- Existing seeded Unicode normalization and byte-encoding properties remain green. The
+  new empty-query prefix/order property uses seed 20261102 (100 cases).
+- The rebuilt focused browser spec passes all six desktop/mobile cases. It checks
+  bare-colon suppression, opening on one character, closing after deleting back to a colon,
+  Escape without deleting/selecting text, viewport bounds and literal glyph persistence, alongside
+  manual image shortcode import and toolbar dismissal. The initial runs found the Escape
+  and mobile clipping bugs. A later test assumption about the ambiguous fuzzy query tad
+  was corrected to the full tada shortcode; explicit bare-colon/one-letter checks remain.
+  Final desktop/mobile screenshots were visually inspected; the menu is fully visible.
+- Host benchmarks run over all 1,814 vendored entries, including one-character ranking.
+  The shared empty-query shortcut retains before/after measurements from the prior iteration.
+  Logs exclude DOM/layout and device input-to-paint;
+  they do not establish SPEC §21's physical-device budgets.
+- Production frontend build, TypeScript/Svelte typecheck (zero errors/warnings), token
+  contract and diff checks pass. Existing dependency directive and large-chunk warnings
+  remain. Browser verification uses a disposable loopback server with sandbox escalation.
 - Prior quick-find verification: 55 TopBar/Workspace DOM tests, 14 desktop/mobile browser
   cases, inspected screenshots and token checks passed. Prior formatting-shortcut
   verification includes 166 focused tests, properties, browser cases and DOM benchmarks.
 
-Fresh logs: local/debug/single-emoji-{before,tests,typecheck,build,browser,tokens}.log.
-Screenshots: web/test-results/emoji-import-an-individual-be562-ted-as-a-Markdown-shortcode-{desktop,mobile}/png-imported.png.
-Older logs remain under local/debug/emoji-dismiss-*, remove-slack-*, quick-find-* and
-format-shortcuts-*. Browser test-results are overwritten by subsequent runs.
+Fresh logs: local/debug/one-char-emoji-{before,tests,typecheck,build,browser,bench}.log.
+Prior colon-emoji logs include Escape/mobile-position regressions and token checks.
+Inline screenshots are the focused spec's colon-suggestions.png files in web/test-results/.
+Older emoji-shortcode, single-emoji, emoji-dismiss, remove-slack, quick-find and
+format-shortcuts logs remain in local/debug/. Browser test-results are overwritten by runs.
 
 Full make check and local coverage measurement are deferred, not requested.
 Full make e2e remains user-run and pending; no full-suite result is claimed.
@@ -50,6 +62,8 @@ Server/leak suites were not rerun: existing authorization and read paths are unc
 
 ## Next and open work
 
+- Whether “overwrite” also means replacing existing emoji artwork is awaiting clarification.
+  The current change edits the filename suggestion; duplicate protection remains (SPEC §11.2).
 - Run manual full E2E with make e2e. Full checks and
   coverage remain deferred until requested. Physical-device/performance acceptance and
   fresh remote CI remain unconfirmed.

@@ -132,6 +132,7 @@ describe("emoji picker", () => {
     beforeEach(() => {
       fetchMock.mockReset();
       vi.stubGlobal("fetch", fetchMock);
+      vi.spyOn(window, "prompt").mockImplementation((_message, initial) => initial ?? null);
       toolbar = document.createElement("div");
       status = document.createElement("div");
       picker = mountEmojiPicker(fakeEditor().editor, toolbar, [{ shortcode: "taken", glyph: "", custom: true, category: "custom", aliases: ["wave"] }], { vault: "vault", status });
@@ -160,10 +161,10 @@ describe("emoji picker", () => {
       expect(toolbar.querySelectorAll(".emoji-picker-item")).toHaveLength(2);
     });
 
-    it.each([null, "taken", "---"])("does not upload after a cancelled or invalid replacement %s", async (replacement) => {
+    it.each([null, "", "taken", "---", ":wave:"])("does not upload after a cancelled, invalid or duplicate shortcode %s", async (replacement) => {
       vi.spyOn(window, "prompt").mockReturnValue(replacement);
       vi.spyOn(window, "alert").mockImplementation(() => undefined);
-      select(new File(["image"], "wave.png"));
+      select(new File(["image"], "fresh.png"));
       await vi.waitFor(() => expect(status.textContent).toBe("Import cancelled."));
       expect(fetchMock).not.toHaveBeenCalled();
       expect(button.disabled).toBe(false);
@@ -373,13 +374,13 @@ describe("emoji picker", () => {
     picker.destroy();
   });
 
-  it("imports one image without a pack-name prompt and adds it to the picker", async () => {
+  it("imports a manually chosen shortcode with the filename as its suggestion", async () => {
     const { editor } = fakeEditor();
     const toolbar = document.createElement("div");
     const status = document.createElement("div");
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
-    const prompt = vi.spyOn(window, "prompt").mockReturnValue(null);
+    const prompt = vi.spyOn(window, "prompt").mockReturnValueOnce(":Party Popper:").mockReturnValueOnce("fresh");
     const picker = mountEmojiPicker(editor, toolbar, [], { vault: "vault", status });
     document.body.append(toolbar);
     const input = toolbar.querySelector<HTMLInputElement>(".emoji-import-controls input");
@@ -391,19 +392,19 @@ describe("emoji picker", () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { manifest: { name: string; emoji: Array<{ shortcode: string }> } };
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/v1/vaults/vault/emoji/packs/${body.manifest.name}`);
     expect(body.manifest.name).toMatch(/^emoji-[0-9a-f-]{36}$/);
-    expect(body.manifest.emoji).toEqual([{ shortcode: "wave", file: "wave.png", aliases: [] }]);
-    expect(prompt).not.toHaveBeenCalled();
-    expect(status.textContent).toBe("Imported :wave:.");
+    expect(body.manifest.emoji).toEqual([{ shortcode: "party-popper", file: "party-popper.png", aliases: [] }]);
+    expect(prompt).toHaveBeenCalledExactlyOnceWith("Emoji shortcode", "wave");
+    expect(status.textContent).toBe("Imported :party-popper:.");
     toolbar.querySelector<HTMLButtonElement>(".emoji-picker-toggle")?.click();
     expect(toolbar.querySelectorAll(".emoji-picker-item")).toHaveLength(1);
-    expect(toolbar.querySelector(".emoji-picker-item")?.getAttribute("aria-label")).toBe(":wave:");
+    expect(toolbar.querySelector(".emoji-picker-item")?.getAttribute("aria-label")).toBe(":party-popper:");
     Object.defineProperty(input, "files", { configurable: true, value: [new File([new Uint8Array([7])], "fresh.png", { type: "image/png" })] });
     input.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     const second = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as { manifest: { name: string } };
     expect(second.manifest.name).not.toBe(body.manifest.name);
     expect(toolbar.querySelectorAll(".emoji-picker-item")).toHaveLength(2);
-    expect(prompt).not.toHaveBeenCalled();
+    expect(prompt).toHaveBeenNthCalledWith(2, "Emoji shortcode", "fresh");
     picker.destroy();
     vi.restoreAllMocks();
   });
@@ -448,7 +449,7 @@ describe("emoji picker", () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { manifest: { emoji: Array<{ shortcode: string; file: string }> } };
     expect(body.manifest.emoji).toEqual([{ shortcode: "party-bird", file: "party-bird.png", aliases: [] }]);
-    expect(prompt).toHaveBeenCalledExactlyOnceWith("Shortcode :parrot: already exists. Enter a replacement shortcode, or Cancel.");
+    expect(prompt).toHaveBeenCalledExactlyOnceWith("Emoji shortcode", "parrot");
     picker.destroy();
     vi.restoreAllMocks();
   });

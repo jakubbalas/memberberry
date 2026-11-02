@@ -11,14 +11,28 @@ describe("single emoji import", () => {
     expect(normalizeShortcode("snow+day_2")).toBe("snow+day_2");
   });
 
+  it("normalizes manually entered Unicode shortcodes idempotently", () => {
+    const input = fc.array(fc.integer({ min: 0, max: 0x10ffff }), { maxLength: 64 }).map((points) => String.fromCodePoint(...points));
+    fc.assert(fc.property(input, (value) => {
+      const normalized = normalizeShortcode(value);
+      if (normalized === undefined) return;
+      expect(normalized).toMatch(/^[a-z0-9][a-z0-9_+-]*$/);
+      expect(normalizeShortcode(normalized)).toBe(normalized);
+    }), { seed: 20261102, numRuns: 100 });
+  });
+
   it.each(["PNG", "gif", "jpg", "jpeg", "webp"])("plans one %s image from its filename", (extension) => {
     expect(planEmojiImport(`Party Parrot.${extension}`, new Uint8Array([7]))).toEqual({
       shortcode: "party-parrot", file: `party-parrot.${extension.toLowerCase()}`, bytes: new Uint8Array([7]),
     });
   });
 
-  it.each(["pack.zip", "emoji.json", "picture.svg", "---.png", "🎉.png", "image"])("rejects unsupported or nameless image %s", (name) => {
+  it.each(["pack.zip", "emoji.json", "picture.svg", "image"])("rejects unsupported image %s", (name) => {
     expect(planEmojiImport(name, new Uint8Array([7]))).toBeUndefined();
+  });
+
+  it.each(["---.png", "🎉.png", "日本語.png", "مرحبا.png"])("suggests an editable fallback for %s", (name) => {
+    expect(planEmojiImport(name, new Uint8Array([7]))).toEqual({ shortcode: "custom-emoji", file: "custom-emoji.png", bytes: new Uint8Array([7]) });
   });
 
   it("rejects an empty image", () => {

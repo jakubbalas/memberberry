@@ -409,8 +409,7 @@ function importButton(text: string, label: string): HTMLButtonElement {
 }
 
 function resolveName(name: string, used: ReadonlySet<string>): string | undefined {
-  if (!used.has(name)) return name;
-  const replacement = window.prompt(`Shortcode :${name}: already exists. Enter a replacement shortcode, or Cancel.`);
+  const replacement = window.prompt("Emoji shortcode", name);
   if (replacement === null) return undefined;
   const normalized = normalizeShortcode(replacement);
   if (normalized === undefined || used.has(normalized)) {

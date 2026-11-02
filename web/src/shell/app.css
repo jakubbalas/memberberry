@@ -98,7 +98,7 @@ body {
 .emoji-import-controls { display: grid; gap: var(--space-2); }
 .emoji-import-controls .emoji-picker-more { width: 100%; }
 .emoji-import-controls input { display: none; }
-.emoji-autocomplete { position: fixed; z-index: 4; display: grid; min-width: 14rem; max-width: min(24rem, calc(100vw - var(--space-8))); padding: var(--space-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-raised); box-shadow: var(--shadow-md); }
+.emoji-autocomplete { position: fixed; z-index: 4; display: grid; min-width: min(14rem, calc(100vw - var(--space-8))); max-width: min(24rem, calc(100vw - var(--space-8))); overflow-y: auto; padding: var(--space-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-raised); box-shadow: var(--shadow-md); }
 .emoji-autocomplete-item { min-height: var(--touch-target-min); padding: var(--space-2) var(--space-3); border: 0; color: var(--text-primary); background: transparent; font: var(--text-sm)/var(--leading-flat) var(--font-ui); text-align: left; cursor: pointer; }
 .emoji-autocomplete-item[aria-selected="true"], .emoji-autocomplete-item:hover { background: var(--surface-hover); }
 .emoji-autocomplete-item:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-offset)); }
