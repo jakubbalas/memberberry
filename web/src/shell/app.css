@@ -94,6 +94,8 @@ body {
 .emoji-picker-item { min-width: var(--touch-target-min); min-height: var(--touch-target-min); overflow: hidden; border: 1px solid transparent; border-radius: var(--radius-sm); padding: var(--space-1); color: var(--text-primary); background: var(--surface-note); font: var(--text-lg)/var(--leading-flat) var(--font-ui); cursor: pointer; }
 .emoji-picker-item:hover { border-color: var(--accent-primary); }
 .emoji-picker-item img { display: block; width: var(--space-6); height: var(--space-6); margin: auto; object-fit: contain; }
+.custom-emoji-image { display: inline-block; width: 1em; height: 1em; object-fit: contain; vertical-align: middle; }
+.custom-emoji-legacy-source { display: none; }
 .emoji-picker-more { grid-column: 1 / -1; min-height: var(--control-height); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--surface-note); cursor: pointer; }
 .emoji-import-controls { display: grid; gap: var(--space-2); }
 .emoji-import-controls .emoji-picker-more { width: 100%; }
@@ -125,7 +127,7 @@ body {
 .standalone-note .tiptap blockquote > :first-child { margin-top: 0; }
 .editor-surface .tiptap blockquote > :last-child,
 .standalone-note .tiptap blockquote > :last-child { margin-bottom: 0; }
-.editor-surface .tiptap img { display: block; max-width: 100%; height: auto; }
+.editor-surface .tiptap img:not(.custom-emoji-image) { display: block; max-width: 100%; height: auto; }
 .image-editor-dialog { width: min(46rem, calc(100% - var(--space-8))); max-width: 100%; max-height: calc(100vh - var(--space-8)); overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-6); color: var(--text-primary); background: var(--surface-raised); box-shadow: var(--shadow-lg); }
 .image-editor-dialog::backdrop { background: color-mix(in srgb, var(--text-primary) 30%, transparent); }
 .image-editor-dialog h2 { margin: 0 0 var(--space-5); font: var(--weight-bold) var(--text-lg)/var(--leading-snug) var(--font-ui); }

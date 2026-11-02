@@ -1,5 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { emojiCatalog } from "../emoji-catalog.js";
+import { publishCustomEmoji } from "../custom-emoji.js";
 import { emojiUploadBody, normalizeShortcode, readEmojiImport } from "./emoji-import.js";
 
 /** One item shown by the emoji picker. */
@@ -208,7 +209,7 @@ export function mountEmojiPicker(
         }
         item.addEventListener("click", () => {
           if (canInsert !== undefined && (!canInsert() || insertion?.doc !== editor.state.doc)) { close(); return; }
-          const content = choice.custom ? `:${choice.shortcode}:` : `${choice.glyph}${choice.supportsSkinTone === true ? selectedTone : ""}`;
+          const content = choice.custom ? { type: "emoji", attrs: { shortcode: choice.shortcode } } : `${choice.glyph}${choice.supportsSkinTone === true ? selectedTone : ""}`;
           if (insertion === undefined) editor.chain().focus().insertContent(content).run();
           else editor.chain().focus().insertContentAt({ from: insertion.from, to: insertion.to }, content).run();
           recentShortcodes = [choice.shortcode, ...recentShortcodes.filter((shortcode) => shortcode !== choice.shortcode)].slice(0, MAX_RECENTS);
@@ -371,6 +372,10 @@ function mountEmojiImporter(
       });
       if (!response.ok) throw new Error(response.status === 409 ? "That emoji already exists. Choose another shortcode." : "Emoji import failed.");
       if (destroyed) return;
+      publishCustomEmoji(options.vault, {
+        shortcode, glyph: "", category: storageId, custom: true, aliases: [], supportsSkinTone: false,
+        imageUrl: `/api/v1/vaults/${encodeURIComponent(options.vault)}/emoji/${storageId}/${encodeURIComponent(resolved.file)}`,
+      });
       onImported([{
         shortcode,
         glyph: "",

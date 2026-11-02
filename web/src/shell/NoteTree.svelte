@@ -13,6 +13,7 @@
   import { emojiCatalog } from "../emoji-catalog.js";
   import type { EmojiEntry } from "../notes.js";
   import { emojiName } from "./name-emoji.js";
+  import EmojiText from "./EmojiText.svelte";
   import Icon from "./Icon.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import type { Bookmarks } from "./bookmarks.svelte.js";
@@ -300,7 +301,7 @@
               oncontextmenu={(event) => openContextMenu(event, entry.path)}
               onkeydown={(event) => { if (isMenuKey(event)) openContextMenu(event, entry.path); }}
             >
-              <span class="tree-label">{entry.label}</span>
+              <span class="tree-label"><EmojiText text={entry.label} /></span>
               {#if entry.conflicts > 0}
                 <span class="tree-conflicts" aria-label={conflictLabel(entry.conflicts)}>
                   {entry.conflicts}
@@ -402,12 +403,12 @@
                 <Icon name="chevron-right" variant="tree-twisty" />
                 <Icon name={row.expanded === true ? "folder-open" : "folder"} variant="tree-folder" />
               {:else if icon(row) !== undefined && icon(row) !== null}
-                {icon(row)}
+                <EmojiText text={icon(row) ?? ""} />
               {:else}
                 <Icon name="note" />
               {/if}
             </span>
-            <span class="tree-label">{label(row)}</span>
+            <span class="tree-label"><EmojiText text={label(row)} /></span>
             {#if row.node.kind === "folder"}
               <!-- Shift+F10 / ContextMenu opens this without a tab stop per folder. -->
               <button type="button" tabindex="-1" class="icon-button folder-actions row-actions" aria-label={`Folder actions for ${row.node.name}`} title="Folder actions (Shift+F10)" aria-haspopup="menu" aria-expanded={context?.path === row.node.path && context.source === "tree"} onclick={(event) => openContextMenu(event, row.node.path, "folder")}><Icon name="more" /></button>

@@ -2,66 +2,66 @@
 
 ## Current state (2026-11-02)
 
-Inline emoji suggestions now open after one character following a colon, such as :t, at
-the start of a text block or after whitespace. A bare colon stays closed; deleting back to
-the bare colon closes suggestions. SPEC §11.4 and A35 record the user's final preference.
-The shared empty-query helper still serves immediate-colon name dialogs without ranking
-the whole catalog. Escape yields to the inline chooser before block selection can consume
-it; a second Escape still performs normal block selection. The popup is kept within the
-viewport, flips above the caret when needed and scrolls when height is limited.
+Custom emoji now render in the authenticated app instead of appearing only in the picker.
+The fix covers note bodies/titles, inline suggestions, navigation/tab/folder/home/search/
+outline labels and authenticated transclusions. Existing schema atoms and aliases use the
+same authorized artwork as the picker. Images scale with surrounding text. This is
+committed; SPEC §11.1–11.4 records behavior and remaining rendering limits.
 
-The same change includes manual shortcode selection: every valid image import prompts
-with a filename-derived suggestion (custom-emoji for Unicode/punctuation-only names).
-Cancellation, invalid names and existing shortcode/alias collisions upload nothing.
-SPEC §11.2/A34 records it. Replacing existing artwork remains unconfirmed.
+The old picker inserted custom codes as plain text, which Rust correctly escaped. New picker
+and autocomplete selections and completed typed codes use the existing emoji atom and keep
+canonical Markdown shortcodes. Older escaped/text replicas get view-only decorations;
+rendering never migrates or rewrites their CRDT content. Code stays literal, unavailable
+artwork falls back to a readable shortcode, and title/outline extraction retains emoji names.
 
-Single-image import and pack-UI removal are committed as 60d7b20. Existing storage,
-artwork, resolution, authorization and administrative API remain compatible. No server/read
-path changed, and no push, deployment or live-vault operation was performed here.
+Artwork lookup is nonblocking and shared only while authenticated views subscribe. Accepted
+imports update mounted views; last teardown aborts and drops the ephemeral catalog. Existing
+E22 routes still filter the catalog/images server-side. No server route or schema format
+changed and no new enforcement point was added. No live-vault write, push or deployment
+was performed. The prior shortcode/autocomplete work is committed as deefe71.
 
 ## Verification
 
-- 145 focused tests pass across commands, block handles, emoji import/picker and name
-  prompts. They cover bare-colon suppression, one-letter queries, whitespace, Unicode/RTL
-  context,
-  glyph insertion, empty-query order/limit properties, first/second Escape ownership,
-  manual shortcode selection, validation, failure/retry and teardown.
-- The latest bare-colon suppression regression failed against the immediately-opening
-  implementation before setting the one-character threshold. The mounted Escape regression
-  failed when the block-selection capture handler stole the key. The
-  mobile bounds regression first measured the popup extending to x=431px in a 412px viewport.
-- Existing seeded Unicode normalization and byte-encoding properties remain green. The
-  new empty-query prefix/order property uses seed 20261102 (100 cases).
-- The rebuilt focused browser spec passes all six desktop/mobile cases. It checks
-  bare-colon suppression, opening on one character, closing after deleting back to a colon,
-  Escape without deleting/selecting text, viewport bounds and literal glyph persistence, alongside
-  manual image shortcode import and toolbar dismissal. The initial runs found the Escape
-  and mobile clipping bugs. A later test assumption about the ambiguous fuzzy query tad
-  was corrected to the full tada shortcode; explicit bare-colon/one-letter checks remain.
-  Final desktop/mobile screenshots were visually inspected; the menu is fully visible.
-- Host benchmarks run over all 1,814 vendored entries, including one-character ranking.
-  The shared empty-query shortcut retains before/after measurements from the prior iteration.
-  Logs exclude DOM/layout and device input-to-paint;
-  they do not establish SPEC §21's physical-device budgets.
-- Production frontend build, TypeScript/Svelte typecheck (zero errors/warnings), token
-  contract and diff checks pass. Existing dependency directive and large-chunk warnings
-  remain. Browser verification uses a disposable loopback server with sandbox escalation.
-- Prior quick-find verification: 55 TopBar/Workspace DOM tests, 14 desktop/mobile browser
-  cases, inspected screenshots and token checks passed. Prior formatting-shortcut
-  verification includes 166 focused tests, properties, browser cases and DOM benchmarks.
+- Focused custom/editor/rendering tests (190) and related shell/schema tests (149, with
+  overlap) pass. Cases cover
+  canonical/legacy text, titles, aliases, unknown/failed images, code exclusion, unchanged
+  JSON/content, incremental decoration updates, teardown, lookup races and malformed/denied
+  catalogs. Seeded catalog URL/alias properties use seed 20261102 (100 cases).
+- All six focused desktop/mobile browser cases pass and their final screenshots were
+  visually reviewed. They verify a 3d-printer shortcode: existing escaped text,
+  title and new picker/typed/autocomplete insertions render; legacy escaping remains intact;
+  new atoms persist as unescaped canonical shortcodes; images survive reload and appear in
+  navigation/tabs. The one-character trigger and outside/Escape dismissal remain covered.
+- The initial browser regression failed against the old text-only renderer. A separate
+  title-extraction regression failed before adding schema leaf text. Screenshot QA also
+  found the general media-image CSS overriding inline artwork; it has a browser layout check.
+  A separate regression proves clicking emoji artwork does not offer the media-image editor.
+- Focused server checks pass: both custom_emoji_route HTTP cases (including unreadable-vault
+  denial) and the E22 leak test. Frontend denial tests also reject catalog data on 403/404/500.
+- Production frontend build, TypeScript/Svelte typecheck and design-token checks pass.
+  Existing dependency directive and large-chunk warnings remain. Browser listeners require
+  sandbox escalation and use only the disposable test vault on 9012.
+- Host benchmarks compare the new rendering extension against a baseline editor over 1,000
+  blocks and measure full-catalog autocomplete. They exclude layout, network and physical
+  Android input-to-paint; device performance acceptance remains unconfirmed.
+- Bundle-only verification accepts the existing recorded breach: this local build measures
+  about 905 KB against the 500 KB target (allowance 950 KiB). This is not a clean budget pass;
+  the current local WASM build is unoptimized. No allowance was changed.
 
-Fresh logs: local/debug/one-char-emoji-{before,tests,typecheck,build,browser,bench}.log.
-Prior colon-emoji logs include Escape/mobile-position regressions and token checks.
-Inline screenshots are the focused spec's colon-suggestions.png files in web/test-results/.
-Older emoji-shortcode, single-emoji, emoji-dismiss, remove-slack, quick-find and
-format-shortcuts logs remain in local/debug/. Browser test-results are overwritten by runs.
+Fresh logs: local/debug/custom-emoji-{before,title-before,inline-before,media-before,tests,related-tests,
+http,leak,build,browser,typecheck,tokens,bench,bundle}.log. Browser screenshots are
+web/test-results/emoji-import-an-individual-be562-ted-as-a-Markdown-shortcode-{desktop,mobile}/custom-emoji-in-note.png.
+Old single-emoji/emoji-shortcode/one-char-emoji/colon-emoji logs remain in local/debug/.
+Browser test-results are overwritten by subsequent runs.
 
 Full make check and local coverage measurement are deferred, not requested.
 Full make e2e remains user-run and pending; no full-suite result is claimed.
-Server/leak suites were not rerun: existing authorization and read paths are unchanged.
 
 ## Next and open work
 
+- Anonymous shares and CLI HTML still show readable custom shortcodes. They need their own
+  rendering/authorization integration; authenticated vault image URLs must not be reused
+  for anonymous shares. The authenticated app and its standalone HTML export render artwork.
 - Whether “overwrite” also means replacing existing emoji artwork is awaiting clarification.
   The current change edits the filename suggestion; duplicate protection remains (SPEC §11.2).
 - Run manual full E2E with make e2e. Full checks and
@@ -73,8 +73,7 @@ Server/leak suites were not rerun: existing authorization and read paths are unc
 - Open in main panel cannot load folder contents on this Mac: its shallow-directory
   endpoint is Linux-only and returns 404. Sidebar Rename/Delete has real-server browser
   verification; folder-content state transitions have DOM coverage. See SPEC §6.1.
-- Custom emoji artwork in names remains unsupported; custom shortcodes stay textual.
-  General external rich HTML import remains outside the clipboard scope.
+- General external rich HTML import remains outside the clipboard scope.
 - Other connected clients/bookmarks do not follow folder renames; only the initiating
   workspace updates. Other durable feature limits remain in SPEC.md.
 - The macOS directory_path_included warning remains; its callers are Linux-only. Historical

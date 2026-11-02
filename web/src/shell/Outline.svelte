@@ -13,6 +13,7 @@
   not keyboard-operable at all (§8.2).
 -->
 <script lang="ts">
+  import EmojiText from "./EmojiText.svelte";
   import type { OutlineView } from "./outline.svelte.js";
   import { headingLabel, outlineKeyAction } from "./outline.js";
 
@@ -153,7 +154,7 @@
           ondragend={enddrag}
         >
           <span class="tree-icon" aria-hidden="true">H{heading.level}</span>
-          <span class="tree-label">{headingLabel(heading)}</span>
+          <span class="tree-label"><EmojiText text={headingLabel(heading)} /></span>
         </div>
       {/each}
     </div>

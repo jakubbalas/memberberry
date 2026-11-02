@@ -3401,6 +3401,11 @@ the note or prevent editing. The picker reports loading/failure, preserves a que
 while loading, and cancels pending requests when its editor is destroyed. Loading failures
 may be retried by explicitly closing and reopening the picker.
 
+Artwork needed by rendered custom shortcodes or inline suggestions loads independently,
+without delaying editor readiness. Active authenticated views share an ephemeral per-vault
+catalog from E22; the last subscriber aborts pending work and drops that catalog. A successful
+image import updates mounted views immediately and cannot be lost to an older catalog response.
+
 ### 11.2 Custom emoji
 
 Custom emoji support **server-level sharing across vaults** (A21), with optional vault-local
@@ -3467,8 +3472,26 @@ base64. A dead app leaves `:partyparrot:` in the text: exactly what Slack leaves
 perfectly readable.
 
 Unicode emoji **store the literal glyph** (🎉), not the shortcode, because a glyph renders
-everywhere including in a plain text editor — better under C2. Typing `:tada:`
-autocompletes to 🎉; `:partyparrot:` stays textual. Both are picker-inserted identically.
+everywhere including in a plain text editor — better under C2. Typing `:tada:` autocompletes
+to 🎉. Custom picker selections, autocomplete selections and completed typed shortcodes
+insert the existing `emoji` schema node and serialize as `:partyparrot:`, without accidental
+Markdown escaping or persisted image URLs.
+
+The authenticated app displays known custom emoji as inline artwork in note bodies/titles,
+navigation and tab labels/icons, folder contents, search/home/outline labels and transclusions.
+Canonical names and aliases resolve case-insensitively through E22's authorized images.
+Title/outline text extraction and plain-text copying retain the shortcode rather than
+dropping the image node. Unknown names, failed catalogs or image failures show the readable
+shortcode. Code blocks and inline code remain literal.
+
+Older replicas may contain plain-text shortcodes inserted by the old picker, including
+escaped Markdown. They receive view-only image decorations outside code; rendering never
+rewrites their CRDT or Markdown, so no concurrent migration can duplicate note content.
+Changed legacy text is rescanned within affected blocks, not across the whole note per key.
+
+Standalone HTML exported from the authenticated rendered note embeds its emoji images like
+other media (§19.2). Anonymous share rendering and CLI HTML rendering currently keep the
+readable shortcodes; they do not reuse authenticated vault image URLs.
 
 ### 11.4 Picker
 
@@ -3486,13 +3509,18 @@ returns focus to its Emoji toggle, and consumes that key so other Escape actions
 also fire. Escape has no picker effect while it is closed. Picker controls remain usable
 without dismissal, and its toggle can close or reopen it.
 
+Inline suggestions include the authorized custom catalog when it arrives, with image
+previews. Picking a custom suggestion inserts its canonical shortcode as an emoji node;
+Unicode suggestions still insert literal glyphs.
+
 Note/folder naming dialogs offer the offline Unicode catalog immediately on `:`, including
 at the start of a name or after `/` in a nested path. Arrow keys select; Enter inserts the
 literal glyph without submitting the form; the first Escape dismisses suggestions. Pointer
 and touch selection return focus to the name field. Exact-name destructive confirmations
 never autocomplete. Folder labels in the note tree and folder contents resolve recognized
-Unicode shortcodes/aliases for display without rewriting the underlying directory path;
-unknown and custom shortcodes remain literal. No Markdown interpretation is applied to names.
+Unicode shortcodes/aliases and authorized custom artwork for display without rewriting the
+underlying directory path. Unknown names and unavailable artwork remain literal. Name inputs
+remain plain text, and no Markdown interpretation is applied to names.
 
 ---
 

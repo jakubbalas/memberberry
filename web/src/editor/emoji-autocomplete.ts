@@ -2,6 +2,7 @@ import { Extension, type Editor } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 
 import type { EmojiEntry } from "../notes.js";
+import { observeCustomEmoji } from "../custom-emoji.js";
 
 import { emojiSuggestions } from "../emoji-suggestions.js";
 export { emojiSuggestions } from "../emoji-suggestions.js";
@@ -15,7 +16,7 @@ export function hasEmojiSuggestions(editor: Editor): boolean {
 }
 
 /** Adds an offline, keyboard-navigable `:` shortcode menu to a Tiptap editor. */
-export function emojiAutocomplete(catalog: readonly EmojiEntry[]): Extension {
+export function emojiAutocomplete(catalog: readonly EmojiEntry[], vault?: string): Extension {
   return Extension.create({
     name: "memberberryEmojiAutocomplete",
     addProseMirrorPlugins() {
@@ -44,7 +45,7 @@ export function emojiAutocomplete(catalog: readonly EmojiEntry[]): Extension {
           },
         },
         state: {
-          init: () => createAutocompleteState(editor, catalog),
+          init: () => createAutocompleteState(editor, catalog, vault),
           apply: (_transaction, previous) => previous,
         },
         view: (view) => {
@@ -61,8 +62,9 @@ export function emojiAutocomplete(catalog: readonly EmojiEntry[]): Extension {
   });
 }
 
+interface EmojiSuggestion extends EmojiEntry { readonly custom?: true; readonly imageUrl?: string }
 interface AutocompleteState {
-  readonly items: readonly EmojiEntry[];
+  readonly items: readonly EmojiSuggestion[];
   selected: number;
   view?: import("@tiptap/pm/view").EditorView;
   refresh(): void;
@@ -72,8 +74,10 @@ interface AutocompleteState {
   destroy(): void;
 }
 
-function createAutocompleteState(editor: Editor, catalog: readonly EmojiEntry[]): AutocompleteState {
-  let items: readonly EmojiEntry[] = [];
+function createAutocompleteState(editor: Editor, base: readonly EmojiEntry[], vault?: string): AutocompleteState {
+  let catalog: readonly EmojiSuggestion[] = base;
+  let items: readonly EmojiSuggestion[] = [];
+  let unsubscribe: (() => void) | undefined;
   let selected = 0;
   let popup: HTMLDivElement | undefined;
   let queryStart = 0;
@@ -93,6 +97,10 @@ function createAutocompleteState(editor: Editor, catalog: readonly EmojiEntry[])
         state.close();
         return;
       }
+      if (vault !== undefined && unsubscribe === undefined) unsubscribe = observeCustomEmoji(vault, (custom) => {
+        catalog = [...custom, ...base];
+        state.refresh();
+      });
       queryStart = query.from;
       items = emojiSuggestions(catalog, query.text);
       selected = Math.min(selected, Math.max(0, items.length - 1));
@@ -107,7 +115,8 @@ function createAutocompleteState(editor: Editor, catalog: readonly EmojiEntry[])
       const entry = items[index];
       const view = state.view;
       if (entry === undefined || view === undefined) return;
-      editor.chain().focus().insertContentAt({ from: queryStart, to: view.state.selection.from }, entry.glyph).run();
+      const content = entry.custom === true ? { type: "emoji", attrs: { shortcode: entry.shortcode } } : entry.glyph;
+      editor.chain().focus().insertContentAt({ from: queryStart, to: view.state.selection.from }, content).run();
       state.close();
     },
     close: () => {
@@ -115,7 +124,7 @@ function createAutocompleteState(editor: Editor, catalog: readonly EmojiEntry[])
       popup?.remove();
       popup = undefined;
     },
-    destroy: () => state.close(),
+    destroy: () => { unsubscribe?.(); state.close(); },
   };
   return state;
 
@@ -136,6 +145,12 @@ function createAutocompleteState(editor: Editor, catalog: readonly EmojiEntry[])
       button.setAttribute("role", "option");
       button.setAttribute("aria-selected", String(index === selected));
       button.textContent = `${entry.glyph} :${entry.shortcode}:`;
+      if (entry.imageUrl !== undefined) {
+        const image = document.createElement("img");
+        image.src = entry.imageUrl; image.alt = `:${entry.shortcode}:`; image.className = "custom-emoji-image";
+        image.onerror = () => { button.textContent = `:${entry.shortcode}:`; };
+        button.prepend(image);
+      }
       button.addEventListener("mousedown", (event) => event.preventDefault());
       button.addEventListener("click", () => state.choose(index));
       popup?.append(button);

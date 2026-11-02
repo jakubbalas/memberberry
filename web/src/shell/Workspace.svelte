@@ -11,7 +11,8 @@
   editor is the thing this shell exists to hold.
 -->
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { setContext, untrack } from "svelte";
+  import { EMOJI_VAULT_CONTEXT, type EmojiVaultContext } from "../custom-emoji.js";
   import { rememberLaunch } from "../pwa/launch.js";
   import { WORKSPACE_REFRESH } from "../pwa/events.js";
 
@@ -169,6 +170,7 @@
   }: Props = $props();
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
+  setContext<EmojiVaultContext>(EMOJI_VAULT_CONTEXT, { get vault() { return session?.vault; } });
   const folderBrowser = new FolderBrowser();
   let folderVaultLabel = $state<string | undefined>();
   $effect(() => {

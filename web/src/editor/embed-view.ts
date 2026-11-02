@@ -20,6 +20,7 @@
  */
 
 import { Extension } from "@tiptap/core";
+import { hydrateCustomEmoji } from "../custom-emoji.js";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { DOMSerializer } from "@tiptap/pm/model";
@@ -69,6 +70,7 @@ export class EmbedBlock {
   /** The note this embed resolved to, once it has. What jump-to-source opens. */
   private note: string | undefined;
   private destroyed = false;
+  private stopEmoji: (() => void) | undefined;
 
   constructor(
     private readonly context: EmbedContext,
@@ -108,6 +110,7 @@ export class EmbedBlock {
   /** Releases the request, the listeners and every nested embed. */
   destroy(): void {
     this.destroyed = true;
+    this.stopEmoji?.();
     this.aborter.abort();
     this.toggle.removeEventListener("click", this.onToggle);
     this.body.removeEventListener("click", this.onBodyClick);
@@ -129,6 +132,8 @@ export class EmbedBlock {
   }
 
   private render(outcome: EmbedOutcome): void {
+    this.stopEmoji?.();
+    this.stopEmoji = undefined;
     this.dom.dataset["embedState"] = outcome.state;
     this.bar.replaceChildren();
     this.body.replaceChildren();
@@ -188,6 +193,7 @@ export class EmbedBlock {
    */
   private fill(html: string): void {
     this.body.innerHTML = html;
+    this.stopEmoji = hydrateCustomEmoji(this.body, this.context.vault);
     // why: the ids come from `^block-id` anchors, and this is a *copy* of the target's
     // blocks on a page that may already contain the original — or two embeds of it. A
     // duplicated id makes `#^anchor` ambiguous and points every label that uses one at

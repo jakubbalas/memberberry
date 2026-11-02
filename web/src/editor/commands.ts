@@ -91,11 +91,13 @@ export function emojiInputRules(catalog: readonly EmojiEntry[]): Extension {
     name: "memberberryEmojiInputRules",
     addInputRules() {
       return [new InputRule({
-        find: /:([a-z0-9_+\-]{2,}):(?::(skin-tone-[2-6]):)?$/i,
-        handler: ({ range, match, chain }) => {
+        find: /:([a-z0-9_+\-]+):(?::(skin-tone-[2-6]):)?$/i,
+        handler: ({ range, match, chain, state }) => {
           const glyph = resolveEmojiInput(catalog, match[1], match[2]);
-          if (glyph === undefined) return;
-          chain().insertContentAt({ from: range.from, to: range.to }, glyph);
+          if (glyph !== undefined) chain().insertContentAt({ from: range.from, to: range.to }, glyph);
+          else if (match[1] !== undefined && state.schema.nodes["emoji"] !== undefined) {
+            chain().insertContentAt({ from: range.from, to: range.to }, { type: "emoji", attrs: { shortcode: match[1] } });
+          }
         },
       })];
     },

@@ -1,5 +1,6 @@
 <!-- Full-vault search, exact online or compact-prefix offline (`SPEC.md` §14.3). -->
 <script lang="ts">
+  import EmojiText from "./EmojiText.svelte";
   import type { SearchView } from "./search.svelte.js";
 
   interface Props {
@@ -39,7 +40,7 @@
         {#each view.answer.hits as hit}
           <li>
             <button type="button" class="search-result" data-path={hit.path} onclick={() => onopen(hit.path)}>
-              <span class="tree-label">{hit.title ?? hit.path}</span>
+              <span class="tree-label"><EmojiText text={hit.title ?? hit.path} /></span>
               <span class="search-path">{hit.path}</span>
               <span class="search-context">{hit.context}</span>
             </button>

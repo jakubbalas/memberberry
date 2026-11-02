@@ -24,6 +24,7 @@ import { lineBreak } from "./line-break.js";
 import { pdfViews } from "./pdf-view.js";
 import { emojiInputRules } from "./commands.js";
 import { emojiAutocomplete } from "./emoji-autocomplete.js";
+import { customEmojiViews } from "./custom-emoji.js";
 import { documentLinks } from "./links.js";
 import { dateMentions } from "./date-mentions.js";
 import { documentLinkAutocomplete, type DocumentLinkLoader } from "./document-link-autocomplete.js";
@@ -127,7 +128,8 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
         memberberryInputRules,
         dateMentions,
         emojiInputRules(catalog),
-        emojiAutocomplete(catalog),
+        emojiAutocomplete(catalog, options.media?.vault),
+        ...(options.media === undefined ? [] : [customEmojiViews(options.media.vault)]),
         documentLinks(options.noteId),
         documentLinkAutocomplete(options.loadLinkNotes ?? (async () => {
           if (options.embeds === undefined) return [];

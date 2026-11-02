@@ -83,7 +83,7 @@ test("the emoji picker dismisses on outside clicks and Escape, including after f
 
 test("an individual PNG can be selected, imported, rendered and inserted as a Markdown shortcode", async ({ page }, info) => {
   const note = scratchNote("emoji-import", info.project.name);
-  const shortcode = `mb-import-${info.project.name}`;
+  const shortcode = `3d-printer-${info.project.name}`;
   await signIn(page);
   await page.goto(`/v/personal/${note}`);
   const editor = page.locator(".editor-surface .tiptap");
@@ -123,6 +123,42 @@ test("an individual PNG can be selected, imported, rendered and inserted as a Ma
   await expect.poll(() => item.locator("img").evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(1);
   await page.screenshot({ path: info.outputPath("png-imported.png") });
   await item.click();
-  await expect.poll(() => readFileSync(join(E2E_VAULT, note), "utf8"), { timeout: 15_000 }).toContain(`:${shortcode}:`);
+  const rendered = editor.locator(`img[alt=":${shortcode}:"]`);
+  await expect(rendered).toHaveCount(3);
+  await expect.poll(() => rendered.evaluateAll((images) => images.every((image) => image instanceof HTMLImageElement && image.naturalWidth === 1))).toBe(true);
+  const body = editor.locator(":scope > p").first();
+  const bounds = await body.boundingBox();
+  if (bounds === null) throw new Error("body paragraph missing");
+  await body.click({ position: { x: bounds.width - 2, y: bounds.height / 2 } });
+  await page.keyboard.type(` :${shortcode}:`);
+  await expect(rendered).toHaveCount(4);
+  await page.keyboard.type(" :3d");
+  const suggestions = page.getByRole("listbox", { name: "Emoji suggestions", exact: true });
+  const customOption = suggestions.getByRole("option").filter({ hasText: `:${shortcode}:` });
+  await expect(customOption).toBeVisible();
+  if (info.project.name === "mobile") await customOption.tap();
+  else await customOption.click();
+  await expect(rendered).toHaveCount(5);
+  await expect.poll(() => readFileSync(join(E2E_VAULT, note), "utf8"), { timeout: 15_000 }).toContain(`:${shortcode}:A note this test may edit.`);
+  expect(readFileSync(join(E2E_VAULT, note), "utf8").split(`\\:${shortcode}:`)).toHaveLength(2);
+  await page.reload();
+  await expect(rendered).toHaveCount(5);
+  const inline = await editor.locator("h1").evaluate((heading) => {
+    const image = heading.querySelector("img");
+    const text = heading.firstChild;
+    if (image === null || text === null) throw new Error("emoji heading is incomplete");
+    const range = heading.ownerDocument.createRange(); range.selectNodeContents(text);
+    const letters = range.getBoundingClientRect(); const artwork = image.getBoundingClientRect();
+    return { display: getComputedStyle(image).display, overlaps: artwork.top < letters.bottom && artwork.bottom > letters.top };
+  });
+  expect(inline).toEqual({ display: "inline-block", overlaps: true });
+  const showNavigation = page.getByRole("button", { name: "Show Navigation", exact: true });
+  if (await showNavigation.isVisible()) await showNavigation.click();
+  const scratchFolder = page.getByRole("tree", { name: "Notes", exact: true }).getByRole("treeitem", { name: "Scratch", exact: true });
+  if (await scratchFolder.getAttribute("aria-expanded") === "false") await scratchFolder.click();
+  await expect(page.locator(`.tree-label img[alt=":${shortcode}:"]`).first()).toBeVisible();
+  if (info.project.name === "mobile") await page.getByRole("button", { name: "Hide Navigation", exact: true }).click();
+  else await expect(page.locator(`.tab-label img[alt=":${shortcode}:"]`)).toBeVisible();
+  await page.screenshot({ path: info.outputPath("custom-emoji-in-note.png") });
 
 });

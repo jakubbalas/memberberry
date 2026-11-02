@@ -12,6 +12,7 @@
   the drawers instead.
 -->
 <script lang="ts">
+  import EmojiText from "./EmojiText.svelte";
   import NotePane from "./NotePane.svelte";
   import TabSheet from "./TabSheet.svelte";
   import type { NoteBootstrap } from "./bootstrap.js";
@@ -93,7 +94,7 @@
       }}
     >
       <span class="mobile-bar-count">{store.tabs.length}</span>
-      <span class="mobile-bar-note">{active === undefined ? "No note open" : titleOf?.(active.note) ?? active.note.split("/").pop()}</span>
+      <span class="mobile-bar-note"><EmojiText text={active === undefined ? "No note open" : titleOf?.(active.note) ?? active.note.split("/").pop() ?? ""} /></span>
     </button>
   </nav>
 </div>

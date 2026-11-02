@@ -140,6 +140,7 @@ const OUTLINE_BODY = [
  * note *this* viewport will rename, or the desktop run rewrites the mobile run's fixture.
  */
 function scratchBody(purpose: string, project: string): string {
+  if (purpose === "emoji-import") return `# Scratch :3d-printer-${project}:\n\nA note this test may edit.\n\nLegacy \\:3d-printer-${project}:\n`;
   if (purpose === "outline") return OUTLINE_BODY;
   if (purpose.startsWith("theme-")) return NOTEBOOK_BODY;
   if (purpose === "rename") {

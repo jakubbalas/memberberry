@@ -17,9 +17,28 @@ import { pdfViews } from "./pdf-view.js";
 import { createMemberberryExtensions } from "./schema.js";
 import { tableRowHandles } from "./table-tools.js";
 import { taskItemView } from "./task-view.js";
+import { customEmojiViews } from "./custom-emoji.js";
 
 const contractPath = resolve(process.cwd(), "../crates/mb-core/schema.json");
 const contract = JSON.parse(readFileSync(contractPath, "utf8")) as unknown;
+
+it("does not offer the media image editor when clicking custom emoji artwork", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify([{ shortcode: "printer", pack: "p", file: "p.png", aliases: [] }]))));
+  const panel = document.createElement("section"); const surface = document.createElement("div"); const status = document.createElement("p");
+  panel.append(surface); document.body.append(panel);
+  const ydoc = new Doc();
+  const editor = new Editor({ element: surface, extensions: [...createMemberberryExtensions(contract), tableRowHandles, customEmojiViews("v")],
+    content: { type: "doc", content: [{ type: "paragraph", content: [{ type: "emoji", attrs: { shortcode: "printer" } }] }] } });
+  const shell = mountEditorShell({ editor, document: ydoc, panel, status, media: { vault: "v" },
+    mediaUploader: { upload: async () => ({ path: "unused" }), flush: async () => undefined, destroy: () => undefined } });
+  try {
+    await vi.waitFor(() => expect(surface.querySelector("img.custom-emoji-image")).not.toBeNull());
+    const control = panel.querySelector<HTMLButtonElement>("[aria-label='Edit selected image']");
+    if (control === null) throw new Error("media image editor control missing");
+    surface.querySelector<HTMLImageElement>("img.custom-emoji-image")?.click();
+    expect(control.hidden).toBe(true);
+  } finally { shell.destroy(); editor.destroy(); ydoc.destroy(); panel.remove(); vi.unstubAllGlobals(); }
+});
 
 it.each(["changed", "readonly"])("does not insert a completed upload into a %s destination", async state => {
   const panel = document.createElement("section"); const surface = document.createElement("div"); const status = document.createElement("p");

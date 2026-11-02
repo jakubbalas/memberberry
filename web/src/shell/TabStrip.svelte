@@ -11,6 +11,7 @@
 -->
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import EmojiText from "./EmojiText.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import { requestRename } from "./rename.js";
   import type { GroupId, Tab, TabGroup } from "./workspace.js";
@@ -141,9 +142,9 @@
       }}
     >
       {#if iconOf?.(tab.note)}
-        <span class="tab-icon" aria-hidden="true">{iconOf(tab.note)}</span>
+        <span class="tab-icon" aria-hidden="true"><EmojiText text={iconOf(tab.note) ?? ""} /></span>
       {/if}
-      <span class="tab-label">{label(tab)}</span>
+      <span class="tab-label"><EmojiText text={label(tab)} /></span>
       <button
         type="button"
         class="tab-close"

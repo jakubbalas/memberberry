@@ -3,6 +3,7 @@
  import { emojiCatalog } from "../emoji-catalog.js";
  import type { EmojiEntry } from "../notes.js";
  import { emojiName } from "./name-emoji.js";
+ import EmojiText from "./EmojiText.svelte";
  import Icon from "./Icon.svelte";
  import NamePrompt from "./NamePrompt.svelte";
  import { FolderBrowser } from "./folder-browser.svelte.js";
@@ -63,7 +64,7 @@
  }
 </script>
 <section class="workspace-home folder-contents" aria-labelledby="folder-heading">
- <header><h1 id="folder-heading" tabindex="-1" bind:this={heading}>{emojiName(name,nameCatalog)}</h1><button type="button" class="icon-button" aria-label="Close folder view" title="Close folder view" onclick={onclose}><Icon name="close" /></button></header>
+ <header><h1 id="folder-heading" tabindex="-1" bind:this={heading}><EmojiText text={emojiName(name,nameCatalog)} {vault} /></h1><button type="button" class="icon-button" aria-label="Close folder view" title="Close folder view" onclick={onclose}><Icon name="close" /></button></header>
  <section class="home-notes" aria-label="Folder contents">
   <button type="button" disabled={browser.listing===undefined||busy} class="folder-row" bind:this={opener} onclick={()=>{++promptIdentity;prompt=true;creationError=undefined;}}><Icon name="folder-plus" /><span>Add folder here</span></button>
   {#if oncreate!==undefined}<button type="button" class="folder-row" disabled={browser.listing===undefined} onclick={oncreate}><Icon name="plus" /><span>New note</span></button>{/if}
@@ -72,8 +73,8 @@
   {:else if browser.error!==""}<p role="alert">{browser.error}</p><button type="button" onclick={()=>{void browser.navigate(vault,path);}}>Refresh folder</button>
   {:else if browser.listing!==undefined}
    {#if browser.listing.folders.length===0}<p>0 folders found</p>{/if}
-   <ul>{#each browser.listing.folders as entry (entry.path)}<li><button type="button" aria-label={`Open folder ${emojiName(entry.name,nameCatalog)}`} onclick={()=>onfolder(entry.path)}><Icon name="folder" /><span>{emojiName(entry.name,nameCatalog)}</span></button></li>{/each}
-   {#each browser.listing.files as entry (entry.path)}<li><button type="button" onclick={()=>onopen(entry.path)}><Icon name="note" /><span>{entry.name}</span></button></li>{/each}</ul>
+   <ul>{#each browser.listing.folders as entry (entry.path)}<li><button type="button" aria-label={`Open folder ${emojiName(entry.name,nameCatalog)}`} onclick={()=>onfolder(entry.path)}><Icon name="folder" /><span><EmojiText text={emojiName(entry.name,nameCatalog)} {vault} /></span></button></li>{/each}
+   {#each browser.listing.files as entry (entry.path)}<li><button type="button" onclick={()=>onopen(entry.path)}><Icon name="note" /><span><EmojiText text={entry.name} {vault} /></span></button></li>{/each}</ul>
   {/if}
  </section>
 </section>

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Editor } from "@tiptap/core";
+import type { Content, Editor } from "@tiptap/core";
 
 import { mountEmojiPicker, mergeEmojiChoices, type EmojiChoice } from "./emoji-picker.js";
 
@@ -11,7 +11,7 @@ function fakeEditor() {
   const editor = {
     chain: () => ({
       focus: () => ({
-        insertContent: (value: string) => {
+        insertContent: (value: Content) => {
           insertContent(value);
           return { run };
         },
@@ -313,8 +313,8 @@ describe("emoji picker", () => {
     ]);
   });
 
-  it("searches, keeps custom entries visible first, and inserts their readable shortcode", () => {
-    const { editor, run } = fakeEditor();
+  it("searches, keeps custom entries first, and inserts a schema emoji atom", () => {
+    const { editor, run, insertContent } = fakeEditor();
     const toolbar = document.createElement("div");
     const picker = mountEmojiPicker(editor, toolbar, choices);
     document.body.append(toolbar);
@@ -328,6 +328,7 @@ describe("emoji picker", () => {
     search.dispatchEvent(new Event("input"));
     toolbar.querySelector<HTMLButtonElement>(".emoji-picker-item")?.click();
     expect(run).toHaveBeenCalled();
+    expect(insertContent).toHaveBeenCalledWith({ type: "emoji", attrs: { shortcode: "partyparrot" } });
     picker.destroy();
     expect(toolbar.querySelector(".emoji-picker-wrap")).toBeNull();
   });

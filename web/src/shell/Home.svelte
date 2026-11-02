@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EmojiText from "./EmojiText.svelte";
   import Icon from "./Icon.svelte";
   import type { NoteCatalog } from "./note-catalog.svelte.js";
 
@@ -31,7 +32,7 @@
           {@const folderEnd = note.path.lastIndexOf("/")}
           <li><button type="button" onclick={() => onopen(note.path)}>
             <Icon name="note" />
-            <span><strong>{#if folderEnd >= 0}<small>{note.path.slice(0, folderEnd)}{" / "}</small>{/if}{note.title ?? note.path.slice(folderEnd + 1).replace(/\.md$/, "")}</strong></span>
+            <span><strong>{#if folderEnd >= 0}<small>{note.path.slice(0, folderEnd)}{" / "}</small>{/if}<EmojiText text={note.title ?? note.path.slice(folderEnd + 1).replace(/\.md$/, "")} /></strong></span>
             <Icon name="chevron-right" />
           </button></li>
         {/each}

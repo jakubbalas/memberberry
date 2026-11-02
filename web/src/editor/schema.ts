@@ -6,7 +6,7 @@
  */
 
 import { Mark, Node, getSchema, type Extensions } from "@tiptap/core";
-import type { DOMOutputSpec, Schema } from "@tiptap/pm/model";
+import type { DOMOutputSpec, Node as ProseMirrorNode, Schema } from "@tiptap/pm/model";
 
 import { schema as loadSchemaContract, tagInputParser } from "../notes.js";
 import { tagInputRules } from "./commands.js";
@@ -81,8 +81,17 @@ function createNodeExtension(
     ...(definition.code === undefined ? {} : { code: definition.code }),
     ...(definition.defining === undefined ? {} : { defining: definition.defining }),
     ...(attributes === undefined ? {} : { addAttributes: () => attributesFor(attributes) }),
+    ...(name === "emoji" ? {
+      renderText: ({ node }) => emojiText(node),
+      // why: title commits and outlines use PM textContent, not Tiptap's clipboard serializer.
+      extendNodeSchema: (extension: Node) => extension.name === "emoji" ? { leafText: emojiText } : {},
+    } : {}),
     ...(name === "text" ? {} : { renderHTML: (props) => renderNode(name, props.node.attrs, props.HTMLAttributes, media) }),
   });
+}
+
+function emojiText(node: ProseMirrorNode): string {
+  return `:${stringValue(node.attrs["shortcode"])}:`;
 }
 
 function createMarkExtension(name: string, definition: MarkDefinition) {

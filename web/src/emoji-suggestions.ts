@@ -3,7 +3,7 @@ import type { EmojiEntry } from "./notes.js";
 const MAX_SUGGESTIONS = 8;
 
 /** Returns the Unicode entries matching an inline colon query, ordered by fuzzy relevance. */
-export function emojiSuggestions(catalog: readonly EmojiEntry[], query: string): readonly EmojiEntry[] {
+export function emojiSuggestions<T extends EmojiEntry>(catalog: readonly T[], query: string): readonly T[] {
   const normalized = query.toLowerCase();
   // why: the first colon has no query to rank; preserve catalog order without scanning every entry.
   if (normalized.length === 0) return catalog.slice(0, MAX_SUGGESTIONS);

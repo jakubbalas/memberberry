@@ -11,6 +11,7 @@
   user can neither see nor otherwise switch to.
 -->
 <script lang="ts">
+  import EmojiText from "./EmojiText.svelte";
   import type { Tab, TabId } from "./workspace.js";
 
   interface Props {
@@ -79,9 +80,9 @@
               onclick={() => onactivate(tab.id)}
             >
               {#if iconOf?.(tab.note)}
-                <span class="tab-sheet-icon" aria-hidden="true">{iconOf(tab.note)}</span>
+                <span class="tab-sheet-icon" aria-hidden="true"><EmojiText text={iconOf(tab.note) ?? ""} /></span>
               {/if}
-              <span class="tab-sheet-name">{label(tab)}</span>
+              <span class="tab-sheet-name"><EmojiText text={label(tab)} /></span>
               {#if folder(tab) !== undefined}
                 <span class="tab-sheet-folder">{folder(tab)}</span>
               {/if}

@@ -154,7 +154,7 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     control.hidden = true;
     options.panel.append(control);
     const onImageClick = (event: MouseEvent): void => {
-      if (!(event.target instanceof HTMLImageElement)) return;
+      if (!(event.target instanceof HTMLImageElement) || event.target.classList.contains("custom-emoji-image")) return;
       const position = options.editor.view.posAtDOM(event.target, 0);
       options.editor.view.dispatch(
         options.editor.state.tr.setSelection(NodeSelection.create(options.editor.state.doc, position)),
