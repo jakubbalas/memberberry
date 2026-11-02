@@ -45,7 +45,10 @@
      */
     readonly findHint?: string | undefined;
     readonly vaultTheme?: ShippedTheme | undefined;
+    readonly vaultAccent?: string | undefined;
     readonly themeStorage?: ThemeStorage | undefined;
+    /** Opens vault Settings; absent for anyone who does not own the vault. */
+    readonly onsettings?: (() => void) | undefined;
   }
 
   const {
@@ -57,7 +60,9 @@
     onfind,
     findHint,
     vaultTheme,
+    vaultAccent,
     themeStorage,
+    onsettings,
   }: Props = $props();
 </script>
 
@@ -107,7 +112,12 @@
   <div class="topbar-side topbar-end">
     <InstallControl />
     <UpdateControl reload={onupdate} />
-    <ThemePicker {vault} {vaultTheme} storage={themeStorage} />
+    <ThemePicker {vault} {vaultTheme} {vaultAccent} storage={themeStorage} />
+    {#if onsettings !== undefined}
+      <button type="button" class="icon-button topbar-settings" aria-label="Vault settings" title="Vault settings" onclick={() => onsettings()}>
+        <Icon name="settings" />
+      </button>
+    {/if}
 
     <button
       type="button"

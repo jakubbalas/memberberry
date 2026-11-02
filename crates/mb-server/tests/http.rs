@@ -1937,6 +1937,266 @@ fn custom_emoji_route_does_not_disclose_an_unreadable_vault() {
     assert!(is_not_found(&status), "{status}");
 }
 
+// ---------------------------------------------------------------- vault settings
+
+const PIXEL_PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+fn write_pixel(dir: &TempDir, path: &str) {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, PIXEL_PNG)
+        .expect("pixel");
+    let full = dir.path().join(path);
+    std::fs::create_dir_all(full.parent().expect("parent")).expect("dir");
+    std::fs::write(full, bytes).expect("pixel");
+}
+
+#[test]
+fn settings_round_trip_theme_and_accent_and_keep_other_config() {
+    let dir = TempDir::new("http-settings");
+    dir.write("Note.md", "# Note\n");
+    dir.write(".memberberry/config.toml", "trash_retention_days = 7\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    let (status, body) = server.get("/api/v1/vaults/v/settings");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains(r#""theme":"system","accent":null"#), "{body}");
+    assert!(
+        server
+            .headers("/api/v1/vaults/v/settings")
+            .to_lowercase()
+            .contains("cache-control: no-store")
+    );
+
+    let (status, _) = server.put_json(
+        "/api/v1/vaults/v/settings",
+        "",
+        r##"{"theme":"memberberry-pastel","accent":"#AA33CC"}"##,
+    );
+    assert!(status.contains("204"), "{status}");
+    let (_, body) = server.get("/api/v1/vaults/v/settings");
+    assert!(
+        body.contains(r##""theme":"memberberry-pastel","accent":"#aa33cc""##),
+        "{body}"
+    );
+    let config =
+        std::fs::read_to_string(dir.path().join(".memberberry/config.toml")).expect("config");
+    assert!(config.contains("trash_retention_days = 7"), "{config}");
+
+    let (status, _) = server.put_json(
+        "/api/v1/vaults/v/settings",
+        "",
+        r#"{"theme":"system","accent":null}"#,
+    );
+    assert!(status.contains("204"), "{status}");
+    let (_, body) = server.get("/api/v1/vaults/v/settings");
+    assert!(body.contains(r#""theme":"system","accent":null"#), "{body}");
+}
+
+#[test]
+fn settings_refuse_invalid_values_and_leave_the_file_alone() {
+    let dir = TempDir::new("http-settings-invalid");
+    dir.write("Note.md", "# Note\n");
+    dir.write(".memberberry/config.toml", "theme = \"memberberry-dark\"\n");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+    for body in [
+        r#"{"theme":"hacker","accent":null}"#,
+        r#"{"theme":"system","accent":"red"}"#,
+        r##"{"theme":"system","accent":"#fff\"><script>"}"##,
+        r#"{"theme":"system","accent":null,"extra":1}"#,
+        r#"{"accent":null}"#,
+        "not json",
+    ] {
+        let (status, _) = server.put_json("/api/v1/vaults/v/settings", "", body);
+        assert!(status.contains("400"), "{body}: {status}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".memberberry/config.toml")).expect("config"),
+        "theme = \"memberberry-dark\"\n"
+    );
+
+    dir.write(".memberberry/config.toml", "theme = = broken");
+    let (status, _) = server.put_json(
+        "/api/v1/vaults/v/settings",
+        "",
+        r#"{"theme":"system","accent":null}"#,
+    );
+    assert!(status.contains("409"), "{status}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".memberberry/config.toml")).expect("config"),
+        "theme = = broken"
+    );
+}
+
+#[test]
+fn the_editor_bootstrap_carries_the_accent_and_the_owner_flag_only_for_owners() {
+    let index = "<body><div id=\"app\" data-vault=\"\" data-note=\"\" data-user=\"\" data-vault-theme=\"\"></div></body>";
+    let owned = TempDir::new("http-bootstrap-owner");
+    owned.write("One.md", "# One\n");
+    owned.write(".memberberry/config.toml", "accent = \"#336699\"\n");
+    let edited = TempDir::new("http-bootstrap-editor");
+    edited.write("One.md", "# One\n");
+    edited.write(".memberberry/config.toml", "accent = \"not a colour\"\n");
+    edited.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"editor\"\n",
+    );
+    let web = TempDir::new("http-bootstrap-web");
+    web.write("index.html", index);
+    let server = TestServer::authenticated_with_web_root(
+        vec![
+            vault(&owned, "owned", "Owned"),
+            vault(&edited, "edited", "Edited"),
+        ],
+        web.path().to_path_buf(),
+    );
+
+    let (_, body) = server.get("/v/owned/One.md");
+    assert!(body.contains("data-vault-accent=\"#336699\""), "{body}");
+    assert!(body.contains("data-vault-owner=\"true\""), "{body}");
+    let (_, body) = server.get("/v/edited/One.md");
+    assert!(
+        !body.contains("data-vault-owner"),
+        "an editor is not offered settings: {body}"
+    );
+    assert!(
+        !body.contains("data-vault-accent"),
+        "an invalid accent must not reach the page: {body}"
+    );
+}
+
+#[test]
+fn settings_list_local_and_shared_emoji_and_delete_only_local_ones() {
+    let dir = TempDir::new("http-settings-emoji");
+    let data = TempDir::new("http-settings-emoji-data");
+    dir.write("Note.md", "# Note\n\n:parrot:\n");
+    dir.write(
+        ".memberberry/emoji/packs/emoji-a/pack.json",
+        r#"{"name":"emoji-a","version":1,"emoji":[{"shortcode":"parrot","file":"parrot.png","aliases":["bird","old"]}]}"#,
+    );
+    write_pixel(&dir, ".memberberry/emoji/packs/emoji-a/parrot.png");
+    data.write(
+        "emoji/packs/server/pack.json",
+        r#"{"name":"server","version":1,"emoji":[{"shortcode":"ship","file":"ship.png"}]}"#,
+    );
+    write_pixel(&data, "emoji/packs/server/ship.png");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth db");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("setup");
+    let token = auth
+        .create_session(alice.id, 4_102_444_800)
+        .expect("session");
+    let cookie = auth.signed_session_cookie(&token).expect("cookie");
+    let state = AppState::authenticated(vec![vault(&dir, "v", "V")], auth)
+        .expect("state")
+        .with_data_dir(data.path().to_path_buf());
+    let mut server = TestServer::start(state);
+    server.default_headers = format!("Cookie: mb_session={cookie}\r\n");
+
+    let (status, body) = server.get("/api/v1/vaults/v/settings");
+    assert!(is_ok(&status), "{status}");
+    assert!(body.contains(r#""shortcode":"parrot","aliases":["bird","old"],"pack":"emoji-a","file":"parrot.png","shared":false"#), "{body}");
+    assert!(
+        body.contains(
+            r#""shortcode":"ship","aliases":[],"pack":"server","file":"ship.png","shared":true"#
+        ),
+        "{body}"
+    );
+
+    let (status, _) = server.delete("/api/v1/vaults/v/emoji-entries/parrot/aliases/old");
+    assert!(status.contains("204"), "{status}");
+    let (status, _) = server.delete("/api/v1/vaults/v/emoji-entries/parrot/aliases/old");
+    assert!(is_not_found(&status), "{status}");
+    let (_, body) = server.get("/api/v1/vaults/v/settings");
+    assert!(body.contains(r#""aliases":["bird"]"#), "{body}");
+
+    let (status, _) = server.delete("/api/v1/vaults/v/emoji-entries/ship");
+    assert!(
+        is_not_found(&status),
+        "a shared emoji is not the vault owner's: {status}"
+    );
+    assert!(data.path().join("emoji/packs/server/ship.png").is_file());
+
+    let (status, _) = server.delete("/api/v1/vaults/v/emoji-entries/parrot");
+    assert!(status.contains("204"), "{status}");
+    assert!(!dir.path().join(".memberberry/emoji/packs/emoji-a").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Note.md")).expect("note"),
+        "# Note\n\n:parrot:\n",
+        "deleting artwork must not edit notes"
+    );
+}
+
+#[test]
+fn renaming_an_emoji_rewrites_notes_and_keeps_the_old_name_as_an_alias() {
+    let dir = TempDir::new("http-emoji-rename");
+    dir.write("One.md", "# One :parrot:\n\nText :Parrot: and `:parrot:`\n");
+    dir.write("Two.md", "---\nicon: \":parrot:\"\n---\n\nNothing else\n");
+    dir.write("Three.md", "No emoji here\n");
+    dir.write(
+        ".memberberry/emoji/packs/emoji-a/pack.json",
+        r#"{"name":"emoji-a","version":1,"emoji":[{"shortcode":"parrot","file":"parrot.png"}]}"#,
+    );
+    write_pixel(&dir, ".memberberry/emoji/packs/emoji-a/parrot.png");
+    dir.write(
+        ".memberberry/emoji/packs/emoji-b/pack.json",
+        r#"{"name":"emoji-b","version":1,"emoji":[{"shortcode":"cat","file":"cat.png","aliases":["kitty"]}]}"#,
+    );
+    write_pixel(&dir, ".memberberry/emoji/packs/emoji-b/cat.png");
+    let server = TestServer::authenticated(vec![vault(&dir, "v", "V")]);
+
+    for (to, expected) in [("kitty", "400"), ("Bad Name", "400"), ("parrot", "400")] {
+        let body = format!(r#"{{"kind":"emoji","from":"parrot","to":"{to}"}}"#);
+        let (status, _) = server.post_json("/api/v1/vaults/v/rename", "", &body);
+        assert!(status.contains(expected), "{to}: {status}");
+    }
+    let (status, _) = server.post_json(
+        "/api/v1/vaults/v/rename",
+        "",
+        r#"{"kind":"emoji","from":"missing","to":"x"}"#,
+    );
+    assert!(is_not_found(&status), "{status}");
+    assert!(
+        std::fs::read_to_string(dir.path().join("One.md"))
+            .expect("one")
+            .contains(":parrot:")
+    );
+
+    let (status, body) = server.post_json(
+        "/api/v1/vaults/v/rename",
+        "",
+        r#"{"kind":"emoji","from":"parrot","to":"bird"}"#,
+    );
+    assert!(is_ok(&status), "{status}: {body}");
+    assert!(
+        body.contains(r#""to":":bird:","notes":2,"references":3"#),
+        "{body}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("One.md")).expect("one"),
+        "# One :bird:\n\nText :bird: and `:parrot:`\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Two.md")).expect("two"),
+        "---\nicon: \":bird:\"\n---\n\nNothing else\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Three.md")).expect("three"),
+        "No emoji here\n"
+    );
+    let (_, catalog) = server.get("/api/v1/vaults/v/emoji");
+    assert!(
+        catalog.contains(
+            r#""shortcode":"bird","file":"parrot.png","pack":"emoji-a","aliases":["parrot"]"#
+        ),
+        "{catalog}"
+    );
+}
+
 // ---------------------------------------------------------------- index
 
 #[test]

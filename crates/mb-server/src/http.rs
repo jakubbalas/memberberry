@@ -646,6 +646,22 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/vaults/{slug}/emoji/packs", get(vault_emoji_packs))
         .route(
+            "/api/v1/vaults/{slug}/settings",
+            get(vault_settings_load)
+                .put(vault_settings_save)
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
+        // why: a separate prefix rather than `emoji/entries/…`, which the `emoji/{*asset}`
+        // image route below would otherwise share with a pack legitimately named `entries`.
+        .route(
+            "/api/v1/vaults/{slug}/emoji-entries/{shortcode}",
+            delete(vault_emoji_entry_delete),
+        )
+        .route(
+            "/api/v1/vaults/{slug}/emoji-entries/{shortcode}/aliases/{alias}",
+            delete(vault_emoji_alias_delete),
+        )
+        .route(
             "/api/v1/vaults/{slug}/emoji/{*asset}",
             get(vault_emoji_asset),
         )
@@ -2227,6 +2243,159 @@ async fn vault_emoji_delete(
     emoji_pack_delete_response(crate::emoji::remove(&root, &pack))
 }
 
+/// The vault, when the authenticated caller is its vault-wide owner (§11.2, §20.1).
+///
+/// Every settings route answers a non-owner exactly as it answers an unknown vault. Server
+/// admin grants nothing here (`AGENTS.md` §3.1): an admin who is not an owner is refused.
+fn settings_owner(state: &AppState, slug: &str, headers: &HeaderMap) -> Option<Arc<Vault>> {
+    let vault = state.vault(slug)?;
+    let access = state.access_for(vault.slug())?;
+    let view = state.authorized_vault(&vault, &access, headers)?;
+    view.is_owner().then_some(vault)
+}
+
+fn local_emoji_root(vault: &Vault) -> PathBuf {
+    vault
+        .root()
+        .join(".memberberry")
+        .join("emoji")
+        .join("packs")
+}
+
+/// One emoji row on the settings page: local rows are editable, shared ones are not.
+#[derive(Debug, Serialize)]
+struct SettingsEmoji {
+    shortcode: String,
+    aliases: Vec<String>,
+    pack: String,
+    file: String,
+    shared: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SettingsView {
+    theme: &'static str,
+    accent: Option<String>,
+    emoji: Vec<SettingsEmoji>,
+}
+
+/// `GET /api/v1/vaults/{slug}/settings` — appearance and the effective emoji, owner only.
+async fn vault_settings_load(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = settings_owner(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let local = local_emoji_root(&vault);
+    let shared = shared_emoji_root(&state);
+    let entries = match crate::emoji::resolve(shared.as_deref(), &local) {
+        Ok(entries) => entries,
+        Err(error) => {
+            eprintln!("memberberry settings: {error}");
+            return emoji_upload_error(StatusCode::CONFLICT);
+        }
+    };
+    let emoji = entries
+        .into_iter()
+        .map(|entry| SettingsEmoji {
+            shared: !entry.path.starts_with(&local),
+            shortcode: entry.shortcode,
+            aliases: entry.aliases,
+            pack: entry.pack,
+            file: entry.file,
+        })
+        .collect();
+    json_no_store(&SettingsView {
+        theme: vault.theme(),
+        accent: vault.accent().map(|accent| accent.as_str().to_string()),
+        emoji,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsUpdate {
+    theme: String,
+    accent: Option<String>,
+}
+
+/// `PUT /api/v1/vaults/{slug}/settings` — replaces the vault's default theme and accent.
+async fn vault_settings_save(
+    State(state): State<Arc<AppState>>,
+    AxumPath(slug): AxumPath<String>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let Some(vault) = settings_owner(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    let Ok(update) = serde_json::from_str::<SettingsUpdate>(&body) else {
+        return emoji_upload_error(StatusCode::BAD_REQUEST);
+    };
+    let Some(theme) = crate::settings::parse_theme(&update.theme) else {
+        return emoji_upload_error(StatusCode::BAD_REQUEST);
+    };
+    let accent = match update.accent.as_deref() {
+        None => None,
+        Some(value) => match crate::settings::Accent::parse(value) {
+            Some(accent) => Some(accent),
+            None => return emoji_upload_error(StatusCode::BAD_REQUEST),
+        },
+    };
+    let appearance = crate::settings::Appearance { theme, accent };
+    match crate::settings::write(vault.root(), &appearance) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error @ crate::settings::Error::Malformed(_)) => {
+            eprintln!("memberberry settings: {error}");
+            emoji_upload_error(StatusCode::CONFLICT)
+        }
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
+/// `DELETE /api/v1/vaults/{slug}/emoji-entries/{shortcode}` — removes one local emoji.
+async fn vault_emoji_entry_delete(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, shortcode)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = settings_owner(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    emoji_entry_response(crate::emoji::remove_entry(
+        &local_emoji_root(&vault),
+        &shortcode,
+    ))
+}
+
+/// `DELETE …/emoji-entries/{shortcode}/aliases/{alias}` — removes one alias of a local emoji.
+async fn vault_emoji_alias_delete(
+    State(state): State<Arc<AppState>>,
+    AxumPath((slug, shortcode, alias)): AxumPath<(String, String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(vault) = settings_owner(&state, &slug, &headers) else {
+        return workspace_denied();
+    };
+    emoji_entry_response(crate::emoji::remove_alias(
+        &local_emoji_root(&vault),
+        &shortcode,
+        &alias,
+    ))
+}
+
+fn emoji_entry_response(result: Result<(), crate::emoji::Error>) -> Response {
+    match result {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        // why: the caller is already the owner, so "no such emoji" reveals nothing — but it
+        // is still the same 404 a stranger gets, which keeps the route's answers uniform.
+        Err(crate::emoji::Error::Invalid { .. }) => workspace_denied(),
+        Err(error) => server_error(&Error::Config(error.to_string())),
+    }
+}
+
 /// Installs a server-shared pack. This is the one emoji operation requiring server admin.
 async fn shared_emoji_upload(
     State(state): State<Arc<AppState>>,
@@ -2776,6 +2945,11 @@ enum RenameRequest {
         from: String,
         to: String,
     },
+    /// `from` is a vault-local custom emoji's canonical shortcode (§11.2).
+    Emoji {
+        from: String,
+        to: String,
+    },
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -2839,6 +3013,9 @@ async fn rename(
                 rename.note_with_title(&from, &to, title.as_deref())
             }
             RenameRequest::Tag { from, to } => rename.tag(&from, &to),
+            RenameRequest::Emoji { from, to } => {
+                rename.emoji(&from, &to, shared_emoji_root(&worker).as_deref())
+            }
             RenameRequest::Folder { from, to } => rename.folder(&from, &to),
         }
     })
@@ -5099,13 +5276,23 @@ fn workspace_page(
     let root = state.web_root.as_ref()?;
     let user = state.authenticated_user(headers)?;
     let index = std::fs::read_to_string(root.join("index.html")).ok()?;
+    // why: the caller's own vault-wide role is not a secret from them, and the client needs
+    // it only to decide whether to offer Settings. Every settings route re-checks it.
+    let owner = state
+        .access_for(vault.slug())
+        .is_some_and(|access| AuthorizedVault::new(vault, &access, user.clone()).is_owner());
+    let accent = vault.accent();
     let Some(page) = inject_bootstrap(
         &index,
-        vault.slug().as_str(),
-        note,
-        user.as_str(),
-        vault.media_max_dimension(),
-        vault.theme(),
+        &Bootstrap {
+            vault: vault.slug().as_str(),
+            note,
+            user: user.as_str(),
+            media_max_dimension: vault.media_max_dimension(),
+            theme: vault.theme(),
+            accent: accent.as_ref(),
+            owner,
+        },
     ) else {
         return Some(server_error(&Error::Config(format!(
             "{}/index.html does not contain the bootstrap element; the frontend build does not match this server",
@@ -5119,14 +5306,26 @@ fn workspace_page(
 ///
 /// The note's body is deliberately absent (`SPEC.md` §3.3): content reaches the browser over
 /// the CRDT and nowhere else, so this page is never a second source of truth for it.
-fn inject_bootstrap(
-    index: &str,
-    vault: &str,
-    note: &str,
-    user: &str,
+struct Bootstrap<'a> {
+    vault: &'a str,
+    note: &'a str,
+    user: &'a str,
     media_max_dimension: u32,
-    theme: &str,
-) -> Option<String> {
+    theme: &'a str,
+    accent: Option<&'a crate::settings::Accent>,
+    owner: bool,
+}
+
+fn inject_bootstrap(index: &str, bootstrap: &Bootstrap<'_>) -> Option<String> {
+    let Bootstrap {
+        vault,
+        note,
+        user,
+        media_max_dimension,
+        theme,
+        accent,
+        owner,
+    } = *bootstrap;
     if !index.contains(BOOTSTRAP_MARKER) {
         return None;
     }
@@ -5144,6 +5343,13 @@ fn inject_bootstrap(
     element.push_str(&media_max_dimension.to_string());
     element.push_str("\" data-vault-theme=\"");
     push_escaped_attr(&mut element, theme);
+    if let Some(accent) = accent {
+        element.push_str("\" data-vault-accent=\"");
+        push_escaped_attr(&mut element, accent.as_str());
+    }
+    if owner {
+        element.push_str("\" data-vault-owner=\"true");
+    }
     if note.is_empty() {
         element.push_str("\" data-home=\"true");
     }

@@ -48,6 +48,7 @@ if (session !== undefined) {
   applyTheme(
     document.documentElement,
     resolveTheme(readThemeChoice(preferences, session.vault), session.theme ?? "system"),
+    session.accent,
   );
 }
 
@@ -86,6 +87,8 @@ async function start(): Promise<void> {
       store: started.store,
       session: { vault: session.vault, user: session.user },
       vaultTheme: session.theme,
+      vaultAccent: session.accent,
+      owner: session.owner === true,
       home: homeBootstrap !== undefined,
       onresume: async () => { refresh.refresh(); },
       onupdate: async (): Promise<boolean> => {

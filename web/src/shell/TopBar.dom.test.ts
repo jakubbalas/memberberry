@@ -177,4 +177,28 @@ describe("the top bar", () => {
       void unmount(app);
     }
   });
+
+  it("offers vault settings only when the workspace says this user owns the vault", () => {
+    const { teardown } = render();
+    expect(target.querySelector('[aria-label="Vault settings"]')).toBeNull();
+    teardown();
+    let opened = 0;
+    const app = mount(TopBar, {
+      target,
+      props: {
+        vault: "personal",
+        leftCollapsed: false,
+        rightCollapsed: false,
+        ontoggle: () => undefined,
+        onsettings: () => { opened += 1; },
+        themeStorage: { getItem: () => null, setItem: () => undefined },
+      },
+    });
+    try {
+      target.querySelector<HTMLButtonElement>('[aria-label="Vault settings"]')?.click();
+      expect(opened).toBe(1);
+    } finally {
+      void unmount(app);
+    }
+  });
 });

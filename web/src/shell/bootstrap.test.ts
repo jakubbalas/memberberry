@@ -64,6 +64,23 @@ describe("reading the bootstrap", () => {
     ).toBeUndefined();
   });
 
+  it("accepts only a six-digit hex accent", () => {
+    const attributes = { "data-vault": "personal", "data-note": "One.md", "data-user": "alice" };
+    expect(readNoteBootstrap(element({ ...attributes, "data-vault-accent": "#AA33CC" }))?.accent).toBe("#aa33cc");
+    for (const bad of ["red", "#abc", "#aa33cc;x", "url(x)"]) {
+      expect(readNoteBootstrap(element({ ...attributes, "data-vault-accent": bad }))?.accent).toBeUndefined();
+    }
+  });
+
+  it("offers settings only for an explicit owner flag, on both kinds of page", () => {
+    const note = { "data-vault": "personal", "data-note": "One.md", "data-user": "alice" };
+    const home = { "data-vault": "personal", "data-user": "alice", "data-home": "true" };
+    expect(readNoteBootstrap(element({ ...note, "data-vault-owner": "true" }))?.owner).toBe(true);
+    expect(readHomeBootstrap(element({ ...home, "data-vault-owner": "true" }))?.owner).toBe(true);
+    expect(readNoteBootstrap(element({ ...note, "data-vault-owner": "yes" }))?.owner).toBeUndefined();
+    expect(readNoteBootstrap(element(note))?.owner).toBeUndefined();
+  });
+
   it("returns what the server filled in", () => {
     const target = element({
       "data-vault": "personal",

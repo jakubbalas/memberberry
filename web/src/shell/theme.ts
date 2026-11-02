@@ -1,5 +1,7 @@
 /** Shipped theme selection and per-device vault overrides (`SPEC.md` §20.1). */
 
+import { applyAccent } from "./accent.js";
+
 export const SHIPPED_THEMES = ["system", "memberberry-light", "memberberry-dark", "memberberry-pastel"] as const;
 
 export type ShippedTheme = (typeof SHIPPED_THEMES)[number];
@@ -54,9 +56,14 @@ export function resolveTheme(choice: ThemeChoice, vaultTheme: ShippedTheme): Shi
   return choice === "vault" ? vaultTheme : choice;
 }
 
-/** Applies a shipped palette without putting note or permission data into storage. */
-export function applyTheme(root: HTMLElement, theme: ShippedTheme): void {
+/**
+ * Applies a shipped palette, then the vault's accent for it, without putting note or
+ * permission data into storage. The accent follows the palette because its readable
+ * lightness depends on the surface the palette paints (`accent.ts`).
+ */
+export function applyTheme(root: HTMLElement, theme: ShippedTheme, accent?: string): void {
   if (theme === "system") delete root.dataset["theme"];
   else root.dataset["theme"] = theme;
+  applyAccent(root, accent);
   root.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT));
 }

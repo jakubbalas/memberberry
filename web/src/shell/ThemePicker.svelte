@@ -28,11 +28,13 @@
   interface Props {
     readonly vault: string;
     readonly vaultTheme?: ShippedTheme | undefined;
+    /** The vault's accent override; repainted for whichever palette is active. */
+    readonly vaultAccent?: string | undefined;
     readonly storage?: ThemeStorage | undefined;
     readonly root?: HTMLElement | undefined;
   }
 
-  const { vault, vaultTheme = "system", storage, root }: Props = $props();
+  const { vault, vaultTheme = "system", vaultAccent, storage, root }: Props = $props();
   // A mounted workspace cannot change vault or device; switching vaults navigates to a new page.
   const preferences = untrack(
     () => storage ?? (typeof localStorage === "undefined" ? undefined : localStorage),
@@ -41,7 +43,19 @@
   let choice = $state<ThemeChoice>(untrack(() => readThemeChoice(preferences, vault)));
 
   $effect(() => {
-    applyTheme(themeRoot, resolveTheme(choice, vaultTheme));
+    applyTheme(themeRoot, resolveTheme(choice, vaultTheme), vaultAccent);
+  });
+
+  // why: under "system" the surface changes with the operating system, not with this
+  // control, and the accent's readable lightness depends on that surface (`accent.ts`).
+  $effect(() => {
+    const theme = resolveTheme(choice, vaultTheme);
+    const accent = vaultAccent;
+    if (theme !== "system" || accent === undefined || typeof matchMedia !== "function") return;
+    const query = matchMedia("(prefers-color-scheme: dark)");
+    const repaint = (): void => { applyTheme(themeRoot, theme, accent); };
+    query.addEventListener("change", repaint);
+    return () => { query.removeEventListener("change", repaint); };
   });
 
   function select(event: Event): void {

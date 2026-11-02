@@ -28,6 +28,7 @@ export type IconName =
   | "folder-open"
   | "vault"
   | "appearance"
+  | "settings"
   | "plus"
   | "more"
   | "close";
@@ -60,6 +61,8 @@ export const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
   // what a theme is. Read as a swatch rather than as a sun, so it does not promise that the
   // control only chooses between light and dark.
   appearance: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "M12 3v18", "M12 7.5h6.4", "M12 12h8.9", "M12 16.5h6.4"],
+  // Three sliders: settings are a handful of values to adjust, which a cog only implies.
+  settings: ["M4 6h16", "M15 4v4", "M4 12h16", "M9 10v4", "M4 18h16", "M17 16v4"],
   plus: ["M12 5.5v13", "M5.5 12h13"],
   more: ["M5 12h.01", "M12 12h.01", "M19 12h.01"],
   close: ["m6.5 6.5 11 11", "m17.5 6.5-11 11"],

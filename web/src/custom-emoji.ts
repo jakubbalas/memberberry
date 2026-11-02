@@ -15,6 +15,8 @@ export interface EmojiVaultContext { readonly vault: string | undefined }
 interface Catalog {
   entries: readonly CustomEmoji[];
   published: CustomEmoji[];
+  /** Bumped per request, so only the newest response may replace the entries. */
+  generation: number;
   readonly listeners: Set<(entries: readonly CustomEmoji[]) => void>;
   readonly controller: AbortController;
 }
@@ -42,7 +44,7 @@ export function customEmojiEntries(body: unknown, vault: string): readonly Custo
 export function observeCustomEmoji(vault: string, changed: (entries: readonly CustomEmoji[]) => void): () => void {
   let catalog = catalogs.get(vault);
   if (catalog === undefined) {
-    catalog = { entries: [], published: [], listeners: new Set(), controller: new AbortController() };
+    catalog = { entries: [], published: [], generation: 0, listeners: new Set(), controller: new AbortController() };
     catalogs.set(vault, catalog);
     void load(vault, catalog);
   }
@@ -69,7 +71,20 @@ export function publishCustomEmoji(vault: string, entry: CustomEmoji): void {
   notify(catalog);
 }
 
+/**
+ * Re-reads the catalog for views already mounted in this vault, after Settings deleted or
+ * renamed an emoji. Locally published imports are dropped: the server's answer includes them.
+ */
+export function reloadCustomEmoji(vault: string): void {
+  const catalog = catalogs.get(vault);
+  if (catalog === undefined) return;
+  catalog.published = [];
+  void load(vault, catalog);
+}
+
 async function load(vault: string, catalog: Catalog): Promise<void> {
+  catalog.generation += 1;
+  const generation = catalog.generation;
   let entries: readonly CustomEmoji[] = [];
   try {
     const response = await fetch(`/api/v1/vaults/${encodeURIComponent(vault)}/emoji`, {
@@ -79,7 +94,7 @@ async function load(vault: string, catalog: Catalog): Promise<void> {
   } catch {
     // why: unavailable artwork degrades to the stored shortcode, never blocks note editing.
   }
-  if (catalogs.get(vault) !== catalog || catalog.controller.signal.aborted) return;
+  if (catalogs.get(vault) !== catalog || catalog.controller.signal.aborted || catalog.generation !== generation) return;
   catalog.entries = merge(entries, catalog.published);
   notify(catalog);
 }

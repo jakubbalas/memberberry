@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import fc from "fast-check";
-import { customEmojiEntries, customEmojiLookup, observeCustomEmoji, publishCustomEmoji } from "./custom-emoji.js";
+import { customEmojiEntries, customEmojiLookup, observeCustomEmoji, publishCustomEmoji, reloadCustomEmoji } from "./custom-emoji.js";
 
 const entry = { shortcode: "3d-printer", pack: "printing", file: "printer.png", aliases: ["3dp"] };
 const cleanups: Array<() => void> = [];
@@ -72,4 +72,26 @@ it("does not deliver a late response or an upload to another vault", async () =>
   publishCustomEmoji("other", imported);
   await Promise.resolve(); await Promise.resolve();
   expect(changed).not.toHaveBeenCalled();
+});
+
+it("reloads mounted views after settings change the catalog, and an older response cannot win", async () => {
+  let resolveFirst: ((response: Response) => void) | undefined;
+  const fetchMock = vi.fn<typeof fetch>()
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+    .mockResolvedValueOnce(new Response(JSON.stringify([{ ...entry, shortcode: "renamed", aliases: ["3d-printer"] }])));
+  vi.stubGlobal("fetch", fetchMock);
+  const changed = vi.fn();
+  cleanups.push(observeCustomEmoji("reload", changed));
+  reloadCustomEmoji("reload");
+  await vi.waitFor(() => expect(changed.mock.lastCall?.[0]?.[0]?.shortcode).toBe("renamed"));
+  resolveFirst?.(new Response(JSON.stringify([entry])));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(changed.mock.lastCall?.[0]?.[0]?.shortcode).toBe("renamed");
+});
+
+it("does nothing when no view in that vault is mounted", () => {
+  const fetchMock = vi.fn<typeof fetch>();
+  vi.stubGlobal("fetch", fetchMock);
+  reloadCustomEmoji("nobody-watching");
+  expect(fetchMock).not.toHaveBeenCalled();
 });

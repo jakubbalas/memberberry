@@ -267,12 +267,21 @@ impl Vault {
     /// The shipped theme selected by this vault, or system preference by default (§20.1).
     #[must_use]
     pub fn theme(&self) -> &'static str {
-        match self.config_string("theme").as_deref() {
-            Some("memberberry-light") => "memberberry-light",
-            Some("memberberry-dark") => "memberberry-dark",
-            Some("memberberry-pastel") => "memberberry-pastel",
-            _ => "system",
-        }
+        self.config_string("theme")
+            .as_deref()
+            .and_then(crate::settings::parse_theme)
+            .unwrap_or("system")
+    }
+
+    /// The vault's accent override, when `config.toml` holds a valid `#rrggbb` (§20.1).
+    ///
+    /// Anything else — a colour name, a typo — is ignored rather than passed on, so a bad
+    /// value costs the override and never reaches a page.
+    #[must_use]
+    pub fn accent(&self) -> Option<crate::settings::Accent> {
+        self.config_string("accent")
+            .as_deref()
+            .and_then(crate::settings::Accent::parse)
     }
 
     /// Whether history snapshots use zstd compression (`SPEC.md` §18.1).

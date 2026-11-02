@@ -1334,7 +1334,7 @@ ships.
 | E11 | **Media** | Content addressing is *not* authorization. `media_refs(note_id, path, original_name)` backs the check: a user may fetch a blob only if it is referenced by a note they can read, including a frontmatter `cover` image (§12.5). The sole pre-reference exception is a five-minute grant scoped to the authenticated editor who uploaded those same bytes, bridging the upload and the note's indexed save; it never grants another user access. Easy to miss; it is a real leak if missed. |
 | E12 | Tasks & task views | Filtered by readable set. |
 | E13 | Share links | A separate anonymous path with its own rules (§17). The authenticated management routes authorize the exact note before creation and scope listing/revocation to the creator; bearer tokens are never returned by list. The `/s/<token>` renderer re-authenticates the opaque token, then re-checks the link creator's current enabled account and readable set before reading the note. Its media route requires the signed share-session cookie, re-checks the same creator-readable set, and permits only media referenced by the shared note. Expiry, revocation and password failures are neutral unavailable responses. Anonymous share and media requests are bounded independently by token and by the trusted peer IP supplied by the server connection layer; forwarded headers are not trusted. |
-| E14 | **Rename / link rewrite** | §6.6. **M8:** the one operation that reads outside the caller's readable set, on purpose — a link left broken in a note they cannot see is worse. What contains it: the note being renamed is resolved through the *caller's* `AuthorizedVault`, so an unreadable one answers exactly as a missing one; both ends need `editor` or better, and a tag rename needs vault-wide `owner`; the privileged read is an ordinary index `Reader` holding a synthetic `owner` ACL, so E5 is untouched; and the reply counts only notes the caller can read, with the full list going to the audit log (§6.9). Shape checks on the new name run *before* authorization, existence checks after, so a rename cannot be used to probe for notes. Folder moves also require write access at both paths for every descendant before mutation, with neutral denial for hidden descendants and symlinked paths; empty folders use the same checks. |
+| E14 | **Rename / link rewrite** | §6.6. **M8:** the one operation that reads outside the caller's readable set, on purpose — a link left broken in a note they cannot see is worse. What contains it: the note being renamed is resolved through the *caller's* `AuthorizedVault`, so an unreadable one answers exactly as a missing one; both ends need `editor` or better, and a tag or custom emoji rename needs vault-wide `owner`; the privileged read is an ordinary index `Reader` holding a synthetic `owner` ACL, so E5 is untouched; and the reply counts only notes the caller can read, with the full list going to the audit log (§6.9). Shape checks on the new name run *before* authorization, existence checks after, so a rename cannot be used to probe for notes. Folder moves also require write access at both paths for every descendant before mutation, with neutral denial for hidden descendants and symlinked paths; empty folders use the same checks. |
 | E15 | **Workspace layouts and bookmarks** (§8.1, §8.2) | A layout is one user's list of open notes, which is the same class of data as presence — E4 filters awareness precisely because it reveals which note a person is reading. The file is keyed by the **authenticated** user, and there is no route parameter naming whose layout it is, so there is nothing to substitute. Requires vault membership, not note-level access: a layout is not a note. The device id is parsed into a validated type before it can become a filename. **Bookmarks are additionally filtered on read**: they outlive the permission that created them, so a revoked note must leave the list rather than keep showing its name. |
 
 | E16 | **Tag pane** (§9.3) | Both the tree and the per-node counts come from the readable set. A tag is a claim about notes: one carried only by notes the caller cannot read has no node, and a shared tag's count names only the notes they may see (§6.5). Membership is checked for the vault rather than per note — there is no path in the request — so a non-member gets the same empty-handed reply as an unknown vault rather than an empty tag list. |
@@ -1354,6 +1354,7 @@ ships.
 | E30 | **Shallow vault directory browsing** (§6.1; backend reviewed, t-006 UI implementation active) | Immediate folder and `.md` names are read through `AuthorizedVault` with the current caller/ACL, never through an unfiltered feature helper or admin bypass. Denied/unknown directory or vault is neutral. Permission filtering precedes filesystem reads of denied paths and response publication; no titles/bodies, descendant enumeration, symlink/hidden traversal or stale-authority publication. Necessary deeper-grant navigation cannot reopen an explicit denial or manufacture access from absent targets. The persisted t-013 native folder filter is applied after content authority and before excluded-directory reads/navigation. Bounded work/output refuses without partial disclosure. |
 | E31 | **Immediate configured-location folder creation** (§6.1; backend reviewed, t-006 UI implementation active) | Strict enabled signed-session-admin and same-origin/header authority precedes config/filesystem work; repeat after waits and at mkdir/publication. One exact child under a pinned allowed parent, no-follow beneath configured root, current registry/identity checks and no collisions/overlaps. No content grant, ACL/registry creation or registration receipt. Owned-only cleanup; post-create ambiguity never implies rollback or safe replay. Readback verifies the exact child identity before success. |
 | E32 | **Folder deletion** (§8.2) | `DELETE /api/v1/vaults/{slug}/folders` takes `{path, confirmation?}` with an 8 KiB body limit. `AuthorizedVault::delete_folder` requires editor/owner on the folder and every descendant before disclosing confirmation requirements or mutating. Unknown, denied, unsupported, hidden, symlinked and excluded trees receive the same neutral 404; server admin grants no bypass. Full preflight is bounded to 100,000 entries. Any actual note/subfolder requires the exact basename (409 otherwise); empty folders need no confirmation. Every sync room closes before note files move to the existing Markdown trash, followed by nonrecursive directory removal, index reconciliation and deletion auditing. I/O errors can leave partial deletion and return a generic no-store refusal; the client refreshes before retry. |
+| E33 | **Vault settings and emoji management** (§20.4, §11.2) | `GET`/`PUT …/settings`, `DELETE …/emoji-entries/…` and emoji renames require vault-wide `owner`, checked per request from the live ACL. Editors, viewers, non-members and server admins who are not owners get the same 404 as an unknown vault, with no setting or emoji name in the body and nothing written. Shared server emoji answer as missing on the vault routes. Emoji renames are E14 privileged rewrites, and the reply counts only notes the owner can read. The `data-vault-owner` bootstrap flag only controls whether the dialog is offered. |
 
 **Every sync-frame denial is one reply.** An unknown vault, a path that does not resolve,
 a missing ACL and a role of `none` all return the same `not_found` error frame. Sending
@@ -3443,9 +3444,22 @@ and history all remain strictly per-vault (A22).
   use the same normalization as filenames, including lowercase and optional surrounding
   colons. Cancellation, empty/invalid names and collisions with existing shortcodes or
   aliases upload nothing; invalid/duplicate names report that a unique shortcode is required.
-  There is no pack-name prompt, pack-management
+  The picker has no pack-name prompt, pack-management
   panel, folder import or ZIP import. Cancelled, multiple, unsupported or empty selections
   upload nothing. Errors are reported without adding a picker entry, and upload can be retried.
+- **Vault settings (A36, §20.4):** the vault owner lists, adds, renames and deletes the
+  vault's own emoji, and removes aliases. Shared server emoji are listed read-only. Adding
+  uses the same single-image upload as the picker. **Delete** removes the manifest entry,
+  its image when no other entry uses it, and the pack once empty. Notes keep `:name:` as
+  readable text (§11.3). **Rename** rewrites `:old:` to `:new:` in every note, including
+  notes the owner cannot read, as a privileged operation under E14's rules. The rewrite is
+  verified like a tag rename (`mb_core::rewrite::rename_emoji`), so code, maths and wikilink
+  targets are untouched, and a frontmatter `icon: ":old:"` is renamed too. Matching is ASCII
+  case-insensitive. The old name stays as an alias, so a replica that was offline during the
+  rename still renders when it syncs `:old:` back. The new name may not collide with any
+  local or shared name, except one of the emoji's own aliases (which swaps the two).
+  Rewrites are planned before the manifest changes. A note-write failure after the manifest
+  changed leaves the old name working through its alias.
 - **Storage compatibility:** each image uses a generated `emoji-<UUID>` storage identifier
   and a one-entry manifest through the existing vault upload API. Pack identifiers are not
   part of the import UI. Existing manifests, artwork, authorization and export keep their
@@ -4122,6 +4136,15 @@ describes how to add a palette without changing component styles. Common block a
 in the toolbar; secondary formatting and export actions live in the keyboard-accessible More
 disclosure. History, deleted notes, and share creation use expandable sidebar sections. Mobile
 sidebar toggles sit in the header so the writing surface spans the available width.
+**Accent override (A37, §20.4).** A vault may set `accent = "#rrggbb"` in
+`.memberberry/config.toml`. The server accepts only six hex digits and places the lowercase
+value in the editor bootstrap as `data-vault-accent`. Anything else is ignored. The client
+re-declares `--accent-primary` and `--focus-ring` inline on `<html>` for the active palette.
+It keeps the chosen hue and saturation and moves lightness away from `--surface-note` until
+contrast reaches 4.5:1, so one colour stays readable on Paper and Charcoal. A colour that
+already passes is used unchanged. Under `system`, an operating-system scheme change
+repaints it. Tokens mixed from the accent follow automatically. Server-rendered pages
+(sign-in, vault list, shares) keep the shipped accent.
 Automatic loading of
 vault-local theme CSS remains unimplemented; the shipped palettes work end to end.
 
@@ -4186,6 +4209,30 @@ computes WCAG relative luminance from their actual hex values. Normal text roles
 the first real check found it at 4.23:1 on the canvas.
 
 ---
+
+### 20.4 Vault settings (A36, A37)
+
+A **Vault settings** dialog, opened from the top bar, lets the vault-wide owner change:
+
+- the vault default theme (`theme` in `config.toml`; devices may still override it, §20.1);
+- the accent override (§20.1);
+- the vault's custom emoji (§11.2).
+
+Only owners see the control. The bootstrap carries `data-vault-owner="true"` for them, and
+that flag only decides whether the control is shown. Every route re-checks ownership (E33).
+A server admin who is not an owner is refused like anyone else.
+
+Saving rewrites `config.toml` through a TOML table. Other keys are kept; comments are not.
+A malformed existing file is refused (409) and left untouched rather than replaced. The
+mounted workspace repaints immediately. Other open windows pick the change up on their next
+page load.
+
+Routes, all owner-only, `no-store`, and 404 for everyone else:
+`GET`/`PUT /api/v1/vaults/{slug}/settings` (`{theme, accent|null}`, 8 KiB, unknown fields
+rejected); `DELETE …/emoji-entries/{shortcode}`;
+`DELETE …/emoji-entries/{shortcode}/aliases/{alias}`; and `POST …/rename` with
+`kind: "emoji"`. The entry routes use their own prefix so they cannot collide with
+`emoji/{pack}/{file}` image URLs.
 
 ## 21. Performance budgets (C6, A15)
 
@@ -4928,6 +4975,11 @@ them systematically. It is the suite most likely to catch a real security bug.
   malformed device id and "nothing saved" are one indistinguishable reply.
 - **Custom emoji packs** (E22): a readable vault receives the local-over-shared manifest and
   image bytes, while a non-member receives the same denial for the list and asset routes.
+- **Vault settings** (E33): an anonymous caller, a server admin who is only an editor, a viewer
+  and a non-member get 404 from every settings, emoji-entry, alias and emoji-rename route,
+  with no canary name or setting in the body and every file byte-identical. The owner's
+  success is asserted in the same test. An emoji rename (E14) rewrites a note the owner
+  cannot read and counts only the readable one.
 - **Web clipper** (E23): a viewer, an owner constrained by a viewer-scoped token, and a write
   outside the actor's folder grant are denied before outbound work. DNS resolution and every
   redirect are independently checked and pinned against private-address SSRF.
@@ -5386,6 +5438,7 @@ browser. Nothing will be opening a browser here.
 - [x] Compatible custom emoji storage + single-image upload (A33)
 - [x] `export --materialize-emoji`
 - [x] Note icons (frontmatter → tree, tabs, title, graph)
+- [x] Owner Vault settings: list/add/rename/delete vault emoji, alias removal (A36, §20.4)
 
 ### M15 — Web clipper
 - [x] HTML → block document in `mb-core`
@@ -5408,6 +5461,7 @@ browser. Nothing will be opening a browser here.
 - [x] `import-obsidian` with dry-run report; `memberberry doctor`
 - [x] PDF / HTML / static-site export
 - [x] Light and dark themes, contrast checks (the token contract itself ships in M7)
+- [x] Vault default theme and contrast-adjusted accent from Vault settings (A37, §20.4)
 - [x] Remappable default keymap (§8.4)
 - [x] Backup job; docker-compose with MinIO; deployment and security docs
 
@@ -5464,6 +5518,8 @@ to replace a product comparison with a description. Do not reverse these without
 | A33 | Emoji import UI | *"remove that functinality altogether. Single emoji import is just fine"* | Remove pack management and bulk import from the picker. Import one image with a filename-derived shortcode and no pack-name prompt; preserve existing storage and authorization (§11.2). Supersedes A32's folder/ZIP UI scope. |
 | A34 | Custom shortcode selection | *"I want to be able to manually select (or overwrite) the custom shortcode"* | Prompt for the shortcode on every image import, using the filename only as an editable suggestion (§11.2). Supersedes A33's automatic filename-derived shortcode. |
 | A35 | Inline emoji trigger | *"lets leave it on 1 character"* | Open inline suggestions after one character following the colon, such as `:s`. A bare colon keeps them closed (§11.4). |
+| A36 | Vault settings | *"a way where I can manage some aspects of the vault. One of it will be custom emojis (add, remove, modify shortcode)"*; rename choice: *"Rewrite notes"* | Owner-only Vault settings dialog (§20.4) managing vault-local emoji. Supersedes A33's "no pack-management panel" for Settings only; the picker stays single-image. Rename rewrites notes as an E14 privileged operation and keeps the old name as an alias (§11.2). |
+| A37 | Vault accent colour | *"default colour"* → *"Accent colour"* | Per-vault `#rrggbb` accent, adjusted per palette for 4.5:1 contrast (§20.1). |
 
 ---
 

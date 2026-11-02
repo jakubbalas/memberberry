@@ -30,6 +30,7 @@
   import "./navigation.css";
   import { clampSidebarWidths, MIN_SIDEBAR_WIDTH, readSidebarPreferences, sidebarMaximum, writeSidebarPreferences, type SidebarPreferences } from "./sidebar-preferences.js";
   import NamePrompt from "./NamePrompt.svelte";
+  import SettingsDialog from "./SettingsDialog.svelte";
   import { deleteFolder, createFolder, fetchFolders } from "./folders.js";
   import Sidebar from "./Sidebar.svelte";
   import TopBar from "./TopBar.svelte";
@@ -135,6 +136,10 @@
     /** Authenticated public-share management, supplied by a test or built from the session. */
     readonly shares?: ShareView | undefined;
     readonly vaultTheme?: ShippedTheme | undefined;
+    /** The vault's validated accent override (§20.1). */
+    readonly vaultAccent?: string | undefined;
+    /** Whether to offer Settings. The server re-checks ownership on every settings route. */
+    readonly owner?: boolean | undefined;
   }
 
   const {
@@ -165,9 +170,17 @@
     createNote,
     daily: suppliedDaily,
     shares: suppliedShares,
-    vaultTheme,
+    vaultTheme: bootTheme,
+    vaultAccent: bootAccent,
+    owner = false,
     home = false,
   }: Props = $props();
+
+  // why: Settings changes the vault default without a reload, so the bootstrap values seed
+  // local state rather than being read straight from props.
+  let vaultTheme = $state<ShippedTheme | undefined>(untrack(() => bootTheme));
+  let vaultAccent = $state<string | undefined>(untrack(() => bootAccent));
+  let settingsOpen = $state(false);
 
   const vaultSlug = $derived(session?.vault ?? "local-demo");
   setContext<EmojiVaultContext>(EMOJI_VAULT_CONTEXT, { get vault() { return session?.vault; } });
@@ -696,7 +709,9 @@
     onfind={() => requestPalette("notes", target ?? window)}
     {findHint}
     {vaultTheme}
+    {vaultAccent}
     themeStorage={preferences}
+    onsettings={owner && session !== undefined ? () => { settingsOpen = true; } : undefined}
   />
 
   <Sidebar
@@ -820,6 +835,15 @@
     <LocalGraph view={graph} note={store.activeTab?.note} onopen={openNavigationNote} />
   </Sidebar>
 </div>
+
+{#if owner && session !== undefined}
+  <SettingsDialog
+    open={settingsOpen}
+    vault={session.vault}
+    ondismiss={() => { settingsOpen = false; }}
+    onappearance={(theme, accent) => { vaultTheme = theme; vaultAccent = accent; }}
+  />
+{/if}
 
 {#if folderPrompt}
   <NamePrompt open={folderPrompt} title="New folder" subject="At the vault root. Use / for nested folders." label="Folder name" initial="" busy={folderBusy} error={folderError} confirm="Create folder" confirming="Creating…" onsubmit={(name) => void submitFolder(name)} ondismiss={() => { if (!folderBusy) folderPrompt = false; }} />

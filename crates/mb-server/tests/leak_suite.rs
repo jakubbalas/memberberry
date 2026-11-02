@@ -985,6 +985,195 @@ fn e22_custom_emoji_are_filtered_before_resolution() {
     ));
 }
 
+/// E33: vault settings and emoji management exist only for the vault-wide owner.
+///
+/// Every route answers editor, viewer, non-member and a server admin who is merely an editor
+/// with the same 404, carries no emoji name or setting in the body, and writes nothing. The
+/// owner's success is asserted too, so the denials cannot pass by the routes being broken.
+#[tokio::test]
+async fn e33_vault_settings_and_emoji_management_are_owner_only() {
+    use axum::http::header;
+    use mb_server::http::{AppState, router};
+    use std::sync::Arc;
+    let dir = TempDir::new("e33-settings");
+    dir.write("Note.md", "# Note\n\n:secret_salary:\n");
+    dir.write(
+        ".memberberry/config.toml",
+        "theme = \"memberberry-dark\"\naccent = \"#123456\"\n",
+    );
+    dir.write(
+        ".memberberry/emoji/packs/canary/pack.json",
+        r#"{"name":"canary","version":1,"emoji":[{"shortcode":"secret_salary","file":"secret.png","aliases":["compensation"]}]}"#,
+    );
+    dir.write(
+        ".memberberry/emoji/packs/canary/secret.png",
+        "private image bytes",
+    );
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"editor\"\n\n\
+         [[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[members]]\nuser = \"dave\"\nrole = \"owner\"\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    let password = "correct horse battery staple";
+    // alice is the first user, so she is a server admin — and only an editor here.
+    let mut cookies = Vec::new();
+    for (index, name) in ["alice", "bob", "carol", "dave"].into_iter().enumerate() {
+        let user = mb_auth::NewUser {
+            username: name,
+            display_name: name,
+            password,
+        };
+        let created = if index == 0 {
+            auth.setup_first_user(user).expect("first user")
+        } else {
+            auth.create_user(user).expect("user")
+        };
+        let token = auth
+            .create_session(created.id, 4_102_444_800)
+            .expect("session");
+        cookies.push(format!(
+            "mb_session={}",
+            auth.signed_session_cookie(&token).expect("cookie")
+        ));
+    }
+    let state = Arc::new(AppState::authenticated(vec![vault], auth).expect("state"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("address"));
+    let server = tokio::spawn(async move { axum::serve(listener, router(state)).await });
+    let client = reqwest::Client::new();
+    let snapshot = || {
+        [
+            "Note.md",
+            ".memberberry/config.toml",
+            ".memberberry/emoji/packs/canary/pack.json",
+            ".memberberry/emoji/packs/canary/secret.png",
+        ]
+        .map(|path| std::fs::read(dir.path().join(path)).expect("file"))
+    };
+    let before = snapshot();
+    let base = format!("{origin}/api/v1/vaults/personal");
+    for (caller, cookie) in [
+        ("anonymous", ""),
+        ("admin editor", cookies[0].as_str()),
+        ("viewer", cookies[1].as_str()),
+        ("non-member", cookies[2].as_str()),
+    ] {
+        let probes = [
+            client.get(format!("{base}/settings")),
+            client
+                .put(format!("{base}/settings"))
+                .body(r##"{"theme":"memberberry-light","accent":"#ffffff"}"##),
+            client.delete(format!("{base}/emoji-entries/secret_salary")),
+            client.delete(format!(
+                "{base}/emoji-entries/secret_salary/aliases/compensation"
+            )),
+            client
+                .post(format!("{base}/rename"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(r#"{"kind":"emoji","from":"secret_salary","to":"public"}"#),
+        ];
+        for probe in probes {
+            let response = probe
+                .header(header::COOKIE, cookie)
+                .send()
+                .await
+                .expect("response");
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::NOT_FOUND,
+                "{caller}"
+            );
+            let body = response.text().await.expect("body");
+            for canary in [
+                "secret_salary",
+                "compensation",
+                "#123456",
+                "memberberry-dark",
+            ] {
+                assert!(
+                    !body.contains(canary),
+                    "{canary} leaked to {caller}: {body}"
+                );
+            }
+        }
+    }
+    assert_eq!(snapshot(), before, "a refused caller changed the vault");
+
+    let response = client
+        .get(format!("{base}/settings"))
+        .header(header::COOKIE, &cookies[3])
+        .send()
+        .await
+        .expect("owner response");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert!(
+        response
+            .text()
+            .await
+            .expect("body")
+            .contains("secret_salary")
+    );
+    server.abort();
+    let _stopped = server.await;
+}
+
+/// E14 for emoji: the rename reaches notes the owner cannot read, and does not say so.
+#[test]
+fn e14_an_emoji_rename_never_reports_what_it_reached() {
+    let dir = TempDir::new("leak-emoji-rename");
+    dir.write("Open.md", "Hello :parrot:\n");
+    dir.write("Private/Salary.md", ":parrot: :parrot:\n");
+    dir.write(
+        ".memberberry/emoji/packs/emoji-a/pack.json",
+        r#"{"name":"emoji-a","version":1,"emoji":[{"shortcode":"parrot","file":"parrot.png"}]}"#,
+    );
+    dir.write(".memberberry/emoji/packs/emoji-a/parrot.png", "image");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = mb_server::AccessFile::load(vault.root()).expect("access.toml");
+    let registry = mb_server::indexing::IndexRegistry::default();
+    let errors = registry.maintain(std::iter::once(&vault), &mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "indexing the vault: {errors:?}");
+    let index = registry.get(&vault).expect("index");
+    let sync = mb_server::sync::SyncRegistry::default();
+    let alice = Username::parse("alice").expect("username");
+    let rename =
+        mb_server::rename::Rename::new(&vault, access.policy(), alice, &index, &sync, None);
+
+    let renamed = rename
+        .emoji("parrot", "bird", None)
+        .expect("the owner may rename it");
+    assert_eq!(
+        (renamed.notes, renamed.references),
+        (1, 1),
+        "the reply counted a note alice cannot read"
+    );
+    let hidden = std::fs::read_to_string(dir.path().join("Private/Salary.md")).expect("hidden");
+    assert_eq!(
+        hidden, ":bird: :bird:\n",
+        "the hidden note was left with the old name"
+    );
+}
+
 /// E18: an inbox row is a source note's name and text, so task queries are filtered at the
 /// index layer before any row reaches the pane.
 #[test]

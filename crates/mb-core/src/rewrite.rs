@@ -102,6 +102,8 @@ pub enum RewriteError {
     InvalidName(String),
     /// The new tag is not spelled the way [`syntax::scan_tag`] spells a tag.
     InvalidTag(String),
+    /// The new custom emoji shortcode is not a lowercase stored shortcode (§11.2).
+    InvalidEmoji(String),
     /// The spliced text did not parse back to the renamed document.
     ///
     /// The note is named by the caller, never by this crate — it is pure and holds no
@@ -115,6 +117,9 @@ impl fmt::Display for RewriteError {
         match self {
             Self::InvalidName(name) => write!(formatter, "`{name}` is not a usable note name"),
             Self::InvalidTag(tag) => write!(formatter, "`{tag}` is not a usable tag"),
+            Self::InvalidEmoji(name) => {
+                write!(formatter, "`{name}` is not a usable emoji shortcode")
+            }
             Self::Unverified => formatter.write_str(
                 "the rewritten note did not parse back to the renamed document, so it was \
                  discarded",
@@ -231,6 +236,59 @@ pub fn rename_tag(source: &str, from: &str, to: &str) -> Result<Rewrite, Rewrite
     });
     edits.sort_by_key(|(range, _)| range.start);
     finish_rename(source, edits, |text| retagged(text, from, to))
+}
+
+/// Renames a custom emoji shortcode, `:from:` to `:to:`, and changes nothing else (§11.2).
+///
+/// Matching is ASCII case-insensitive because rendering resolves names that way (§11.3), so
+/// `:PartyParrot:` is renamed along with `:partyparrot:`. A frontmatter `icon: ":from:"` is
+/// rewritten too: it renders the same artwork. Shortcodes inside code, maths and link
+/// destinations are text rather than emoji and are left alone, exactly as the parser
+/// leaves them.
+///
+/// # Errors
+///
+/// [`RewriteError::InvalidEmoji`] if `to` is not a stored shortcode, and
+/// [`RewriteError::Unverified`] if the result did not survive verification.
+pub fn rename_emoji(source: &str, from: &str, to: &str) -> Result<Rewrite, RewriteError> {
+    let from = from.trim().trim_matches(':');
+    let to = to.trim().trim_matches(':');
+    validate_emoji_name(to)?;
+    // why: a vault-wide rename visits every note. The substring test is a cheap filter that
+    // spares the two full parses verification costs for the notes that cannot match.
+    let needle = format!(":{}:", from.to_ascii_lowercase());
+    if from.is_empty() || !source.to_ascii_lowercase().contains(&needle) {
+        return Ok(Rewrite::unchanged(source));
+    }
+    let (body, base, scan) = scannable(source);
+    let mut edits = frontmatter_icon_edits(source, from, to);
+    walk_emoji(body, &scan, |name, found| {
+        if found.eq_ignore_ascii_case(from) {
+            edits.push((base + name.start..base + name.end, to.to_string()));
+        }
+    });
+    edits.sort_by_key(|(range, _)| range.start);
+    finish_rename(source, edits, |text| reemojied(text, from, to))
+}
+
+/// Whether `to` is usable as a stored custom emoji shortcode.
+///
+/// The same alphabet pack manifests accept: lowercase ASCII letters, digits, `_`, `+` and
+/// `-`. Narrower than what the parser reads, so every stored name is also a parsed one.
+///
+/// # Errors
+///
+/// [`RewriteError::InvalidEmoji`] with the name that failed.
+pub fn validate_emoji_name(to: &str) -> Result<(), RewriteError> {
+    let stored = !to.is_empty()
+        && to.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'+' | b'-')
+        });
+    if stored && syntax::scan_shortcode(&format!("{to}:")) == Some(to.len()) {
+        Ok(())
+    } else {
+        Err(RewriteError::InvalidEmoji(to.to_string()))
+    }
 }
 
 /// Makes the first line of a note its non-empty level-one title.
@@ -520,6 +578,28 @@ fn retagged(source: &str, from: &str, to: &str) -> Document {
     crate::canonicalize(doc)
 }
 
+/// The same, for an emoji rename — the frontmatter icon included, because it renders too.
+fn reemojied(source: &str, from: &str, to: &str) -> Document {
+    let mut doc = crate::parse(source);
+    if doc
+        .frontmatter
+        .icon
+        .as_deref()
+        .and_then(|icon| icon.strip_prefix(':')?.strip_suffix(':'))
+        .is_some_and(|name| name.eq_ignore_ascii_case(from))
+    {
+        doc.frontmatter.icon = Some(format!(":{to}:"));
+    }
+    map_blocks(&mut doc.blocks, &mut |inline| {
+        if let Inline::Emoji(name) = inline
+            && name.eq_ignore_ascii_case(from)
+        {
+            *name = to.to_string();
+        }
+    });
+    crate::canonicalize(doc)
+}
+
 /// `tag` renamed when it is `from` or nested under it, keeping the segments below.
 ///
 /// Segment-wise rather than by byte length: folding normalizes to NFC, so a decomposed
@@ -738,7 +818,14 @@ fn resolve(body: &str, scan: &Scan, at: usize) -> Resolved {
 /// Calls `on_target` with the source range of every wikilink target in the body.
 fn walk(body: &str, scan: &Scan, mut on_target: impl FnMut(Range<usize>, &str)) {
     let mut at = 0usize;
-    while let Some(step) = advance(body, scan, at, &mut on_target, &mut |_, _| {}) {
+    while let Some(step) = advance(
+        body,
+        scan,
+        at,
+        &mut on_target,
+        &mut |_, _| {},
+        &mut |_, _| {},
+    ) {
         at = step;
     }
 }
@@ -747,7 +834,23 @@ fn walk(body: &str, scan: &Scan, mut on_target: impl FnMut(Range<usize>, &str)) 
 /// in `[[Note#Heading]]` is an anchor and renaming a tag must not touch it.
 fn walk_tags(body: &str, scan: &Scan, mut on_tag: impl FnMut(Range<usize>, &str)) {
     let mut at = 0usize;
-    while let Some(step) = advance(body, scan, at, &mut |_, _| {}, &mut on_tag) {
+    while let Some(step) = advance(body, scan, at, &mut |_, _| {}, &mut on_tag, &mut |_, _| {}) {
+        at = step;
+    }
+}
+
+/// The same walk, reporting custom emoji shortcodes. Wikilinks are skipped for the same
+/// reason as above: `[[Meeting 10:30:]]` names a note, not an emoji.
+fn walk_emoji(body: &str, scan: &Scan, mut on_emoji: impl FnMut(Range<usize>, &str)) {
+    let mut at = 0usize;
+    while let Some(step) = advance(
+        body,
+        scan,
+        at,
+        &mut |_, _| {},
+        &mut |_, _| {},
+        &mut on_emoji,
+    ) {
         at = step;
     }
 }
@@ -759,6 +862,7 @@ fn advance(
     at: usize,
     on_target: &mut impl FnMut(Range<usize>, &str),
     on_tag: &mut impl FnMut(Range<usize>, &str),
+    on_emoji: &mut impl FnMut(Range<usize>, &str),
 ) -> Option<usize> {
     let rest = body.get(at..).filter(|rest| !rest.is_empty())?;
     let char_len = rest.chars().next().map_or(1, char::len_utf8);
@@ -768,6 +872,13 @@ fn advance(
     if let Some(link) = wikilink_at(body, scan, at) {
         on_target(link.target, &link.name);
         return Some(link.end);
+    }
+    // The parser tries a shortcode before a tag at the same position (`parse::inline`).
+    if rest.starts_with(':')
+        && let Some(emoji) = emoji_at(body, scan, at)
+    {
+        on_emoji(emoji.body, &emoji.name);
+        return Some(emoji.end);
     }
     if rest.starts_with('#')
         && let Some(tag) = tag_at(body, scan, at)
@@ -849,6 +960,56 @@ struct FoundTag {
     end: usize,
     body: Range<usize>,
     name: String,
+}
+
+/// A shortcode starting at the `:` at `at`: its end, and the source range of its name.
+///
+/// Both colons are the construct's delimiters, so an escape on either cancels it, which is
+/// what `parse::inline` checks too.
+fn emoji_at(body: &str, scan: &Scan, at: usize) -> Option<FoundTag> {
+    let resolved = resolve(body, scan, at + 1);
+    let len = syntax::scan_shortcode(&resolved.text)?;
+    let close = resolved.source_of(len);
+    if scan.escaped.contains(&close) || !scan.all(close..close + 1) {
+        return None;
+    }
+    Some(FoundTag {
+        end: close + 1,
+        body: at + 1..resolved.end_before(len),
+        name: resolved.text.get(..len).unwrap_or("").to_string(),
+    })
+}
+
+/// The edit renaming a frontmatter `icon: ":from:"`, quoted or not.
+///
+/// Hand-rolled for the reason [`frontmatter_tag_edits`] is: the frontmatter parser returns
+/// values and this needs their offsets. A shape it does not recognise is left alone, and
+/// verification turns that into a refusal rather than a stale icon.
+fn frontmatter_icon_edits(source: &str, from: &str, to: &str) -> Vec<(Range<usize>, String)> {
+    let (Some(body), _) = frontmatter::split(source) else {
+        return Vec::new();
+    };
+    let base = source.find(body).unwrap_or(0);
+    let mut offset = 0usize;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if let Some(value) = trimmed.strip_prefix("icon:") {
+            let lead = value.len() - value.trim_start().len();
+            let item = value.trim();
+            let (text, quote) = match unquoted(item) {
+                Some(inner) => (inner, 1),
+                None => (item, 0),
+            };
+            if let Some(name) = text.strip_prefix(':').and_then(|t| t.strip_suffix(':'))
+                && name.eq_ignore_ascii_case(from)
+            {
+                let begin = base + offset + "icon:".len() + lead + quote + 1;
+                return vec![(begin..begin + name.len(), to.to_string())];
+            }
+        }
+        offset += line.len();
+    }
+    Vec::new()
 }
 
 /// Tag edits inside the frontmatter's `tags:` value (§9.3 unifies inline and frontmatter).

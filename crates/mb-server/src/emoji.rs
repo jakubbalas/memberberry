@@ -277,6 +277,165 @@ pub fn materialize(shared_root: Option<&Path>, vault: &crate::Vault) -> Result<u
     Ok(copied)
 }
 
+/// The vault-local pack owning `shortcode` as its canonical name, and that pack's manifest.
+///
+/// Only canonical shortcodes identify an entry for management; an alias is a second name for
+/// it, not a handle. `None` when no local pack owns the name — including when only a shared
+/// pack does, because shared artwork is not the vault owner's to change (§11.2, A21).
+///
+/// # Errors
+///
+/// Fails closed when the local root is unreadable or holds an invalid pack.
+pub fn find_local(root: &Path, shortcode: &str) -> Result<Option<(PathBuf, Manifest)>, Error> {
+    let Some(entry) = load_root(root)?.remove(shortcode) else {
+        return Ok(None);
+    };
+    let manifest = load_pack(&entry.path)?;
+    Ok(Some((entry.path, manifest)))
+}
+
+/// Deletes one vault-local emoji, and its pack once nothing else is in it.
+///
+/// Notes keep their `:shortcode:` text: deleting artwork must not edit anybody's note, and the
+/// readable shortcode is §11.3's intended degradation.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for an unknown shortcode, otherwise I/O failures.
+pub fn remove_entry(root: &Path, shortcode: &str) -> Result<(), Error> {
+    let Some((directory, mut manifest)) = find_local(root, shortcode)? else {
+        return Err(unknown(root));
+    };
+    let Some(position) = manifest
+        .emoji
+        .iter()
+        .position(|entry| entry.shortcode == shortcode)
+    else {
+        return Err(unknown(root));
+    };
+    let removed = manifest.emoji.remove(position);
+    if manifest.emoji.is_empty() {
+        return std::fs::remove_dir_all(&directory).map_err(|source| Error::Io {
+            path: directory,
+            source,
+        });
+    }
+    write_manifest(&directory, &manifest)?;
+    // why: the image may be shared by another entry in an older multi-emoji pack.
+    if !manifest
+        .emoji
+        .iter()
+        .any(|entry| entry.file == removed.file)
+    {
+        let image = directory.join(&removed.file);
+        std::fs::remove_file(&image).map_err(|source| Error::Io {
+            path: image,
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+/// Renames one vault-local emoji, keeping the old name as an alias.
+///
+/// The old name stays resolvable so a note the rewrite could not reach — an offline replica
+/// that reconnects later — still shows the artwork rather than a bare shortcode. `taken` is
+/// every other effective name in the vault, shared ones included, so a rename can never
+/// shadow somebody else's emoji.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for an unknown or invalid name, [`Error::Conflict`] when `to` already
+/// names another emoji.
+pub fn rename_entry(
+    root: &Path,
+    from: &str,
+    to: &str,
+    taken: &std::collections::BTreeSet<String>,
+) -> Result<(), Error> {
+    if !valid_name(to) {
+        return Err(Error::Invalid {
+            path: root.to_path_buf(),
+            message: "invalid emoji shortcode".to_string(),
+        });
+    }
+    let Some((directory, mut manifest)) = find_local(root, from)? else {
+        return Err(unknown(root));
+    };
+    let Some(entry) = manifest
+        .emoji
+        .iter_mut()
+        .find(|entry| entry.shortcode == from)
+    else {
+        return Err(unknown(root));
+    };
+    let own = entry.aliases.iter().any(|alias| alias == to);
+    if to == from || (!own && taken.contains(to)) {
+        return Err(Error::Conflict(directory));
+    }
+    entry.aliases.retain(|alias| alias != to);
+    entry.aliases.push(from.to_string());
+    entry.shortcode = to.to_string();
+    write_manifest(&directory, &manifest)
+}
+
+/// Removes one alias from a vault-local emoji. The canonical shortcode is unaffected.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] when the emoji or the alias does not exist.
+pub fn remove_alias(root: &Path, shortcode: &str, alias: &str) -> Result<(), Error> {
+    let Some((directory, mut manifest)) = find_local(root, shortcode)? else {
+        return Err(unknown(root));
+    };
+    let Some(entry) = manifest
+        .emoji
+        .iter_mut()
+        .find(|entry| entry.shortcode == shortcode)
+    else {
+        return Err(unknown(root));
+    };
+    let before = entry.aliases.len();
+    entry.aliases.retain(|existing| existing != alias);
+    if entry.aliases.len() == before {
+        return Err(unknown(root));
+    }
+    write_manifest(&directory, &manifest)
+}
+
+/// Every effective name in the vault — canonical shortcodes and aliases, local and shared.
+///
+/// # Errors
+///
+/// Fails closed when either root holds an invalid pack.
+pub fn effective_names(
+    shared_root: Option<&Path>,
+    local_root: &Path,
+) -> Result<std::collections::BTreeSet<String>, Error> {
+    Ok(resolved_names(resolve(shared_root, local_root)?.iter()))
+}
+
+/// Replaces a pack manifest atomically, validating it against the files on disk first.
+fn write_manifest(directory: &Path, manifest: &Manifest) -> Result<(), Error> {
+    validate_manifest(manifest, directory)?;
+    let path = directory.join("pack.json");
+    let bytes = serde_json::to_vec(manifest).map_err(|error| Error::Invalid {
+        path: path.clone(),
+        message: error.to_string(),
+    })?;
+    crate::sync::atomic_write(&path, &bytes).map_err(|error| Error::Io {
+        path,
+        source: std::io::Error::other(error.to_string()),
+    })
+}
+
+fn unknown(root: &Path) -> Error {
+    Error::Invalid {
+        path: root.to_path_buf(),
+        message: "no such vault emoji".to_string(),
+    }
+}
+
 fn available_materialized_name(root: &Path, pack: &str) -> Result<String, Error> {
     if !root.join(pack).exists() {
         return Ok(pack.to_string());
@@ -790,6 +949,182 @@ mod tests {
                 .join(".memberberry/emoji/packs/party-materialized-1")
                 .is_dir()
         );
+    }
+
+    const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    fn single(root: &std::path::Path, pack: &str, shortcode: &str, aliases: &[&str]) {
+        let entry = super::Entry {
+            shortcode: shortcode.to_string(),
+            file: format!("{shortcode}.png"),
+            aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
+        };
+        super::install(
+            root,
+            pack,
+            super::Upload {
+                manifest: super::Manifest {
+                    name: pack.to_string(),
+                    version: 1,
+                    emoji: vec![entry],
+                },
+                files: vec![super::UploadFile {
+                    name: format!("{shortcode}.png"),
+                    content_base64: PIXEL.to_string(),
+                }],
+            },
+        )
+        .expect("install");
+    }
+
+    fn names(root: &std::path::Path) -> std::collections::BTreeSet<String> {
+        super::effective_names(None, root).expect("names")
+    }
+
+    #[test]
+    fn rename_keeps_the_old_name_as_an_alias() {
+        let root = tempdir().expect("root");
+        single(root.path(), "emoji-a", "parrot", &["bird"]);
+        super::rename_entry(root.path(), "parrot", "party", &names(root.path())).expect("rename");
+        let entries = resolve(None, root.path()).expect("resolve");
+        let entry = entries.first().expect("entry");
+        assert_eq!(
+            (entry.shortcode.as_str(), entry.aliases.clone()),
+            ("party", vec!["bird".to_string(), "parrot".to_string()])
+        );
+    }
+
+    #[test]
+    fn rename_to_its_own_alias_swaps_the_names() {
+        let root = tempdir().expect("root");
+        single(root.path(), "emoji-a", "parrot", &["bird"]);
+        super::rename_entry(root.path(), "parrot", "bird", &names(root.path())).expect("rename");
+        let entries = resolve(None, root.path()).expect("resolve");
+        let entry = entries.first().expect("entry");
+        assert_eq!(
+            (entry.shortcode.as_str(), entry.aliases.clone()),
+            ("bird", vec!["parrot".to_string()])
+        );
+    }
+
+    #[test]
+    fn rename_refuses_a_name_another_emoji_uses_and_writes_nothing() {
+        let root = tempdir().expect("root");
+        single(root.path(), "emoji-a", "parrot", &[]);
+        single(root.path(), "emoji-b", "cat", &["kitty"]);
+        let before = fs::read(root.path().join("emoji-a/pack.json")).expect("manifest");
+        for taken in ["cat", "kitty", "parrot"] {
+            assert!(
+                matches!(
+                    super::rename_entry(root.path(), "parrot", taken, &names(root.path())),
+                    Err(Error::Conflict(_))
+                ),
+                "{taken}"
+            );
+        }
+        assert_eq!(
+            fs::read(root.path().join("emoji-a/pack.json")).expect("manifest"),
+            before
+        );
+    }
+
+    #[test]
+    fn rename_refuses_an_invalid_name_or_an_unknown_emoji() {
+        let root = tempdir().expect("root");
+        single(root.path(), "emoji-a", "parrot", &["bird"]);
+        for (from, to) in [
+            ("parrot", "Party"),
+            ("parrot", "a b"),
+            ("parrot", "../x"),
+            ("missing", "x"),
+            ("bird", "x"),
+        ] {
+            assert!(
+                matches!(
+                    super::rename_entry(root.path(), from, to, &names(root.path())),
+                    Err(Error::Invalid { .. })
+                ),
+                "{from} -> {to}"
+            );
+        }
+    }
+
+    #[test]
+    fn rename_refuses_to_shadow_a_shared_name() {
+        let root = tempdir().expect("root");
+        let shared = root.path().join("shared");
+        let local = root.path().join("local");
+        single(&shared, "server", "ship", &[]);
+        single(&local, "emoji-a", "parrot", &[]);
+        let taken = super::effective_names(Some(&shared), &local).expect("names");
+        assert!(matches!(
+            super::rename_entry(&local, "parrot", "ship", &taken),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn a_shared_emoji_is_not_found_in_the_local_root() {
+        let root = tempdir().expect("root");
+        let shared = root.path().join("shared");
+        let local = root.path().join("local");
+        single(&shared, "server", "ship", &[]);
+        assert!(super::find_local(&local, "ship").expect("find").is_none());
+        assert!(matches!(
+            super::remove_entry(&local, "ship"),
+            Err(Error::Invalid { .. })
+        ));
+        assert!(shared.join("server/ship.png").is_file());
+    }
+
+    #[test]
+    fn deleting_the_only_emoji_removes_its_pack() {
+        let root = tempdir().expect("root");
+        single(root.path(), "emoji-a", "parrot", &[]);
+        super::remove_entry(root.path(), "parrot").expect("remove");
+        assert!(!root.path().join("emoji-a").exists());
+        assert!(resolve(None, root.path()).expect("resolve").is_empty());
+    }
+
+    #[test]
+    fn deleting_one_emoji_of_a_shared_pack_keeps_the_rest_and_shared_images() {
+        let root = tempdir().expect("root");
+        let pack = root.path().join("legacy");
+        fs::create_dir_all(&pack).expect("pack");
+        fs::write(pack.join("a.png"), b"a").expect("a");
+        fs::write(pack.join("b.png"), b"b").expect("b");
+        fs::write(
+            pack.join("pack.json"),
+            r#"{"name":"legacy","version":1,"emoji":[{"shortcode":"one","file":"a.png"},{"shortcode":"two","file":"a.png"},{"shortcode":"three","file":"b.png"}]}"#,
+        )
+        .expect("manifest");
+        super::remove_entry(root.path(), "one").expect("remove one");
+        assert!(pack.join("a.png").is_file(), "two still uses a.png");
+        super::remove_entry(root.path(), "three").expect("remove three");
+        assert!(!pack.join("b.png").exists(), "nothing uses b.png any more");
+        let left: Vec<String> = resolve(None, root.path())
+            .expect("resolve")
+            .into_iter()
+            .map(|entry| entry.shortcode)
+            .collect();
+        assert_eq!(left, ["two"]);
+    }
+
+    #[test]
+    fn removing_an_alias_keeps_the_emoji() {
+        let root = tempdir().expect("root");
+        single(root.path(), "emoji-a", "parrot", &["bird", "old"]);
+        super::remove_alias(root.path(), "parrot", "old").expect("remove alias");
+        let entries = resolve(None, root.path()).expect("resolve");
+        assert_eq!(entries.first().expect("entry").aliases, ["bird"]);
+        assert!(matches!(
+            super::remove_alias(root.path(), "parrot", "old"),
+            Err(Error::Invalid { .. })
+        ));
+        assert!(matches!(
+            super::remove_alias(root.path(), "missing", "bird"),
+            Err(Error::Invalid { .. })
+        ));
     }
 
     #[test]

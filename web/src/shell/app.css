@@ -597,6 +597,31 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .rename-cancel { color: var(--text-primary); background: var(--surface-raised); }
 .rename-confirm { color: var(--surface-note); border-color: transparent; background: var(--accent-primary); }
 .rename-cancel:disabled, .rename-confirm:disabled { opacity: .55; cursor: default; }
+/* Vault settings (§20.4). One scrolling sheet: the emoji list is unbounded, the window is not. */
+.settings-dialog { width: min(var(--palette-width), calc(100vw - var(--space-8))); max-width: 100%; max-height: calc(100dvh - var(--space-9)); margin: var(--space-8) auto auto; padding: 0; overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-primary); background: var(--surface-note); box-shadow: var(--shadow-lg); }
+.settings-dialog::backdrop { background: color-mix(in srgb, var(--text-primary) 35%, transparent); }
+.settings-body { display: flex; flex-direction: column; gap: var(--space-6); padding: var(--space-5); }
+.settings-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.settings-section { display: flex; flex-direction: column; gap: var(--space-4); padding-top: var(--space-5); border-top: 1px solid var(--border-subtle); }
+.settings-heading { margin: 0; font: var(--weight-bold) var(--text-sm)/var(--leading-snug) var(--font-ui); }
+.settings-note { margin: 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.settings-note:empty { display: none; }
+.settings-form, .settings-inline { display: flex; flex-direction: column; gap: var(--space-4); }
+.settings-inline { flex: 1; min-width: 0; }
+.settings-start { justify-content: flex-start; }
+.settings-fieldset { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding: 0; border: 0; }
+.settings-choice { display: flex; align-items: center; gap: var(--space-4); min-height: var(--touch-target-min); font: var(--text-sm)/var(--leading-flat) var(--font-ui); }
+.settings-colour { width: var(--touch-target-min); height: var(--touch-target-min); padding: var(--space-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-sunken); cursor: pointer; }
+.settings-colour:disabled { opacity: .55; cursor: default; }
+.settings-emoji-list { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+.settings-emoji-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); padding: var(--space-3) 0; border-bottom: 1px solid var(--border-subtle); }
+.settings-emoji-image { width: var(--icon-size); height: var(--icon-size); object-fit: contain; }
+.settings-emoji-names { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: var(--space-3); min-width: 0; }
+.settings-shortcode { font: var(--weight-medium) var(--text-sm)/var(--leading-flat) var(--font-mono); overflow-wrap: anywhere; }
+.settings-alias { display: inline-flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--surface-raised); font: var(--text-xs)/var(--leading-flat) var(--font-mono); }
+.settings-alias-remove { min-width: var(--touch-target-min); min-height: var(--touch-target-min); padding: 0; border: 0; color: var(--text-muted); background: none; cursor: pointer; font: var(--text-sm)/var(--leading-flat) var(--font-ui); }
+.settings-alias-remove:hover { color: var(--state-danger); }
+.settings-danger { background: var(--state-danger); }
 /* Announced, not shown: the message is for a screen reader as much as for a sighted user,
    and a toast that steals a corner of the workspace is worse than a line nobody has to read. */
 .rename-notice { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; border: 0; clip-path: inset(50%); white-space: nowrap; }

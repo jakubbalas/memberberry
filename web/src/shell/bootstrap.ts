@@ -12,6 +12,7 @@
  * and gets validated properly. Not before.
  */
 
+import { parseAccent } from "./accent.js";
 import { shippedTheme, type ShippedTheme } from "./theme.js";
 
 /** A note the server has authorized this user to open. */
@@ -21,17 +22,34 @@ export interface NoteBootstrap {
   readonly user: string;
   readonly mediaMaxDimension?: number;
   readonly theme?: ShippedTheme;
+  /** The vault's validated `#rrggbb` accent override (§20.1). */
+  readonly accent?: string;
+  /**
+   * Whether this user owns the vault, which is only whether to *offer* Settings. Every
+   * settings route re-checks it on the server; this flag authorizes nothing.
+   */
+  readonly owner?: boolean;
 }
 
 /** An authenticated vault home, with no note selected by the route. */
-export type HomeBootstrap = Pick<NoteBootstrap, "vault" | "user" | "theme">;
+export type HomeBootstrap = Pick<NoteBootstrap, "vault" | "user" | "theme" | "accent" | "owner">;
+
+/** The appearance and ownership attributes both bootstrap kinds share. */
+function vaultAttributes(element: HTMLElement): Pick<NoteBootstrap, "theme" | "accent" | "owner"> {
+  const theme = shippedTheme(element.dataset["vaultTheme"]);
+  const accent = parseAccent(element.dataset["vaultAccent"]);
+  return {
+    ...(theme === undefined ? {} : { theme }),
+    ...(accent === undefined ? {} : { accent }),
+    ...(element.dataset["vaultOwner"] === "true" ? { owner: true } : {}),
+  };
+}
 
 /** Reads only explicitly marked home pages; incomplete bootstraps remain local-only. */
 export function readHomeBootstrap(element: HTMLElement): HomeBootstrap | undefined {
   const { vault, user, home } = element.dataset;
   if (home !== "true" || !isFilled(vault) || !isFilled(user)) return undefined;
-  const theme = shippedTheme(element.dataset["vaultTheme"]);
-  return { vault, user, ...(theme === undefined ? {} : { theme }) };
+  return { vault, user, ...vaultAttributes(element) };
 }
 
 /** The offline shell can resume a vault home using the remembered display label. */
@@ -59,13 +77,12 @@ export function readNoteBootstrap(element: HTMLElement): NoteBootstrap | undefin
   const mediaMaxDimension = Number.isInteger(parsedMaximum) && parsedMaximum >= 256 && parsedMaximum <= 8192
     ? parsedMaximum
     : undefined;
-  const theme = shippedTheme(element.dataset["vaultTheme"]);
   return {
     vault,
     note,
     user,
     ...(mediaMaxDimension === undefined ? {} : { mediaMaxDimension }),
-    ...(theme === undefined ? {} : { theme }),
+    ...vaultAttributes(element),
   };
 }
 

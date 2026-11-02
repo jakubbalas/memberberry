@@ -22,6 +22,7 @@ pub mod invites;
 pub mod media;
 pub mod rename;
 pub mod repository;
+pub mod settings;
 pub mod static_site;
 pub mod sync;
 pub mod titles;

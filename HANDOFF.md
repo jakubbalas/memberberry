@@ -2,63 +2,61 @@
 
 ## Current state (2026-11-02)
 
-Custom emoji now render in the authenticated app instead of appearing only in the picker.
-The fix covers note bodies/titles, inline suggestions, navigation/tab/folder/home/search/
-outline labels and authenticated transclusions. Existing schema atoms and aliases use the
-same authorized artwork as the picker. Images scale with surrounding text. This is
-committed; SPEC §11.1–11.4 records behavior and remaining rendering limits.
+Vault settings are implemented and committed (SPEC §20.4, §11.2, §20.1, E33, A36/A37).
+Owners get a top-bar settings button (sliders icon) opening a dialog that:
+- sets the vault default theme and an optional accent colour, saved to
+  `.memberberry/config.toml`. The accent is lightened or darkened per palette to keep 4.5:1
+  contrast;
+- lists vault emoji (shared server emoji read-only), adds one image under a chosen
+  shortcode, removes aliases, deletes emoji (notes keep `:name:`) and renames them;
+- renames by rewriting `:old:` to `:new:` in every note as an E14 privileged rewrite
+  (`mb_core::rewrite::rename_emoji`, the `rename` route with `kind: "emoji"`) and keeps the
+  old name as an alias.
 
-The old picker inserted custom codes as plain text, which Rust correctly escaped. New picker
-and autocomplete selections and completed typed codes use the existing emoji atom and keep
-canonical Markdown shortcodes. Older escaped/text replicas get view-only decorations;
-rendering never migrates or rewrites their CRDT content. Code stays literal, unavailable
-artwork falls back to a readable shortcode, and title/outline extraction retains emoji names.
-
-Artwork lookup is nonblocking and shared only while authenticated views subscribe. Accepted
-imports update mounted views; last teardown aborts and drops the ephemeral catalog. Existing
-E22 routes still filter the catalog/images server-side. No server route or schema format
-changed and no new enforcement point was added. No live-vault write, push or deployment
-was performed. The prior shortcode/autocomplete work is committed as deefe71.
+New routes: `GET`/`PUT …/settings`, `DELETE …/emoji-entries/{shortcode}[/aliases/{alias}]`.
+New enforcement point: E33. The bootstrap now carries `data-vault-accent` and
+`data-vault-owner`. The custom emoji rendering work before this is committed as c92aebd.
+No push, deployment or live-vault write was performed.
 
 ## Verification
 
-- Focused custom/editor/rendering tests (190) and related shell/schema tests (149, with
-  overlap) pass. Cases cover
-  canonical/legacy text, titles, aliases, unknown/failed images, code exclusion, unchanged
-  JSON/content, incremental decoration updates, teardown, lookup races and malformed/denied
-  catalogs. Seeded catalog URL/alias properties use seed 20261102 (100 cases).
-- All six focused desktop/mobile browser cases pass and their final screenshots were
-  visually reviewed. They verify a 3d-printer shortcode: existing escaped text,
-  title and new picker/typed/autocomplete insertions render; legacy escaping remains intact;
-  new atoms persist as unescaped canonical shortcodes; images survive reload and appear in
-  navigation/tabs. The one-character trigger and outside/Escape dismissal remain covered.
-- The initial browser regression failed against the old text-only renderer. A separate
-  title-extraction regression failed before adding schema leaf text. Screenshot QA also
-  found the general media-image CSS overriding inline artwork; it has a browser layout check.
-  A separate regression proves clicking emoji artwork does not offer the media-image editor.
-- Focused server checks pass: both custom_emoji_route HTTP cases (including unreadable-vault
-  denial) and the E22 leak test. Frontend denial tests also reject catalog data on 403/404/500.
-- Production frontend build, TypeScript/Svelte typecheck and design-token checks pass.
-  Existing dependency directive and large-chunk warnings remain. Browser listeners require
-  sandbox escalation and use only the disposable test vault on 9012.
-- Host benchmarks compare the new rendering extension against a baseline editor over 1,000
-  blocks and measure full-catalog autocomplete. They exclude layout, network and physical
-  Android input-to-paint; device performance acceptance remains unconfirmed.
-- Bundle-only verification accepts the existing recorded breach: this local build measures
-  about 905 KB against the 500 KB target (allowance 950 KiB). This is not a clean budget pass;
-  the current local WASM build is unoptimized. No allowance was changed.
+- mb-core: 24 new emoji-rewrite tests, including seeded properties (verifies on generated
+  notes, there-and-back identity, spans-only edits on arbitrary input). The existing 34
+  rename tests still pass. Three mutation probes (case-folding, closing-colon escape,
+  frontmatter icon) each turned a test red; the escape probe needed a new test to do so.
+- mb-server: 9 emoji manifest tests, 8 settings tests (with properties), 5 HTTP integration
+  tests, and leak cases e33 (owner-only routes; probe removing the owner check went red) and
+  e14_an_emoji_rename. The full mb-core and mb-server suites pass apart from the two
+  onboarding config-write tests below. Clippy reports nothing in changed files; the
+  existing folder_delete.rs test-module expect findings remain.
+- Web: all 187 vitest files (2782 tests) pass, plus svelte-check, token-check and
+  wasm-check. The accent property uses seed 20261102 against every `--surface-note` in
+  tokens.css. Dialog probes (collision check, delete confirmation) went red.
+- Browser: settings.spec.ts passes on desktop and mobile (add, rename rewriting the file on
+  disk, theme + accent saved and repainted after reload, delete). Its screenshots were
+  inspected. Related theme/emoji-import/topbar/tokens specs pass (43), including the mobile
+  44px touch floor with the new button. The spec uses its own `empty-<project>-settings`
+  vault so vault-wide appearance changes cannot leak into other specs.
+- The two failing onboarding tests (`onboarding_failed_config_write_…`,
+  `onboarding_config_write_failure_…`) compare `/private/var` against `/var` temp paths
+  on macOS. They are unrelated to this change; see the open item below.
 
-Fresh logs: local/debug/custom-emoji-{before,title-before,inline-before,media-before,tests,related-tests,
-http,leak,build,browser,typecheck,tokens,bench,bundle}.log. Browser screenshots are
-web/test-results/emoji-import-an-individual-be562-ted-as-a-Markdown-shortcode-{desktop,mobile}/custom-emoji-in-note.png.
-Old single-emoji/emoji-shortcode/one-char-emoji/colon-emoji logs remain in local/debug/.
-Browser test-results are overwritten by subsequent runs.
+Logs: local/debug/settings-rust-tests.log, local/debug/settings-clippy.log. Screenshots:
+web/test-results/settings-an-owner-manages-*/settings-dialog.png (overwritten by later runs).
 
 Full make check and local coverage measurement are deferred, not requested.
 Full make e2e remains user-run and pending; no full-suite result is claimed.
 
 ## Next and open work
 
+- Settings scope deliberately omitted: no palette command for Settings, no server-admin
+  editing of shared emoji from the dialog (the admin API still exists), no replacing an
+  emoji's artwork, and no accent on server-rendered pages. Open windows other than the one
+  that saved pick up appearance on their next load.
+- An emoji rename that fails part-way through note writes leaves earlier notes rewritten.
+  The old alias keeps everything rendering, but re-running the rename is refused (the old
+  name is no longer canonical); finish by hand or rename back. The audit log lists touched
+  files. Emoji renames scan every note file (no emoji index), so cost grows with vault size.
 - Anonymous shares and CLI HTML still show readable custom shortcodes. They need their own
   rendering/authorization integration; authenticated vault image URLs must not be reused
   for anonymous shares. The authenticated app and its standalone HTML export render artwork.
@@ -77,7 +75,8 @@ Full make e2e remains user-run and pending; no full-suite result is claimed.
 - Other connected clients/bookmarks do not follow folder renames; only the initiating
   workspace updates. Other durable feature limits remain in SPEC.md.
 - The macOS directory_path_included warning remains; its callers are Linux-only. Historical
-  onboarding cleanup/recovery tests remain unverified locally.
+  onboarding cleanup/recovery tests fail locally on the macOS /private/var vs /var
+  temp-path comparison (http.rs:268); unrelated to settings, not fixed.
 - Unreproduced sync registry lock-poisoned panic: capture the first backtrace; never clear
   poison or delete replicas. False-conflict callouts are not automatically removed.
 - Browser IndexedDB cap/cross-tab eviction remains unverified. Existing Linux Chromium

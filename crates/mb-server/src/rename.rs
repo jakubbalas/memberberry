@@ -1,4 +1,4 @@
-//! Renaming a note or a tag, with inbound links rewritten (`SPEC.md` §6.6, E14).
+//! Renaming a note, a tag or a custom emoji, with references rewritten (`SPEC.md` §6.6, E14).
 //!
 //! ## Why this is privileged, and what that costs
 //!
@@ -385,6 +385,77 @@ impl<'a> Rename<'a> {
             rewrite::rename_tag(source, &from, &to)
         })?;
         let outcome = self.write(planned, &BTreeMap::new(), &to)?;
+        self.settle();
+        Ok(outcome)
+    }
+
+    /// Renames a vault-local custom emoji and rewrites `:from:` to `:to:` in every note (§11.2).
+    ///
+    /// **Requires vault-wide `owner`**, for the reason [`Rename::tag`] does: a shortcode is a
+    /// name spread across notes with different ACLs, and owner already manages the vault's
+    /// emoji. Shared server emoji are not the owner's to rename and answer as missing.
+    ///
+    /// The rewrite runs as the same privileged operation as a tag rename — every note, read
+    /// or not — and the old name is kept as an alias in the manifest, so a replica that was
+    /// offline during the rename and later syncs `:from:` back still renders the artwork.
+    /// Order: every rewrite is planned in memory first; then the manifest changes; then the
+    /// notes are written. A refusal at either of the first two steps writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// See [`RenameError`]. A missing or shared emoji is [`RenameError::Denied`].
+    pub fn emoji(
+        &self,
+        from: &str,
+        to: &str,
+        shared_root: Option<&std::path::Path>,
+    ) -> Result<Renamed, RenameError> {
+        if !self.is_owner() {
+            return Err(RenameError::Denied);
+        }
+        let from = from.trim().trim_matches(':').to_string();
+        let to = to.trim().trim_matches(':').to_string();
+        rewrite::validate_emoji_name(&to).map_err(|_| RenameError::InvalidName(to.clone()))?;
+        let local_root = self
+            .vault
+            .root()
+            .join(".memberberry")
+            .join("emoji")
+            .join("packs");
+        let Some((_, manifest)) = crate::emoji::find_local(&local_root, &from)
+            .map_err(|error| RenameError::Failed(error.to_string()))?
+        else {
+            return Err(RenameError::Denied);
+        };
+        let own_alias = manifest
+            .emoji
+            .iter()
+            .any(|entry| entry.shortcode == from && entry.aliases.contains(&to));
+        let taken = crate::emoji::effective_names(shared_root, &local_root)
+            .map_err(|error| RenameError::Failed(error.to_string()))?;
+        if to == from || (!own_alias && taken.contains(&to)) {
+            return Err(RenameError::Exists(format!(":{to}:")));
+        }
+
+        self.flush_open_notes()?;
+        let carriers: Vec<(String, Vec<String>)> = self
+            .vault
+            .notes()
+            .map_err(|error| RenameError::Failed(error.to_string()))?
+            .into_iter()
+            .map(|path| (path, Vec::new()))
+            .collect();
+        let planned = plan(self.vault, &carriers, |source, _| {
+            rewrite::rename_emoji(source, &from, &to)
+        })?;
+        crate::emoji::rename_entry(&local_root, &from, &to, &taken).map_err(
+            |error| match error {
+                crate::emoji::Error::Conflict(_) => RenameError::Exists(format!(":{to}:")),
+                crate::emoji::Error::Invalid { .. } => RenameError::InvalidName(to.clone()),
+                crate::emoji::Error::Io { .. } => RenameError::Failed(error.to_string()),
+            },
+        )?;
+        let outcome = self.write(planned, &BTreeMap::new(), &format!(":{to}:"))?;
         self.settle();
         Ok(outcome)
     }

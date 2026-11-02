@@ -127,6 +127,19 @@ export async function renameTag(
   return send(vault, { kind: "tag", from, to }, options);
 }
 
+/**
+ * Renames a vault-local custom emoji and rewrites its shortcode in every note (§11.2).
+ * The server keeps the old name as an alias, so nothing the rewrite missed stops rendering.
+ */
+export async function renameEmoji(
+  vault: string,
+  from: string,
+  to: string,
+  options: RenameOptions = {},
+): Promise<RenameResult> {
+  return send(vault, { kind: "emoji", from, to }, options);
+}
+
 /** Moves an entire folder through the server's permission-checked rename operation. */
 export async function renameFolder(vault: string, from: string, to: string, options: RenameOptions = {}): Promise<RenameResult> {
   return send(vault, { kind: "folder", from, to }, options);
