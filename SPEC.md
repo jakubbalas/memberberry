@@ -500,7 +500,8 @@ scope. Do not add these without an explicit decision:
 - Arbitrary HTML blocks, note-authored CSS and unbounded style values. The explicit
   bounded `mb-style` contract above is the user-requested exception for coloured text;
   it is not permission to restore general-purpose HTML storage/editing.
-- **Mermaid diagrams** — explicitly declined in A9; not an oversight
+- ~~Mermaid diagrams~~ — declined in A9, **brought in by A38** (§13.2). They are ordinary
+  ` ```mermaid ` code fences, so Markdown isomorphism is untouched
 - **Freeform canvas workspaces** — explicitly declined in A9; Excalidraw covers the need
 - **Task recurrence (`🔁`)** — deferred; see §10.4
 
@@ -623,6 +624,7 @@ web/
   src/editor/     Tiptap schema (generated from schema.json) + y-prosemirror
   src/shell/      Svelte 5 workspace: panes, tabs, sidebars, adaptive layout
   src/excalidraw/ React island, lazily chunked
+  src/mermaid/    Mermaid renderer, lazily chunked (§13.2)
   src/wasm/       generated bindings from mb-wasm
   (public shares are server-only self-contained HTML in mb-server; see §17)
 clipper/          Browser extension (MV3 + Firefox), shares mb-wasm
@@ -654,6 +656,7 @@ untrusted note content rather than of any one caller.
 | HTTP compression | `flate2` (`miniz_oxide`, pure Rust) | §21.7; ninety lines beat `tower-http` here |
 | Password hashing | `argon2` (argon2id) | |
 | Drawing | `@excalidraw/excalidraw` | lazy React chunk |
+| Text diagrams | `mermaid` | lazy chunk, only on notes with a ` ```mermaid ` fence (§13.2) |
 | Graph render | WebGL, `sigma.js` or custom | worker layout, LOD; §9.4 |
 | Article extraction | `@mozilla/readability` | clipper only |
 
@@ -3668,7 +3671,9 @@ banner; vault/Markdown exports retain the frontmatter and authorized referenced 
 
 ---
 
-## 13. Excalidraw
+## 13. Diagrams
+
+### 13.1 Excalidraw
 
 - Embed `@excalidraw/excalidraw` as a lazily-loaded React island (§5.1). The server exposes
   authorized scene JSON through `GET/PUT /api/v1/vaults/{slug}/drawings/{drawing}` and stores
@@ -3687,6 +3692,48 @@ banner; vault/Markdown exports retain the frontmatter and authorized referenced 
   visible than it was — surface it in the UI when two people open the same drawing.
 - Drawings live under the same ACL as any other file at that path.
 - Handwriting/stylus input is supported by Excalidraw natively; no extra work.
+
+### 13.2 Mermaid (A38)
+
+Mermaid diagrams, Gantt charts first among them, are in scope. A38 reverses A9's exclusion. It
+accepts that **pages containing Mermaid diagrams may miss the mid-range Android budgets** (§21.2).
+That is a scoped exception, not a relaxed budget.
+
+- **Storage: a plain fenced `code_block` with `lang` `mermaid`.** This adds no new block type, schema
+  node or serializer path, and round-trips through the existing `code_block` rules (§4.4, §22.1).
+  The source is the content (C2): it stays readable in a text editor, and Obsidian, GitHub and
+  GitLab render it natively (C5). Rendered SVG is never written into the vault.
+- **Rendering.** The `mermaid` package is a lazily loaded chunk. It is imported only when a note
+  that contains a ` ```mermaid ` fence is opened, and each diagram renders only when it scrolls into
+  view. It is **never on the critical path**. The initial-bundle budget (§21.2) excludes it, and
+  `make perf-bundle` fails if it leaks in. Mermaid measures text through the DOM, so it cannot
+  run in a Web Worker (§21.3). That is the honest reason this exception exists.
+- **Editing.** A diagram renders as a preview with a source toggle. The source is edited as an
+  ordinary code block, and the preview re-renders after a debounce, never per keystroke. A
+  syntax error shows the source with Mermaid's message inline. A failed render never throws,
+  never blanks the block and never blocks editing.
+- **Offline.** Like every lazy chunk, it is precached after the load event (§7.4), so diagrams
+  render offline. That precache grows the ~1.6 MB build, but it never touches first paint.
+- **Security.** `securityLevel: 'strict'`, so labels are sanitized and click/callback
+  directives are disabled. No network access: remote icon packs and font loading are disabled
+  (C1). Diagram source comes from other vault members, so it is treated as untrusted input, and
+  the inserted SVG is sanitized output. The app CSP already allows the inline `<style>` Mermaid
+  emits (`style-src 'unsafe-inline'`). Scripts stay `'self'`.
+- **Permissions.** Rendering is client-side over block text the client already received
+  through the permission-filtered sync path. It adds no read path and no enforcement point
+  (§6.4). Search indexes the source as code-block text, as before.
+- **Theming.** Mermaid's `base` theme, with `themeVariables` read from the design tokens (§20.1).
+  Diagrams re-render on theme or accent change. No hard-coded colours.
+- **Public shares (§17).** The public renderer ships no JavaScript, so a shared note shows
+  the diagram source as a code block in v1. Server-side pre-rendering is an open question,
+  not a promise.
+- **Performance exception, and its limits.** The exception covers only *open note*, *longest
+  main-thread task* and *INP* on a page that contains Mermaid diagrams, and only for the
+  render itself. Notes without a diagram must meet every budget, and typing elsewhere on a
+  diagram page must still meet keystroke → paint. In the user's words, *"Wherever possible we
+  find alternatives"*: render lazily, cache SVG in memory by source hash, and reach for a
+  lighter approach where one exists before leaning on the exception. `make perf` records
+  a diagram-page fixture separately so the exception is measured, not assumed.
 
 ---
 
@@ -4029,9 +4076,10 @@ the note (E10).
 - Validates every wikilink and reports unresolved ones.
 - Maps Obsidian callouts, block IDs, aliases, tags, task emoji metadata and
   `.excalidraw.md` through as-is.
-- Reports unsupported constructs (Canvas files, Mermaid blocks, Dataview queries,
+- Reports unsupported constructs (Canvas files, Dataview queries,
   community-plugin syntax) explicitly rather than silently mangling them. Unsupported
   fenced blocks are preserved verbatim as opaque code blocks — never destroyed.
+  Mermaid fences pass through unchanged and render (§13.2).
 
 ### 19.2 Export (A9)
 
@@ -4419,7 +4467,7 @@ the p95 interval between frames while the camera moves on every one of them: an 
 paints nothing and would report a perfect 16 ms whatever the renderer cost. It does **not**
 include the force layout, which has settled before the measurement starts and runs in a
 worker — §21.2 budgets the frame rate of the picture, not how long it takes to arrange it.
-| Initial JS + WASM, gzip (excl. lazy Excalidraw) | **< 500 KiB** | same |
+| Initial JS + WASM, gzip (excl. lazy Excalidraw and Mermaid) | **< 500 KiB** | same |
 | Client search index, 10k notes | < 10 MB typical, **< 15 MB hard ceiling** | same |
 | Peak memory, 10k-note vault, index loaded | < 250 MB | < 400 MB |
 | Server memory, idle, 10k notes | — | < 150 MB |
@@ -5472,7 +5520,7 @@ browser. Nothing will be opening a browser here.
 - Published-site mode (folder-level public publishing)
 - Excalidraw CRDT collaboration; cross-vault links
 - Database views over structured note properties
-- Freeform canvas workspaces, Mermaid — **only if explicitly requested; both were declined**
+- Freeform canvas workspaces — **only if explicitly requested; declined** (Mermaid: in scope by A38, §13.2)
 
 ---
 
@@ -5491,7 +5539,7 @@ to replace a product comparison with a description. Do not reverse these without
 | A6 | Encryption at rest | *"No encryption at rest, only on filesystem"* | None. Rely on disk/FS encryption (§6.7) |
 | A7 | Version history | *"Server should keep versions / logs for 90 days, local should not care"* | Server: 90d Markdown snapshots. Client: GC, no history (§18) |
 | A8 | Vault size | *"around 500 notes… design for 10k+"* | 10k+ is the design target; drives §7.2, §9.4, §14.2, §21 |
-| A9 | Extra features | transclusion, nested tags, icons/outline/export | In scope. **Mermaid and Canvas explicitly not selected** (§4.4) |
+| A9 | Extra features | transclusion, nested tags, icons/outline/export | In scope. **Mermaid and Canvas explicitly not selected** (§4.4). Mermaid reversed by A38 (§13.2) |
 | A10 | Workspace | adaptive | Tabs+splits desktop, single-doc mobile (§8) |
 | A11 | Web clipper | v1, extension + share target | M15 (§16) |
 | A12 | Tasks | *"I want due dates and priorities"* | Obsidian Tasks emoji syntax; recurrence deferred (§10) |
@@ -5520,6 +5568,7 @@ to replace a product comparison with a description. Do not reverse these without
 | A35 | Inline emoji trigger | *"lets leave it on 1 character"* | Open inline suggestions after one character following the colon, such as `:s`. A bare colon keeps them closed (§11.4). |
 | A36 | Vault settings | *"a way where I can manage some aspects of the vault. One of it will be custom emojis (add, remove, modify shortcode)"*; rename choice: *"Rewrite notes"* | Owner-only Vault settings dialog (§20.4) managing vault-local emoji. Supersedes A33's "no pack-management panel" for Settings only; the picker stays single-image. Rename rewrites notes as an E14 privileged operation and keeps the old name as an alias (§11.2). |
 | A37 | Vault accent colour | *"default colour"* → *"Accent colour"* | Per-vault `#rrggbb` accent, adjusted per palette for 4.5:1 contrast (§20.1). |
+| A38 | Mermaid diagrams (motivated by Gantt charts for replacing Confluence; reverses A9's exclusion) | *"we should bring in mermaid and document that we accept that midrange android might experience issue with pages that do have mermaid diagrams. Wherever possible we find alternatives"* | Mermaid ` ```mermaid ` fences render via a lazy chunk (§13.2). Pages with diagrams carry a scoped exception to the §21.2 mobile budgets; every other page keeps them. |
 
 ---
 
@@ -5546,7 +5595,7 @@ before the milestone that implements it.
 
 ### Deliberately out of scope for v1
 
-Recorded so they read as decisions rather than omissions: Mermaid, freeform canvas workspaces,
+Recorded so they read as decisions rather than omissions: freeform canvas workspaces,
 multi-column page layouts and synced blocks, database views with formulas, task recurrence, cross-vault
 links, plugin system, encryption at rest, TOTP 2FA, comments and mentions, published-site
 mode, Excalidraw collaborative editing, native desktop and mobile apps.

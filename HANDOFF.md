@@ -1,5 +1,23 @@
 # Handoff
 
+## Branch `mermaid-diagrams` (2026-11-08): spec only, no code yet
+
+Mermaid diagrams are now in scope (decision A38, SPEC §13.2). Gantt charts are the reason:
+the team wants Memberberry as a Confluence replacement. So far this branch changes only
+SPEC.md: §4.4, §5.3/§5.4, §13 (now "Diagrams", with 13.1 Excalidraw and 13.2 Mermaid), §19.1,
+§21.2, the A9/A38 log rows and the §25 out-of-scope lists. No implementation, tests or
+browser work exists yet.
+
+Next, in order: lazy `web/src/mermaid/` renderer for ` ```mermaid ` code blocks (strict
+security level, token-driven theme, render-on-visible, inline error); a vitest suite
+including a hostile-label sanitization case; a `make perf-bundle` assertion that mermaid
+stays out of the initial bundle; a perf fixture page with a diagram; one Playwright spec
+(desktop + mobile) that renders a Gantt chart and reads the `.md` back off disk.
+
+Open: should public shares (§17, no public JS) pre-render diagrams server-side? v1 shows
+the source as a code block. The Confluence Cloud side (a Forge macro wrapping `mermaid`, or
+an existing Marketplace Mermaid app) is a separate project and does not belong in this repo.
+
 ## Current state (2026-11-02)
 
 Vault settings are implemented and committed (SPEC §20.4, §11.2, §20.1, E33, A36/A37).
