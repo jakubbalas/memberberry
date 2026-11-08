@@ -20,6 +20,7 @@ import { memberberryInputRules } from "./commands.js";
 import { tableRowHandles } from "./table-tools.js";
 import { taskItemView } from "./task-view.js";
 import { calloutFold } from "./callout-fold.js";
+import { mermaidViews } from "./mermaid-view.js";
 import { lineBreak } from "./line-break.js";
 import { pdfViews } from "./pdf-view.js";
 import { emojiInputRules } from "./commands.js";
@@ -138,6 +139,7 @@ export async function startNoteEditor(options: StartNoteEditorOptions): Promise<
         })),
         taskItemView,
         calloutFold,
+        mermaidViews(),
         lineBreak,
         tableRowHandles,
         ...(options.embeds === undefined ? [] : [embedViews(options.embeds)]),

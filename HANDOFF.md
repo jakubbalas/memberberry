@@ -1,22 +1,50 @@
 # Handoff
 
-## Branch `mermaid-diagrams` (2026-11-08): spec only, no code yet
+## Branch `mermaid-diagrams` (2026-11-08): Mermaid diagrams implemented
 
-Mermaid diagrams are now in scope (decision A38, SPEC §13.2). Gantt charts are the reason:
-the team wants Memberberry as a Confluence replacement. So far this branch changes only
-SPEC.md: §4.4, §5.3/§5.4, §13 (now "Diagrams", with 13.1 Excalidraw and 13.2 Mermaid), §19.1,
-§21.2, the A9/A38 log rows and the §25 out-of-scope lists. No implementation, tests or
-browser work exists yet.
+Mermaid diagrams are in scope (A38, SPEC §13.2). The reason is Gantt charts: the team wants
+Memberberry as a Confluence replacement. A ` ```mermaid ` code block renders as a preview.
+Its source shows when the caret is inside (via Edit source, a click on the preview, or an
+arrow key from the adjacent block) and hides on Done or when the caret leaves. Read-only notes
+get Show source.
 
-Next, in order: lazy `web/src/mermaid/` renderer for ` ```mermaid ` code blocks (strict
-security level, token-driven theme, render-on-visible, inline error); a vitest suite
-including a hostile-label sanitization case; a `make perf-bundle` assertion that mermaid
-stays out of the initial bundle; a perf fixture page with a diagram; one Playwright spec
-(desktop + mobile) that renders a Gantt chart and reads the `.md` back off disk.
+- `web/src/mermaid/`: `renderer.ts` (lazy `import("mermaid")`, strict security, serialized
+  queue, LRU cache keyed by width + theme + source), `sanitize.ts` (second pass: scripts,
+  handlers, external URLs, fetching CSS), `theme.ts` (tokens → `themeVariables`), `mermaid.css`.
+- `web/src/editor/mermaid-view.ts`: code-block node view, editing decoration, arrow keys.
+  Priority 1, so open menus keep their keys. Escape is deliberately not bound, because §8.4
+  gives it to block selection.
+- `mermaid` is pinned to 11.17.2 because Excalidraw's `mermaid-to-excalidraw` resolves to the
+  same copy, so the PWA precache does not grow. 12.x exists; moving to it means two copies.
+- `perf/bundle.ts` fails if a Mermaid chunk is statically imported by an eager chunk.
 
-Open: should public shares (§17, no public JS) pre-render diagrams server-side? v1 shows
-the source as a code block. The Confluence Cloud side (a Forge macro wrapping `mermaid`, or
-an existing Marketplace Mermaid app) is a separate project and does not belong in this repo.
+Verification: 55 new unit tests (sanitizer property test seeded 20261108; renderer; theme;
+editor view) plus 2 perf bundle tests. The full web suite passes (2840), as do typecheck,
+token-check and perf-bundle. Mutation probes went red for: event-handler stripping, strict
+security, theme-listener teardown, debounce-timer teardown and arrow-key adjacency.
+Probing the bundle guard with a static import showed that the import folds into the app chunk,
+which the existing bundle budget catches; the key guard covers a separate eager chunk.
+Browser: `e2e/mermaid.spec.ts` passes on desktop and mobile (8). It renders a Gantt chart,
+types into it and reads the `.md` off disk, checks there are no off-origin requests, covers
+arrow-key entry and the error state, and checks dark-theme bar colours against tokens.
+Screenshots were inspected. Full `make check` and coverage were not run (not requested).
+Full `make e2e` is pending; the user runs it.
+
+Open:
+- Public shares (§17, no public JS) show diagram source as a code block. Server-side
+  pre-rendering is undecided.
+- No re-render on window resize; a chart re-lays out on its next edit or open.
+- A38's mobile performance exception is not measured yet. SPEC §13.2 promises a diagram-page
+  fixture in `make perf`; it does not exist.
+- Arrow-key entry works only between sibling blocks. A diagram nested in a list or callout is
+  reached by clicking or with Edit source.
+- `npm audit` reports 29 advisories (3 critical), the same count as main. Mermaid adds none,
+  because Excalidraw already pulls in the same tree. One critical advisory is in DOMPurify
+  3.4.15 (IN_PLACE mode), which Mermaid's strict mode uses. Diagrams now reach that code from
+  every note, not only from Excalidraw's import dialog. `sanitize.ts` is the independent
+  second pass. The upgrade is not triaged.
+- The Confluence Cloud side (a Forge macro wrapping `mermaid`, or a Marketplace Mermaid app)
+  is a separate project, not in this repo.
 
 ## Current state (2026-11-02)
 

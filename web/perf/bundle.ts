@@ -26,6 +26,14 @@ import { extname, join } from "node:path";
  */
 const LAZY = [/excalidraw/i];
 
+/**
+ * Manifest keys that must never be on the critical path. Unlike `LAZY`, which only leaves a
+ * file out of the sum, a match here fails the measurement: SPEC §13.2 promises Mermaid is
+ * fetched only by a note that contains a diagram, and A38's performance exception depends on
+ * that promise holding for every other page.
+ */
+const MUST_STAY_LAZY = [/node_modules\/mermaid\//, /^_mermaid\./];
+
 /** Where Vite records which chunk imports which. Written because `build.manifest` is on. */
 const MANIFEST = ".vite/manifest.json";
 
@@ -67,9 +75,9 @@ function eagerChunks(dist: string): Set<string> | undefined {
   if (!statSync(path, { throwIfNoEntry: false })?.isFile()) return undefined;
   const manifest = JSON.parse(readFileSync(path, "utf8")) as Record<string, ManifestChunk>;
   const eager = new Set<string>();
-  const queue = Object.values(manifest)
-    .filter((chunk) => chunk.isEntry === true)
-    .map((chunk) => chunk.file);
+  const entries = Object.entries(manifest).filter(([, chunk]) => chunk.isEntry === true);
+  const queue = entries.map(([, chunk]) => chunk.file);
+  const leaked = (key: string) => MUST_STAY_LAZY.some((pattern) => pattern.test(key));
   const byFile = new Map(Object.values(manifest).map((chunk) => [chunk.file, chunk]));
   while (queue.length > 0) {
     const file = queue.pop();
@@ -79,6 +87,9 @@ function eagerChunks(dist: string): Set<string> | undefined {
     if (chunk === undefined) continue;
     for (const asset of chunk.assets ?? []) eager.add(asset);
     for (const key of chunk.imports ?? []) {
+      if (leaked(key)) {
+        throw new Error(`${key} is statically imported by ${file}, so it is on the critical path. SPEC §13.2 requires it to stay lazy.`);
+      }
       const imported = manifest[key];
       if (imported !== undefined) queue.push(imported.file);
     }

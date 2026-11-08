@@ -1,0 +1,18 @@
+/* Mermaid diagrams in the editor (SPEC §13.2). Tokens only (§20.1). */
+
+.mb-mermaid { margin-block: var(--space-5); }
+.mb-mermaid-chrome { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-2); }
+.mb-mermaid-preview { overflow-x: auto; padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-note); cursor: text; }
+.mb-mermaid-preview > svg { display: block; max-width: 100%; height: auto; margin-inline: auto; }
+/* A Gantt chart keeps the size it was laid out at; a narrow screen scrolls it (§13.2). */
+.mb-mermaid-preview > svg[aria-roledescription="gantt"] { max-width: none; }
+.mb-mermaid-status, .mb-mermaid-error { margin: 0; color: var(--text-muted); font: var(--text-sm)/var(--leading-snug) var(--font-ui); }
+.mb-mermaid-error { color: var(--state-danger); white-space: pre-wrap; }
+.mb-mermaid-toggle { align-self: flex-end; min-height: var(--control-height); padding: 0 var(--space-4); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: var(--text-sm)/1 var(--font-ui); cursor: pointer; }
+.mb-mermaid-toggle:hover { background: var(--surface-hover); }
+.mb-mermaid-toggle:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+@media (pointer: coarse) { .mb-mermaid-toggle { min-height: var(--touch-target-min); } }
+
+/* The source is the content. It stays in the document, hidden until it is being edited,
+   asked for, or needed to read a render error. */
+.mb-mermaid:not(.mb-mermaid-source-open):not([data-mermaid-state="error"]) > .mb-mermaid-source { display: none; }

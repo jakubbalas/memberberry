@@ -131,6 +131,30 @@ describe("measuring the critical-path bundle", () => {
     expect(measured.excluded).toEqual(["assets/graph.js"]);
   });
 
+  it("fails when Mermaid is statically imported onto the critical path (SPEC §13.2)", () => {
+    mkdirSync(join(dist, "assets"), { recursive: true });
+    writeFileSync(join(dist, "assets", "index.js"), compressible(4_000));
+    writeFileSync(join(dist, "assets", "mermaid.core.js"), compressible(6_000));
+    manifest({
+      "index.html": { file: "assets/index.js", isEntry: true, imports: ["_mermaid.core-abc.js"] },
+      "_mermaid.core-abc.js": { file: "assets/mermaid.core.js" },
+    });
+
+    expect(() => measureBundle(dist)).toThrow(/_mermaid\.core-abc\.js is statically imported/);
+  });
+
+  it("accepts Mermaid behind a dynamic import and leaves it out of the sum", () => {
+    mkdirSync(join(dist, "assets"), { recursive: true });
+    writeFileSync(join(dist, "assets", "index.js"), compressible(4_000));
+    writeFileSync(join(dist, "assets", "mermaid.core.js"), compressible(6_000));
+    manifest({
+      "index.html": { file: "assets/index.js", isEntry: true, dynamicImports: ["node_modules/mermaid/dist/mermaid.core.mjs"] },
+      "node_modules/mermaid/dist/mermaid.core.mjs": { file: "assets/mermaid.core.js" },
+    });
+
+    expect(measureBundle(dist).excluded).toEqual(["assets/mermaid.core.js"]);
+  });
+
   it("follows static imports through a chunk that is also dynamically imported", () => {
     // A module shared between the shell and the graph is on the critical path because the
     // shell needs it, whatever else also asks for it.

@@ -35,6 +35,7 @@
     "@excalidraw/excalidraw": "^0.18.1",
     "@mozilla/readability": "^0.5.0",
     "@tiptap/core": "^3.30.6",
+    "mermaid": "11.17.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "svelte": "^5.57.0",

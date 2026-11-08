@@ -3705,15 +3705,21 @@ That is a scoped exception, not a relaxed budget.
   GitLab render it natively (C5). Rendered SVG is never written into the vault.
 - **Rendering.** The `mermaid` package is a lazily loaded chunk. It is imported only when a note
   that contains a ` ```mermaid ` fence is opened, and each diagram renders only when it scrolls into
-  view. It is **never on the critical path**. The initial-bundle budget (§21.2) excludes it, and
-  `make perf-bundle` fails if it leaks in. Mermaid measures text through the DOM, so it cannot
+  view. It is **never on the critical path**. The initial-bundle budget (§21.2) excludes it.
+  `make perf-bundle` fails if a Mermaid chunk is statically imported by an eager one; a static
+  import folded into the app chunk itself breaks the bundle budget instead. Mermaid measures text through the DOM, so it cannot
   run in a Web Worker (§21.3). That is the honest reason this exception exists.
-- **Editing.** A diagram renders as a preview with a source toggle. The source is edited as an
-  ordinary code block, and the preview re-renders after a debounce, never per keystroke. A
-  syntax error shows the source with Mermaid's message inline. A failed render never throws,
+- **Editing.** A diagram renders as a preview. Its source is hidden until the caret is inside
+  it. *Edit source*, a click on the preview, or an arrow key from the adjacent block puts the
+  caret there. Moving the caret out, or *Done*, hides the source again. Escape keeps its §8.4
+  meaning (select the block). Read-only notes get *Show source* instead. The source is edited
+  as an ordinary code block, and the preview re-renders after a debounce, never per keystroke.
+  A syntax error shows the source with Mermaid's message inline. A failed render never throws,
   never blanks the block and never blocks editing.
 - **Offline.** Like every lazy chunk, it is precached after the load event (§7.4), so diagrams
-  render offline. That precache grows the ~1.6 MB build, but it never touches first paint.
+  render offline. Excalidraw's `mermaid-to-excalidraw` already depends on `mermaid`, and npm
+  dedupes the two to one copy. So the precache does not grow, provided the version stays
+  the one Excalidraw resolves to (11.x at the time of writing).
 - **Security.** `securityLevel: 'strict'`, so labels are sanitized and click/callback
   directives are disabled. No network access: remote icon packs and font loading are disabled
   (C1). Diagram source comes from other vault members, so it is treated as untrusted input, and
@@ -3724,6 +3730,11 @@ That is a scoped exception, not a relaxed budget.
   (§6.4). Search indexes the source as code-block text, as before.
 - **Theming.** Mermaid's `base` theme, with `themeVariables` read from the design tokens (§20.1).
   Diagrams re-render on theme or accent change. No hard-coded colours.
+- **Gantt layout.** A Gantt chart is laid out at the preview's width, in 40px steps and never
+  below 640px, and keeps that size rather than being scaled to fit. Below 640px its date axis
+  overlaps, so a phone scrolls the chart sideways. The default axis format is a short date
+  (`%e %b`, as in `2 Nov`), and a diagram's own `axisFormat` overrides it. Resizing the window
+  does not re-render. A diagram renders again only on its next edit, theme change or open.
 - **Public shares (§17).** The public renderer ships no JavaScript, so a shared note shows
   the diagram source as a code block in v1. Server-side pre-rendering is an open question,
   not a promise.
