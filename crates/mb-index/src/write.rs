@@ -147,6 +147,7 @@ impl Index {
             for path in &plan.removed {
                 self.search.remove(path);
             }
+            self.segments_stale = true;
         }
         Ok(plan)
     }
@@ -211,6 +212,7 @@ impl Index {
             &facts.tags,
             &facts.text_blocks,
         )?;
+        self.segments_stale = true;
 
         Ok(if existing.is_some() {
             Changed::Rewritten
@@ -231,22 +233,30 @@ impl Index {
             .execute([path])?;
         if removed > 0 {
             self.search.remove(path);
+            self.segments_stale = true;
         }
         Ok(removed > 0)
     }
 
-    /// Publishes queued full-text changes as one Tantivy commit.
+    /// Publishes queued full-text changes as one Tantivy commit, and rebuilds the zone
+    /// segments from them.
     ///
     /// SQLite commits each note independently, while Tantivy batches a reconcile into one
     /// segment publication. If publication fails, the index remains derived state and the
     /// next full rebuild repairs it.
     ///
+    /// Does nothing when no note was inserted, rewritten or removed since the last
+    /// successful rebuild: there is nothing to commit and the segments already describe the
+    /// published text. A stamp-only upsert is not a change.
+    ///
     /// # Errors
     ///
     /// Fails if Tantivy cannot commit or reload its reader.
     pub fn publish(&mut self) -> Result<(), Error> {
-        self.search.publish()?;
-        self.rebuild_zone_segments()
+        if !self.segments_stale {
+            return Ok(());
+        }
+        self.publish_and_rebuild()
     }
 }
 

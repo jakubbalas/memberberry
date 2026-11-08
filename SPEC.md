@@ -3787,7 +3787,20 @@ retain revoked bytes. Newer upserts and tombstones win by note identity.
 **Per-zone publication and reader assembly, implemented in M9.** After the SQLite and Tantivy
 writers publish, `mb-index` rebuilds one complete compact segment per persisted maximal zone
 under `.memberberry/index/zones/<zone-id>.idx`. Every note goes to the deepest matching prefix,
-so a child override is never duplicated in its parent. Reopening an index reconstructs the
+so a child override is never duplicated in its parent. The rebuild runs only when a note was
+inserted, rewritten or removed since the last successful one (and once after opening, since
+segments are held in memory). A publish that changed nothing is a no-op, such as a reconcile that
+found every stamp current, or an upsert that only moved a stamp. A
+failed rebuild leaves the segments cleared and stale, so the next publish retries it. **Honest
+limit:** a rebuild is still a full one, holding the vault's index lock while it re-encodes every
+note. A single real note edit in a 10k-note vault therefore stalls every index-backed route for
+that long. Before the no-op rule, every reconcile did this. The 5 s sync recovery sweep also reached the
+index as a whole-vault reconcile, against `INDEX_SWEEP_INTERVAL`'s stated intent. Together
+they held the lock almost continuously on the 10k perf vault: about 6.5 s of rebuild every
+6.5 s. The queued routes filled the browser's six connections per host, so a second note's
+sync socket could not open (`make perf` open-note, 2026-11-08). Both are fixed. The index
+reconciles the whole vault only on its 60 s sweep or a watcher overflow. The incremental per-note delta above is
+what removes the limit. Reopening an index reconstructs the
 in-memory assembly from the published derived sources even when the ACL rows did not change;
 stale zone files are removed. `Reader::client_segments` evaluates the live ACL and returns only
 segments whose zone ID and ACL hash match that reader's permitted epoch. The previous in-memory

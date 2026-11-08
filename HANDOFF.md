@@ -1,53 +1,80 @@
 # Handoff
 
-## Current state (2026-11-02)
+## Current state (2026-11-08)
 
-Vault settings are implemented and committed (SPEC §20.4, §11.2, §20.1, E33, A36/A37).
-Owners get a top-bar settings button (sliders icon) opening a dialog that:
-- sets the vault default theme and an optional accent colour, saved to
-  `.memberberry/config.toml`. The accent is lightened or darkened per palette to keep 4.5:1
-  contrast;
-- lists vault emoji (shared server emoji read-only), adds one image under a chosen
-  shortcode, removes aliases, deletes emoji (notes keep `:name:`) and renames them;
-- renames by rewriting `:old:` to `:new:` in every note as an E14 privileged rewrite
-  (`mb_core::rewrite::rename_emoji`, the `rename` route with `kind: "emoji"`) and keeps the
-  old name as an alias.
+Fixed: `make perf` hung at open-note on the 10k vault. The second note ("Note 777") showed
+"This note has not been downloaded" while online, and the harness waited 90 s for its body.
 
-New routes: `GET`/`PUT …/settings`, `DELETE …/emoji-entries/{shortcode}[/aliases/{alias}]`.
-New enforcement point: E33. The bootstrap now carries `data-vault-accent` and
-`data-vault-owner`. The custom emoji rendering work before this is committed as c92aebd.
-No push, deployment or live-vault write was performed.
+Root cause, two defects compounding:
+1. `mb_index::Index::publish` rebuilt every zone's client search segment from every note's
+   text on every call, holding the vault's index mutex. That is about 6–7 s at 10k notes on
+   a debug build, even when nothing changed.
+2. The maintenance loop (`serve_listener`, `http.rs`) handed the index the 5 s sync recovery
+   sweep's `Changes::All`, so the index ran a whole-vault reconcile and a publish every 5 s.
+   `INDEX_SWEEP_INTERVAL`'s own doc says that must not happen.
+
+Together, the lock was held about 6.5 s out of every 6.5 s (measured with a temporary tick
+log). `/notes`, `/graph`, `/backlinks`, `/tags`, `/tasks` and `/search/segments` queued
+behind it. Chrome allows six HTTP/1.1 connections per host, so those parked requests held
+back unrelated ones: `/history` and the new note's WebSocket handshake. Normally the body
+arrived 11–21 s late; on a loaded machine, past the 90 s wait. Thread samples showed idle
+runtime workers, five handlers waiting on the index lock, and `maintain_index` → `reconcile`
+in `mb_search::Segment::build`.
+
+Fix:
+- `Index` tracks `segments_stale`. It is set at open and by every content mutation (`upsert`
+  that rewrites, `remove`, reconcile removals). `publish` is a no-op when it is clear, and it
+  clears only after a successful rebuild.
+- The tick's split is now the pure `tick_changes`. The index gets the watcher's report, or
+  `All` only on its own 60 s sweep or a watcher overflow.
+
+A whole-vault reconcile now takes about 140 ms. SPEC §14.2 records the rule and the remaining
+limit: a real note edit still triggers a full rebuild under the lock.
 
 ## Verification
 
-- mb-core: 24 new emoji-rewrite tests, including seeded properties (verifies on generated
-  notes, there-and-back identity, spans-only edits on arbitrary input). The existing 34
-  rename tests still pass. Three mutation probes (case-folding, closing-colon escape,
-  frontmatter icon) each turned a test red; the escape probe needed a new test to do so.
-- mb-server: 9 emoji manifest tests, 8 settings tests (with properties), 5 HTTP integration
-  tests, and leak cases e33 (owner-only routes; probe removing the owner check went red) and
-  e14_an_emoji_rename. The full mb-core and mb-server suites pass apart from the two
-  onboarding config-write tests below. Clippy reports nothing in changed files; the
-  existing folder_delete.rs test-module expect findings remain.
-- Web: all 187 vitest files (2782 tests) pass, plus svelte-check, token-check and
-  wasm-check. The accent property uses seed 20261102 against every `--surface-note` in
-  tokens.css. Dialog probes (collision check, delete confirmation) went red.
-- Browser: settings.spec.ts passes on desktop and mobile (add, rename rewriting the file on
-  disk, theme + accent saved and repainted after reload, delete). Its screenshots were
-  inspected. Related theme/emoji-import/topbar/tokens specs pass (43), including the mobile
-  44px touch floor with the new button. The spec uses its own `empty-<project>-settings`
-  vault so vault-wide appearance changes cannot leak into other specs.
-- The two failing onboarding tests (`onboarding_failed_config_write_…`,
-  `onboarding_config_write_failure_…`) compare `/private/var` against `/var` temp paths
-  on macOS. They are unrelated to this change; see the open item below.
-
-Logs: local/debug/settings-rust-tests.log, local/debug/settings-clippy.log. Screenshots:
-web/test-results/settings-an-owner-manages-*/settings-dialog.png (overwritten by later runs).
+- `http::tick_tests` (5 tests). The two recovery-sweep regressions failed before the
+  `tick_changes` fix.
+- Regression tests in `crates/mb-index/tests/zones.rs`:
+  `publishing_with_no_content_change_does_not_rebuild_zone_segments` and
+  `a_stamp_only_upsert_does_not_rebuild_zone_segments`. Both failed before the fix. Four guard
+  tests show that content change, removal, reconcile removal and a reopened index still rebuild.
+  Probe: dropping the flag in `upsert` turned the guard and the existing E6 assembly tests red.
+- All mb-index suites pass, and clippy `-D warnings` is clean. mb-server: leak_suite (45),
+  watch, recovery, access, websocket, sync and rename pass. Three tests fail identically on the
+  base commit without this change, all from macOS `/private/var` vs `/var` under the sandbox
+  TMPDIR: the two onboarding config-write tests (http.rs:268) and
+  `targeted_indexing_removes_a_note_replaced_by_a_symlink` (indexing.rs:351).
+- Browser: `local/debug/perf-note777-loop.mts` (gitignored) loops the open-note steps against
+  one perf server, logging WebSocket frames and HTTP timing. Before the fix each iteration took
+  11–21 s. After: 2.6–6 s unthrottled and 9.5–13.5 s at 4x CPU throttle, with the body 0.5 s
+  after the click.
+- `make perf` now runs every scenario on both profiles. It was run twice: after the index fix
+  (`local/debug/perf-after-fix.log`) and after both fixes (`local/debug/perf-after-fix2.log`).
+  Desktop cold start dropped from 5712 ms (before) to 878 and 312 ms, within budget. Rows
+  still over budget in the final run, **not** recorded in `web/perf/breaches.json`, all over
+  before this fix too:
+  - open-note: desktop 155 ms vs 80, mobile 1036 ms vs 150
+  - INP: desktop 136 ms vs 100, mobile 480 ms vs 200
+  - desktop longest task: 880 ms vs 50
+  - mobile longest task: 90 ms against a recorded 65 (ceiling 78)
+  - idle server memory: 393 MB vs 150 MB. Run 1 measured 86 MB, so it swings with
+    something not yet identified; it is not fixed.
+  Mobile quick-switcher still measures nothing ("results did not change within 30000 ms"), as
+  before. These rows need a fix-or-record decision, and nothing was recorded here.
 
 Full make check and local coverage measurement are deferred, not requested.
 Full make e2e remains user-run and pending; no full-suite result is claimed.
 
 ## Next and open work
+
+- Perf rows above still over budget need a fix-or-record decision (SPEC §21.3).
+- A real note edit still causes a full zone-segment rebuild under the index lock (SPEC §14.2
+  honest limit). Index-backed routes also lock a `std::sync::Mutex` inline in async handlers.
+  The per-note incremental delta, or moving the rebuild off the lock, is the follow-up.
+- The perf vault is cached in `target/perf/vault`, including `.memberberry/` state and any
+  notes the keystroke scenario edited. `cachedNoteCount` counts every folder, so an extra
+  fixture folder (e.g. `perf-fixtures/`) forces a regeneration.
 
 - Settings scope deliberately omitted: no palette command for Settings, no server-admin
   editing of shared emoji from the dialog (the admin API still exists), no replacing an

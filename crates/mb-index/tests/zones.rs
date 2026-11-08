@@ -393,3 +393,114 @@ fn a_malformed_frontmatter_id_falls_back_to_path_identity() {
         .client_segments();
     assert_eq!(matched_paths(&segments, "zoneberry"), ["Imported.md"]);
 }
+
+/// Whether `publish` rebuilt the zone segments, observed through the one durable thing a
+/// rebuild does: re-persist every segment file. The files are removed first so a rebuild
+/// is the only way they come back.
+fn publish_rebuilds(index: &mut Index, zones_dir: &std::path::Path) -> bool {
+    std::fs::remove_dir_all(zones_dir).expect("clearing the persisted segments");
+    index.publish().expect("publish");
+    zones_dir.exists()
+}
+
+// Regression: the 10k-note perf vault never delivered a second note's body. Every
+// reconcile ended in `publish`, which rebuilt every zone segment from every note's text
+// under the index lock, even when the reconcile found nothing to change. At 10 000 notes
+// that held every index-backed route for seconds per tick, and the browser's six
+// connections per host, all parked on that lock, starved the note's WebSocket handshake
+// past the harness's 90 s wait.
+#[test]
+fn publishing_with_no_content_change_does_not_rebuild_zone_segments() {
+    let dir = TempDir::new("publish-unchanged");
+    let path = dir.path().join(".memberberry/index/graph.sqlite");
+    let zones_dir = path.with_file_name("zones");
+    let mut index = Index::open(&path).expect("index");
+    index.replace_zones(&zoned_policy()).expect("zones");
+    upsert(&mut index, "Welcome.md", "# Welcome\n\nzoneberry\n", 1);
+    index.publish().expect("first publish");
+
+    assert!(!publish_rebuilds(&mut index, &zones_dir));
+}
+
+#[test]
+fn a_stamp_only_upsert_does_not_rebuild_zone_segments() {
+    let dir = TempDir::new("publish-stamp-only");
+    let path = dir.path().join(".memberberry/index/graph.sqlite");
+    let zones_dir = path.with_file_name("zones");
+    let mut index = Index::open(&path).expect("index");
+    index.replace_zones(&zoned_policy()).expect("zones");
+    upsert(&mut index, "Welcome.md", "# Welcome\n\nzoneberry\n", 1);
+    index.publish().expect("first publish");
+    upsert(&mut index, "Welcome.md", "# Welcome\n\nzoneberry\n", 2);
+
+    assert!(!publish_rebuilds(&mut index, &zones_dir));
+}
+
+#[test]
+fn a_content_change_still_rebuilds_zone_segments_on_publish() {
+    let dir = TempDir::new("publish-changed");
+    let path = dir.path().join(".memberberry/index/graph.sqlite");
+    let zones_dir = path.with_file_name("zones");
+    let mut index = Index::open(&path).expect("index");
+    index.replace_zones(&zoned_policy()).expect("zones");
+    upsert(&mut index, "Welcome.md", "# Welcome\n\nzoneberry\n", 1);
+    index.publish().expect("first publish");
+    upsert(
+        &mut index,
+        "Welcome.md",
+        "# Welcome\n\nzoneberry rewritten\n",
+        2,
+    );
+
+    assert!(publish_rebuilds(&mut index, &zones_dir));
+    let segments = index
+        .reader(&zoned_policy(), &user("alice"))
+        .expect("reader")
+        .client_segments();
+    assert_eq!(matched_paths(&segments, "rewritten"), ["Welcome.md"]);
+}
+
+#[test]
+fn a_removal_still_rebuilds_zone_segments_on_publish() {
+    let dir = TempDir::new("publish-removed");
+    let path = dir.path().join(".memberberry/index/graph.sqlite");
+    let zones_dir = path.with_file_name("zones");
+    let mut index = Index::open(&path).expect("index");
+    index.replace_zones(&zoned_policy()).expect("zones");
+    upsert(&mut index, "Welcome.md", "# Welcome\n\nzoneberry\n", 1);
+    index.publish().expect("first publish");
+    assert!(index.remove("Welcome.md").expect("remove"));
+
+    assert!(publish_rebuilds(&mut index, &zones_dir));
+}
+
+#[test]
+fn a_reconcile_removal_still_rebuilds_zone_segments_on_publish() {
+    let dir = TempDir::new("publish-reconcile-removed");
+    let path = dir.path().join(".memberberry/index/graph.sqlite");
+    let zones_dir = path.with_file_name("zones");
+    let mut index = Index::open(&path).expect("index");
+    index.replace_zones(&zoned_policy()).expect("zones");
+    upsert(&mut index, "Welcome.md", "# Welcome\n\nzoneberry\n", 1);
+    index.publish().expect("first publish");
+    index.reconcile(&[]).expect("reconcile");
+
+    assert!(publish_rebuilds(&mut index, &zones_dir));
+}
+
+#[test]
+fn a_reopened_index_rebuilds_zone_segments_on_its_first_publish() {
+    let dir = TempDir::new("publish-reopened");
+    let path = dir.path().join(".memberberry/index/graph.sqlite");
+    let zones_dir = path.with_file_name("zones");
+    let mut index = Index::open(&path).expect("index");
+    index.replace_zones(&zoned_policy()).expect("zones");
+    upsert(&mut index, "Welcome.md", "# Welcome\n\nzoneberry\n", 1);
+    index.publish().expect("first publish");
+    drop(index);
+
+    // why: segments live in memory and are not loaded on open, so a restarted server with
+    // an up-to-date database still has to build them once or it would serve none (E6).
+    let mut index = Index::open(&path).expect("reopen");
+    assert!(publish_rebuilds(&mut index, &zones_dir));
+}
