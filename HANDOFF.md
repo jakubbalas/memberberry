@@ -18,6 +18,10 @@ get Show source.
   same copy, so the PWA precache does not grow. 12.x exists; moving to it means two copies.
 - `perf/bundle.ts` fails if a Mermaid chunk is statically imported by an eager chunk.
 
+Perf: the diagram-page fixture and three §21.10 rows are in `web/perf`. The scenario runs
+first and by navigation, so a broken tab scenario cannot hide it. `breaches.json` records
+mobile `diagram-longest-task` (76 ms) and desktop `diagram-keystroke-to-paint` (16.4 ms).
+
 Verification: 55 new unit tests (sanitizer property test seeded 20261108; renderer; theme;
 editor view) plus 2 perf bundle tests. The full web suite passes (2840), as do typecheck,
 token-check and perf-bundle. Mutation probes went red for: event-handler stripping, strict
@@ -34,8 +38,18 @@ Open:
 - Public shares (§17, no public JS) show diagram source as a code block. Server-side
   pre-rendering is undecided.
 - No re-render on window resize; a chart re-lays out on its next edit or open.
-- A38's mobile performance exception is not measured yet. SPEC §13.2 promises a diagram-page
-  fixture in `make perf`; it does not exist.
+- **`make perf` cannot complete, and it fails on main too.** In the 10k perf vault, the
+  open-note scenario opens Note 777 through the quick switcher, and the pane stays on "This
+  note has not been downloaded to this device" while online: the note's sync state never
+  arrives. It reproduced twice, also without the fixture note and with the Mermaid view
+  unwired, so it predates this branch. Repro script and screenshots:
+  local/debug/perf-diagram*.log.
+- The diagram rows (SPEC §21.10) were measured by a run with the tab scenarios temporarily
+  skipped; that patch was reverted. In the same run, rows that are not Mermaid's were over
+  and unrecorded: desktop cold-start longest task 826 ms, mobile 98 ms (recorded at 65), and
+  idle server memory 396 MB against 150 MB. Whether those are new or long-standing is
+  unknown, because the harness has not completed recently. Do not record them as breaches
+  until a full run on main shows them.
 - Arrow-key entry works only between sibling blocks. A diagram nested in a list or callout is
   reached by clicking or with Edit source.
 - `npm audit` reports 29 advisories (3 critical), the same count as main. Mermaid adds none,

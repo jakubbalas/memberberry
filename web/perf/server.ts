@@ -42,6 +42,44 @@ export const PERF_NOTE = "folder-00/note-00000.md";
  */
 export const PERF_QUERY = "Note 4242";
 
+/**
+ * The A38 diagram page (SPEC §13.2): one note holding a realistic Gantt chart, so the
+ * performance exception for pages with Mermaid diagrams is measured rather than assumed.
+ *
+ * It lives in its own folder, which `cachedNoteCount` skips. The corpus is still exactly
+ * `gen-vault`'s, and adding the fixture does not make every run regenerate 10 000 notes.
+ */
+export const PERF_FIXTURES = "perf-fixtures";
+export const PERF_DIAGRAM_NOTE = `${PERF_FIXTURES}/gantt.md`;
+/** Text in the paragraph below the chart, where the typing measurement types. */
+export const PERF_DIAGRAM_MARKER = "Roadmap notes";
+
+/** Sections × tasks per section in the fixture chart: a quarter's plan, not a toy. */
+const GANTT_SECTIONS = 6;
+const GANTT_TASKS = 7;
+
+/**
+ * The fixture note, deterministically. Each section's tasks chain with `after`, and each
+ * section starts after the previous one's second task, so the layout has real dependencies
+ * to resolve, as a team's plan does.
+ */
+export function diagramFixture(): string {
+  const lines = ["gantt", "    title Quarterly roadmap", "    dateFormat YYYY-MM-DD", "    axisFormat %e %b"];
+  for (let section = 0; section < GANTT_SECTIONS; section += 1) {
+    lines.push(`    section Stream ${section + 1}`);
+    for (let task = 0; task < GANTT_TASKS; task += 1) {
+      const id = `s${section}t${task}`;
+      const start = task > 0
+        ? `after s${section}t${task - 1}`
+        : section === 0 ? "2026-01-05" : `after s${section - 1}t1`;
+      const tag = task === 0 ? "done, " : task === 1 ? "active, " : section === 2 && task === 4 ? "crit, " : "";
+      lines.push(`    Task ${section + 1}.${task + 1} :${tag}${id}, ${start}, ${2 + ((section + task) % 4)}d`);
+    }
+  }
+  lines.push(`    Launch :milestone, launch, after s${GANTT_SECTIONS - 1}t${GANTT_TASKS - 1}, 0d`);
+  return `# Gantt fixture\n\n\`\`\`mermaid\n${lines.join("\n")}\n\`\`\`\n\n${PERF_DIAGRAM_MARKER} for the quarter.\n`;
+}
+
 const PERF_ROOT = join(REPO, "target", "perf");
 const VAULT = join(PERF_ROOT, "vault");
 const DATA_DIR = join(PERF_ROOT, "data");
@@ -72,7 +110,7 @@ function cachedNoteCount(): number {
   if (!existsSync(notes)) return 0;
   let total = 0;
   for (const folder of readdirSync(notes, { withFileTypes: true })) {
-    if (!folder.isDirectory()) continue;
+    if (!folder.isDirectory() || folder.name === PERF_FIXTURES) continue;
     total += readdirSync(join(notes, folder.name)).filter((n) => n.endsWith(".md")).length;
   }
   return total;
@@ -87,12 +125,17 @@ function cachedNoteCount(): number {
  * harness nobody runs measures nothing.
  */
 export function ensureVault(notes: number = PERF_NOTES): void {
-  if (cachedNoteCount() === notes) return;
-  rmSync(VAULT, { recursive: true, force: true });
-  mkdirSync(VAULT, { recursive: true });
-  execFileSync(binary(), ["gen-vault", "--out", VAULT, "--notes", String(notes)], {
-    stdio: "inherit",
-  });
+  if (cachedNoteCount() !== notes) {
+    rmSync(VAULT, { recursive: true, force: true });
+    mkdirSync(VAULT, { recursive: true });
+    execFileSync(binary(), ["gen-vault", "--out", VAULT, "--notes", String(notes)], {
+      stdio: "inherit",
+    });
+  }
+  // why: rewritten every run, because the typing measurement edits it, and a fixture that
+  // grows by sixty characters per run would drift away from what was first recorded.
+  mkdirSync(join(VAULT, "notes", PERF_FIXTURES), { recursive: true });
+  writeFileSync(join(VAULT, "notes", PERF_DIAGRAM_NOTE), diagramFixture());
 }
 
 export interface PerfServer {

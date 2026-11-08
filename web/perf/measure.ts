@@ -18,7 +18,7 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 import type { DeviceClass } from "./budgets.ts";
-import { PERF_NOTE, PERF_QUERY, PERF_SLUG, PERF_USER } from "./server.ts";
+import { PERF_DIAGRAM_MARKER, PERF_DIAGRAM_NOTE, PERF_NOTE, PERF_QUERY, PERF_SLUG, PERF_USER } from "./server.ts";
 
 const EDITOR = ".editor-surface .tiptap";
 // why: a CSS selector rather than `getByRole`, because these measurements are taken inside
@@ -30,7 +30,10 @@ const SWITCHER = 'dialog.palette[aria-label="Open a note"]';
 const SWITCHER_INPUT = `${SWITCHER} .palette-input`;
 
 /** How many times each scenario runs. Enough for a p95 to mean something, few enough to run. */
-const REPEATS = { coldStart: 5, warmStart: 5, openNote: 12, keystrokes: 60, switcher: 12, graphFrames: 90 } as const;
+const REPEATS = { coldStart: 5, warmStart: 5, openNote: 12, keystrokes: 60, switcher: 12, graphFrames: 90, diagram: 6 } as const;
+
+/** The diagram block of SPEC §13.2, and the attribute that says how its render went. */
+const DIAGRAM = ".mb-mermaid";
 
 /**
  * Fewest samples a browser measurement may be reported from.
@@ -110,9 +113,13 @@ export interface DeviceRun {
  */
 const INSTRUMENT = `
   window.__mbLongTasks = [];
+  window.__mbLongTaskSpans = [];
   window.__mbInteractions = [];
   new PerformanceObserver((list) => {
-    for (const entry of list.getEntries()) window.__mbLongTasks.push(entry.duration);
+    for (const entry of list.getEntries()) {
+      window.__mbLongTasks.push(entry.duration);
+      window.__mbLongTaskSpans.push([entry.startTime, entry.duration]);
+    }
   }).observe({ type: "longtask", buffered: true });
   new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
@@ -137,6 +144,16 @@ async function readNumbers(page: Page, name: "__mbLongTasks" | "__mbInteractions
     const store = (globalThis as unknown as Record<string, unknown>)[key];
     return Array.isArray(store) ? store.filter((n): n is number => typeof n === "number") : [];
   }, name);
+}
+
+/** Long tasks as `[startTime, duration]`, so a scenario can keep only those after a moment. */
+async function readSpans(page: Page): Promise<[number, number][]> {
+  return page.evaluate(() => {
+    const store = (globalThis as unknown as Record<string, unknown>)["__mbLongTaskSpans"];
+    if (!Array.isArray(store)) return [];
+    return store.filter((span): span is [number, number] =>
+      Array.isArray(span) && typeof span[0] === "number" && typeof span[1] === "number");
+  });
 }
 
 /** Whatever `BrowserContext.storageState()` returns — the session cookie, in practice. */
@@ -700,8 +717,11 @@ async function setQuery(page: Page, query: string): Promise<void> {
  * to 8 ms for privacy — useless granularity against a 16 ms budget, and fine against INP's
  * 100–200 ms, which is why INP is taken from there and this is not.
  */
-async function keystrokes(page: Page): Promise<{ toPaint: number[]; interactions: number[] }> {
-  await page.locator(EDITOR).first().click();
+async function keystrokes(
+  page: Page,
+  focus: (page: Page) => Promise<void> = (p) => p.locator(EDITOR).first().click(),
+): Promise<{ toPaint: number[]; interactions: number[] }> {
+  await focus(page);
   await page.evaluate(() => {
     const store: number[] = [];
     (globalThis as unknown as Record<string, unknown>)["__mbKeys"] = store;
@@ -939,6 +959,85 @@ async function sampleSwitcher(page: Page, head: string, tail: string): Promise<n
  * until it finishes is one people assume has hung and kill — which is the same as not having
  * it. stderr so the report on stdout stays machine-readable.
  */
+/**
+ * Navigates to the diagram page and returns two in-page times: the editor visible and
+ * editable, and the Gantt chart painted after it.
+ *
+ * why: the render is timed from editor-ready, not from navigation. Navigation includes
+ * booting the app, which the cold-start rows already budget. A38's exception is about the
+ * diagram, so this row isolates the diagram.
+ */
+async function timeToDiagram(page: Page, url: string): Promise<{ ready: number; painted: number }> {
+  await page.goto(url, { waitUntil: "commit" });
+  return page.evaluate(
+    ([editorSelector, diagramSelector, deadline]) =>
+      new Promise<{ ready: number; painted: number }>((resolve, reject) => {
+        let ready: number | undefined;
+        const editorReady = (): boolean => {
+          const editor = document.querySelector(editorSelector);
+          return editor instanceof HTMLElement && editor.isContentEditable
+            && editor.checkVisibility({ checkVisibilityCSS: true });
+        };
+        const diagramState = (): string | null =>
+          document.querySelector(`${editorSelector} ${diagramSelector}`)?.getAttribute("data-mermaid-state") ?? null;
+        const timer = setTimeout(() => {
+          observer.disconnect();
+          reject(new Error(`the diagram never rendered within ${deadline} ms (state ${String(diagramState())})`));
+        }, deadline);
+        const check = (): void => {
+          if (ready === undefined && editorReady()) ready = performance.now();
+          if (ready === undefined) return;
+          const state = diagramState();
+          if (state === "error") {
+            observer.disconnect();
+            clearTimeout(timer);
+            reject(new Error("the fixture diagram rendered as an error, so there is no render to time"));
+            return;
+          }
+          if (state !== "ready") return;
+          observer.disconnect();
+          clearTimeout(timer);
+          const start = ready;
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve({ ready: start, painted: performance.now() })));
+        };
+        const observer = new MutationObserver(check);
+        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+        check();
+      }),
+    [EDITOR, DIAGRAM, READINESS_TIMEOUT_MS] as const,
+  );
+}
+
+/**
+ * The A38 diagram page (SPEC §13.2): render time, the worst main-thread task after the
+ * editor is ready, and typing below the chart.
+ *
+ * A full navigation per sample, because the renderer memoizes by source in memory and a
+ * second render on the same page would time a cache hit. The Mermaid chunk itself is warm
+ * in the service worker by then, which is the case a returning user is in.
+ */
+async function diagramPage(page: Page): Promise<{ render: number[]; longTasks: number[]; keys: number[] }> {
+  const render: number[] = [];
+  const longTasks: number[] = [];
+  const url = `/v/${PERF_SLUG}/${PERF_DIAGRAM_NOTE}`;
+  for (let attempt = 0; attempt < REPEATS.diagram; attempt += 1) {
+    const { ready, painted } = await timeToDiagram(page, url);
+    render.push(painted - ready);
+    // why: one figure per load, the worst task that *started* after the editor was ready.
+    // A task that started earlier is the app booting, which `longest-task` already owns.
+    const after = (await readSpans(page)).filter(([start]) => start >= ready).map(([, duration]) => duration);
+    longTasks.push(after.length === 0 ? 0 : Math.max(...after));
+    await settle(page);
+  }
+  const keys = await keystrokes(page, async (p) => {
+    // why: the paragraph, not the editor's centre. A click on the chart opens its source,
+    // and the budget this checks is typing *elsewhere* on the page.
+    await p.locator(EDITOR).first().getByText(PERF_DIAGRAM_MARKER).click();
+    await p.keyboard.press("End");
+  });
+  return { render, longTasks, keys: keys.toPaint };
+}
+
 function report(profile: DeviceProfile, scenario: string): void {
   process.stderr.write(`  measured ${profile.name}: ${scenario}\n`);
 }
@@ -960,6 +1059,11 @@ export async function measureDevice(
   const page = await context.newPage();
   await throttle(context, page, profile.cpuThrottle);
 
+  // why: first, and by navigation. It needs no tabs or switcher, so a failure in the tab
+  // scenarios below cannot hide the A38 rows, which are the ones most likely to move.
+  const diagram = await diagramPage(page);
+  report(profile, "diagram page");
+  await settle(page);
   const noteSamples = await openNote(page, profile.isMobile ? MOBILE_SHEET : DESKTOP_TABS);
   report(profile, "open note");
   await settle(page);
@@ -1045,6 +1149,28 @@ export async function measureDevice(
         `${graph.nodes} nodes drawn, redrawn on every frame by a wheel event dispatched from ` +
         "an animation-frame loop. Frame *time*, not rate: 30 fps is 33.3 ms. It does not " +
         "include the force layout, which is finished before this starts and runs in a worker",
+    },
+    {
+      id: "diagram-render",
+      samples: diagram.render,
+      reduce: "median",
+      caveat:
+        "a 43-task Gantt chart in six sections, timed from editor-ready to the chart painted " +
+        "after a full navigation. The Mermaid chunk comes from the service worker cache",
+    },
+    {
+      id: "diagram-longest-task",
+      samples: diagram.longTasks,
+      reduce: "max",
+      caveat:
+        "worst task that started after the editor was ready, per load. As with longest-task, " +
+        "0 ms means nothing crossed 50 ms, not that no work happened",
+    },
+    {
+      id: "diagram-keystroke-to-paint",
+      samples: diagram.keys,
+      reduce: "p95",
+      caveat: "typing in the paragraph below the rendered chart; double-rAF, as keystroke-to-paint",
     },
   ];
 

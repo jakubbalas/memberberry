@@ -3743,8 +3743,9 @@ That is a scoped exception, not a relaxed budget.
   render itself. Notes without a diagram must meet every budget, and typing elsewhere on a
   diagram page must still meet keystroke → paint. In the user's words, *"Wherever possible we
   find alternatives"*: render lazily, cache SVG in memory by source hash, and reach for a
-  lighter approach where one exists before leaning on the exception. `make perf` records
-  a diagram-page fixture separately so the exception is measured, not assumed.
+  lighter approach where one exists before leaning on the exception. `make perf` measures a
+  diagram-page fixture in three rows of its own (§21.10), so the exception is measured, not
+  assumed. A miss is carried in `breaches.json` at its measured value, as a ratchet.
 
 ---
 
@@ -4813,6 +4814,26 @@ documents in the same build, not a previous application version.
 0.0003 ms in jsdom. Refreshes cache their displayed state and leave the banner DOM
 unchanged during ordinary typing. Neither benchmark measures browser paint or device
 performance; the existing §21.2 budgets remain unchanged.
+
+### 21.10 Measured: the Mermaid diagram page (A38)
+
+The fixture is `perf-fixtures/gantt.md` in the perf vault: a 43-task Gantt chart in six
+sections, with dependencies, and a paragraph below it. `web/perf/server.ts` rewrites it every
+run and keeps it out of the 10k corpus count. Each sample is a full navigation, so nothing is
+memoized; the Mermaid chunk comes from the service-worker cache. Three rows, measured against
+the budgets A38 relaxes (2026-11-08, this machine, mobile = Chromium at 4x CPU throttle):
+
+| Row | Desktop | Mobile | Budget (desktop / mobile) |
+|---|---|---|---|
+| Editor ready → Gantt chart painted (median) | 22.2 ms | 85.5 ms | 80 / 150 ms |
+| Longest task after the editor is ready | 0 ms (none over 50) | **76 ms** | 50 / 50 ms |
+| Keystroke → paint below the chart (p95) | **16.4 ms** | 15.9 ms | 16 / 16 ms |
+
+The render is well inside the Open note budget on both devices, which is better than A38
+assumed. The real cost is one main-thread task of about 76 ms on the throttled phone. Mermaid
+lays the chart out against the DOM, so it cannot move to a worker. That task is the A38
+exception, recorded in `breaches.json` for mobile only. The desktop keystroke figure is the
+same one-frame resolution limit as `keystroke-to-paint` (§21.4), not a diagram cost.
 
 ## 22. Testing strategy
 

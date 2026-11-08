@@ -142,6 +142,35 @@ export const BUDGETS: readonly Budget[] = [
     desktop: 30_000,
     note: "server-side; no device class. §21.8 has where the time goes",
   },
+  // A38 (SPEC §13.2): pages with a Mermaid diagram may miss the budgets below on a phone, and
+  // only while the diagram renders. These rows hold that exception to the *same* numbers as
+  // the rows it relaxes. A miss is carried in breaches.json at its measured value, so the
+  // exception is a ratchet rather than a blank cheque.
+  {
+    id: "diagram-render",
+    metric: "Diagram page: editor ready → Gantt chart painted (A38, measured against Open note)",
+    unit: "ms",
+    mobile: 150,
+    desktop: 80,
+    note: "Mermaid chunk already in cache; render is not memoized across samples",
+  },
+  {
+    id: "diagram-longest-task",
+    metric: "Diagram page: longest main-thread task after the editor is ready (A38)",
+    unit: "ms",
+    mobile: 50,
+    desktop: 50,
+  },
+  {
+    // why: no exception. §13.2 promises typing elsewhere on a diagram page keeps the
+    // keystroke budget, and this row is what makes that a check rather than a sentence.
+    id: "diagram-keystroke-to-paint",
+    metric: "Diagram page: keystroke → paint below the chart",
+    unit: "ms",
+    mobile: 16,
+    desktop: 16,
+    note: "p95",
+  },
 ];
 
 export const PENDING: readonly Pending[] = [
