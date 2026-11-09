@@ -1,6 +1,6 @@
 /** Full-vault search in a real browser (`SPEC.md` §14.3). */
 
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 import { emptyVaultSlug } from "./environment.js";
 
 const EDITOR = ".editor-surface .tiptap";
@@ -16,8 +16,7 @@ test("keeps multiple matching blocks visible as a fedora prefix grows", async ({
   expect(created.ok()).toBe(true);
   await page.goto(`/v/${vault}/${path}`);
   await expect(page.locator(EDITOR).first()).toBeVisible();
-  const navigation = page.getByRole("button", { name: /^Show Navigation$/ });
-  if (await navigation.isVisible()) await navigation.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Search", exact: true }).click();
   const input = page.locator(`${SEARCH} input[type="search"]`);
   const results = page.locator(`${SEARCH} .search-result`).filter({ has: page.locator(".search-path", { hasText: path }) });
@@ -37,8 +36,7 @@ test("shows exact online context and opens a matching note", async ({ page }) =>
   await signIn(page);
   await page.goto("/v/personal/Welcome.md");
   await expect(page.locator(EDITOR).first()).toBeVisible();
-  const navigation = page.getByRole("button", { name: /^Show Navigation$/ });
-  if (await navigation.isVisible()) await navigation.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Search", exact: true }).click();
 
   const input = page.locator(`${SEARCH} input[type="search"]`);

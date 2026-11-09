@@ -11,7 +11,9 @@ test("cold-start failure identifies the hidden editor gate and connection status
         <div class="editor-surface"><div class="tiptap" contenteditable="true">Note</div></div>
       </section><p class="offline-status" role="status">Offline — reconnecting</p>`,
   }));
-  await expect(timeToEditor(page, "/perf-blocked")).rejects.toThrow(/body.*waiting.*Offline — reconnecting/s);
+  // why: a short deadline. The harness's default (90 s, for a throttled phone's cold start) is
+  // longer than this test's timeout, so the diagnostic it asserts on could never arrive.
+  await expect(timeToEditor(page, "/perf-blocked", 5_000)).rejects.toThrow(/body.*waiting.*Offline — reconnecting/s);
 });
 
 test("a stalled custom emoji request does not block the note editor", async ({ page }) => {

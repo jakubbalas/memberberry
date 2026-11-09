@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Editor } from "@tiptap/core";
 import type { Locator, Page } from "@playwright/test";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 
@@ -19,8 +19,7 @@ async function createNote(page: Page, path: string, content: string): Promise<vo
 }
 
 async function openTasks(page: Page): Promise<Locator> {
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Tasks", exact: true }).click();
   const tasks = page.locator("#navigation-tasks .inbox-panel");
   await expect(tasks).toBeVisible();

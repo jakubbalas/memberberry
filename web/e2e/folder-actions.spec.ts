@@ -1,12 +1,11 @@
 /** Folder rename and guarded deletion, on desktop and touch (SPEC §8.2). */
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 test("folder actions open rename and require an exact name for nonempty deletion", async ({ page }, info) => {
   await signIn(page);
   await page.goto("/v/personal/Projects/Roadmap.md");
   await expect(page.locator(".editor-surface .tiptap")).toBeVisible();
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   const row = page.getByRole("treeitem", { name: "Projects", exact: true });
   const openMenu = async () => {
     if (info.project.name === "mobile") await row.getByRole("button", { name: "Folder actions for Projects", exact: true }).tap();
@@ -48,8 +47,7 @@ test("folder rename persists and confirmed deletion trashes notes and removes em
   await page.goto(`/v/personal/${encodeURIComponent(parent)}/Original/Keep.md`);
   await expect(page.locator(".editor-surface .tiptap")).toBeVisible();
   const showNavigation = async () => {
-    const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-    if (await show.isVisible()) await show.click();
+    await openSidebar(page, "Navigation");
   };
   await showNavigation();
   const tree = page.getByRole("tree", { name: "Notes", exact: true });

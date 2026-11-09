@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT, scratchNote } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 test("colon plus one character opens inline emoji suggestions and a bare colon stays closed", async ({ page }, info) => {
   const note = scratchNote("emoji-colon", info.project.name);
@@ -152,8 +152,7 @@ test("an individual PNG can be selected, imported, rendered and inserted as a Ma
     return { display: getComputedStyle(image).display, overlaps: artwork.top < letters.bottom && artwork.bottom > letters.top };
   });
   expect(inline).toEqual({ display: "inline-block", overlaps: true });
-  const showNavigation = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await showNavigation.isVisible()) await showNavigation.click();
+  await openSidebar(page, "Navigation");
   const scratchFolder = page.getByRole("tree", { name: "Notes", exact: true }).getByRole("treeitem", { name: "Scratch", exact: true });
   if (await scratchFolder.getAttribute("aria-expanded") === "false") await scratchFolder.click();
   await expect(page.locator(`.tree-label img[alt=":${shortcode}:"]`).first()).toBeVisible();

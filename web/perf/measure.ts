@@ -264,7 +264,11 @@ async function throttle(context: BrowserContext, page: Page, rate: number): Prom
  * `waitUntil: "commit"` so the observer is installed while the document is still loading;
  * the initial `querySelector` covers the case where it beat us to it anyway.
  */
-export async function timeToEditor(page: Page, url: string): Promise<number> {
+export async function timeToEditor(
+  page: Page,
+  url: string,
+  deadline: number = READINESS_TIMEOUT_MS,
+): Promise<number> {
   await page.goto(url, { waitUntil: "commit" });
   return page.evaluate(
     ([selector, deadline]) =>
@@ -309,7 +313,7 @@ export async function timeToEditor(page: Page, url: string): Promise<number> {
         });
         observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
       }),
-    [EDITOR, READINESS_TIMEOUT_MS] as const,
+    [EDITOR, deadline] as const,
   );
 }
 

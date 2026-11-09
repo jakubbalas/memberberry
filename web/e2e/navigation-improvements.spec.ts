@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 import type { Page } from "@playwright/test";
 
 async function showNavigation(page: Page): Promise<void> {
   await expect(page.locator(".workspace-shell")).toBeVisible();
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
 }
 
 async function openFolder(page: Page, name: string): Promise<void> {
@@ -142,8 +141,7 @@ test("sidebars fill mobile width only and keep body top padding at zero", async 
     }
     await expect(left.locator(".sidebar-body")).toHaveCSS("padding-top", "0px");
     await page.getByRole("button", { name: "Hide Navigation", exact: true }).click();
-    const showContext = page.getByRole("button", { name: "Show Context", exact: true });
-    if (await showContext.isVisible()) await showContext.click();
+    await openSidebar(page, "Context");
     const right = page.getByRole("complementary", { name: "Context", exact: true });
     if (width < 768) {
       const bounds = await right.boundingBox();

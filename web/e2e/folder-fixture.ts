@@ -1,10 +1,31 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { createServer } from "node:net";
 import { chown, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPO, E2E_WEB_ROOT, E2E_USER } from "./environment.js";
 import type { Page } from "@playwright/test";
 /** An isolated loopback-only service, with explicit fresh-process restart and guaranteed cleanup. */
+/**
+ * A loopback port the OS reports free, held for this fixture's lifetime.
+ *
+ * why: the fixture used to bind 9012, which is the main E2E server's port (AGENTS.md §5.1), so
+ * under `make e2e` every folder spec failed with "exited before readiness". One port per
+ * fixture rather than port 0 per start, because `restart()` must come back on the same
+ * origin: the page, its storage and its cookies stay pointed at it.
+ */
+async function freePort(): Promise<number> {
+ return new Promise<number>((resolve,reject)=>{
+  const probe=createServer();
+  probe.once("error",reject);
+  probe.listen(0,"127.0.0.1",()=>{
+   const address=probe.address();
+   const port=typeof address==="object"&&address!==null?address.port:0;
+   probe.close(()=>port>0?resolve(port):reject(new Error("the OS reported no free port")));
+  });
+ });
+}
+
 export async function folderServer(locations:"configured"|"empty"|"none"|"multiple"="configured",unprivileged=false): Promise<{root:string;config:string;serviceUid:number;serviceGid:number;readonly origin:string;readonly pid:number|undefined;restart:()=>Promise<void>;stop:()=>Promise<void>}> {
  const root=await mkdtemp(join(tmpdir(),"memberberry-folders-")),projects=join(root,"projects"),config=join(root,"server.toml");
  const binary=process.env["FOLDER_BINARY"]??join(REPO,"target/debug/memberberry");
@@ -42,7 +63,8 @@ export async function folderServer(locations:"configured"|"empty"|"none"|"multip
   for(const [path,body] of Object.entries(files)){await mkdir(join(projects,path,".."),{recursive:true});await writeFile(join(projects,path),body);}
   if(locations==="configured")await mkdir(join(projects,"Empty"));
   if(locations==="multiple")await mkdir(join(root,"other"));
-  await writeFile(config,`bind = "127.0.0.1:9012"\nweb_root = ${JSON.stringify(E2E_WEB_ROOT)}\n`+(locations==="none"?"":`[[vault_locations]]\nid = "projects"\nname = "Projects"\npath = ${JSON.stringify(projects)}\n`)+(locations==="multiple"?`[[vault_locations]]\nid = "other"\nname = "Other 日本"\npath = ${JSON.stringify(join(root,"other"))}\n`:"")+(locations!=="configured"?"":`[[vaults]]\nslug = "registered"\npath = ${JSON.stringify(join(projects,"Registered"))}\n[[vaults]]\nslug = "nested"\npath = ${JSON.stringify(join(projects,"Parent/Nested"))}\n`));
+  const port=await freePort();
+  await writeFile(config,`bind = "127.0.0.1:${port}"\nweb_root = ${JSON.stringify(E2E_WEB_ROOT)}\n`+(locations==="none"?"":`[[vault_locations]]\nid = "projects"\nname = "Projects"\npath = ${JSON.stringify(projects)}\n`)+(locations==="multiple"?`[[vault_locations]]\nid = "other"\nname = "Other 日本"\npath = ${JSON.stringify(join(root,"other"))}\n`:"")+(locations!=="configured"?"":`[[vaults]]\nslug = "registered"\npath = ${JSON.stringify(join(projects,"Registered"))}\n[[vaults]]\nslug = "nested"\npath = ${JSON.stringify(join(projects,"Parent/Nested"))}\n`));
   if(unprivileged&&process.getuid?.()===0)for(const path of [root,projects,config])await chown(path,serviceUid,serviceGid);
   execFileSync(binary,["user","setup","--username",E2E_USER.username,"--password-stdin","--config",config],{...identity,input:`${E2E_USER.password}\n`});
   await start();

@@ -1,4 +1,4 @@
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 import { emptyVaultSlug } from "./environment.js";
 
 test("Home note rows show folder prefixes and titles without duplicate filenames", async ({ page }, info) => {
@@ -24,8 +24,7 @@ test("the vault opens Home with compact file actions and a brand link back home"
   await signIn(page);
   await page.goto("/v/personal");
   await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (info.project.name === "mobile") await show.click();
+  await openSidebar(page, "Navigation");
   const navigation = page.getByRole("complementary", { name: "Navigation", exact: true });
   await expect(navigation).toBeVisible();
   await expect(navigation.getByRole("button", { name: "Search notes", exact: true })).toHaveCount(0);
@@ -61,8 +60,7 @@ test("creates a real empty folder from the file actions and keeps it after reloa
   await signIn(page);
   await page.goto("/v/personal");
   await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   const navigation = page.getByRole("complementary", { name: "Navigation", exact: true });
   await navigation.getByRole("button", { name: "New folder", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "New folder", exact: true });
@@ -71,6 +69,6 @@ test("creates a real empty folder from the file actions and keeps it after reloa
   await dialog.getByRole("button", { name: "Create folder", exact: true }).click();
   await expect(navigation.getByRole("treeitem", { name, exact: true })).toBeVisible();
   await page.reload();
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   await expect(navigation.getByRole("treeitem", { name, exact: true })).toBeVisible();
 });

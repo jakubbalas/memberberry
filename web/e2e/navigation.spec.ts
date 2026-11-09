@@ -1,11 +1,10 @@
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 test("navigation shows one tool at a time and preserves search when switching", async ({ page }, info) => {
   await signIn(page);
   await page.goto("/v/personal/Themes/Notebook.md");
   await expect(page.locator(".editor-surface .tiptap").first()).toBeVisible();
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   const tools = page.getByRole("group", { name: "Navigation views" });
   await expect(page.getByRole("tree", { name: "Notes", exact: true })).toBeVisible();
   await expect(page.locator(".search-panel")).toBeHidden();

@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { E2E_NOTES, expect, signIn, test } from "./fixtures.js";
+import { E2E_NOTES, expect, signIn, test, openSidebar } from "./fixtures.js";
 import { E2E_VAULT, scratchNote } from "./environment.js";
 
 /** The editor is mounted when Tiptap has taken over the surface. */
@@ -25,8 +25,7 @@ test("opening a note loads the bundle and mounts an editable surface", async ({ 
   await signIn(page);
   await page.getByRole("link", { name: "Personal" }).click();
   await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
-  const showNavigation = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await showNavigation.isVisible()) await showNavigation.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("tree", { name: "Notes", exact: true })
     .getByRole("treeitem", { name: "Welcome", exact: true }).click();
 

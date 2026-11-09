@@ -81,6 +81,21 @@ export async function signIn(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Vaults" })).toBeVisible();
 }
 
+/**
+ * Opens a side panel (§8.2 desktop, §8.3 mobile drawer) if it is closed.
+ *
+ * why: waits for the top bar's toggle in either state before deciding. The old pattern,
+ * `if (await show.isVisible()) await show.click()`, checks once with no wait: right after a
+ * `goto` or `reload` the shell may not have rendered the toggle yet, so the check returned
+ * false, the drawer stayed shut and the next click waited 30 s for a control inside it.
+ */
+export async function openSidebar(page: Page, side: "Navigation" | "Context"): Promise<void> {
+  const toggle = page.getByRole("button", { name: new RegExp(`^(Show|Hide) ${side}$`) });
+  await expect(toggle).toBeVisible();
+  if ((await toggle.getAttribute("aria-label")) === `Show ${side}`) await toggle.click();
+  await expect(page.getByRole("button", { name: `Hide ${side}`, exact: true })).toBeVisible();
+}
+
 /** The resolved value of a CSS custom property on an element. */
 export async function tokenValue(page: Page, selector: string, token: string): Promise<string> {
   return page.locator(selector).evaluate(

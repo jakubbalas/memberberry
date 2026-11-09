@@ -218,6 +218,25 @@ no full-suite result is claimed.
   machine memory pressure, so a later failure there needs the footprint checked first. The
   footprint-vs-RSS budget question in §21.11 is still open.
 
+- **Full `make e2e` on macOS (2026-11-09): 93 failed.** Triage, with a baseline at `afbb2cd`
+  (before the day's 15 commits) for comparison:
+  - 78 were the folder fixture (`e2e/folder-fixture.ts`) binding 9012, the main E2E server's
+    port, so it exited before readiness. Fixed: it now asks the OS for one free port per
+    fixture. Those specs (`folder-*`, `new-vault`, `shallow-folder-*`) and
+    `navigation-improvements` still fail **on macOS by design**: folder locations and the
+    shallow-directory endpoint are Linux-only (SPEC §6). They need a Linux run; the
+    port fix there is untested.
+  - `task-display` (mobile) was a regression on main (2 of 3 runs failed, 0 of 3 on the
+    baseline): after `page.reload()`, an instant `isVisible("Show Navigation")` ran before the
+    shell rendered, so the drawer stayed shut. The same race was in 25 specs; all now use
+    `openSidebar(page, side)` from `e2e/fixtures.ts`, which waits for the toggle in either
+    state. `task-display`, `backlinks` and `graph` (mobile) then passed 3 of 3.
+  - `perf-readiness` could never pass since `f50f8a8`: `timeToEditor` waited 90 s and the test
+    allowed 45 s. `timeToEditor` takes a deadline; the test passes 5 s.
+  - **Still flaky, and equally flaky on the baseline:** `block-selection` (Tab/Shift+Tab,
+    menus), `workspace` (varying cases), `pwa-update` (including `ENOTEMPTY` renaming a
+    `dist/pwa-update-*` directory under parallel workers). Different cases fail on each run;
+    not caused by the day's work, not fixed.
 - Settings scope deliberately omitted: no palette command for Settings, no server-admin
   editing of shared emoji from the dialog (the admin API still exists), no replacing an
   emoji's artwork, and no accent on server-rendered pages. Open windows other than the one

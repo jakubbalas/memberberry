@@ -26,7 +26,7 @@ import { join } from "node:path";
 import type { Browser, Locator, Page } from "@playwright/test";
 
 import { E2E_VAULT, scratchNote } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 /** Every symptom of a browser with its network taken away, which these tests cause. */
 function allowDisconnection(failures: { allow(pattern: RegExp): void }): void {
@@ -163,8 +163,7 @@ test("an offline edit colliding with a file edit is marked, not silently merged"
     // replica carries it, and the tree draws the badge without opening every note (§3.5).
     await page.reload();
     await expect(page.locator(".ProseMirror").first()).toContainText("Written on a train.");
-    const navigationToggle = page.getByRole("button", { name: /^Show Navigation$/ });
-    if (await navigationToggle.isVisible()) await navigationToggle.click();
+    await openSidebar(page, "Navigation");
     const tree = page.getByRole("tree", { name: "Notes" });
     await tree.getByRole("treeitem", { name: /Scratch/ }).click();
     const noteRow = tree.locator(`[role="treeitem"][title="${note}"]`);

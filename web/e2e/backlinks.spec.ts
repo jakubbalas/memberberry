@@ -8,7 +8,7 @@
  * neither of those can fail the way a wrong route or a cold index fails.
  */
 
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 const PANEL = ".backlinks-panel";
@@ -23,8 +23,7 @@ async function openWithContext(
   await expect(page.locator(EDITOR).first()).toBeVisible();
   // §8.3: below the breakpoint the sidebars are drawers and start closed, so the panel has
   // to be opened. Above it they start open and this is a no-op.
-  const toggle = page.getByRole("button", { name: /^Show Context$/ });
-  if (await toggle.isVisible()) await toggle.click();
+  await openSidebar(page, "Context");
   await expect(page.locator(PANEL)).toBeVisible();
 }
 

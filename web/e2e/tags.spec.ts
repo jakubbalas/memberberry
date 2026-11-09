@@ -11,7 +11,7 @@
  * here are exactly those notes.
  */
 
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 const PANE = ".tag-pane";
@@ -49,8 +49,7 @@ test("a typed hashtag is saved and appears in the tag pane", async ({ page }, in
     const response = await page.request.get("/api/v1/vaults/personal/tags");
     return response.text();
   }).toContain(`"key":"${name}"`);
-  const toggle = page.getByRole("button", { name: /^Show Navigation$/ });
-  if (await toggle.isVisible()) await toggle.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Tags", exact: true }).click();
   await expect(page.locator(`.tag-row[data-tag="${name}"]`)).toBeVisible();
 });
@@ -62,8 +61,7 @@ async function openWithNavigation(page: import("@playwright/test").Page): Promis
   await expect(page.locator(EDITOR).first()).toBeVisible();
   // §8.3: below the breakpoint the sidebars are drawers and start closed. Above it this is
   // a no-op.
-  const toggle = page.getByRole("button", { name: /^Show Navigation$/ });
-  if (await toggle.isVisible()) await toggle.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Tags", exact: true }).click();
   await expect(page.locator(PANE)).toBeVisible();
 }

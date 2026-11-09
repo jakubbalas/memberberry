@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 test("folders move into another folder and back to root with their notes", async ({ page }, info) => {
   await signIn(page);
@@ -12,8 +12,7 @@ test("folders move into another folder and back to root with their notes", async
   }
   expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path: `${source}/Nested/Note.md` } })).ok()).toBe(true);
   await page.goto("/v/personal");
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   const tree = page.getByRole("tree", { name: "Notes", exact: true });
   const row = (path: string) => tree.getByTitle(path, { exact: true });
   await expect(row(source)).toHaveAttribute("draggable", "true");

@@ -5,14 +5,13 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { offlineDatabaseName } from "../src/offline/database-name.js";
 import { E2E_ORIGIN, E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 const SCHEMA = JSON.parse(readFileSync(join(import.meta.dirname, "../../crates/mb-core/schema.json"), "utf8")) as { version: number };
 
 async function showNavigation(page: Page): Promise<void> {
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
 }
 
 function disk(path: string): string {

@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { E2E_VAULT, REPO, scratchNote } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 import type { Page } from "@playwright/test";
 
 const schema: unknown = JSON.parse(readFileSync(join(REPO, "crates/mb-core/schema.json"), "utf8"));
@@ -38,8 +38,7 @@ test("workspace focus discovers server changes without reloading the editor", as
   // Headless Chromium does not consistently emit OS focus when activating a tab. Drive
   // that lifecycle input explicitly; the resulting storage, HTTP and sync are real.
   await page.evaluate(() => window.dispatchEvent(new FocusEvent("focus")));
-  const navigation = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await navigation.isVisible()) await navigation.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("treeitem", { name: "Pwa", exact: true }).click();
   await expect(page.locator(`[role="treeitem"][title="${note}"]`)).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-same-editor", "yes");
@@ -78,8 +77,7 @@ test("return refresh updates closed pinned text and offline search before the ne
   await context.setOffline(true);
   await page.goto(`/v/personal/${note}`);
   await expect(page.getByText("saffronpwa content refreshed on return.")).toBeVisible();
-  const navigation = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await navigation.isVisible()) await navigation.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Search", exact: true }).click();
   await page.locator('.search-panel input[type="search"]').fill("saffronpwa");
   await expect(page.locator(".search-mode")).toHaveText("Offline — prefix search");

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 import { E2E_VAULT, scratchNote } from "./environment.js";
 
 const EDITOR = ".editor-surface .tiptap";
@@ -20,8 +20,7 @@ async function appendAfter(page: Page, paragraph: Locator, text: string): Promis
 
 async function showContext(page: import("@playwright/test").Page): Promise<void> {
   await expect(page.locator('.topbar .sidebar-toggle[data-side="right"]')).toBeVisible();
-  const toggle = page.getByRole("button", { name: /^Show Context$/ });
-  if (await toggle.isVisible()) await toggle.click();
+  await openSidebar(page, "Context");
   const history = page.getByRole("region", { name: "History", exact: true });
   if (!(await history.isVisible())) await page.locator(".notebook-section > summary").filter({ hasText: "Note history" }).click();
   await expect(history).toBeVisible();
@@ -30,7 +29,7 @@ async function showContext(page: import("@playwright/test").Page): Promise<void>
 async function hideMobileContext(page: import("@playwright/test").Page): Promise<void> {
   if ((page.viewportSize()?.width ?? 0) > 640) return;
   const toggle = page.getByRole("button", { name: /^Hide Context$/ });
-  if (await toggle.isVisible()) await toggle.click();
+  await openSidebar(page, "Context");
 }
 
 test("restores a saved version, then trashes and restores the Markdown note", async ({ page, isMobile }, info) => {

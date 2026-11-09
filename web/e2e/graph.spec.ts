@@ -9,7 +9,7 @@
  * through the HTTP route, to a dot a reader can click and land on the note it names.
  */
 
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 const PANEL = ".graph-panel";
@@ -31,8 +31,7 @@ async function openWithContext(
   await page.goto(`/v/personal/${note}`);
   await expect(page.locator(EDITOR).first()).toBeVisible();
   // §8.3: below the breakpoint the sidebars are drawers and start closed.
-  const toggle = page.getByRole("button", { name: /^Show Context$/ });
-  if (await toggle.isVisible()) await toggle.click();
+  await openSidebar(page, "Context");
   await expect(page.locator(PANEL)).toBeVisible();
 }
 

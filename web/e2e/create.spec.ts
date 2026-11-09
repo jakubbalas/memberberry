@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { E2E_VAULT, emptyVaultName, emptyVaultRoot, emptyVaultSlug } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 const PROMPT = "dialog.rename-prompt";
@@ -27,8 +27,7 @@ test("the vault home has account navigation, readable notes and a creation dialo
   await signIn(page);
   await page.goto("/v/personal");
   await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   const navigation = page.getByRole("complementary", { name: "Navigation", exact: true });
   await expect(page.getByRole("link", { name: /Your vaults/ })).toBeVisible();
   await expect(navigation.getByRole("link", { name: "Log out" })).toBeVisible();
@@ -130,8 +129,7 @@ test.describe("creating a note from the workspace", () => {
   test("New note creates inside the selected folder instead of beside the open note", async ({ page }, info) => {
     await signIn(page);
     await page.goto("/v/personal");
-    const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-    if (await show.isVisible()) await show.click();
+    await openSidebar(page, "Navigation");
     await page.locator('[role="treeitem"][title="Projects"]').click();
     await page.getByRole("complementary", { name: "Navigation", exact: true }).getByRole("button", { name: "New note", exact: true }).click();
     const prompt = page.getByRole("dialog", { name: "New note", exact: true });
@@ -147,8 +145,7 @@ test.describe("creating a note from the workspace", () => {
     await signIn(page);
     await page.goto("/v/personal/Projects/Roadmap.md");
     await expect(page.locator(EDITOR)).toBeVisible();
-    const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-    if (await show.isVisible()) await show.click();
+    await openSidebar(page, "Navigation");
     await page.getByRole("complementary", { name: "Navigation", exact: true }).getByRole("button", { name: "New note", exact: true }).click();
     const name = `New editable note ${info.project.name}`;
     const prompt = page.getByRole("dialog", { name: "New note", exact: true });

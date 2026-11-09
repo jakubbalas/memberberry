@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 for (const gesture of ["pointer", "keyboard"] as const) {
   test(`folder New note creates editable Markdown in an empty nested folder via ${gesture}`, async ({ page }, info) => {
@@ -13,8 +13,7 @@ for (const gesture of ["pointer", "keyboard"] as const) {
     expect(response.ok()).toBe(true);
     await page.goto("/v/personal/Projects/Roadmap.md");
     await expect(page.locator(".editor-surface .tiptap")).toBeVisible();
-    const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-    if (await show.isVisible()) await show.click();
+    await openSidebar(page, "Navigation");
     const tree = page.getByRole("tree", { name: "Notes", exact: true });
     await tree.getByRole("treeitem", { name: parent, exact: true }).click();
     const row = tree.getByRole("treeitem", { name: "ملاحظات ✨", exact: true });

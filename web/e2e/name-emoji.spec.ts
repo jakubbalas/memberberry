@@ -1,9 +1,8 @@
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 test("note and folder names offer emoji at the first colon and persist literal glyphs", async ({ page }, info) => {
   await signIn(page); await page.goto("/v/personal");
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   const navigation = page.getByRole("complementary", { name: "Navigation", exact: true });
   for (const kind of ["folder", "note"]) {
     await navigation.getByRole("button", { name: `New ${kind}`, exact: true }).click();
@@ -26,7 +25,7 @@ test("note and folder names offer emoji at the first colon and persist literal g
     else await expect(page.locator(".ProseMirror").getByRole("heading", { name, exact: true })).toBeVisible();
   }
   await page.reload();
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   await expect(navigation.getByRole("treeitem", { name: `🎉 Emoji folder ${info.project.name}`, exact: true })).toBeVisible();
 });
 
@@ -36,8 +35,7 @@ test("existing shortcode folder labels render glyphs and still target the litera
   const created = await page.request.post("/api/v1/vaults/personal/folders", { data: { path } });
   expect(created.ok()).toBe(true);
   await page.goto("/v/personal");
-  const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-  if (await show.isVisible()) await show.click();
+  await openSidebar(page, "Navigation");
   const row = page.getByRole("treeitem", { name: `🎉 Existing ${info.project.name}`, exact: true });
   await expect(row).toBeVisible(); await expect(row).toHaveAttribute("title", path);
   await row.getByRole("button").click();

@@ -1,4 +1,4 @@
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 test("folder expansion and collapse survive reload", async ({ page }, info) => {
   await signIn(page);
@@ -8,8 +8,7 @@ test("folder expansion and collapse survive reload", async ({ page }, info) => {
   })).ok()).toBe(true);
   await page.goto("/v/personal");
   const showNavigation = async (): Promise<void> => {
-    const show = page.getByRole("button", { name: "Show Navigation", exact: true });
-    if (await show.isVisible()) await show.click();
+    await openSidebar(page, "Navigation");
   };
   await showNavigation();
   const row = (path: string) => page.getByRole("tree", { name: "Notes", exact: true }).getByTitle(path, { exact: true });

@@ -7,7 +7,7 @@
  * overdue / later / undated for years.
  */
 
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, signIn, test, openSidebar } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 const PANE = ".inbox-panel";
@@ -17,8 +17,7 @@ async function openWithNavigation(page: import("@playwright/test").Page): Promis
   await signIn(page);
   await page.goto("/v/personal/Welcome.md");
   await expect(page.locator(EDITOR).first()).toBeVisible();
-  const toggle = page.getByRole("button", { name: /^Show Navigation$/ });
-  if (await toggle.isVisible()) await toggle.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Tasks", exact: true }).click();
   await expect(page.locator(PANE)).toBeVisible();
 }
@@ -83,8 +82,7 @@ test("draws a page of a large group and shows the rest on request", async ({ pag
   expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path: `${folder}/Many.md`, content: `# Many\n\n${tasks}\n` } })).ok()).toBe(true);
   await page.goto("/v/personal/Welcome.md");
   await expect(page.locator(EDITOR).first()).toBeVisible();
-  const toggle = page.getByRole("button", { name: /^Show Navigation$/ });
-  if (await toggle.isVisible()) await toggle.click();
+  await openSidebar(page, "Navigation");
   await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Tasks", exact: true }).click();
   const pane = page.locator(`#navigation-tasks ${PANE}`);
   await pane.getByRole("button", { name: "Filters", exact: true }).click();
