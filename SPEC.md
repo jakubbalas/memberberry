@@ -1796,6 +1796,18 @@ decisions:
   CRC32, and one lib0 v1 update. Updates are capped at 64 MiB before allocation. A malformed,
   truncated, or checksum-invalid sidecar fails closed rather than materializing partial
   state; a missing sidecar is rebuilt from its Markdown note (I1).
+- **Missing dependencies:** a log whose merged state still has pending Yjs structs or
+  deletes (an update whose base no record contains) fails to load with
+  `MissingDependencies`. Serving it would make the note unopenable — every client's schema
+  admission refuses it, and the server refuses every later update against it. The
+  coordinator therefore moves it to `.memberberry/crdt/quarantine/<name>.bin.<n>` (numbered,
+  never overwritten, never deleted) and rebuilds from the Markdown note, as for a missing
+  sidecar. Nothing readable is lost: the Markdown was written from what that state
+  materialized. Accepted edits newer than the last Markdown write, if any, stay only in the
+  quarantined file. To keep such a log from being written, `replace` and compaction refuse
+  a pending document, and `append` refuses to *start* a log with an update that cannot stand
+  alone. When the log vanished under an open room (I1 cleanup, a hand-run delete), the
+  coordinator writes its complete, already-validated candidate state instead.
 - **Durability:** the server serializes appends per note and syncs each append. Compaction
   writes and syncs a complete state to a sibling temporary file, atomically renames it over
   the sidecar, then syncs the parent directory. Cross-process writers are unsupported; the

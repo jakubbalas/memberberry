@@ -7,7 +7,8 @@ use std::thread;
 
 use mb_core::frontmatter::YamlValue;
 use tempfile::TempDir;
-use yrs::{Map, Transact, WriteTxn, XmlElementPrelim, XmlFragment};
+use yrs::updates::decoder::Decode;
+use yrs::{Map, ReadTxn, Transact, WriteTxn, XmlElementPrelim, XmlFragment};
 
 use mb_crdt::{
     FRONTMATTER_ROOT, PROSEMIRROR_ROOT, Sidecar, SidecarError, document_from_update_v1,
@@ -308,4 +309,131 @@ fn insert_frontmatter(doc: &yrs::Doc, key: &str, value: &str) -> Vec<u8> {
     txn.get_or_insert_map(FRONTMATTER_ROOT)
         .insert(&mut txn, key, value);
     txn.encode_update_v1()
+}
+
+/// A delta whose structs depend on items that only `unrelated_base` contains.
+fn dependent_update() -> Vec<u8> {
+    let base = document_to_yrs(&mb_core::parse("unrelated base\n")).unwrap();
+    let vector = base.transact().state_vector();
+    mb_crdt::apply_external_markdown(&base, "unrelated base, extended\n").unwrap();
+    base.transact().encode_state_as_update_v1(&vector)
+}
+
+#[test]
+fn a_log_that_leaves_missing_dependencies_fails_closed() {
+    let temp = TempDir::new().unwrap();
+    let sidecar = Sidecar::new(temp.path().join("note.bin"));
+    sidecar
+        .replace(&document_to_yrs(&mb_core::parse("base\n")).unwrap())
+        .unwrap();
+    sidecar.append(&dependent_update()).unwrap();
+
+    let error = sidecar
+        .load()
+        .expect_err("a pending state must not be served");
+
+    assert!(matches!(error, SidecarError::MissingDependencies { .. }));
+}
+
+#[test]
+fn the_perf_vault_sidecar_with_a_pending_first_record_fails_closed() {
+    // The sidecar that made Note 777 unopenable on 2026-11-09: one compacted record whose
+    // state already carried a client's clocks 5..60 without 0..4, then 71 small updates.
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("note.bin");
+    fs::write(
+        &path,
+        include_bytes!("fixtures/perf-note-777-pending-from-record-0.bin"),
+    )
+    .unwrap();
+
+    let error = Sidecar::new(&path)
+        .load()
+        .expect_err("the recorded sidecar must not load");
+
+    assert!(matches!(error, SidecarError::MissingDependencies { .. }));
+}
+
+#[test]
+fn append_refuses_to_start_a_log_with_a_dependent_update() {
+    let temp = TempDir::new().unwrap();
+    let sidecar = Sidecar::new(temp.path().join("note.bin"));
+
+    let error = sidecar
+        .append(&dependent_update())
+        .expect_err("a new log must begin with a self-contained state");
+
+    assert!(matches!(error, SidecarError::MissingDependencies { .. }));
+    assert!(!sidecar.path().exists());
+}
+
+#[test]
+fn replace_refuses_a_document_with_missing_dependencies() {
+    let temp = TempDir::new().unwrap();
+    let sidecar = Sidecar::new(temp.path().join("note.bin"));
+    let pending = document_to_yrs(&mb_core::parse("base\n")).unwrap();
+    pending
+        .transact_mut()
+        .apply_update(yrs::Update::decode_v1(&dependent_update()).unwrap())
+        .unwrap();
+
+    let error = sidecar
+        .replace(&pending)
+        .expect_err("compaction must not fold pending structs into one record");
+
+    assert!(matches!(error, SidecarError::MissingDependencies { .. }));
+    assert!(!sidecar.path().exists());
+}
+
+#[test]
+fn compaction_leaves_a_log_with_missing_dependencies_untouched() {
+    let temp = TempDir::new().unwrap();
+    let sidecar = Sidecar::new(temp.path().join("note.bin"));
+    sidecar
+        .replace(&document_to_yrs(&mb_core::parse("base\n")).unwrap())
+        .unwrap();
+    sidecar.append(&dependent_update()).unwrap();
+    let before = fs::read(sidecar.path()).unwrap();
+
+    let error = sidecar
+        .compact_if_needed(0)
+        .expect_err("compaction must not bake a pending state in");
+
+    assert!(matches!(error, SidecarError::MissingDependencies { .. }));
+    assert_eq!(fs::read(sidecar.path()).unwrap(), before);
+}
+
+#[test]
+fn quarantine_sets_the_log_aside_byte_for_byte_without_overwriting_an_earlier_one() {
+    let temp = TempDir::new().unwrap();
+    let sidecar = Sidecar::new(temp.path().join("crdt/note.bin"));
+    let doc = document_to_yrs(&mb_core::parse("first\n")).unwrap();
+    sidecar.replace(&doc).unwrap();
+    let first = fs::read(sidecar.path()).unwrap();
+    let first_moved = sidecar.quarantine().unwrap();
+    sidecar
+        .replace(&document_to_yrs(&mb_core::parse("second\n")).unwrap())
+        .unwrap();
+    let second = fs::read(sidecar.path()).unwrap();
+
+    let second_moved = sidecar.quarantine().unwrap();
+
+    assert!(!sidecar.path().exists());
+    assert_ne!(first_moved, second_moved);
+    assert_eq!(
+        first_moved.parent(),
+        Some(temp.path().join("crdt/quarantine").as_path())
+    );
+    assert_eq!(fs::read(first_moved).unwrap(), first);
+    assert_eq!(fs::read(second_moved).unwrap(), second);
+}
+
+#[test]
+fn quarantining_a_missing_sidecar_is_an_error() {
+    let temp = TempDir::new().unwrap();
+    let sidecar = Sidecar::new(temp.path().join("note.bin"));
+
+    let error = sidecar.quarantine().expect_err("nothing to set aside");
+
+    assert!(matches!(error, SidecarError::Io { .. }));
 }

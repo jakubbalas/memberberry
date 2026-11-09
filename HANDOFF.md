@@ -1,6 +1,6 @@
 # Handoff
 
-## Current state (2026-11-09): main has Mermaid diagrams and the index-lock sync fix
+## Current state (2026-11-09): Mermaid diagrams, the index-lock sync fix, CRDT sidecar quarantine, inbox paging
 
 Two branches were merged into `main` (not pushed): `mermaid-diagrams` (Mermaid diagrams,
 A38, SPEC §13.2, plus the §21.10 perf fixture) and `claude/xenodochial-gagarin-43e282` (the
@@ -80,7 +80,50 @@ Fix:
 A whole-vault reconcile now takes about 140 ms. SPEC §14.2 records the rule and the remaining
 limit: a real note edit still triggers a full rebuild under the lock.
 
+### CRDT sidecars with missing dependencies are quarantined, not served
+
+Fixed: after the lock fix, Note 777 in the cached perf vault still could not open. The
+server sent a state with Yjs pending structs, and the client's schema admission showed
+"Refresh required". SPEC §7.3 records the new load and recovery rule.
+
+Cause, from the sidecar itself (written 2026-09-16 10:36, 72 records). Record 0 is a full
+state written by compaction or `replace`. It already held client 693270781 at clocks 5–60
+without 0–4, plus about 68 perf "x"-typing clients. Until `3c45e3d` (2026-10-08),
+`apply_remote_update_as` did not check `has_missing_updates`, so a client update without its
+base was accepted, appended and merged as pending. `replace` and compaction then encoded the
+pending state into one record. After 10-08 the server refused every update against that doc,
+so the note stayed broken. Why that client's first 5 clocks never reached the server cannot
+be determined from the evidence.
+
+A second path to the same file shape was still live and is now closed. Deleting a sidecar
+under an open room made the next accepted update the first record of a new log, a delta
+whose base was gone.
+
+Fix:
+- `mb_crdt::Sidecar`: `load` returns `MissingDependencies` for a pending merged state.
+  `replace` and compaction refuse a pending doc. `append` refuses to start a new log with an
+  update that cannot stand alone. New `quarantine()` moves the log to
+  `crdt/quarantine/<name>.<n>`.
+- `NoteCoordinator::open` quarantines and rebuilds from Markdown on `MissingDependencies`.
+  `apply_remote_update_as` writes the full candidate state when the append would start a log.
+- `crates/mb-crdt/tests/fixtures/perf-note-777-pending-from-record-0.bin` is the real broken
+  sidecar, used as a regression fixture.
+
+The cached perf vault (`target/perf/vault` in the main checkout) still holds the broken file.
+The next server open quarantines it there. Nothing deleted it.
+
 ## Verification
+
+- Sidecar dependency fix: two `mb-server/tests/sync.rs` regressions
+  (`a_sidecar_with_missing_dependencies_is_quarantined_and_rebuilt_from_markdown`,
+  `an_update_accepted_after_the_sidecar_was_deleted_starts_a_self_contained_log`) failed
+  before the fix. Seven new `mb-crdt/tests/storage.rs` tests include the real perf-vault file.
+  Probes went red: removing the load check (4 tests), the coordinator's full-state fallback,
+  and quarantining by deletion. All mb-crdt suites pass, and so do mb-server sync, recovery,
+  rename, websocket, convergence and watch. mb-crdt clippy `-D warnings` is clean.
+  mb-server clippy fails only on code this change does not touch: the
+  `directory_path_included` warning and `expect` in `repository/folder_delete.rs` tests.
+  No browser check was run, because the change has no UI delta.
 
 - `http::tick_tests` (5 tests). The two recovery-sweep regressions failed before the
   `tick_changes` fix.
@@ -109,6 +152,13 @@ no full-suite result is claimed.
 
 ## Next and open work
 
+- A truncated, checksum-invalid or wrong-header sidecar still fails closed (SPEC §7.3), so
+  that note stays unopenable until someone deletes the sidecar. Quarantine-and-rebuild could
+  cover those cases too. It was left out because a truncated tail can hold accepted edits
+  that were never flushed, so the trade-off needs a decision.
+- A rebuilt sidecar starts a new CRDT lineage, the same as any I1 rebuild. A browser replica
+  of the old lineage that reconnects with unsent edits merges as concurrent content. That
+  risks duplicated blocks, not loss. This was not exercised in a browser.
 - A real note edit still causes a full zone-segment rebuild under the index lock (SPEC §14.2
   honest limit). Index-backed routes also lock a `std::sync::Mutex` inline in async handlers.
   The per-note incremental delta, or moving the rebuild off the lock, is the follow-up.
@@ -150,16 +200,9 @@ no full-suite result is claimed.
     `perf-mobile-coldstart-profile.mts`) attributes it to `putNotes` (IndexedDB catalog),
     `putSearchSegment` and `mb_search::Segment` validation.
   - Mobile quick-switcher still measures nothing.
-- **A note can become permanently unopenable — fix on branch `claude/busy-rubin-112b0f` (`06edea1`), not merged into main or reviewed here.**
-- Server memory follow-up: branch `claude/quirky-lumiere-325cc1` (`5920960`, not merged or reviewed here) cuts the zone-segment rebuild peak 233 → 56 MB and bare-server startup 327 → 130 MB; after a perf run it still reads 173–197 MB, so the `server-memory-idle` record stays. The perf vault cached
-  in this checkout had a server CRDT sidecar for Note 777 (written 2026-09-16) whose *first*
-  record already has missing dependencies (Yjs pending structs). The server sends it on
-  subscribe; the client's schema admission correctly refuses it, so every client shows
-  "Refresh required" for that note. A fresh vault does not produce it. How the server
-  persisted such a record, and why load does not detect it (Invariant I1 says a rebuild from
-  Markdown must work), is uninvestigated. Evidence kept at
-  `local/debug/perf-vault-broken-note777/` (`.memberberry/crdt/b29b635c….bin`) and the
-  captured payload `local/debug/note777-sync-payload.bin`.
+- Server memory follow-up: branch `claude/quirky-lumiere-325cc1` (`5920960`) cuts the
+  zone-segment rebuild peak 233 → 56 MB and bare-server startup 327 → 130 MB; after a perf run
+  it still reads 173–197 MB, so the `server-memory-idle` record stays.
 
 - Settings scope deliberately omitted: no palette command for Settings, no server-admin
   editing of shared emoji from the dialog (the admin API still exists), no replacing an
