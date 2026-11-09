@@ -13,7 +13,7 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -136,6 +136,20 @@ export function ensureVault(notes: number = PERF_NOTES): void {
   // grows by sixty characters per run would drift away from what was first recorded.
   mkdirSync(join(VAULT, "notes", PERF_FIXTURES), { recursive: true });
   writeFileSync(join(VAULT, "notes", PERF_DIAGRAM_NOTE), diagramFixture());
+}
+
+/** The diagram fixture as the server last wrote it to disk (C2: the file is the truth). */
+export function readDiagramNote(): string {
+  return readFileSync(join(VAULT, "notes", PERF_DIAGRAM_NOTE), "utf8");
+}
+
+/**
+ * Whether `now` holds `count` more of `character` than `before` did: the typing has been
+ * synced and written, not merely shown in the editor.
+ */
+export function typingSaved(before: string, now: string, character: string, count: number): boolean {
+  const occurrences = (text: string): number => text.split(character).length - 1;
+  return occurrences(now) >= occurrences(before) + count;
 }
 
 export interface PerfServer {

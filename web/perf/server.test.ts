@@ -1,7 +1,7 @@
 /** The A38 diagram fixture (SPEC §13.2) must be a stable, valid chart, or the rows it feeds drift. */
 import { describe, expect, it } from "vitest";
 
-import { PERF_DIAGRAM_MARKER, diagramFixture } from "./server.js";
+import { PERF_DIAGRAM_MARKER, diagramFixture, typingSaved } from "./server.js";
 
 const tasks = (note: string) => note.split("\n").filter((line) => /^ {4}\S.* :/.test(line));
 
@@ -29,5 +29,27 @@ describe("diagramFixture", () => {
       else seen.add(id);
     }
     expect(problems).toEqual([]);
+  });
+});
+
+describe("typingSaved", () => {
+  // why: the diagram scenario types into the fixture and the next scenario loads a new page.
+  // Leaving before the edits reach the file let them spill into open-note on mobile, where
+  // the quick-switcher click then never completed (HANDOFF.md).
+  const before = diagramFixture();
+
+  it("is false until every typed character is in the file", () => {
+    const partly = before.replace("for the quarter.", `for the quarter.${"x".repeat(59)}`);
+    expect(typingSaved(before, partly, "x", 60)).toBe(false);
+  });
+
+  it("is true once the file holds all of them", () => {
+    const saved = before.replace("for the quarter.", `for the quarter.${"x".repeat(60)}`);
+    expect(typingSaved(before, saved, "x", 60)).toBe(true);
+  });
+
+  it("counts from what the file held before, so an earlier run's typing does not satisfy it", () => {
+    const earlier = before.replace("for the quarter.", `for the quarter.${"x".repeat(60)}`);
+    expect(typingSaved(earlier, earlier, "x", 60)).toBe(false);
   });
 });

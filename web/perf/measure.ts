@@ -18,7 +18,8 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 import type { DeviceClass } from "./budgets.ts";
-import { PERF_DIAGRAM_MARKER, PERF_DIAGRAM_NOTE, PERF_NOTE, PERF_QUERY, PERF_SLUG, PERF_USER } from "./server.ts";
+import { PERF_DIAGRAM_MARKER, PERF_DIAGRAM_NOTE, PERF_NOTE, PERF_QUERY, PERF_SLUG, PERF_USER, readDiagramNote, typingSaved } from "./server.ts";
+import { switchTargetIndex } from "./tabs.ts";
 
 const EDITOR = ".editor-surface .tiptap";
 // why: a CSS selector rather than `getByRole`, because these measurements are taken inside
@@ -588,7 +589,13 @@ async function openNote(page: Page, tabs: TabSwitch): Promise<number[]> {
     const target = index === 0 ? NOTES[0] : NOTES[1];
     await settle(page);
     await tabs.prepare(page);
-    samples.push(await timeSwitch(page, tabs.selector, index, target.marker));
+    const controls = await page.locator(tabs.selector).evaluateAll((elements) => elements.map((element) => ({
+      title: element.getAttribute("title"),
+      text: element.textContent ?? "",
+    })));
+    const at = switchTargetIndex(controls, target.path);
+    if (at === -1) throw new Error(`no single switch control opens ${target.path}: ${JSON.stringify(controls)}`);
+    samples.push(await timeSwitch(page, tabs.selector, at, target.marker));
   }
   return samples;
 }
@@ -1029,13 +1036,34 @@ async function diagramPage(page: Page): Promise<{ render: number[]; longTasks: n
     longTasks.push(after.length === 0 ? 0 : Math.max(...after));
     await settle(page);
   }
+  const before = readDiagramNote();
   const keys = await keystrokes(page, async (p) => {
     // why: the paragraph, not the editor's centre. A click on the chart opens its source,
     // and the budget this checks is typing *elsewhere* on the page.
     await p.locator(EDITOR).first().getByText(PERF_DIAGRAM_MARKER).click();
     await p.keyboard.press("End");
   });
+  await diagramTypingSaved(before);
   return { render, longTasks, keys: keys.toPaint };
+}
+
+/**
+ * Waits until the diagram scenario's typing is in the Markdown file.
+ *
+ * why: the next scenario loads a new page. Leaving with unsent edits made the mobile
+ * open-note click that follows never complete — only in this exact sequence, never in a
+ * standalone repro, so the cause is unexplained (HANDOFF.md). A scenario must not leave
+ * work in flight for the next one to measure, whatever that work then does.
+ */
+async function diagramTypingSaved(before: string): Promise<void> {
+  const deadline = Date.now() + IN_PAGE_TIMEOUT_MS;
+  while (!typingSaved(before, readDiagramNote(), "x", REPEATS.keystrokes)) {
+    if (Date.now() > deadline) {
+      throw new Error(`the diagram scenario's typing did not reach ${PERF_DIAGRAM_NOTE} within ${IN_PAGE_TIMEOUT_MS} ms`);
+    }
+    // why: polling the file, not a guessed sleep. The file is the signal; this is its interval.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 function report(profile: DeviceProfile, scenario: string): void {
