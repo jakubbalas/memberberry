@@ -770,7 +770,7 @@
       <TagPane view={tags} onopen={openNavigationNote} />
     </section>
     <section class="navigation-view" id="navigation-tasks" aria-label="Tasks" hidden={navigationView !== "Tasks"}>
-      <InboxPane view={inbox} onopen={openNavigationNote} onedit={editTask} display={taskDisplay} ondisplay={saveTaskDisplay} onopenmain={openTasks} />
+      <InboxPane view={inbox} onopen={openNavigationNote} onedit={editTask} display={taskDisplay} ondisplay={saveTaskDisplay} onopenmain={openTasks} active={!collapsed.left && navigationView === "Tasks"} />
     </section>
     <section class="navigation-view" id="navigation-calendar" aria-label="Calendar" hidden={navigationView !== "Calendar"}>
       <CalendarPane view={daily} onopen={openNavigationNote} />

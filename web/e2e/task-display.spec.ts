@@ -15,6 +15,22 @@ async function openTasks(page: Page): Promise<Locator> {
   return pane;
 }
 
+/**
+ * Narrows the inbox to one note through its own Note filter.
+ *
+ * why: the inbox draws one page per group (§10.3) and the shared E2E vault keeps every earlier
+ * run's tasks, so this run's row can sit behind "Show more". A user looking for one note's
+ * task would filter for it too.
+ */
+async function onlyNote(pane: Locator, path: string): Promise<void> {
+  const toggle = pane.getByRole("button", { name: "Filters", exact: true });
+  if (await toggle.isVisible()) await toggle.click();
+  const note = pane.getByLabel("Filter by note path");
+  await note.fill(path);
+  await note.blur();
+  await expect(pane.locator(`.inbox-task-row[data-path="${path}"]`).first()).toBeVisible();
+}
+
 async function chooseOption(page: Page, pane: Locator, name: string): Promise<void> {
   await pane.getByRole("button", { name: "Task options", exact: true }).click();
   await page.getByRole("menu", { name: "Task options", exact: true }).getByRole("menuitemcheckbox", { name, exact: true }).click();
@@ -85,6 +101,7 @@ test("the leading checkbox in the main panel completes the canonical source task
   expect(response.ok()).toBe(true);
   await page.goto("/v/personal/Welcome.md");
   const pane = await openTasks(page);
+  await onlyNote(pane, path);
   const main = await openMain(page, pane);
   const row = main.locator(`.inbox-task-row[data-path="${path}"]`);
   const checkbox = row.getByRole("checkbox", { name: "Complete task: Complete from main", exact: true });

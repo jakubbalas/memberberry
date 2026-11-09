@@ -1,7 +1,11 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
   EMPTY_INBOX_FILTERS,
+  INBOX_PAGE_SIZE,
+  inboxPage,
+  showMoreInbox,
   endOfIsoWeek,
   fetchInboxTasks,
   groupInboxTasks,
@@ -287,3 +291,47 @@ async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+describe("inbox paging (§10.3)", () => {
+  const tasks = (count: number): number[] => Array.from({ length: count }, (_, index) => index);
+
+  it("draws the first page of a large group and counts the rest", () => {
+    const page = inboxPage(tasks(10_000), INBOX_PAGE_SIZE);
+    expect([page.rows.length, page.rows[0], page.hidden, page.next]).toEqual([INBOX_PAGE_SIZE, 0, 10_000 - INBOX_PAGE_SIZE, INBOX_PAGE_SIZE]);
+  });
+
+  it("draws a small group whole, with nothing left to show", () => {
+    const page = inboxPage(tasks(3), INBOX_PAGE_SIZE);
+    expect([page.rows.length, page.hidden, page.next]).toEqual([3, 0, 0]);
+  });
+
+  it("offers only as many more as remain", () => {
+    expect(inboxPage(tasks(INBOX_PAGE_SIZE + 7), INBOX_PAGE_SIZE).next).toBe(7);
+  });
+
+  it("reveals one more page per Show more, stopping at the group's size", () => {
+    const total = INBOX_PAGE_SIZE * 2 + 5;
+    const once = showMoreInbox(INBOX_PAGE_SIZE, total);
+    const twice = showMoreInbox(once, total);
+    expect([once, twice, showMoreInbox(twice, total)]).toEqual([INBOX_PAGE_SIZE * 2, total, total]);
+  });
+
+  it("treats a count below one page as one page when showing more", () => {
+    expect(showMoreInbox(0, 500)).toBe(INBOX_PAGE_SIZE * 2);
+  });
+
+  it("never draws fewer than a page, whatever it is told was shown", () => {
+    expect(inboxPage(tasks(200), 0).rows.length).toBe(INBOX_PAGE_SIZE);
+  });
+
+  it("always partitions the group into a drawn prefix and a hidden count", () => {
+    fc.assert(fc.property(fc.nat(2_000), fc.integer({ min: -10, max: 3_000 }), (total, shown) => {
+      const all = tasks(total);
+      const page = inboxPage(all, shown);
+      return page.rows.length + page.hidden === total
+        && page.rows.every((row, index) => row === all[index])
+        && page.rows.length >= Math.min(total, INBOX_PAGE_SIZE)
+        && page.next === Math.min(page.hidden, INBOX_PAGE_SIZE);
+    }), { seed: 20261109 });
+  });
+});

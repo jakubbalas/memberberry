@@ -3353,6 +3353,16 @@ metadata tier, so an unfiltered inbox remains available offline without opening 
 bodies. Filtered offline queries remain unavailable when the route cannot answer; the cache has
 no tag rows and must not pretend to reproduce the server's tag filter.
 
+**Drawing a large inbox (2026-11-09).** Each group draws its first 50 rows (`INBOX_PAGE_SIZE`
+in `web/src/shell/tasks.ts`); a **Show N more** button under the group reveals the next 50,
+labelled with how many are not shown. The group heading still counts every task, filters and
+sort still apply to the whole answer, and the offline inbox is unchanged. The whole list is
+still fetched; only drawing is paged. The sidebar's Tasks view draws no rows while it is
+hidden (another navigation view is showing, or the left sidebar or mobile drawer is
+collapsed). The main-panel inbox always draws. Expanded groups reset when the pane remounts.
+Why: every row is about 17 elements, and on the 10k perf vault, with one task per note, the
+always-mounted sidebar inbox drew about 170,000 hidden elements on every page.
+
 **Task presentation and placement (2026-10-03).** The sticky Tasks heading has a right-hand
 three-dot menu. **Open in main panel** opens the same filtered inbox in the main area, with
 Close and existing note tabs retained, not a synthetic Markdown note or persisted tab type.

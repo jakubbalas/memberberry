@@ -75,3 +75,38 @@ test("offers controls a finger can press", async ({ page }, testInfo) => {
     expect(box!.height).toBeGreaterThanOrEqual(44);
   }
 });
+
+test("draws a page of a large group and shows the rest on request", async ({ page }, testInfo) => {
+  const folder = `Paged ${testInfo.project.name} ${Date.now()}`;
+  await signIn(page);
+  const tasks = Array.from({ length: 60 }, (_, index) => `- [ ] Paged task ${index}`).join("\n");
+  expect((await page.request.post("/api/v1/vaults/personal/notes", { data: { path: `${folder}/Many.md`, content: `# Many\n\n${tasks}\n` } })).ok()).toBe(true);
+  await page.goto("/v/personal/Welcome.md");
+  await expect(page.locator(EDITOR).first()).toBeVisible();
+  const toggle = page.getByRole("button", { name: /^Show Navigation$/ });
+  if (await toggle.isVisible()) await toggle.click();
+  await page.getByRole("group", { name: "Navigation views" }).getByRole("button", { name: "Tasks", exact: true }).click();
+  const pane = page.locator(`#navigation-tasks ${PANE}`);
+  await pane.getByRole("button", { name: "Filters", exact: true }).click();
+  const field = pane.getByLabel("Filter by folder");
+  await field.fill(folder);
+  await field.blur();
+
+  const undated = pane.locator('.inbox-group[data-group="no_date"]');
+  await expect(undated.locator(".inbox-group-count")).toHaveText("60");
+  await expect(undated.locator(".inbox-task-row")).toHaveCount(50);
+  const more = undated.getByRole("button", { name: "Show 10 more no date tasks; 10 not shown", exact: true });
+  await expect(more).toBeVisible();
+  const box = await more.boundingBox();
+  const paneBox = await pane.boundingBox();
+  if (box === null || paneBox === null) throw new Error("Missing Show more geometry");
+  expect(box.height).toBeGreaterThanOrEqual(44);
+  expect(box.x + box.width).toBeLessThanOrEqual(paneBox.x + paneBox.width + 1);
+  await more.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("inbox-show-more.png") });
+
+  if (testInfo.project.name === "mobile") await more.tap();
+  else await more.click();
+  await expect(undated.locator(".inbox-task-row")).toHaveCount(60);
+  await expect(undated.locator(".inbox-more")).toHaveCount(0);
+});

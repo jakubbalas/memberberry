@@ -15,9 +15,13 @@
   import type { TaskDisplayPreferences } from "./task-display.js";
   import type { TaskEditAction } from "./note-surface.js";
   import {
+    INBOX_PAGE_SIZE,
+    inboxPage,
     inboxSourceLabel,
     isTaskPriority,
     isTaskSort,
+    showMoreInbox,
+    type TaskGroupId,
     type TaskPriority,
   } from "./tasks.js";
 
@@ -31,9 +35,21 @@
     readonly onclose?: () => void;
     /** Two views may share the same inbox, but never HTML ids. */
     readonly idPrefix?: string;
+    /**
+     * Whether the rows are drawn. False while the pane is hidden (another sidebar view, or a
+     * collapsed sidebar or mobile drawer). why: 10k tasks drew ~170k hidden elements (§10.3).
+     */
+    readonly active?: boolean;
   }
 
-  const { view, onopen, onedit, display = { showFilenames: false, showPaths: false }, ondisplay, onopenmain, onclose, idPrefix = "inbox" }: Props = $props();
+  const { view, onopen, onedit, display = { showFilenames: false, showPaths: false }, ondisplay, onopenmain, onclose, idPrefix = "inbox", active = true }: Props = $props();
+
+  /** Rows drawn per group, raised a page at a time by "Show more" (§10.3). */
+  let shown = $state<Partial<Record<TaskGroupId, number>>>({});
+
+  function showMore(group: TaskGroupId, total: number): void {
+    shown = { ...shown, [group]: showMoreInbox(shown[group] ?? INBOX_PAGE_SIZE, total) };
+  }
 
   // why: mount focus belongs to the main view, not to the menu trigger hidden in a mobile drawer.
   let heading = $state<HTMLHeadingElement | undefined>();
@@ -185,16 +201,17 @@
     <p class="tree-empty">Tasks are unavailable for this vault.</p>
   {:else if view.empty}
     <p class="tree-empty">No open tasks in the notes you can read.</p>
-  {:else}
+  {:else if active}
     <div class="inbox-groups">
       {#each view.groups as group (group.id)}
+        {@const page = inboxPage(group.tasks, shown[group.id] ?? INBOX_PAGE_SIZE)}
         <section class="inbox-group" data-group={group.id} aria-labelledby={`${idPrefix}-group-${group.id}`}>
           <h4 class="inbox-group-heading" id={`${idPrefix}-group-${group.id}`}>
             {group.label}
             <span class="inbox-group-count">{group.tasks.length}</span>
           </h4>
           <ul class="inbox-list">
-            {#each group.tasks as task (task.path + ":" + task.ordinal)}
+            {#each page.rows as task (task.path + ":" + task.ordinal)}
               <li>
                 <div class="inbox-task-row" data-editable={onedit !== undefined} data-path={task.path} data-block={task.blockId ?? undefined}>
                   {#if onedit !== undefined}
@@ -245,6 +262,17 @@
               </li>
             {/each}
           </ul>
+          {#if page.next > 0}
+            <button
+              type="button"
+              class="inbox-more"
+              aria-label={`Show ${page.next} more ${group.label.toLowerCase()} tasks; ${page.hidden} not shown`}
+              onclick={() => showMore(group.id, group.tasks.length)}
+            >
+              Show {page.next} more
+              <span class="inbox-more-count">{page.hidden} not shown</span>
+            </button>
+          {/if}
         </section>
       {/each}
     </div>

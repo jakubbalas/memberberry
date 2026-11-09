@@ -139,6 +139,34 @@ export function groupInboxTasks(
   });
 }
 
+/**
+ * Rows drawn per inbox group before "Show more" (§10.3).
+ *
+ * why: every row is ~17 elements. A 10k-task vault drew ~170k on every page, hidden or not.
+ */
+export const INBOX_PAGE_SIZE = 50;
+
+/** The part of one group that is drawn, and what is left behind "Show more". */
+export interface InboxPage<T> {
+  readonly rows: readonly T[];
+  /** Rows not drawn. The group's count still includes them. */
+  readonly hidden: number;
+  /** How many the next "Show more" reveals; 0 when nothing is hidden. */
+  readonly next: number;
+}
+
+/** The first `shown` rows of a group (never fewer than one page). */
+export function inboxPage<T>(tasks: readonly T[], shown: number): InboxPage<T> {
+  const drawn = Math.min(tasks.length, Math.max(shown, INBOX_PAGE_SIZE));
+  const hidden = tasks.length - drawn;
+  return { rows: tasks.slice(0, drawn), hidden, next: Math.min(hidden, INBOX_PAGE_SIZE) };
+}
+
+/** How many rows a group shows after one more "Show more". */
+export function showMoreInbox(shown: number, total: number): number {
+  return Math.min(total, Math.max(shown, INBOX_PAGE_SIZE) + INBOX_PAGE_SIZE);
+}
+
 /** Builds the query string for `GET …/tasks`. Omits empty filters. */
 export function inboxQuery(filters: InboxFilters): string {
   const params = new URLSearchParams();

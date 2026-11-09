@@ -112,6 +112,12 @@ function render(
 
 const pane = (): HTMLElement | null => target.querySelector(".inbox-panel");
 
+/** Shows the sidebar's Tasks view; its rows are not drawn while another view is (§10.3). */
+async function openTasksView(): Promise<void> {
+  target.querySelector<HTMLButtonElement>('button[aria-label="Tasks"]')?.click();
+  await flush();
+}
+
 async function taskMenu(): Promise<HTMLElement> {
   const trigger = target.querySelector<HTMLButtonElement>('#navigation-tasks button[aria-label="Task options"]');
   expect(trigger).not.toBeNull();
@@ -158,6 +164,7 @@ it("places a labelled completion checkbox before the task text instead of Toggle
   const { teardown } = render({ tasks: TASKS });
   try {
     await flush();
+    await openTasksView();
     const row = target.querySelector<HTMLElement>('.inbox-task-row[data-path="Inbox/Old.md"]');
     const checkbox = row?.querySelector<HTMLInputElement>('input[type="checkbox"]');
     expect(checkbox).toBeTruthy();
@@ -173,6 +180,7 @@ it("independently changes task source filenames and full paths from its menu", a
   const { teardown } = render({ tasks: TASKS });
   try {
     await flush();
+    await openTasksView();
     expect(target.querySelector(".inbox-task-source")?.textContent).toBe("Old");
     expect(target.querySelector(".inbox-task-path")).toBeNull();
     item(await taskMenu(), "Show filenames").click();
@@ -276,6 +284,7 @@ describe("the inbox pane", () => {
     const { store, teardown } = render({ tasks: TASKS });
     try {
       await flush();
+      await openTasksView();
       expect(pane()).not.toBeNull();
       const overdue = target.querySelector('.inbox-group[data-group="overdue"]');
       const undated = target.querySelector('.inbox-group[data-group="no_date"]');
@@ -296,6 +305,7 @@ describe("the inbox pane", () => {
     const { teardown } = render({ tasks: TASKS });
     try {
       await flush();
+      await openTasksView();
       const row = target.querySelector<HTMLElement>('.inbox-task-row[data-path="Inbox/Old.md"]');
       expect(row).not.toBeNull();
       row?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click();
@@ -366,5 +376,85 @@ describe("the inbox pane", () => {
     } finally {
       teardown();
     }
+  });
+});
+
+describe("drawing a large inbox (§10.3)", () => {
+  const many = (count: number): readonly InboxTask[] => Array.from({ length: count }, (_, index) => ({
+    path: `Inbox/Task ${index}.md`,
+    title: `Task ${index}`,
+    blockId: null,
+    text: `Task number ${index}`,
+    due: null,
+    scheduled: null,
+    start: null,
+    created: null,
+    priority: null,
+    ordinal: 0,
+  }));
+  const rows = (scope: ParentNode = target): number => scope.querySelectorAll(".inbox-task-row").length;
+  const more = (scope: ParentNode = target): HTMLButtonElement | null => scope.querySelector<HTMLButtonElement>(".inbox-more");
+
+  it("draws one page of a large group, keeps the full count, and offers the rest", async () => {
+    const { teardown } = render({ tasks: many(120) });
+    try {
+      await flush();
+      await openTasksView();
+      expect([rows(), target.querySelector(".inbox-group-count")?.textContent, more()?.getAttribute("aria-label")])
+        .toEqual([50, "120", "Show 50 more no date tasks; 70 not shown"]);
+    } finally { await teardown(); }
+  });
+
+  it("reveals a page per Show more until every task is drawn, keeping focus on the button", async () => {
+    const { teardown } = render({ tasks: many(120) });
+    try {
+      await flush();
+      await openTasksView();
+      const button = more();
+      button?.focus();
+      button?.click();
+      await flush();
+      const afterOne = [rows(), document.activeElement === button, more()?.textContent?.replace(/\s+/g, " ").trim()];
+      more()?.click();
+      await flush();
+      expect([...afterOne, rows(), more()]).toEqual([100, true, "Show 20 more 20 not shown", 120, null]);
+    } finally { await teardown(); }
+  });
+
+  it("draws no rows while the sidebar shows another view, and draws them when Tasks is shown", async () => {
+    const { teardown } = render({ tasks: many(120) });
+    try {
+      await flush();
+      const hidden = rows();
+      await openTasksView();
+      const shown = rows();
+      target.querySelector<HTMLButtonElement>('button[aria-label="Notes"]')?.click();
+      await flush();
+      expect([hidden, shown, rows()]).toEqual([0, 50, 0]);
+    } finally { await teardown(); }
+  });
+
+  it("draws no sidebar rows while the sidebar is collapsed", async () => {
+    const { teardown } = render({ tasks: many(120) });
+    try {
+      await flush();
+      await openTasksView();
+      target.querySelector<HTMLButtonElement>('button[aria-controls="sidebar-left"]')?.click();
+      await flush();
+      expect(rows(target.querySelector("#navigation-tasks") ?? target)).toBe(0);
+    } finally { await teardown(); }
+  });
+
+  it("draws the main-panel inbox whatever the sidebar shows", async () => {
+    const { teardown } = render({ tasks: many(120) });
+    try {
+      await flush();
+      await openTasksView();
+      item(await taskMenu(), "Open in main panel").click();
+      await flush();
+      target.querySelector<HTMLButtonElement>('button[aria-label="Notes"]')?.click();
+      await flush();
+      expect(rows(target.querySelector("main .inbox-main") ?? document.createElement("div"))).toBe(50);
+    } finally { await teardown(); }
   });
 });

@@ -445,6 +445,23 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
   text-transform: uppercase;
 }
 .inbox-group-count { color: var(--text-muted); font-weight: var(--weight-medium); }
+.inbox-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--touch-target-min);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: var(--surface-note);
+  font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui);
+  cursor: pointer;
+}
+.inbox-more:hover { background: var(--surface-hover); }
+.inbox-more:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+.inbox-more-count { color: var(--text-muted); }
 .inbox-list { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .inbox-task-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: var(--space-1); border-radius: var(--radius-sm); }
 .inbox-task-row[data-editable="true"] { grid-template-columns: var(--touch-target-min) minmax(0, 1fr); }

@@ -27,6 +27,22 @@ async function openTasks(page: Page): Promise<Locator> {
   return tasks;
 }
 
+/**
+ * Narrows the inbox to one note through its own Note filter.
+ *
+ * why: the inbox draws one page per group (§10.3) and the shared E2E vault keeps every earlier
+ * run's tasks, so this run's row can sit behind "Show more". A user looking for one note's
+ * task would filter for it too.
+ */
+async function onlyNote(pane: Locator, path: string): Promise<void> {
+  const toggle = pane.getByRole("button", { name: "Filters", exact: true });
+  if (await toggle.isVisible()) await toggle.click();
+  const note = pane.getByLabel("Filter by note path");
+  await note.fill(path);
+  await note.blur();
+  await expect(pane.locator(`.inbox-task-row[data-path="${path}"]`).first()).toBeVisible();
+}
+
 async function scrollFrom(page: Page, target: Locator, mobile: boolean): Promise<void> {
   const box = await target.boundingBox();
   if (box === null) throw new Error("Missing native scroll start target");
@@ -148,6 +164,7 @@ test("an inbox toggle survives native scroll and source remount without replayin
   await createNote(page, path, `# Inbox scroll\n\n- [ ] Keep this completed\n\n${Array.from({ length: 45 }, (_, index) => `Paragraph ${index} makes the source scrollable.`).join("\n\n")}\n`);
   await page.goto("/v/personal/Welcome.md");
   let tasks = await openTasks(page);
+  await onlyNote(tasks, path);
   const inboxBox = tasks.locator(`.inbox-task-row[data-path="${path}"]`).getByRole("checkbox");
   if (info.project.name === "mobile") await inboxBox.tap();
   else await inboxBox.click();
