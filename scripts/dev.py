@@ -8,7 +8,9 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+from typing import Callable
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -87,6 +89,32 @@ def stop(process: subprocess.Popen[bytes] | None) -> None:
             process.wait()
 
 
+Snapshot = tuple[tuple[str, int, int], ...]
+
+
+def restart_frontend(
+    frontend: subprocess.Popen[bytes],
+    install: Callable[[], None],
+    launch: Callable[[], subprocess.Popen[bytes]],
+    watched: Callable[[], list[Path]],
+) -> tuple[subprocess.Popen[bytes], Snapshot]:
+    """Stops Vite, reinstalls, starts it again, and returns it with the configuration's state."""
+    stop(frontend)
+    install()
+    # why: taken after the install, which rewrites package-lock.json even when nothing in it
+    # changed. Taken before, every restart looked like a new change and Vite restarted forever.
+    state = snapshot(watched())
+    return launch(), state
+
+
+def install_frontend() -> None:
+    subprocess.run(["npm", "--prefix", "web", "install", "--silent"], cwd=ROOT, check=True)
+
+
+def launch_frontend() -> subprocess.Popen[bytes]:
+    return start(["npm", "--prefix", "web", "run", "dev", "--", "--host", "127.0.0.1"])
+
+
 def prepare_frontend() -> None:
     subprocess.run(["make", "wasm"], cwd=ROOT, check=True)
     subprocess.run(["npm", "--prefix", "web", "install", "--silent"], cwd=ROOT, check=True)
@@ -110,15 +138,37 @@ def self_test() -> None:
         raise SystemExit("dev-check: Cargo.toml is not watched")
     if ROOT / "web/package.json" not in vite_configuration():
         raise SystemExit("dev-check: package.json is not watched")
+    restart_settles()
     print("dev-check: ok")
+
+
+def restart_settles() -> None:
+    """npm install rewrites package-lock.json even when nothing changed. A restart must not
+    see its own install as a change, or Vite restarts forever."""
+    with tempfile.TemporaryDirectory() as directory:
+        lock = Path(directory) / "package-lock.json"
+        lock.write_text("{}")
+
+        def install() -> None:
+            time.sleep(0.01)
+            lock.write_text("{}")
+
+        idle = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+        process, state = restart_frontend(
+            idle,
+            install,
+            lambda: subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True),
+            lambda: [lock],
+        )
+        stop(process)
+        if snapshot([lock]) != state:
+            raise SystemExit("dev-check: a Vite restart sees its own npm install as a change")
 
 
 def run() -> int:
     prepare_frontend()
     backend = start(backend_command())
-    frontend = start(
-        ["npm", "--prefix", "web", "run", "dev", "--", "--host", "127.0.0.1"]
-    )
+    frontend = launch_frontend()
     rust_state = snapshot(rust_sources())
     wasm_state = snapshot(wasm_sources())
     vite_state = snapshot(vite_configuration())
@@ -133,16 +183,9 @@ def run() -> int:
 
             current_vite = snapshot(vite_configuration())
             if current_vite != vite_state:
-                stop(frontend)
-                subprocess.run(
-                    ["npm", "--prefix", "web", "install", "--silent"],
-                    cwd=ROOT,
-                    check=True,
+                frontend, vite_state = restart_frontend(
+                    frontend, install_frontend, launch_frontend, vite_configuration
                 )
-                frontend = start(
-                    ["npm", "--prefix", "web", "run", "dev", "--", "--host", "127.0.0.1"]
-                )
-                vite_state = current_vite
 
             current_rust = snapshot(rust_sources())
             if current_rust == rust_state:
