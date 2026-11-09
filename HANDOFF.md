@@ -150,13 +150,9 @@ Open:
   bootstrap and registered `dist/sw.js`. Every `npm run build` installed a new waiting worker,
   and since no build contains a source page's entry files, the banner never cleared.
   `isSourcePage` (`src/pwa/updates.ts`) now keeps the watcher off such a page, and `main.ts`
-  calls `retireWorkers` instead of registering in dev. Unit and regression tests pass;
-  `e2e/pwa-update.spec.ts` passes with `--workers=1`. Not checked signed-in on 9011 (no dev
-  credentials here): the user's next reload there should clear the banner.
-- Open: `e2e/pwa-update.spec.ts` rewrites the shared `web/dist` in place, so its tests race
-  when run in parallel (`ENOTEMPTY` renaming into `dist/assets/pwa-update-test`) and leave
-  `dist/pwa-update-*` staging folders behind. It also changes what a running `make dev`
-  serves while it runs. Run it with `--workers=1` until it gets its own web root.
+  calls `retireWorkers` instead of registering in dev. Unit and regression tests pass, as does
+  `e2e/pwa-update.spec.ts`. Not checked signed-in on 9011 (no dev credentials here): the
+  user's next reload there should clear the banner.
 
 ### Index lock no longer starves sync
 
