@@ -234,9 +234,11 @@ no full-suite result is claimed.
   - `perf-readiness` could never pass since `f50f8a8`: `timeToEditor` waited 90 s and the test
     allowed 45 s. `timeToEditor` takes a deadline; the test passes 5 s.
   - **Still flaky, and equally flaky on the baseline:** `block-selection` (Tab/Shift+Tab,
-    menus), `workspace` (varying cases), `pwa-update` (including `ENOTEMPTY` renaming a
-    `dist/pwa-update-*` directory under parallel workers). Different cases fail on each run;
-    not caused by the day's work, not fixed.
+    menus), `workspace` (varying cases). Different cases fail on each run; not caused by the
+    day's work, not fixed.
+  - `pwa-update` no longer races: each test copies `web/dist` into a temp directory and runs
+    its own server on an OS-assigned port, so it never writes to `dist`. It passes in parallel
+    (4/4 twice, 12/12 with `--repeat-each=3`).
 - Settings scope deliberately omitted: no palette command for Settings, no server-admin
   editing of shared emoji from the dialog (the admin API still exists), no replacing an
   emoji's artwork, and no accent on server-rendered pages. Open windows other than the one
