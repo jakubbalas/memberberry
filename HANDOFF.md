@@ -1,6 +1,13 @@
 # Handoff
 
-## Branch `mermaid-diagrams` (2026-11-08): Mermaid diagrams implemented
+## Current state (2026-11-09): main has Mermaid diagrams and the index-lock sync fix
+
+Two branches were merged into `main` (not pushed): `mermaid-diagrams` (Mermaid diagrams,
+A38, SPEC §13.2, plus the §21.10 perf fixture) and `claude/xenodochial-gagarin-43e282` (the
+index lock no longer starves note sync on a 10k vault, SPEC §14.2). They were verified
+separately; the merged result has had focused tests only (see the end of Verification).
+
+### Mermaid diagrams
 
 Mermaid diagrams are in scope (A38, SPEC §13.2). The reason is Gantt charts: the team wants
 Memberberry as a Confluence replacement. A ` ```mermaid ` code block renders as a preview.
@@ -17,97 +24,111 @@ get Show source.
 - `mermaid` is pinned to 11.17.2 because Excalidraw's `mermaid-to-excalidraw` resolves to the
   same copy, so the PWA precache does not grow. 12.x exists; moving to it means two copies.
 - `perf/bundle.ts` fails if a Mermaid chunk is statically imported by an eager chunk.
+- Perf: the diagram-page fixture (`perf-fixtures/gantt.md`, skipped by `cachedNoteCount`, so
+  the 10k vault is not regenerated) and three §21.10 rows are in `web/perf`. The scenario runs
+  first and by navigation. `breaches.json` records mobile `diagram-longest-task` (76 ms) and
+  desktop `diagram-keystroke-to-paint` (16.4 ms). These rows were measured before the sync fix
+  existed, with the tab scenarios temporarily skipped (patch reverted).
 
-Perf: the diagram-page fixture and three §21.10 rows are in `web/perf`. The scenario runs
-first and by navigation, so a broken tab scenario cannot hide it. `breaches.json` records
-mobile `diagram-longest-task` (76 ms) and desktop `diagram-keystroke-to-paint` (16.4 ms).
+Mermaid verification (on its branch): 55 unit tests (sanitizer property test seeded
+20261108; renderer; theme; editor view) plus 2 perf bundle tests; full web suite (2840),
+typecheck, token-check and perf-bundle passed. Mutation probes went red for event-handler
+stripping, strict security, theme-listener teardown, debounce-timer teardown and arrow-key
+adjacency. `e2e/mermaid.spec.ts` passed on desktop and mobile (8 runs): Gantt render, typing,
+`.md` read off disk, no off-origin requests, arrow-key entry, error state, dark-theme colours.
 
-Verification: 55 new unit tests (sanitizer property test seeded 20261108; renderer; theme;
-editor view) plus 2 perf bundle tests. The full web suite passes (2840), as do typecheck,
-token-check and perf-bundle. Mutation probes went red for: event-handler stripping, strict
-security, theme-listener teardown, debounce-timer teardown and arrow-key adjacency.
-Probing the bundle guard with a static import showed that the import folds into the app chunk,
-which the existing bundle budget catches; the key guard covers a separate eager chunk.
-Browser: `e2e/mermaid.spec.ts` passes on desktop and mobile (8). It renders a Gantt chart,
-types into it and reads the `.md` off disk, checks there are no off-origin requests, covers
-arrow-key entry and the error state, and checks dark-theme bar colours against tokens.
-Screenshots were inspected. Full `make check` and coverage were not run (not requested).
-Full `make e2e` is pending; the user runs it.
-
-Open:
+Mermaid open items:
 - Public shares (§17, no public JS) show diagram source as a code block. Server-side
   pre-rendering is undecided.
 - No re-render on window resize; a chart re-lays out on its next edit or open.
-- **`make perf` cannot complete, and it fails on main too.** In the 10k perf vault, the
-  open-note scenario opens Note 777 through the quick switcher, and the pane stays on "This
-  note has not been downloaded to this device" while online: the note's sync state never
-  arrives. It reproduced twice, also without the fixture note and with the Mermaid view
-  unwired, so it predates this branch. Repro script and screenshots:
-  local/debug/perf-diagram*.log.
-- The diagram rows (SPEC §21.10) were measured by a run with the tab scenarios temporarily
-  skipped; that patch was reverted. In the same run, rows that are not Mermaid's were over
-  and unrecorded: desktop cold-start longest task 826 ms, mobile 98 ms (recorded at 65), and
-  idle server memory 396 MB against 150 MB. Whether those are new or long-standing is
-  unknown, because the harness has not completed recently. Do not record them as breaches
-  until a full run on main shows them.
 - Arrow-key entry works only between sibling blocks. A diagram nested in a list or callout is
   reached by clicking or with Edit source.
-- `npm audit` reports 29 advisories (3 critical), the same count as main. Mermaid adds none,
-  because Excalidraw already pulls in the same tree. One critical advisory is in DOMPurify
-  3.4.15 (IN_PLACE mode), which Mermaid's strict mode uses. Diagrams now reach that code from
-  every note, not only from Excalidraw's import dialog. `sanitize.ts` is the independent
-  second pass. The upgrade is not triaged.
+- `npm audit` reports 29 advisories (3 critical), the same count as before Mermaid. One
+  critical advisory is in DOMPurify 3.4.15 (IN_PLACE mode), which Mermaid's strict mode uses,
+  now reachable from every note. `sanitize.ts` is the independent second pass. Not triaged.
 - The Confluence Cloud side (a Forge macro wrapping `mermaid`, or a Marketplace Mermaid app)
   is a separate project, not in this repo.
 
-## Current state (2026-11-02)
+### Index lock no longer starves sync
 
-Vault settings are implemented and committed (SPEC §20.4, §11.2, §20.1, E33, A36/A37).
-Owners get a top-bar settings button (sliders icon) opening a dialog that:
-- sets the vault default theme and an optional accent colour, saved to
-  `.memberberry/config.toml`. The accent is lightened or darkened per palette to keep 4.5:1
-  contrast;
-- lists vault emoji (shared server emoji read-only), adds one image under a chosen
-  shortcode, removes aliases, deletes emoji (notes keep `:name:`) and renames them;
-- renames by rewriting `:old:` to `:new:` in every note as an E14 privileged rewrite
-  (`mb_core::rewrite::rename_emoji`, the `rename` route with `kind: "emoji"`) and keeps the
-  old name as an alias.
+Fixed: `make perf` hung at open-note on the 10k vault. The second note ("Note 777") showed
+"This note has not been downloaded" while online, and the harness waited 90 s for its body.
 
-New routes: `GET`/`PUT …/settings`, `DELETE …/emoji-entries/{shortcode}[/aliases/{alias}]`.
-New enforcement point: E33. The bootstrap now carries `data-vault-accent` and
-`data-vault-owner`. The custom emoji rendering work before this is committed as c92aebd.
-No push, deployment or live-vault write was performed.
+Root cause, two defects compounding:
+1. `mb_index::Index::publish` rebuilt every zone's client search segment from every note's
+   text on every call, holding the vault's index mutex. That is about 6–7 s at 10k notes on
+   a debug build, even when nothing changed.
+2. The maintenance loop (`serve_listener`, `http.rs`) handed the index the 5 s sync recovery
+   sweep's `Changes::All`, so the index ran a whole-vault reconcile and a publish every 5 s.
+   `INDEX_SWEEP_INTERVAL`'s own doc says that must not happen.
+
+Together, the lock was held about 6.5 s out of every 6.5 s (measured with a temporary tick
+log). `/notes`, `/graph`, `/backlinks`, `/tags`, `/tasks` and `/search/segments` queued
+behind it. Chrome allows six HTTP/1.1 connections per host, so those parked requests held
+back unrelated ones: `/history` and the new note's WebSocket handshake. Normally the body
+arrived 11–21 s late; on a loaded machine, past the 90 s wait. Thread samples showed idle
+runtime workers, five handlers waiting on the index lock, and `maintain_index` → `reconcile`
+in `mb_search::Segment::build`.
+
+Fix:
+- `Index` tracks `segments_stale`. It is set at open and by every content mutation (`upsert`
+  that rewrites, `remove`, reconcile removals). `publish` is a no-op when it is clear, and it
+  clears only after a successful rebuild.
+- The tick's split is now the pure `tick_changes`. The index gets the watcher's report, or
+  `All` only on its own 60 s sweep or a watcher overflow.
+
+A whole-vault reconcile now takes about 140 ms. SPEC §14.2 records the rule and the remaining
+limit: a real note edit still triggers a full rebuild under the lock.
 
 ## Verification
 
-- mb-core: 24 new emoji-rewrite tests, including seeded properties (verifies on generated
-  notes, there-and-back identity, spans-only edits on arbitrary input). The existing 34
-  rename tests still pass. Three mutation probes (case-folding, closing-colon escape,
-  frontmatter icon) each turned a test red; the escape probe needed a new test to do so.
-- mb-server: 9 emoji manifest tests, 8 settings tests (with properties), 5 HTTP integration
-  tests, and leak cases e33 (owner-only routes; probe removing the owner check went red) and
-  e14_an_emoji_rename. The full mb-core and mb-server suites pass apart from the two
-  onboarding config-write tests below. Clippy reports nothing in changed files; the
-  existing folder_delete.rs test-module expect findings remain.
-- Web: all 187 vitest files (2782 tests) pass, plus svelte-check, token-check and
-  wasm-check. The accent property uses seed 20261102 against every `--surface-note` in
-  tokens.css. Dialog probes (collision check, delete confirmation) went red.
-- Browser: settings.spec.ts passes on desktop and mobile (add, rename rewriting the file on
-  disk, theme + accent saved and repainted after reload, delete). Its screenshots were
-  inspected. Related theme/emoji-import/topbar/tokens specs pass (43), including the mobile
-  44px touch floor with the new button. The spec uses its own `empty-<project>-settings`
-  vault so vault-wide appearance changes cannot leak into other specs.
-- The two failing onboarding tests (`onboarding_failed_config_write_…`,
-  `onboarding_config_write_failure_…`) compare `/private/var` against `/var` temp paths
-  on macOS. They are unrelated to this change; see the open item below.
+- `http::tick_tests` (5 tests). The two recovery-sweep regressions failed before the
+  `tick_changes` fix.
+- Regression tests in `crates/mb-index/tests/zones.rs`:
+  `publishing_with_no_content_change_does_not_rebuild_zone_segments` and
+  `a_stamp_only_upsert_does_not_rebuild_zone_segments`. Both failed before the fix. Four guard
+  tests show that content change, removal, reconcile removal and a reopened index still rebuild.
+  Probe: dropping the flag in `upsert` turned the guard and the existing E6 assembly tests red.
+- All mb-index suites pass, and clippy `-D warnings` is clean. mb-server: leak_suite (45),
+  watch, recovery, access, websocket, sync and rename pass. Three tests fail identically on the
+  base commit without this change, all from macOS `/private/var` vs `/var` under the sandbox
+  TMPDIR: the two onboarding config-write tests (http.rs:268) and
+  `targeted_indexing_removes_a_note_replaced_by_a_symlink` (indexing.rs:351).
+- Browser: `local/debug/perf-note777-loop.mts` (gitignored) loops the open-note steps against
+  one perf server, logging WebSocket frames and HTTP timing. Before the fix each iteration took
+  11–21 s. After: 2.6–6 s unthrottled and 9.5–13.5 s at 4x CPU throttle, with the body 0.5 s
+  after the click.
+- `make perf` now runs every scenario on both profiles. It was run twice: after the index fix
+  (`local/debug/perf-after-fix.log`) and after both fixes (`local/debug/perf-after-fix2.log`).
+  Desktop cold start dropped from 5712 ms (before) to 878 and 312 ms, within budget. Rows
+  still over budget in the final run, **not** recorded in `web/perf/breaches.json`, all over
+  before this fix too:
+  - open-note: desktop 155 ms vs 80, mobile 1036 ms vs 150
+  - INP: desktop 136 ms vs 100, mobile 480 ms vs 200
+  - desktop longest task: 880 ms vs 50
+  - mobile longest task: 90 ms against a recorded 65 (ceiling 78)
+  - idle server memory: 393 MB vs 150 MB. Run 1 measured 86 MB, so it swings with
+    something not yet identified; it is not fixed.
+  Mobile quick-switcher still measures nothing ("results did not change within 30000 ms"), as
+  before. These rows need a fix-or-record decision, and nothing was recorded here.
 
-Logs: local/debug/settings-rust-tests.log, local/debug/settings-clippy.log. Screenshots:
-web/test-results/settings-an-owner-manages-*/settings-dialog.png (overwritten by later runs).
-
-Full make check and local coverage measurement are deferred, not requested.
-Full make e2e remains user-run and pending; no full-suite result is claimed.
+Merged main (2026-11-09): all mb-index suites, `http::tick_tests` (5), the Mermaid and
+perf-harness vitest files (111 tests) and web typecheck pass. Full make check and local
+coverage measurement are deferred, not requested. Full make e2e remains user-run and pending;
+no full-suite result is claimed.
 
 ## Next and open work
+
+- Perf rows above still over budget need a fix-or-record decision (SPEC §21.3).
+- A real note edit still causes a full zone-segment rebuild under the index lock (SPEC §14.2
+  honest limit). Index-backed routes also lock a `std::sync::Mutex` inline in async handlers.
+  The per-note incremental delta, or moving the rebuild off the lock, is the follow-up.
+- The perf vault is cached in `target/perf/vault`, including `.memberberry/` state and any
+  notes the keystroke scenario edited. `cachedNoteCount` skips `perf-fixtures/`.
+- The "idle server memory" row is read after the whole perf run, not while idle, which
+  explains its swing (86 vs 393 MB at an identical 10,000 notes). The row's measurement needs
+  fixing before its number means anything.
+- `make perf` has not been run on the merged main.
 
 - Settings scope deliberately omitted: no palette command for Settings, no server-admin
   editing of shared emoji from the dialog (the admin API still exists), no replacing an

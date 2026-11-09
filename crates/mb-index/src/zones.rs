@@ -67,8 +67,7 @@ impl Index {
             .collect();
         if existing == replacement {
             if !published_matches(&self.zone_segments, &zones) {
-                self.search.publish()?;
-                self.rebuild_zone_segments()?;
+                self.publish_and_rebuild()?;
             }
             return Ok(false);
         }
@@ -78,9 +77,19 @@ impl Index {
         transaction.commit()?;
         // The text writer may contain note changes when a caller updates policy directly.
         // Publishing first makes the replacement permission epoch a complete snapshot.
+        self.publish_and_rebuild()?;
+        Ok(true)
+    }
+
+    /// Commits the text index and rebuilds every zone segment from it, unconditionally.
+    ///
+    /// The staleness flag clears only after the rebuild succeeds: a failed rebuild has
+    /// already cleared the segments (fail closed), and the next `publish` must retry it.
+    pub(crate) fn publish_and_rebuild(&mut self) -> Result<(), Error> {
         self.search.publish()?;
         self.rebuild_zone_segments()?;
-        Ok(true)
+        self.segments_stale = false;
+        Ok(())
     }
 
     /// Rebuilds every zone segment from the published derived index.

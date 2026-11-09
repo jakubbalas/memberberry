@@ -6217,6 +6217,29 @@ const RECOVERY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// unwatchable root, a note deleted while the process was down.
 const INDEX_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// What one maintenance tick hands to sync maintenance and to the index.
+#[derive(Debug, PartialEq, Eq)]
+struct TickChanges {
+    sync: Changes,
+    index: Changes,
+}
+
+/// Splits one tick's watcher report between sync maintenance and the index.
+///
+/// The recovery sweep widens only the sync pass to every open note; the index reconciles the
+/// whole vault only on its own sweep or when the watcher itself lost track (`All`).
+fn tick_changes(watched: Changes, recovery_due: bool, index_sweep_due: bool) -> TickChanges {
+    // why: the index takes the watcher's own report, never the sync sweep's `All`. See
+    // `INDEX_SWEEP_INTERVAL` for why a whole-vault reconcile does not belong at that cadence.
+    let index = if index_sweep_due {
+        Changes::All
+    } else {
+        watched.clone()
+    };
+    let sync = if recovery_due { Changes::All } else { watched };
+    TickChanges { sync, index }
+}
+
 /// How often S3-backed vaults are made self-contained on local disk (§12.3).
 const MEDIA_MATERIALIZE_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(24 * 60 * 60);
@@ -6305,19 +6328,18 @@ async fn serve_listener(
                 since_sweep = std::time::Duration::ZERO;
                 since_index_sweep = std::time::Duration::ZERO;
             }
-            let mut changed = signal.take();
-            if since_sweep >= RECOVERY_SWEEP_INTERVAL {
+            let recovery_due = since_sweep >= RECOVERY_SWEEP_INTERVAL;
+            if recovery_due {
                 since_sweep = std::time::Duration::ZERO;
-                changed = Changes::All;
             }
-            let indexed = if since_index_sweep >= INDEX_SWEEP_INTERVAL {
+            let index_sweep_due = since_index_sweep >= INDEX_SWEEP_INTERVAL;
+            if index_sweep_due {
                 since_index_sweep = std::time::Duration::ZERO;
-                Changes::All
-            } else {
-                // The watcher's own report, not the sync sweep's `All`: this is the fast
-                // path, and it is empty on a tick where nothing was touched.
-                changed.clone()
-            };
+            }
+            let TickChanges {
+                sync: changed,
+                index: indexed,
+            } = tick_changes(signal.take(), recovery_due, index_sweep_due);
             #[cfg(all(test, target_os = "linux"))]
             let observed = indexed.clone();
             let tick = Arc::clone(&maintenance_state);
@@ -6530,6 +6552,59 @@ ul,ol{padding-left:var(--space-7)}\
 .mb-math-block{display:block;margin:var(--space-6) 0;text-align:center}\
 @media(max-width:767px){main{padding:var(--space-7) var(--space-5)}header{padding:0 var(--space-4)}.mb-library main{padding:var(--space-5)}.mb-library-toolbar{flex-wrap:wrap}.mb-create{width:auto;max-width:100%}.mb-create[open]{width:100%}.mb-create[open] summary{margin-left:0}}\
 ";
+
+#[cfg(test)]
+mod tick_tests {
+    use super::{TickChanges, tick_changes};
+    use crate::watch::Changes;
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    fn only(paths: &[&str]) -> Changes {
+        Changes::Only(paths.iter().map(PathBuf::from).collect::<BTreeSet<_>>())
+    }
+
+    // Regression: the 5 s sync recovery sweep leaked into the index as `All`, so every five
+    // seconds the index walked and stamped all 10 000 notes and, until `publish` learned to
+    // skip unchanged content, rebuilt every zone segment under the index lock. On the perf
+    // vault that rebuild took longer than the interval, so the lock was never free.
+    #[test]
+    fn the_sync_recovery_sweep_does_not_reconcile_the_whole_index() {
+        assert_eq!(
+            tick_changes(only(&["/v/notes/A.md"]), true, false),
+            TickChanges {
+                sync: Changes::All,
+                index: only(&["/v/notes/A.md"]),
+            }
+        );
+    }
+
+    #[test]
+    fn a_quiet_recovery_tick_leaves_the_index_nothing_to_do() {
+        assert!(tick_changes(only(&[]), true, false).index.is_empty());
+    }
+
+    #[test]
+    fn the_index_sweep_reconciles_the_whole_vault() {
+        assert_eq!(tick_changes(only(&[]), false, true).index, Changes::All);
+    }
+
+    #[test]
+    fn a_watcher_overflow_reconciles_the_whole_index() {
+        assert_eq!(tick_changes(Changes::All, false, false).index, Changes::All);
+    }
+
+    #[test]
+    fn an_ordinary_tick_hands_both_passes_the_watcher_report() {
+        assert_eq!(
+            tick_changes(only(&["/v/notes/A.md"]), false, false),
+            TickChanges {
+                sync: only(&["/v/notes/A.md"]),
+                index: only(&["/v/notes/A.md"]),
+            }
+        );
+    }
+}
 
 #[cfg(test)]
 mod clip_tests {

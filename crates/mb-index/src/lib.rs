@@ -109,6 +109,14 @@ pub struct Index {
     path: Option<PathBuf>,
     search: search::SearchIndex,
     zone_segments: zones::PublishedSegments,
+    /// Whether indexed content changed since the zone segments were last rebuilt.
+    ///
+    /// why: a rebuild re-reads every note's text and re-encodes every zone — seconds at
+    /// 10 000 notes, under the vault's index lock. `publish` ends every reconcile, and
+    /// most reconciles find nothing changed; rebuilding on those held every index-backed
+    /// route long enough to starve a note's sync socket.
+    /// Starts `true` because segments live only in memory and an opened index has none.
+    segments_stale: bool,
 }
 
 impl Index {
@@ -166,6 +174,7 @@ impl Index {
             path: Some(path.to_path_buf()),
             search,
             zone_segments: zones::PublishedSegments::default(),
+            segments_stale: true,
         })
     }
 
@@ -188,6 +197,7 @@ impl Index {
             path: None,
             search,
             zone_segments: zones::PublishedSegments::default(),
+            segments_stale: true,
         })
     }
 
