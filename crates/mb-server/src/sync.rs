@@ -853,7 +853,7 @@ impl NoteCoordinator {
         let sidecar_file = sidecar_path(vault.root(), canonical.identity());
         let marker = marker_path(&sidecar_file);
         let sidecar = Sidecar::new(sidecar_file);
-        let restored = sidecar.load()?;
+        let restored = load_or_quarantine(&sidecar)?;
         let recovering = restored.is_some();
         let (doc, last_written_hash) = match restored {
             Some(state) => (state.doc, read_marker(&marker)),
@@ -949,7 +949,13 @@ impl NoteCoordinator {
             ));
         }
         drop(document_from_yrs(&candidate)?);
-        self.sidecar.append(update)?;
+        match self.sidecar.append(update) {
+            // why: the log is gone from under this open room (I1, a hand-run cleanup), so the
+            // update has no base to sit on. The candidate is the complete, already-validated
+            // state including it, which is exactly what a new log must start with.
+            Err(SidecarError::MissingDependencies { .. }) => self.sidecar.replace(&candidate)?,
+            other => other?,
+        }
         self.doc
             .transact_mut()
             .apply_update(decode_update(update)?)
@@ -1051,6 +1057,29 @@ impl NoteCoordinator {
         }
         self.last_written_hash = Some(hash);
         Ok(())
+    }
+}
+
+/// Loads a sidecar, setting it aside when its updates wait on structs it does not contain.
+///
+/// why: such a state cannot be served — every client's schema admission refuses it, so the
+/// note becomes unopenable — and no later update can repair it, because the server refuses
+/// those too. The Markdown note is the source of truth (C2), and what it holds is exactly what
+/// the pending state materialized, so rebuilding from it (the `None` path, I1) loses nothing
+/// that was readable. The bad log is quarantined rather than deleted so it can be diagnosed.
+fn load_or_quarantine(sidecar: &Sidecar) -> Result<Option<mb_crdt::SidecarState>, SyncError> {
+    match sidecar.load() {
+        Err(SidecarError::MissingDependencies { path }) => {
+            let moved = sidecar.quarantine()?;
+            eprintln!(
+                "memberberry: CRDT sidecar {} has missing dependencies; quarantined to {} and \
+                 rebuilding from Markdown",
+                path.display(),
+                moved.display()
+            );
+            Ok(None)
+        }
+        other => Ok(other?),
     }
 }
 

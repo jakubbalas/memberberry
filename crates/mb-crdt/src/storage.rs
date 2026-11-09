@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use thiserror::Error;
 use yrs::updates::decoder::Decode;
-use yrs::{Doc, Transact, Update};
+use yrs::{Doc, ReadTxn, Transact, Update};
 
 use crate::{CrdtError, FRONTMATTER_ROOT, PROSEMIRROR_ROOT, document_from_yrs, encode_update_v1};
 
@@ -59,6 +59,12 @@ pub enum SidecarError {
         #[source]
         source: CrdtError,
     },
+    /// The merged state still waits on structs no record contains.
+    ///
+    /// Serving it would hand every client a document its schema admission refuses, so the
+    /// note could not be opened at all; folding it into one record would make that permanent.
+    #[error("sidecar at {path} holds updates whose dependencies are missing")]
+    MissingDependencies { path: PathBuf },
     #[error("sidecar lock is poisoned at {path}")]
     LockPoisoned { path: PathBuf },
 }
@@ -104,14 +110,24 @@ impl Sidecar {
     /// Durably appends one syntactically valid lib0 v1 update.
     ///
     /// The update may depend on earlier records; full document validation happens during load
-    /// and before sync frames reach this boundary.
+    /// and before sync frames reach this boundary. The one exception is the first record of a
+    /// new log, which has no earlier records and so must be self-contained.
     ///
     /// # Errors
     ///
-    /// Returns [`SidecarError`] if the update or destination is invalid or cannot be synced.
+    /// Returns [`SidecarError`] if the update or destination is invalid or cannot be synced,
+    /// and [`SidecarError::MissingDependencies`] if it would start a log it cannot stand alone in.
     pub fn append(&self, update: &[u8]) -> Result<(), SidecarError> {
         let _guard = self.lock()?;
-        validate_update(update, &self.path, 0)?;
+        let decoded = validate_update(update, &self.path, 0)?;
+        // why: a log that vanished under an open coordinator (I1, trash, a hand-run cleanup)
+        // would otherwise restart with a delta whose base went with the old file, and the
+        // next load would materialize a state every client refuses.
+        if self.starts_new_log()? && leaves_missing_dependencies(decoded, &self.path)? {
+            return Err(SidecarError::MissingDependencies {
+                path: self.path.clone(),
+            });
+        }
         ensure_parent(&self.path)?;
 
         let mut file = OpenOptions::new()
@@ -142,11 +158,55 @@ impl Sidecar {
     /// Returns [`SidecarError`] if the document is malformed or the atomic rewrite fails.
     pub fn replace(&self, doc: &Doc) -> Result<(), SidecarError> {
         let _guard = self.lock()?;
+        if doc.transact().has_missing_updates() {
+            return Err(SidecarError::MissingDependencies {
+                path: self.path.clone(),
+            });
+        }
         document_from_yrs(doc).map_err(|source| SidecarError::InvalidDocument {
             path: self.path.clone(),
             source,
         })?;
         self.replace_locked(&encode_update_v1(doc))
+    }
+
+    /// Moves the sidecar into a `quarantine/` directory beside it and returns where it went.
+    ///
+    /// For a log that cannot be served: the caller rebuilds from Markdown (I1), and the bytes
+    /// stay on disk for diagnosis instead of being deleted. Earlier quarantined copies of the
+    /// same note are never overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SidecarError::Io`] if the sidecar is missing or cannot be moved.
+    pub fn quarantine(&self) -> Result<PathBuf, SidecarError> {
+        let _guard = self.lock()?;
+        fs::metadata(&self.path).map_err(|source| io_error(&self.path, source))?;
+        let directory = self
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join("quarantine");
+        fs::create_dir_all(&directory).map_err(|source| io_error(&directory, source))?;
+        let name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("sidecar.bin");
+        // why: numbered rather than timestamped, so this stays clock-free; the coordinator is
+        // the single writer for this note, so check-then-rename cannot race another quarantine.
+        let mut attempt = 1u64;
+        let target = loop {
+            let candidate = directory.join(format!("{name}.{attempt}"));
+            if !candidate.exists() {
+                break candidate;
+            }
+            attempt += 1;
+        };
+        fs::rename(&self.path, &target).map_err(|source| io_error(&self.path, source))?;
+        sync_parent(&target)?;
+        sync_parent(&self.path)?;
+        Ok(target)
     }
 
     /// Compacts logs whose update count is greater than `threshold` into one state update.
@@ -203,6 +263,11 @@ impl Sidecar {
                 path: self.path.clone(),
             });
         }
+        if doc.transact().has_missing_updates() {
+            return Err(SidecarError::MissingDependencies {
+                path: self.path.clone(),
+            });
+        }
         document_from_yrs(&doc).map_err(|source| SidecarError::InvalidDocument {
             path: self.path.clone(),
             source,
@@ -211,6 +276,14 @@ impl Sidecar {
             doc,
             update_count: count,
         }))
+    }
+
+    fn starts_new_log(&self) -> Result<bool, SidecarError> {
+        match fs::metadata(&self.path) {
+            Ok(metadata) => Ok(metadata.len() == 0),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(source) => Err(io_error(&self.path, source)),
+        }
     }
 
     fn replace_locked(&self, update: &[u8]) -> Result<(), SidecarError> {
@@ -262,6 +335,18 @@ fn validate_update(update: &[u8], path: &Path, record: usize) -> Result<Update, 
         record,
         reason: error.to_string(),
     })
+}
+
+fn leaves_missing_dependencies(update: Update, path: &Path) -> Result<bool, SidecarError> {
+    let doc = Doc::new();
+    let mut txn = doc.transact_mut();
+    txn.apply_update(update)
+        .map_err(|error| SidecarError::InvalidUpdate {
+            path: path.to_path_buf(),
+            record: 0,
+            reason: error.to_string(),
+        })?;
+    Ok(txn.has_missing_updates())
 }
 
 fn ensure_parent(path: &Path) -> Result<(), SidecarError> {

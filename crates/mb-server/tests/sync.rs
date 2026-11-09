@@ -899,3 +899,100 @@ fn deleting_the_derived_state_directory_loses_nothing() {
     );
     assert_eq!(std::fs::read_to_string(&note).unwrap(), "after\n");
 }
+
+/// The note's only CRDT sidecar, found rather than recomputed so the test does not depend on
+/// how sidecars are named.
+fn only_sidecar(dir: &TempDir) -> std::path::PathBuf {
+    let mut sidecars: Vec<_> = std::fs::read_dir(dir.path().join(".memberberry/crdt"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "bin"))
+        .collect();
+    assert_eq!(
+        sidecars.len(),
+        1,
+        "expected one sidecar, found {sidecars:?}"
+    );
+    sidecars.pop().unwrap()
+}
+
+/// An update whose structs depend on items no other document in the test contains.
+fn update_from_an_unrelated_document() -> Vec<u8> {
+    let unrelated = mb_crdt::document_to_yrs(&mb_core::parse("unrelated root\n")).unwrap();
+    let vector = unrelated.transact().state_vector();
+    apply_external_markdown(&unrelated, "unrelated root, then dependent content\n").unwrap();
+    unrelated.transact().encode_state_as_update_v1(&vector)
+}
+
+fn has_missing_dependencies(update: &[u8]) -> bool {
+    document_from_update_v1(update)
+        .unwrap()
+        .transact()
+        .has_missing_updates()
+}
+
+#[test]
+fn a_sidecar_with_missing_dependencies_is_quarantined_and_rebuilt_from_markdown() {
+    // Regression: the perf vault's Note 777 (2026-11-09) held a sidecar whose state had
+    // pending structs. The server loaded it without complaint and served it on subscribe,
+    // every client's schema admission refused it, and the note could not be opened at all.
+    let dir = TempDir::new("sync-pending-sidecar");
+    dir.write("One.md", "the file is the truth\n");
+    let vault = vault(&dir);
+    let canonical = vault.canonical_note("One.md").unwrap();
+    drop(NoteCoordinator::open(&vault, &canonical).unwrap());
+    let sidecar = only_sidecar(&dir);
+    mb_crdt::Sidecar::new(&sidecar)
+        .append(&update_from_an_unrelated_document())
+        .unwrap();
+    let broken = std::fs::read(&sidecar).unwrap();
+
+    let coordinator = NoteCoordinator::open(&vault, &canonical).unwrap();
+
+    let served = coordinator.full_update();
+    assert!(
+        !has_missing_dependencies(&served),
+        "a state with unresolved dependencies must never reach a subscriber"
+    );
+    assert_eq!(
+        mb_core::to_markdown(
+            &document_from_yrs(&document_from_update_v1(&served).unwrap()).unwrap()
+        ),
+        "the file is the truth\n"
+    );
+    let quarantined: Vec<_> = std::fs::read_dir(dir.path().join(".memberberry/crdt/quarantine"))
+        .unwrap()
+        .map(|entry| std::fs::read(entry.unwrap().path()).unwrap())
+        .collect();
+    assert_eq!(
+        quarantined,
+        vec![broken],
+        "the bad sidecar is set aside byte-for-byte, never silently deleted"
+    );
+}
+
+#[test]
+fn an_update_accepted_after_the_sidecar_was_deleted_starts_a_self_contained_log() {
+    // `rm -rf .memberberry/` while a room is open (I1) used to leave the next accepted
+    // update as the first record of a brand-new log: a delta whose base was in the file
+    // that had just been removed, which the next restart loaded as a pending state.
+    let dir = TempDir::new("sync-append-after-delete");
+    dir.write("One.md", "before\n");
+    let vault = vault(&dir);
+    let canonical = vault.canonical_note("One.md").unwrap();
+    let mut coordinator = NoteCoordinator::open(&vault, &canonical).unwrap();
+    let sidecar = only_sidecar(&dir);
+    std::fs::remove_file(&sidecar).unwrap();
+
+    coordinator
+        .apply_remote_update(&edit_to(&coordinator, "after\n"), Instant::now())
+        .unwrap();
+    drop(coordinator);
+
+    let reloaded = mb_crdt::Sidecar::new(&sidecar).load().unwrap().unwrap();
+    assert!(!reloaded.doc.transact().has_missing_updates());
+    assert_eq!(
+        mb_core::to_markdown(&document_from_yrs(&reloaded.doc).unwrap()),
+        "after\n"
+    );
+}
