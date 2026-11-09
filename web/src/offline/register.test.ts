@@ -8,7 +8,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { SERVICE_WORKER_URL, afterLoad, registerOfflineShell } from "./register.js";
+import { SERVICE_WORKER_URL, afterLoad, registerOfflineShell, retireWorkers } from "./register.js";
 
 describe("registering the worker", () => {
   it("asks for a root scope and a revalidated script", () => {
@@ -38,6 +38,20 @@ describe("registering the worker", () => {
     expect(await registerOfflineShell({ register })).toBe(false);
     expect(errors).not.toHaveBeenCalled();
     errors.mockRestore();
+  });
+});
+
+describe("retiring workers from a page loaded from source", () => {
+  it("unregisters every worker on the origin", async () => {
+    const unregister = vi.fn(async () => true);
+    const retired = await retireWorkers({ getRegistrations: async () => [{ unregister }, { unregister }] });
+    expect([retired, unregister.mock.calls.length]).toEqual([2, 2]);
+  });
+
+  it("counts only the workers that went, and survives a browser that refuses", async () => {
+    const one = await retireWorkers({ getRegistrations: async () => [{ unregister: async () => true }, { unregister: async () => { throw new Error("no"); } }] });
+    const none = await retireWorkers({ getRegistrations: async () => { throw new Error("blocked"); } });
+    expect([one, none, await retireWorkers(undefined)]).toEqual([1, 0, 0]);
   });
 });
 

@@ -19,6 +19,7 @@ import { syncClientIndex } from "./offline/search-index.js";
 import {
   afterLoad,
   registerOfflineShell,
+  retireWorkers,
   type ServiceWorkerRegistrar,
 } from "./offline/register.js";
 import NoteWorkspace from "./shell/NoteWorkspace.svelte";
@@ -116,7 +117,11 @@ async function start(): Promise<void> {
   const workers: ServiceWorkerRegistrar | undefined =
     "serviceWorker" in navigator ? navigator.serviceWorker : undefined;
   afterLoad(window, () => {
-    void registerOfflineShell(workers);
+    // why: the dev server's bootstrap proxy (vite.config.ts) gives a source page a bootstrap,
+    // so the guard above no longer keeps the worker out of `make dev`. Its worker controlled
+    // a page no build contains, and each build left "Update available" showing for good.
+    if (import.meta.env.DEV) void retireWorkers("serviceWorker" in navigator ? navigator.serviceWorker : undefined);
+    else void registerOfflineShell(workers);
     // §7.2's pinned tier: the notes this device promised to keep are fetched now, in the
     // background, one at a time. After the load event for the same reason the precache is —
     // nothing on screen is waiting for it.

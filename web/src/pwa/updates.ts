@@ -18,7 +18,26 @@ export function matchesBuild(worker: ServiceWorker, entry: string | readonly str
   });
 }
 
-/** Observes updates and checks on return. It never activates a worker or reloads a page. */
+/** Vite adds this script only to a page it serves from source (`make dev`'s 9011). */
+const VITE_CLIENT = "/@vite/client";
+
+/**
+ * Whether the page was loaded from source by the Vite dev server rather than from a build.
+ *
+ * why: the update check asks whether the waiting build contains this page's entry files. A
+ * page loaded from source has entry files no build contains, so the answer was always "no"
+ * and "Update available" stayed up through every reload.
+ */
+export function isSourcePage(entry: string | readonly string[]): boolean {
+  return (typeof entry === "string" ? [entry] : entry).some(url => {
+    try { return new URL(url).pathname === VITE_CLIENT; } catch { return false; }
+  });
+}
+
+/**
+ * Observes updates and checks on return. It never activates a worker or reloads a page.
+ * A page loaded from source has no build to update to, so it is never offered one.
+ */
 export function watchAppUpdates(options: {
   readonly workers: ServiceWorkerContainer;
   readonly window: Window;
@@ -26,6 +45,10 @@ export function watchAppUpdates(options: {
   readonly entry: string | readonly string[];
   readonly available: (value: boolean) => void;
 }): () => void {
+  if (isSourcePage(options.entry)) {
+    options.available(false);
+    return () => undefined;
+  }
   let disposed = false;
   let registration: ServiceWorkerRegistration | undefined;
   let checking = false;

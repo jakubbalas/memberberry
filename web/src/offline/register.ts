@@ -38,6 +38,28 @@ export async function registerOfflineShell(
   }
 }
 
+/** The part of `navigator.serviceWorker` `retireWorkers` needs. */
+export interface ServiceWorkerRetirer {
+  getRegistrations(): Promise<readonly { unregister(): Promise<boolean> }[]>;
+}
+
+/**
+ * Unregisters every worker on this origin, for a page the Vite dev server loaded from source.
+ *
+ * why: a worker there controls a page none of its builds contain, and each `npm run build`
+ * installs another one beside it. Failures are swallowed, as registration's are: this is
+ * tidying, and a browser that refuses must still run the application.
+ */
+export async function retireWorkers(workers: ServiceWorkerRetirer | undefined): Promise<number> {
+  if (workers === undefined) return 0;
+  try {
+    const results = await Promise.all((await workers.getRegistrations()).map(registration => registration.unregister().catch(() => false)));
+    return results.filter(Boolean).length;
+  } catch {
+    return 0;
+  }
+}
+
 /** The part of `window` `afterLoad` reads. */
 export interface LoadTarget {
   readonly document: { readonly readyState: string };
