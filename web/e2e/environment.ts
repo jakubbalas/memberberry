@@ -68,7 +68,6 @@ const SCRATCH_PURPOSES: readonly string[] = [
   "rename-source",
   // Typed into with the network off, then read off disk once it comes back (§7.4).
   "offline-edit",
-  "pwa-update",
   "pwa-pinned",
   "media",
   "media-drop",
