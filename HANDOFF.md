@@ -1,6 +1,6 @@
 # Handoff
 
-## Current state (2026-11-09): Mermaid diagrams, the index-lock sync fix, CRDT sidecar quarantine, inbox paging
+## Current state (2026-11-09): Mermaid diagrams, the index-lock sync fix, CRDT sidecar quarantine, inbox paging, zone-rebuild memory
 
 Two branches were merged into `main` (not pushed): `mermaid-diagrams` (Mermaid diagrams,
 A38, SPEC §13.2, plus the §21.10 perf fixture) and `claude/xenodochial-gagarin-43e282` (the
@@ -112,6 +112,21 @@ Fix:
 The cached perf vault (`target/perf/vault` in the main checkout) still holds the broken file.
 The next server open quarantines it there. Nothing deleted it.
 
+### Server memory after a zone rebuild
+
+Cause of the 84–413 MB swing in "Server memory, idle" (SPEC §21.11): every start rebuilds the
+zone segments. `Segment::build` held every note's term set at once, a 233 MB heap peak for a
+5.7 MB segment. macOS then keeps the freed pages resident as "reclaimable", and `ps` RSS
+counts them until memory pressure takes them. A bare server read 327 MB RSS with a 30 MB
+footprint. Fix: `Segment::build`/`merge` accumulate postings per note (`Draft` in
+`mb-search`), and `zones.rs` moves text instead of cloning it. The output is byte-identical
+(`cmp` of the 10k zone file; the merge property test asserts merge == build). Rebuild peak is
+now 56 MB, and bare-server startup RSS is 130 MB. Regression test:
+`crates/mb-search/tests/peak_memory.rs` (dev-dep `peak_alloc`). It fails on the old code
+(15.7x the input text against a 4x bound). Verified: mb-search and mb-index suites, clippy,
+wasm32 build of mb-search, mb-server leak_suite (45). `indexing.rs:351` fails as it does on
+the base commit (see below).
+
 ## Verification
 
 - Sidecar dependency fix: two `mb-server/tests/sync.rs` regressions
@@ -200,9 +215,11 @@ no full-suite result is claimed.
     `perf-mobile-coldstart-profile.mts`) attributes it to `putNotes` (IndexedDB catalog),
     `putSearchSegment` and `mb_search::Segment` validation.
   - Mobile quick-switcher still measures nothing.
-- Server memory follow-up: branch `claude/quirky-lumiere-325cc1` (`5920960`) cuts the
-  zone-segment rebuild peak 233 → 56 MB and bare-server startup 327 → 130 MB; after a perf run
-  it still reads 173–197 MB, so the `server-memory-idle` record stays.
+- Server memory (SPEC §21.11), after the zone-rebuild fix: 173–197 MB by `ps` during a perf
+  run against 150, with a physical footprint of 31–58 MB. Needs a budget decision: measure the
+  footprint, or return pages after a rebuild (FFI, so `unsafe`, which the workspace forbids).
+  `breaches.json` still records `server-memory-idle` at 413 MB; lower it to the next run's
+  reading. `make perf` has not been re-run since this fix was merged.
 
 - Settings scope deliberately omitted: no palette command for Settings, no server-admin
   editing of shared emoji from the dialog (the admin API still exists), no replacing an

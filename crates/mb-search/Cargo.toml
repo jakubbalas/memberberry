@@ -14,6 +14,10 @@ unicode-normalization = "0.1"
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+# why: SPEC §21.2 budgets server memory, and building a zone segment is its largest
+# transient. `peak_alloc` is ~80 lines with no dependencies that count bytes around the
+# system allocator; the workspace forbids the `unsafe` a hand-written counter would need.
+peak_alloc = "0.3.0"
 proptest = "1"
 
 [lints]

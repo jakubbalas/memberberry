@@ -230,10 +230,17 @@ struct Record {
     note: Option<StoredNote>,
 }
 
-#[derive(Debug)]
-struct Materialized {
-    record: Record,
-    terms: BTreeSet<Vec<u8>>,
+/// A segment's contents before serialization: records in identity order (document numbers
+/// are positions in `records`) and each term's ascending postings.
+///
+/// why: postings are accumulated note by note rather than by first materializing every
+/// note's term set. Holding one `BTreeSet<Vec<u8>>` per note for a 10 000-note vault peaked
+/// at ~230 MB of heap to encode a ~6 MB segment, and the server's resident memory kept
+/// most of that after every full rebuild (SPEC §21.2). One posting here costs four bytes.
+#[derive(Debug, Default)]
+struct Draft {
+    records: Vec<(NoteIdentity, Record)>,
+    postings: BTreeMap<Vec<u8>, Vec<u32>>,
 }
 
 /// One validated immutable compact index segment.
@@ -261,20 +268,28 @@ impl Segment {
         for change in changes {
             latest.insert(change.identity(), change);
         }
-        let materialized = latest
-            .into_iter()
-            .map(|(identity, change)| match change {
-                Change::Upsert(note) => (identity, materialize(note)),
-                Change::Delete(_) => (
-                    identity,
-                    Materialized {
-                        record: Record { note: None },
-                        terms: BTreeSet::new(),
-                    },
-                ),
-            })
-            .collect();
-        Self::encode(zone_id, acl_hash, materialized)
+        let mut draft = Draft::default();
+        for (doc, (identity, change)) in latest.into_iter().enumerate() {
+            let doc = u32::try_from(doc)?;
+            let note = match change {
+                Change::Upsert(note) => {
+                    for term in terms(&note) {
+                        draft.postings.entry(term).or_default().push(doc);
+                    }
+                    Some(stored(note))
+                }
+                Change::Delete(_) => None,
+            };
+            draft.records.push((identity, Record { note }));
+        }
+        Self::encode(zone_id, acl_hash, &draft)
+    }
+
+    /// Consumes the segment, returning its validated serialized representation without
+    /// copying it.
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
     }
 
     /// Validates and opens serialized bytes. No query reads unchecked offsets.
@@ -417,16 +432,56 @@ impl Segment {
     /// segment by accident.
     pub fn merge(segments: &[Self]) -> Result<Self, Error> {
         let first = segments.first().ok_or(Error::EmptyMerge)?;
+        // Each surviving identity's (segment, document) source; later segments win.
         let mut latest = BTreeMap::new();
-        for segment in segments {
+        for (source, segment) in segments.iter().enumerate() {
             if segment.zone_id != first.zone_id || segment.acl_hash != first.acl_hash {
                 return Err(Error::MetadataMismatch);
             }
-            for (identity, materialized) in segment.materialized()? {
-                latest.insert(identity, materialized);
+            for (doc, identity) in segment.identities.iter().enumerate() {
+                latest.insert(identity.clone(), (source, doc));
             }
         }
-        Self::encode(first.zone_id, first.acl_hash, latest)
+
+        // The merged document number of each source document that survives, or `None`.
+        let mut renumbered: Vec<Vec<Option<u32>>> = segments
+            .iter()
+            .map(|segment| vec![None; segment.identities.len()])
+            .collect();
+        let mut draft = Draft::default();
+        for (merged, (identity, (source, doc))) in latest.into_iter().enumerate() {
+            let record = segments
+                .get(source)
+                .and_then(|segment| segment.records.get(doc))
+                .ok_or(Error::Corrupt("document map disagrees"))?
+                .clone();
+            let slot = renumbered
+                .get_mut(source)
+                .and_then(|documents| documents.get_mut(doc))
+                .ok_or(Error::Corrupt("document map disagrees"))?;
+            *slot = Some(u32::try_from(merged)?);
+            draft.records.push((identity, record));
+        }
+
+        for (segment, documents) in segments.iter().zip(&renumbered) {
+            let mut stream = segment.fst.stream();
+            while let Some((term, offset)) = stream.next() {
+                for doc in segment.postings(offset)? {
+                    if let Some(Some(merged)) = documents.get(usize::try_from(doc)?) {
+                        draft
+                            .postings
+                            .entry(term.to_vec())
+                            .or_default()
+                            .push(*merged);
+                    }
+                }
+            }
+        }
+        // why: a later segment's documents can precede an earlier one's in merged order.
+        for docs in draft.postings.values_mut() {
+            docs.sort_unstable();
+        }
+        Self::encode(first.zone_id, first.acl_hash, &draft)
     }
 
     fn lookup(&self, field: Field, term: &str) -> Result<BTreeSet<u32>, Error> {
@@ -506,55 +561,14 @@ impl Segment {
         Ok(())
     }
 
-    fn materialized(&self) -> Result<BTreeMap<NoteIdentity, Materialized>, Error> {
-        let mut out = self
-            .identities
-            .iter()
-            .cloned()
-            .zip(self.records.iter().cloned())
-            .map(|(id, record)| {
-                (
-                    id,
-                    Materialized {
-                        record,
-                        terms: BTreeSet::new(),
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut stream = self.fst.stream();
-        while let Some((term, offset)) = stream.next() {
-            for doc in self.postings(offset)? {
-                let identity = self
-                    .identities
-                    .get(usize::try_from(doc)?)
-                    .ok_or(Error::Corrupt("posting document out of bounds"))?
-                    .clone();
-                let record = out
-                    .get_mut(&identity)
-                    .ok_or(Error::Corrupt("document map disagrees"))?;
-                record.terms.insert(term.to_vec());
-            }
-        }
-        Ok(out)
-    }
-
-    fn encode(
-        zone_id: ZoneId,
-        acl_hash: AclHash,
-        records: BTreeMap<NoteIdentity, Materialized>,
-    ) -> Result<Self, Error> {
-        let mut postings_by_term: BTreeMap<Vec<u8>, Vec<u32>> = BTreeMap::new();
-        for (doc, materialized) in records.values().enumerate() {
-            let doc = u32::try_from(doc)?;
-            for term in &materialized.terms {
-                postings_by_term.entry(term.clone()).or_default().push(doc);
-            }
-        }
-
+    fn encode(zone_id: ZoneId, acl_hash: AclHash, draft: &Draft) -> Result<Self, Error> {
+        let Draft {
+            records,
+            postings: postings_by_term,
+        } = draft;
         let mut postings = Vec::new();
         let mut fst_builder = MapBuilder::memory();
-        for (term, docs) in &postings_by_term {
+        for (term, docs) in postings_by_term {
             let offset = u64::try_from(postings.len())?;
             fst_builder.insert(term, offset)?;
             put_varint(&mut postings, u64::try_from(docs.len())?);
@@ -570,7 +584,7 @@ impl Segment {
         let mut fields = Vec::new();
         let mut map = Vec::new();
         let mut live_count = 0_u32;
-        for (identity, materialized) in &records {
+        for (identity, record) in records {
             match identity {
                 NoteIdentity::Uuid(id) => {
                     map.push(1);
@@ -581,7 +595,7 @@ impl Segment {
                     put_string(&mut map, path)?;
                 }
             }
-            match &materialized.record.note {
+            match &record.note {
                 Some(note) => {
                     live_count = live_count.checked_add(1).ok_or(Error::TooLarge)?;
                     fields.push(LIVE);
@@ -628,15 +642,8 @@ impl Segment {
     }
 }
 
-fn materialize(note: Note) -> Materialized {
-    let stored = StoredNote {
-        id: note.id,
-        title: note.title.clone(),
-        path: note.path.clone(),
-        tags: note.tags.clone(),
-        icon: note.icon,
-        snippet: note.text.chars().take(200).collect(),
-    };
+/// Every field-qualified term `note` contributes to the postings, deduplicated.
+fn terms(note: &Note) -> BTreeSet<Vec<u8>> {
     let mut terms = BTreeSet::new();
     add_terms(&mut terms, Field::Any, &note.text);
     add_terms(&mut terms, Field::Body, &note.text);
@@ -648,9 +655,18 @@ fn materialize(note: Note) -> Materialized {
         add_terms(&mut terms, Field::Any, tag);
         add_terms(&mut terms, Field::Tag, tag);
     }
-    Materialized {
-        record: Record { note: Some(stored) },
-        terms,
+    terms
+}
+
+/// The display payload retained for `note`; its full text is dropped here.
+fn stored(note: Note) -> StoredNote {
+    StoredNote {
+        snippet: note.text.chars().take(200).collect(),
+        id: note.id,
+        title: note.title,
+        path: note.path,
+        tags: note.tags,
+        icon: note.icon,
     }
 }
 
