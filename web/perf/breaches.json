@@ -37,12 +37,5 @@
       "mobile": 16.9
     },
     "reason": "SPEC \u00a721.4: the same double-requestAnimationFrame resolution as keystroke-to-paint, which is recorded at 16.4 ms desktop and 16.6 ms mobile for the same reason. Mobile measured 15.9, 16.9 and 15.8 ms across runs on 2026-11-08/09: one 60 Hz frame either side of the line. This row is not part of the A38 exception: typing on a diagram page must keep the keystroke budget."
-  },
-  "server-memory-idle": {
-    "recorded": {
-      "desktop": 433004544,
-      "mobile": 433004544
-    },
-    "reason": "SPEC \u00a721.1, \u00a721.11: resident memory after the whole perf run on the 10k vault (debug build, macOS) read 83.7, 277.8 and 412.9 MB on 2026-11-09 with no code change; recorded at the worst. Cause (\u00a721.11): the startup zone-segment rebuild peaked at 233 MB of heap and macOS keeps the freed pages resident, so `ps` RSS tracks machine memory pressure. The rebuild now peaks at 56 MB; RSS during a perf run then read 173-197 MB with a 31-58 MB physical footprint. Lower this entry to the next run's reading; removing it needs the budget decision in \u00a721.11 (measure footprint, or return pages)."
   }
 }

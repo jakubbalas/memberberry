@@ -4727,8 +4727,9 @@ reason:
 - **Server memory, 413 MB against 150 MB.** It reads 83.7, 277.8 and 412.9 MB in three runs
   with no code change. It is not work still in flight: two readings 1 s apart were
   identical. §21.11 has the cause: a 233 MB zone-rebuild peak (since cut to 56 MB) that
-  macOS keeps resident. Recorded at the worst reading until a run after that fix re-measures
-  it.
+  macOS keeps resident. After that fix the next full run read **138.7 MB**, inside budget, so
+  the record was deleted. It is 11 MB from the line, so a later reading over 150 MB is more
+  likely macOS memory pressure (§21.11) than a regression; check the footprint before acting.
 
 Mobile quick-switcher remains a hole (one surviving sample of twelve).
 
@@ -4923,7 +4924,11 @@ encoded bytes are identical. The rebuild now peaks at **56 MB**, and a bare serv
 RSS is **130 MB** (footprint peak 81 MB, from 282 MB). `mb-search/tests/peak_memory.rs` gates the
 build at 4x its input text. The old code measured 15.7x and the new code 2.4x.
 
-**Still over budget by `ps`.** During a perf run, the server's RSS sat between 173 and 197 MB
+**The first full run after the fix (2026-11-09, merged main) read 138.7 MB, inside budget**,
+and the `server-memory-idle` record was deleted. Readings during runs on the fix's branch were
+higher, as below, so the row stays close to its line.
+
+**Earlier, over budget by `ps`.** During a perf run, the server's RSS sat between 173 and 197 MB
 after the desktop scenarios and the start of the mobile ones. Over the same samples,
 its physical footprint stayed between 31 and 58 MB. The difference is the same allocator
 retention, now after legitimate transients: the startup rebuild, and the browser loading the

@@ -202,24 +202,21 @@ no full-suite result is claimed.
   sidebar ignored, Show-more from below a page, page size 1000 (browser). The `task-scroll`
   and `task-display` mobile specs failed because their row was behind "Show more" in the
   shared E2E vault; they now use the inbox's Note filter (`onlyNote`).
-- **`make perf` breaches are all recorded** (SPEC §21.4 "Measured, merged main"). The final
-  run (`local/debug/perf-final.log`) failed only on the three rows since recorded in
-  `web/perf/breaches.json`. Re-judging its `target/perf/report.json` against the new file gives
-  no failing row; a fresh `make perf` has not been run since recording. Follow-ups:
-  - **Server memory** (recorded at 413 MB): 83.7 / 277.8 / 412.9 MB across runs, and stable
-    once read, so not in-flight work. The cause is unknown and needs a heap investigation.
-    A "wait until settled" reading was tried and removed: it settled at once and explained
-    nothing.
+- **`make perf` on merged main passes its gate except one stale record** (2026-11-09,
+  `local/debug/perf-main-after-merges.log`). Its only failure was the `server-memory-idle`
+  record, now inside budget and deleted; re-judging that run's `target/perf/report.json`
+  against the updated `breaches.json` gives no failing row. Mobile longest task read 99 ms,
+  mobile diagram typing 16.4 ms (both within their records). Follow-ups:
   - **Mobile longest task** (recorded at 111 ms): startup work on the main thread. A CPU
     profile (`local/debug/mobile-coldstart-*.cpuprofile`, script
     `perf-mobile-coldstart-profile.mts`) attributes it to `putNotes` (IndexedDB catalog),
     `putSearchSegment` and `mb_search::Segment` validation.
   - Mobile quick-switcher still measures nothing.
-- Server memory (SPEC §21.11), after the zone-rebuild fix: 173–197 MB by `ps` during a perf
-  run against 150, with a physical footprint of 31–58 MB. Needs a budget decision: measure the
-  footprint, or return pages after a rebuild (FFI, so `unsafe`, which the workspace forbids).
-  `breaches.json` still records `server-memory-idle` at 413 MB; lower it to the next run's
-  reading. `make perf` has not been re-run since this fix was merged.
+- Server memory (SPEC §21.11): the first `make perf` on merged main
+  (`local/debug/perf-main-after-merges.log`) read 138.7 MB, inside the 150 MB budget, so the
+  `server-memory-idle` record was deleted. It is close to the line and macOS RSS moves with
+  machine memory pressure, so a later failure there needs the footprint checked first. The
+  footprint-vs-RSS budget question in §21.11 is still open.
 
 - Settings scope deliberately omitted: no palette command for Settings, no server-admin
   editing of shared emoji from the dialog (the admin API still exists), no replacing an
