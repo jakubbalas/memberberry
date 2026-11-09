@@ -32,7 +32,10 @@ const LAZY = [/excalidraw/i];
  * fetched only by a note that contains a diagram, and A38's performance exception depends on
  * that promise holding for every other page.
  */
-const MUST_STAY_LAZY = [/node_modules\/mermaid\//, /^_mermaid\./];
+// The visual Gantt editor (SPEC §13.3) loads on Edit chart, never at startup. `colors.ts` and
+// `fit-text.ts` are the exceptions: the note view colours task bars and shortens long labels with
+// them, and together they are a few hundred bytes.
+const MUST_STAY_LAZY = [/node_modules\/mermaid\//, /^_mermaid\./, /^src\/gantt\/(?!(?:colors|fit-text)\.ts$)/];
 
 /** Where Vite records which chunk imports which. Written because `build.manifest` is on. */
 const MANIFEST = ".vite/manifest.json";

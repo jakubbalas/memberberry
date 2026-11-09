@@ -2,7 +2,8 @@
 import type { MermaidConfig } from "mermaid";
 import { describe, expect, it } from "vitest";
 
-import { configFor, createMermaidRenderer, layoutWidth, MIN_DIAGRAM_WIDTH, type MermaidApi } from "./renderer.js";
+import { PHASE_COLOURS } from "../gantt/colors.js";
+import { configFor, createMermaidRenderer, GANTT_CSS, ganttLayout, layoutWidth, MIN_DIAGRAM_WIDTH, phaseBands, thinLabels, type MermaidApi } from "./renderer.js";
 
 const SVG = (label: string) => `<svg xmlns="http://www.w3.org/2000/svg"><text>${label}</text></svg>`;
 
@@ -154,5 +155,84 @@ describe("layout width", () => {
 describe("configFor", () => {
   it("uses the theme's font for the whole diagram when the tokens give one", () => {
     expect([configFor({ fontFamily: "Inter" }).fontFamily, "fontFamily" in configFor({})]).toEqual(["Inter", false]);
+  });
+});
+
+describe("ganttLayout", () => {
+  it("sizes the left margin from the longest phase name, within bounds", () => {
+    const short = ganttLayout("gantt\n  section A\n  T :1d");
+    const long = ganttLayout("gantt\n  section Discovery & research\n  section Build");
+    const huge = ganttLayout(`gantt\n  section ${"x".repeat(200)}`);
+    expect([short.leftPadding, long.leftPadding, huge.leftPadding]).toEqual([80, 180, 280]);
+  });
+
+  it("counts characters, not UTF-16 units, for a phase name with emoji", () => {
+    expect(ganttLayout("gantt\n  section 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀").leftPadding).toBe(150);
+  });
+
+  it("grows the rows and text for tall rows", () => {
+    const fixed = ganttLayout("gantt\n  section A");
+    const tall = ganttLayout("gantt\n  %% option rows zoomed\n  section A");
+    expect([tall.barHeight > fixed.barHeight, tall.fontSize > fixed.fontSize, tall.sectionFontSize > fixed.sectionFontSize]).toEqual([true, true, true]);
+  });
+
+  it("drops the name column when phases are rows", () => {
+    expect(ganttLayout("gantt\n  %% option phases row\n  section Discovery & research").leftPadding).toBeLessThan(ganttLayout("gantt\n  section A").leftPadding);
+  });
+
+  it("adds larger text to the chart's CSS only for tall rows", () => {
+    const tall = configFor({}, MIN_DIAGRAM_WIDTH, "gantt\n  %% option rows zoomed").themeCSS ?? "";
+    expect([configFor({}, MIN_DIAGRAM_WIDTH, "gantt").themeCSS, tall.startsWith(GANTT_CSS), tall.length > GANTT_CSS.length]).toEqual([GANTT_CSS, true, true]);
+  });
+
+  it("reaches Mermaid through configFor", async () => {
+    const fake = fakeMermaid();
+    await createMermaidRenderer({ load: () => Promise.resolve(fake) }).render("gantt\n  section Discovery & research", {});
+    expect([fake.configs[0]?.gantt?.leftPadding, fake.configs[0]?.themeCSS]).toEqual([180, GANTT_CSS]);
+  });
+});
+
+describe("GANTT_CSS", () => {
+  it("styles with design tokens only", () => {
+    const colours = [...GANTT_CSS.matchAll(/(?:fill|stroke):\s*([^;]+);/gu)].map((match) => match[1]?.trim() ?? "");
+    const token = /^var\(--[a-z0-9-]+\)$/u;
+    const mix = /^color-mix\(in srgb, var\(--[a-z0-9-]+\) \d+%, var\(--surface-note\)\)$/u;
+    expect(colours.filter((value) => !(value === "none" || value === "transparent" || token.test(value) || mix.test(value)))).toEqual([]);
+  });
+
+  it("gives every phase style a band, a name colour and bar colours", () => {
+    expect(PHASE_COLOURS.map((_colour, n) => [`.section${String(n)} `, `.sectionTitle${String(n)} `, `.task${String(n)} `, `.active${String(n)} `, `.done${String(n)} `].every((rule) => GANTT_CSS.includes(rule)))).toEqual(PHASE_COLOURS.map(() => true));
+  });
+});
+
+describe("thinLabels", () => {
+  it("keeps a label only when it clears the last one kept", () => {
+    const boxes = [0, 30, 60, 90, 120].map((left) => ({ left, right: left + 40 }));
+    expect(thinLabels(boxes)).toEqual([true, false, true, false, true]);
+  });
+
+  it("keeps everything when nothing is laid out (zero-width boxes)", () => {
+    expect(thinLabels([{ left: 0, right: 0 }, { left: 0, right: 0 }])).toEqual([true, true]);
+  });
+});
+
+describe("phaseBands", () => {
+  it("groups consecutive rows of one phase, in position order", () => {
+    const rows = [
+      { top: 60, bottom: 90, style: 1 },
+      { top: 0, bottom: 30, style: 0 },
+      { top: 30, bottom: 60, style: 0 },
+      { top: 90, bottom: 120, style: 1 },
+      { top: 120, bottom: 150, style: 0 },
+    ];
+    expect(phaseBands(rows)).toEqual([
+      { top: 0, bottom: 60, style: 0 },
+      { top: 60, bottom: 120, style: 1 },
+      { top: 120, bottom: 150, style: 0 },
+    ]);
+  });
+
+  it("is empty for a chart without phases", () => {
+    expect(phaseBands([])).toEqual([]);
   });
 });

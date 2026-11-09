@@ -1,18 +1,62 @@
 /* Mermaid diagrams in the editor (SPEC §13.2). Tokens only (§20.1). */
 
 .mb-mermaid { margin-block: var(--space-5); }
-.mb-mermaid-chrome { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-2); }
-.mb-mermaid-preview { overflow-x: auto; padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-note); cursor: text; }
+.mb-mermaid-chrome { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: var(--space-2); }
+.mb-mermaid-preview { overflow-x: auto; padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-note); cursor: default; }
 .mb-mermaid-preview > svg { display: block; max-width: 100%; height: auto; margin-inline: auto; }
 /* A Gantt chart keeps the size it was laid out at; a narrow screen scrolls it (§13.2). */
 .mb-mermaid-preview > svg[aria-roledescription="gantt"] { max-width: none; }
 .mb-mermaid-status, .mb-mermaid-error { margin: 0; color: var(--text-muted); font: var(--text-sm)/var(--leading-snug) var(--font-ui); }
 .mb-mermaid-error { color: var(--state-danger); white-space: pre-wrap; }
-.mb-mermaid-toggle { align-self: flex-end; min-height: var(--control-height); padding: 0 var(--space-4); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: var(--text-sm)/1 var(--font-ui); cursor: pointer; }
-.mb-mermaid-toggle:hover { background: var(--surface-hover); }
-.mb-mermaid-toggle:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
-@media (pointer: coarse) { .mb-mermaid-toggle { min-height: var(--touch-target-min); } }
+.mb-mermaid-chart[hidden] { display: none; }
+/* A Gantt chart in a note drags to move around (§13.2); in an editable note a double-click
+   also opens its editor (§13.3). The grab hand says both. */
+.mb-mermaid-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
+.mb-mermaid-toggle, .mb-mermaid-chart { min-height: var(--control-height); padding: 0 var(--space-4); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: var(--text-sm)/1 var(--font-ui); cursor: pointer; }
+.mb-mermaid-toggle:hover, .mb-mermaid-chart:hover { background: var(--surface-hover); }
+.mb-mermaid-toggle:focus-visible, .mb-mermaid-chart:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+@media (pointer: coarse) { .mb-mermaid-toggle, .mb-mermaid-chart { min-height: var(--touch-target-min); } }
 
 /* The source is the content. It stays in the document, hidden until it is being edited,
    asked for, or needed to read a render error. */
 .mb-mermaid:not(.mb-mermaid-source-open):not([data-mermaid-state="error"]) > .mb-mermaid-source { display: none; }
+
+/* A shortened Gantt label shows its full text above it on hover, click or tap (§13.2). */
+.mb-mermaid-preview .mb-shortened { cursor: help; }
+.mb-mermaid-tip {
+  position: absolute;
+  z-index: 5;
+  width: max-content;
+  max-width: min(24rem, 100%);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  font: var(--text-sm)/var(--leading-snug) var(--font-ui);
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  transform: translateY(calc(-100% - var(--space-1)));
+}
+.mb-mermaid-tip[hidden] { display: none; }
+
+/* Zooming and moving around a Gantt chart (§13.2). The zoom sits at the left of the actions. */
+.mb-chart-zoom { display: inline-flex; align-items: center; gap: 2px; margin-right: auto; padding: 2px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-sunken); }
+.mb-chart-zoom[hidden] { display: none; }
+.mb-chart-zoom button { min-width: var(--control-height); min-height: calc(var(--control-height) - 6px); padding: 0 var(--space-2); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: var(--text-sm)/1 var(--font-ui); font-variant-numeric: tabular-nums; cursor: pointer; }
+.mb-chart-zoom button[hidden] { display: none; }
+.mb-chart-zoom button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+.mb-chart-zoom button:disabled { opacity: 0.4; cursor: default; }
+.mb-chart-zoom button:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+@media (pointer: coarse) { .mb-chart-zoom button { min-height: var(--touch-target-min); min-width: var(--touch-target-min); } }
+.mb-mermaid-preview:has(> svg[aria-roledescription="gantt"]) { overflow: auto; cursor: grab; touch-action: pan-x pan-y; }
+.mb-mermaid-preview[data-panning="true"] { cursor: grabbing; user-select: none; }
+/* A chart's own cap on its height (%% option max-height); past it the chart scrolls. */
+.mb-mermaid-preview[data-max-height="small"] { max-height: 20rem; }
+.mb-mermaid-preview[data-max-height="medium"] { max-height: 30rem; }
+.mb-mermaid-preview[data-max-height="large"] { max-height: 45rem; }
+/* A capped chart's dates, kept at the top of its box while it scrolls (§13.2): the axis
+   Mermaid draws is at the bottom, out of sight. It scrolls sideways with the chart. */
+.mb-chart-dates { position: sticky; top: calc(-1 * var(--space-4) - 1px); z-index: 1; box-sizing: content-box; height: 1.6em; margin: calc(-1 * var(--space-4)) auto var(--space-2); padding-top: var(--space-2); border-bottom: 1px solid var(--border-subtle); background: var(--surface-note); color: var(--text-muted); font-family: var(--font-ui); line-height: 1.6em; }
+.mb-chart-dates > span { position: absolute; bottom: 0; transform: translateX(-50%); white-space: nowrap; font-variant-numeric: tabular-nums; }

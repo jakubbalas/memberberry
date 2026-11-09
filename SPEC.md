@@ -1841,6 +1841,10 @@ navigation. The worker keeps its existing waiting lifecycle, preserving other op
 windows and lazy chunks; its offline build changes once old controlled windows close.
 The reload action flushes the workspace and refuses while note writes are pending or
 cannot be checked. No forced worker takeover or replica deletion is used for updating.
+A page the Vite dev server loads from source (`make dev` on 9011, recognised by its
+`/@vite/client` script) is never offered an update and registers no worker; it unregisters
+any worker already on its origin. Its entry files are in no build, so the check above would
+otherwise show "Update available" through every reload.
 
 Service worker precaches the app shell and WASM bundle. IndexedDB holds Y docs, the
 pending-update queue, and the client search index. Pinned-media caching is deferred as
@@ -3734,9 +3738,22 @@ That is a scoped exception, not a relaxed budget.
   import folded into the app chunk itself breaks the bundle budget instead. Mermaid measures text through the DOM, so it cannot
   run in a Web Worker (§21.3). That is the honest reason this exception exists.
 - **Editing.** A diagram renders as a preview. Its source is hidden until the caret is inside
-  it. *Edit source*, a click on the preview, or an arrow key from the adjacent block puts the
-  caret there. Moving the caret out, or *Done*, hides the source again. Escape keeps its §8.4
-  meaning (select the block). Read-only notes get *Show source* instead. The source is edited
+  it. *Edit code*, or an arrow key from the adjacent block, puts the caret there. A click on
+  the diagram does not: in the user's words, *"is there a way not to display the code on
+  single click, only have a button 'Edit code' that would display it"*. The preview ignores the
+  click, and its node view stops the event, because otherwise ProseMirror places the caret
+  inside the block from the click itself. Moving the caret out, or *Done*, hides the source
+  again. *Done* moves the caret to the next text after the diagram, else the text before it,
+  else a new empty paragraph after it. A search from the end of a note otherwise ran back into
+  the diagram's own code and left it open. **The caret enters a diagram's code only on
+  purpose:** *Edit code*, an arrow key from the adjacent block, a newly inserted chart, or the
+  Gantt editor's *Edit as text*. Each of these marks its transaction (`MERMAID_ENTER`). Any
+  other way the caret lands there is moved to the nearest text outside the diagram, without
+  editing the note. That covers a note opening with its first body line inside a diagram, or
+  a collaborator's edit. Staying inside the same diagram (typing, a remote edit while editing)
+  is left alone. Limit: a note that is *only* a diagram has no text to move to, and opening a
+  note must not add one, so there the code shows. Escape keeps its §8.4 meaning (select the block). Read-only notes get *Show code*
+  instead. The source is edited
   as an ordinary code block, and the preview re-renders after a debounce, never per keystroke.
   A syntax error shows the source with Mermaid's message inline. A failed render never throws,
   never blanks the block and never blocks editing.
@@ -3757,7 +3774,48 @@ That is a scoped exception, not a relaxed budget.
 - **Gantt layout.** A Gantt chart is laid out at the preview's width, in 40px steps and never
   below 640px, and keeps that size rather than being scaled to fit. Below 640px its date axis
   overlaps, so a phone scrolls the chart sideways. The default axis format is a short date
-  (`%e %b`, as in `2 Nov`), and a diagram's own `axisFormat` overrides it. Resizing the window
+  (`%e %b`, as in `2 Nov`), and a diagram's own `axisFormat` overrides it. **Design
+  (2026-11-09):**
+  - The left margin is sized from the longest phase name (7.4px a character plus 32px, from
+    80 to 280px). Mermaid's 75px default let names run under the bars.
+  - Bars are 26px with 8px gaps and rounded corners, and type is 12px for tasks and 13px bold
+    for phase names.
+  - **Phases are told apart by colour** (*"those phases could be handled differently, it is
+    not visible enough"*). Each phase takes the next chart-series token: `--series-2`,
+    `-1`, `-4`, `-3`, `-5` and `-0`, with red last so a first phase does not read as an
+    alarm. Each phase's band is a light tint that the grid shows through, and its name is
+    bold in that colour. Its bars are filled with a mix of it and outlined in it: stronger
+    while active, faded when done, and outlined in `--state-danger` when critical. After
+    drawing, the note view adds a stripe in the phase's colour down its left edge and a line
+    where each later phase starts. A task's own colour (A40) still wins.
+  - The grid is light and dotted, and the today line is dashed.
+  - After drawing, the note view hides any date label that would overlap the one before. At a
+    note's width, Mermaid's own ticks ran together.
+  - **Zooming and moving around** (*"lets have the presentational part as useful as it can be
+    with easy zooms and movements"*). A Gantt chart in a note has zoom controls beside
+    *Edit chart*: zoom out, the current zoom (which resets to 100%), zoom in, *Fit* (the
+    chart's width fills the box) and *Today* (scrolls today a third of the way in; offered only
+    when the chart shows today). Zoom runs from 25% to 400% in fixed steps. Ctrl or ⌘ with the
+    wheel, which is how a trackpad pinch arrives, zooms around the pointer; a two-finger pinch
+    does on a touch screen. Dragging with the mouse moves around a chart bigger than its box,
+    and the click ending a drag is not taken as a click. Touch scrolls natively. Zooming scales
+    the drawn picture and then re-thins the date labels. It changes nothing in the note and
+    lasts while the note is open, through re-renders. Other Mermaid diagrams scale to fit as
+    before and have no zoom.
+  - **Long names are shortened** (*"When the text it too long, shorten it and reveal on click
+    or hover"*). After drawing, a task name that does not fit its bar is put inside the bar
+    and cut to fit with "…". A bar under 40px keeps its name beside it, cut at the chart's
+    edge. Milestone names are left to Mermaid. A phase name is cut to its name column, or to
+    the chart's width when phases are rows. Cuts fall between characters, so an emoji is
+    never split. Hovering the label or its bar shows the full name in a tip above it. A
+    click or tap keeps the tip open until a second click or a click elsewhere in the chart.
+    The full text is unchanged in the source, so *Edit code* and the editor are the keyboard
+    route to it. The preview is a single image to assistive technology (`role="img"`), so
+    the labels are not separately focusable. In the visual editor, a long name is cut inside
+    its bar by an estimated width, and the full name is the bar's hover title and is in the
+    task list.
+  - All of it is `themeCSS` built from design tokens (`GANTT_CSS` in
+    `web/src/mermaid/renderer.ts`), so it follows the theme. Resizing the window
   does not re-render. A diagram renders again only on its next edit, theme change or open.
 - **Public shares (§17).** The public renderer ships no JavaScript, so a shared note shows
   the diagram source as a code block in v1. Server-side pre-rendering is an open question,
@@ -3770,6 +3828,157 @@ That is a scoped exception, not a relaxed budget.
   lighter approach where one exists before leaning on the exception. `make perf` measures a
   diagram-page fixture in three rows of its own (§21.10), so the exception is measured, not
   assumed. A miss is carried in `breaches.json` at its measured value, as a ratchet.
+
+### 13.3 Visual Gantt editor (A39)
+
+A drag-and-drop editor for Mermaid `gantt` charts. Memberberry gets it first; a Confluence
+Cloud macro reuses the same component later (A39). **It edits text and stores nothing else.**
+The note still holds the ` ```mermaid ` fence of §13.2 (C2), and the note's preview is still
+Mermaid's render. The editor is only a better way to write that text.
+
+- **One self-contained component, `web/src/gantt/`.** Plain TypeScript and DOM, no Svelte, and
+  no imports from the rest of the app; a test fails if it gains one. A host passes the source
+  in and gets the source back. The Confluence macro imports the same files. Its stylesheet uses
+  the design-token names of §20.1, which another host declares for itself. The token check
+  allows no private `--ge-*` names.
+- **What it understands.** `title`, `dateFormat YYYY-MM-DD`, `axisFormat`, `excludes weekends`,
+  `todayMarker`, `section`, comments (`%%`), and task lines
+  `Name :[tags,] [id,] start, end`. Tags are `done`, `active`, `crit` and `milestone`. *start*
+  is a date or `after id [id …]`. *end* is a date or a whole number of hours, days or weeks
+  (`36h`, `5d`, `2w`). Any other directive or comment line is kept verbatim, in place. A chart that uses
+  something outside this set (another `dateFormat`, hours, `until`, `click`) opens **read-only**
+  in the visual editor with *Edit as text*. The editor never writes a lossy version of it.
+- **Round trip.** Open and Save with no change writes the source back byte-for-byte. An
+  edited task is rewritten in one canonical form; untouched lines stay exactly as they were.
+  Property tests cover parse → serialize → parse for every supported construct (§22.1).
+- **Scheduling.** Each task's start and end come from its dates, its length and its `after`
+  dependencies, in calendar days, or working days under `excludes weekends`, as Mermaid
+  computes them. An hours length ends part-way through a day, and a task after it starts
+  there, so positions are fractional days. A start date is always a whole day, so moving a task
+  that started mid-day pins it to the start of the day it lands on. An unknown id or a dependency cycle marks the task as an error in the table.
+  The task is still drawn, never silently moved.
+- **Layout.** A modal dialog, full-screen below 768px (§8.3). It has a timeline and a task
+  table (name, start, length or end, starts after, status). The default puts the chart above
+  the tasks, with a divider between them. A task row has: a grip, name, start, *Ends* (choose
+  *End date*, *Hours*, *Days* or *Weeks*, then the value), *Starts after*, colour, status and a
+  Milestone toggle. Switching how a task ends keeps its bar where it is, rounded to the new
+  unit and never below one of it. An end date keeps Mermaid's meaning: the bar ends at the
+  start of that day. There is no Critical toggle, at the user's request (*"We can probably
+  remove Critical button"*). A `crit` tag a chart already has is kept and still drawn. Drag the divider, or use Up and Down on it, to move
+  it between 20% and 80%. *Side by side* puts the table beside the timeline instead, with the
+  rows lined up and scrolled together. The choice is remembered per browser (`localStorage`;
+  blocked storage just keeps the default). When the panes are stacked, a row and its bar no
+  longer share a line, so focus in either one marks that task in both and scrolls the other
+  into view. The timeline fills its pane's width, so a short chart shows more dates rather
+  than empty space. On a phone the two panes are tabs. The toolbar has the chart title, zoom (days, weeks,
+  months), Undo and Redo, Add task, Add section and View source. Cancel and Save sit at the
+  bottom. It opens at the zoom that fits the chart: days up to three weeks, weeks up to about
+  four months, then months. The timeline scrolls to today when today is in range, and keeps its
+  scroll position across edits.
+- **Direct manipulation.** Drag a bar to move it, or its end to change its length; both snap
+  to whole days. Drag from a bar's connector to another bar to make the second start after the
+  first. A milestone is a diamond and only moves. Moving a task that starts `after` another
+  pins it to the new date and drops the dependency; the status line says so, and Undo restores
+  it. Pointer events cover mouse, pen and touch. The timeline is `touch-action: pan-y`. A
+  vertical swipe scrolls natively, and horizontal movement reaches the editor: it drags a bar,
+  or pans the timeline over empty space. Chrome reads `touch-action` from the `<svg>` box, not
+  from the shapes inside it, so a rule on a bar alone let the browser cancel a touch drag as a
+  pan. The touch E2E test guards this.
+- **Moving a task to another phase.** A task's section is only where its line sits, so
+  moving between phases means moving the line. In the task list, drag a row by its grip (⠿).
+  The list scrolls while you drag near its edges, and a line shows where the task will land.
+  In the chart, drag a bar more than half a row up or down. Sideways movement in the same drag
+  still changes its dates, and the whole drag is one undo step. On a phone a vertical swipe
+  scrolls the chart, so rows move with the grip there. Alt+Up and Alt+Down move the focused
+  task one row, crossing a section line into the next phase. They are not taken from a
+  `<select>`, where Alt+Down opens the list. **Moving never changes a date.** Mermaid's
+  one-field form (`Polish :3d`) starts a task right after the line above it. So the moved
+  task, the task that was below it, and the task that ends up below it each get an explicit
+  `after <id>` for the task they really followed, or a date when nothing was above. A seeded
+  property test moves tasks at random and checks every date.
+- **Task colours (A40).** Mermaid has no per-task colour, so a colour is a comment Mermaid
+  ignores: `%% color <task id> <value>`, one line per task, kept together after the chart's
+  directives. The value is a note colour name (gray, brown, orange, yellow, green, blue,
+  purple, pink, red) or any `#rgb` / `#rrggbb` hex. Anything else is ignored. In the user's
+  words: *"If the color starts with # and is hex - use any color. otherwise lets have
+  preselected note colors and then a picker"*. A note colour uses its theme tokens, so it
+  follows light and dark. A hex colour outlines the bar in exactly that colour, with a 35% mix
+  of it as the fill, so task names stay readable in either theme. The value `none` is an
+  explicit *No colour*: a plain bar in the surface and muted ink, rather than the phase's
+  colour (A41). The editor's Colour column offers *Phase colour* (no line), *No colour*, the
+  nine note colours and *Custom…*, which opens the system colour picker.
+  A task gets an id when it is first coloured; removing it removes its colour line. Values are
+  validated strictly before reaching a style attribute. In a note, the rendered Mermaid chart's
+  bars are coloured after rendering: Mermaid names each task bar `<diagram id>-<task id>`.
+  Other renderers (GitHub, Obsidian) show the chart uncoloured. `web/src/gantt/colors.ts` and
+  `fit-text.ts` are the only files in `src/gantt/` the startup bundle may contain, since the
+  note view needs them.
+- **Phase colours.** A phase is coloured automatically, from its position in the palette
+  (§13.2). In the editor's phase row it can be set to *Auto*, *No colour* (`none`: no band,
+  stripe or tint, the name in the text colour, plain bars), a note colour or *Custom…* (in
+  the user's words: *"select automatically a colour for a phase but allow for its change in
+  the editing mode"*). A chosen colour is a comment line with the other colour lines:
+  `%% section-color <value> <phase name>`. The name runs to the end of the line, so spaces are
+  kept. It is keyed by name because phases have no id; renaming a phase in the editor carries
+  the colour along, and removing the phase drops it. Phases that share a name share a colour.
+  A phase with its own colour still counts towards the palette, so the phases after it keep
+  their automatic colours. The editor's timeline shows phase colours too (tinted header,
+  stripe, name and bars), so it matches the note. In the note, a phase's own colour is applied
+  after rendering to its bands, stripe, name and bars, keeping each bar's state. A task's own
+  colour still wins.
+- **Adding a task to a phase.** Every phase in the task list ends with a thin *+ Add task* row
+  (in the user's words: *"under the section as the last thing show thin section what would
+  make a new row"*). So do the tasks above the first phase, when there are any. It adds a task
+  as the phase's last, starting when its last task ends, and puts the cursor in its name. An
+  empty phase has one too. Its accessible name says which phase it adds to. The timeline
+  leaves the same room, so table and timeline rows still line up side by side. On a touch
+  screen the row is a full touch target.
+- **Chart style (A41).** Three chart-wide settings, each a comment line kept with the colour
+  lines: `%% option <key> <value>`. A setting at its default writes no line, and unknown keys or
+  values are ignored.
+  - `phases column|row`: phase names in a left column (Mermaid's own layout, the default), or
+    as a header row above each phase. Mermaid has no row layout, so the note rearranges the
+    rendered chart: it opens a header row per phase, moves the name into it, shifts the bars,
+    labels and milestones below it down, and grows the grid, today's line and the picture. The
+    name column is dropped, so bars start near the left edge.
+  - `phase-fill whole|name`: the phase colour fills the whole phase (bands and a stripe, the
+    default), or only its name: an outlined cell behind the name in column layout, or an
+    outlined header row in row layout. In the user's words: *"we would have only a header row
+    or a column with color. If it is a color, there should be some "border" colored"*.
+  - `rows fixed|zoomed`: the standard row height, or taller rows (36px bars) with larger text.
+  - `max-height full|small|medium|large`: how tall the chart may be in a note: its full height
+    (the default), or 20, 30 or 45rem, past which it scrolls inside its box (*"some config
+    option to have max height in case there is a ton of tasks"*). Mermaid draws the date axis
+    at the bottom, so while a capped chart is taller than its box the note view repeats the
+    axis's dates in a header that stays at the top of the box as it scrolls, and scrolls
+    sideways with the chart. The header copies the drawn axis (its dates, their places and
+    the labels thinned out of the way), redrawn after every zoom. It is hidden from assistive
+    technology, which reads the axis with the chart.
+  The editor's *Style* button opens a panel that sets them (*Phase names*, *Phase colour*,
+  *Row height*, *Max height*); Escape or a click elsewhere closes it. Its own timeline
+  always shows phases as header rows and keeps its row height, since those are how the editor
+  works; it follows the phase fill. Other renderers ignore the lines and show Mermaid's layout.
+- **Keyboard (§8.4).** Nothing is pointer-only. Table cells are labelled form controls, and
+  dependencies are set with the *Starts after* control. A focused bar moves a day with Left and
+  Right and changes length with Shift+Left and Shift+Right. Enter in a task's name adds a task
+  below it. Mod+Z and Mod+Shift+Z undo and redo inside the dialog. Escape cancels, asking first
+  when there are unsaved changes.
+- **In Memberberry.** An editable note's Gantt chart gets *Edit chart*, which opens the
+  dialog. A double-click (a double tap on a phone) on the chart opens it too, and the pointer
+  over such a chart is a hand. Other Mermaid diagrams and read-only notes ignore a
+  double-click, and a single click does nothing (§13.2). Save replaces the code block's text in one transaction: one undo step in the note,
+  synced like any edit. A read-only note gets no *Edit chart*. The Insert menu gets *Gantt
+  chart*, which inserts a starter chart and opens the editor on it. If another member changed
+  the chart while the dialog was open, Save does not overwrite it silently: it says so and
+  offers *Replace theirs* or *Discard mine*.
+- **Bundle.** A lazy chunk, loaded on *Edit chart* or *Gantt chart*, and never on the critical
+  path. `make perf-bundle` guards it as it guards Mermaid (§13.2).
+- **Security and permissions.** Task names are untrusted text and are only ever set as
+  `textContent`. The editor works on block text the client already holds, so it adds no read
+  path and no enforcement point (§6.4).
+- **Confluence (later, not this repo).** A Forge Custom UI macro that bundles `web/src/gantt/`,
+  keeps the Mermaid source in the macro's configuration and renders the view with `mermaid`.
+  Installing it needs a Confluence Cloud administrator.
 
 ---
 
@@ -5709,6 +5918,9 @@ to replace a product comparison with a description. Do not reverse these without
 | A36 | Vault settings | *"a way where I can manage some aspects of the vault. One of it will be custom emojis (add, remove, modify shortcode)"*; rename choice: *"Rewrite notes"* | Owner-only Vault settings dialog (§20.4) managing vault-local emoji. Supersedes A33's "no pack-management panel" for Settings only; the picker stays single-image. Rename rewrites notes as an E14 privileged operation and keeps the old name as an alias (§11.2). |
 | A37 | Vault accent colour | *"default colour"* → *"Accent colour"* | Per-vault `#rrggbb` accent, adjusted per palette for 4.5:1 contrast (§20.1). |
 | A38 | Mermaid diagrams (motivated by Gantt charts for replacing Confluence; reverses A9's exclusion) | *"we should bring in mermaid and document that we accept that midrange android might experience issue with pages that do have mermaid diagrams. Wherever possible we find alternatives"* | Mermaid ` ```mermaid ` fences render via a lazy chunk (§13.2). Pages with diagrams carry a scoped exception to the §21.2 mobile budgets; every other page keeps them. |
+| A39 | Visual Gantt editor | *"for both Confluence AND memberberry, I want to have some nice UI with awesome UX way how to build gantt charts"*; then: *"Full drag-and-drop now"*, *"Inside memberberry repo"*, *"Memberberry first"* | A shared drag-and-drop editor over Mermaid `gantt` text, in `web/src/gantt/`. Memberberry first; a Confluence Forge macro reuses it later (§13.3). Storage stays the §13.2 fence. |
+| A41 | Gantt "no colour" and chart style | *"it should also be possible to select "no color" (even for tasks). Then we might want to have some overall chart config where we can select "style" - one of it will be if the whole section has background color or only the section name row. another if it should be more "zoomed in" or fixed height"*; then: *"we might want to have also possibility and separated config for if we want to have phase shown as a row or a column like we have now and based on that we would have only a header row or a column with color. If it is a color, there should be some "border" colored"*, and *"Row height"* | `none` as a task or phase colour; `%% option phases column\|row`, `phase-fill whole\|name`, `rows fixed\|zoomed` lines, set from the editor toolbar (§13.3). |
+| A40 | Gantt task colours | *"Next up - I want to be able to set colours for tasks"*; then: *"lets recognise both. If the color starts with # and is hex - use any color. otherwise lets have preselected note colors and then a picker"* | `%% color <id> <value>` comment lines. A value is a note colour name or `#rgb`/`#rrggbb` hex; the editor offers the note colours and a custom picker (§13.3). |
 
 ---
 

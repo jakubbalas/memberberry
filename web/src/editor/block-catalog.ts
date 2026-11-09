@@ -4,6 +4,7 @@ import type { Node as PMNode } from "@tiptap/pm/model";
 import { TextSelection } from "@tiptap/pm/state";
 import { yUndoPluginKey } from "y-prosemirror";
 import { insertBlock } from "./commands.js";
+import { editGanttAt, MERMAID_ENTER } from "./mermaid-view.js";
 import { applyBlockFormat, blockFormatState, captureBlockSelection, type BlockSelection } from "./block-format.js";
 import { singleEditorMessages, type SingleEditorGate } from "./single-editor.js";
 import { parseNaturalDate, todayDate } from "./task-metadata.js";
@@ -21,7 +22,7 @@ export interface BlockCatalogOptions {
   readonly emoji: () => void;
   readonly onDraftStateChange?: () => void;
 }
-interface Entry { label: string; group: string; icon: string; hint?: string; aliases?: string; content?: JSONContent; form?: "code" | "math" | "inline" | "web" | "date"; action?: "image" | "emoji" | "note" | "table" | "template" }
+interface Entry { label: string; group: string; icon: string; hint?: string; aliases?: string; content?: JSONContent; form?: "code" | "math" | "inline" | "web" | "date"; action?: "image" | "emoji" | "note" | "table" | "template" | "gantt" }
 const entries: readonly Entry[] = [
   { label: "Text", group: "Basic blocks", icon: "T", content: { type: "paragraph" } },
   ...[1, 2, 3, 4].map(level => ({ label: `Heading ${level}`, group: "Basic blocks", icon: `H${level}`, hint: "#".repeat(level), content: { type: "heading", attrs: { level } } })),
@@ -35,6 +36,7 @@ const entries: readonly Entry[] = [
   { label: "Divider", group: "Basic blocks", icon: "—", hint: "***", content: { type: "divider" } },
   { label: "Image", group: "Media", icon: "▧", action: "image" },
   { label: "Code", group: "Media", icon: "</>", hint: "```", form: "code" },
+  { label: "Gantt chart", aliases: "timeline schedule project plan mermaid", group: "Media", icon: "▤", action: "gantt" },
   { label: "Web bookmark", aliases: "web link url", group: "Media", icon: "↗", form: "web" },
   { label: "Block equation", group: "Advanced blocks", icon: "∑", hint: "$$", form: "math" },
   { label: "Template", group: "Advanced blocks", icon: "▤", action: "template" },
@@ -44,6 +46,13 @@ const entries: readonly Entry[] = [
   { label: "Inline equation", group: "Inline", icon: "√", hint: "$", form: "inline" },
 ];
 interface Target { doc: PMNode; from: number; to: number; below: boolean; slash: boolean }
+
+/** A small chart to start from, beginning today, for the Insert menu's Gantt chart. */
+function starterGantt(now: Date = new Date()): JSONContent {
+  const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())).toISOString().slice(0, 10);
+  const text = ["gantt", "    title New plan", "    dateFormat YYYY-MM-DD", "    section Phase 1", `    First task :first, ${today}, 5d`, "    Second task :after first, 3d"].join("\n");
+  return { type: "code_block", attrs: { lang: "mermaid" }, content: [{ type: "text", text }] };
+}
 
 /** Mounts one catalogue; a changed document invalidates every captured insertion/form. */
 export function mountBlockCatalog(options: BlockCatalogOptions) {
@@ -92,7 +101,8 @@ export function mountBlockCatalog(options: BlockCatalogOptions) {
     const undo = yUndoPluginKey.getState(editor.state) as { undoManager?: { stopCapturing(): void } } | undefined;
     undo?.undoManager?.stopCapturing();
   };
-  const insert = (content: JSONContent): boolean => {
+  /** `enter` marks a caret placed in a new diagram's code as deliberate (SPEC §13.2). */
+  const insert = (content: JSONContent, enter = false): boolean => {
     if (!current() || !target) { hide(); return false; }
     const captured = target;
     applying = true; isolate();
@@ -107,6 +117,7 @@ export function mountBlockCatalog(options: BlockCatalogOptions) {
       const transaction = editor.state.tr.replaceWith(from, to, replacement);
       transaction.setSelection(TextSelection.near(transaction.doc.resolve(Math.min(transaction.doc.content.size, from + (replacement.isLeaf ? replacement.nodeSize : 1))), 1));
       transaction.setStoredMarks([]);
+      if (enter) transaction.setMeta(MERMAID_ENTER, true);
       editor.view.dispatch(transaction);
       return editor.state.doc !== captured.doc;
     } finally { isolate(); applying = false; close(); }
@@ -169,6 +180,14 @@ export function mountBlockCatalog(options: BlockCatalogOptions) {
     if (!current()) { hide(); return; }
     if (entry.form) { showForm(entry.form); return; }
     if (entry.content) { insert(entry.content); return; }
+    if (entry.action === "gantt") {
+      // why: insert a starter chart, then open the visual editor on it (SPEC §13.3). The caret
+      // lands inside the new code block, which locates it.
+      if (!insert(starterGantt(), true)) return;
+      const { $from } = editor.state.selection;
+      if ($from.parent.type.name === "code_block") void editGanttAt(editor.view, $from.before($from.depth));
+      return;
+    }
     if (!prepareExternal()) return;
     if (entry.action === "image") options.image?.();
     if (entry.action === "emoji") options.emoji();

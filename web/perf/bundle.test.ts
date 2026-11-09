@@ -143,6 +143,18 @@ describe("measuring the critical-path bundle", () => {
     expect(() => measureBundle(dist)).toThrow(/_mermaid\.core-abc\.js is statically imported/);
   });
 
+  it("fails when the Gantt editor is statically imported onto the critical path (SPEC §13.3)", () => {
+    mkdirSync(join(dist, "assets"), { recursive: true });
+    writeFileSync(join(dist, "assets", "index.js"), compressible(4_000));
+    writeFileSync(join(dist, "assets", "gantt-editor.js"), compressible(6_000));
+    manifest({
+      "index.html": { file: "assets/index.js", isEntry: true, imports: ["src/gantt/gantt-editor.ts"] },
+      "src/gantt/gantt-editor.ts": { file: "assets/gantt-editor.js" },
+    });
+
+    expect(() => measureBundle(dist)).toThrow(/src\/gantt\/gantt-editor\.ts is statically imported/);
+  });
+
   it("accepts Mermaid behind a dynamic import and leaves it out of the sum", () => {
     mkdirSync(join(dist, "assets"), { recursive: true });
     writeFileSync(join(dist, "assets", "index.js"), compressible(4_000));

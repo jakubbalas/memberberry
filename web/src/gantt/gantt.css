@@ -1,0 +1,291 @@
+/* The visual Gantt editor (SPEC §13.3). Design tokens only (§20.1); another host declares
+   the same token names. Table rows and timeline rows share one height so they line up. */
+
+.gantt-editor {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: min(78rem, 96vw);
+  height: min(52rem, 92vh);
+  max-width: none;
+  max-height: none;
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+  font: var(--text-sm)/var(--leading-snug) var(--font-ui);
+}
+.gantt-editor:not([open]) { display: none; }
+.gantt-editor[data-narrow="true"] {
+  width: 100vw;
+  height: 100dvh;
+  margin: 0;
+  padding: var(--space-3);
+  border: 0;
+  border-radius: 0;
+}
+.gantt-editor button,
+.gantt-editor input,
+.gantt-editor select,
+.gantt-editor textarea { font: inherit; color: inherit; }
+.gantt-editor button {
+  min-height: var(--control-height);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-note);
+  cursor: pointer;
+}
+.gantt-editor button:hover:not(:disabled) { background: var(--surface-hover); }
+.gantt-editor button:disabled { opacity: 0.5; cursor: default; }
+.gantt-editor button[aria-pressed="true"],
+.gantt-editor button[aria-selected="true"] { background: var(--surface-selected); border-color: var(--accent-primary); }
+.gantt-editor :focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.gantt-editor .ge-primary { background: var(--accent-primary); border-color: var(--accent-primary); color: var(--surface-raised); }
+.gantt-editor .ge-primary:hover:not(:disabled) { background: var(--accent-primary); filter: brightness(1.08); }
+.gantt-editor input,
+.gantt-editor select {
+  box-sizing: border-box;
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-note);
+}
+@media (pointer: coarse) {
+  .gantt-editor button,
+  .gantt-editor input,
+  .gantt-editor select { min-height: var(--touch-target-min); }
+}
+
+.ge-header { display: flex; align-items: center; gap: var(--space-2); }
+.ge-heading { flex: 1; margin: 0; font: var(--weight-bold) var(--text-lg)/var(--leading-flat) var(--font-ui); }
+.ge-history { display: inline-flex; gap: var(--space-1); }
+.gantt-editor .ge-history button { border-color: transparent; background: transparent; color: var(--text-muted); }
+.gantt-editor .ge-history button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+
+/* One row of controls, separated from the work area below. The view controls come first and
+   the actions sit at the far end; on a narrow screen it wraps rather than overflowing. */
+.ge-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ge-title { flex: 1 1 14rem; min-width: 0; max-width: 26rem; font-weight: var(--weight-medium); }
+.ge-actions { display: inline-flex; flex-wrap: wrap; gap: var(--space-2); margin-left: auto; }
+.gantt-editor[data-narrow="true"] .ge-layout { display: none; }
+.gantt-editor[data-narrow="true"] .ge-title { flex-basis: 100%; max-width: none; }
+.gantt-editor[data-narrow="true"] .ge-actions { flex-basis: 100%; flex-wrap: nowrap; margin-left: 0; }
+.gantt-editor[data-narrow="true"] .ge-actions button { flex: 1; padding: 0 var(--space-2); }
+
+/* A segmented control: one sunken track, the chosen option raised on it. */
+.ge-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+}
+.gantt-editor .ge-segmented button {
+  min-height: calc(var(--control-height) - 6px);
+  white-space: nowrap;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+}
+.gantt-editor .ge-segmented button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+.gantt-editor .ge-segmented button[aria-pressed="true"] {
+  border-color: var(--border-subtle);
+  background: var(--surface-note);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.ge-style-wrap { position: relative; }
+/* why: the empty alternative text keeps the arrow out of the button's accessible name. */
+.ge-style-button::after { content: "▾" / ""; margin-left: var(--space-1); color: var(--text-muted); }
+.gantt-editor .ge-style-button[aria-expanded="true"] { background: var(--surface-selected); border-color: var(--accent-primary); }
+.ge-style-panel {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 10;
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-md);
+}
+.ge-style-panel[hidden] { display: none; }
+.ge-style-row { display: grid; grid-template-columns: 7rem auto; align-items: center; gap: var(--space-3); }
+.ge-style-label { color: var(--text-muted); white-space: nowrap; }
+.gantt-editor .ge-style-row .ge-segmented button { flex: 1; }
+@media (pointer: coarse) {
+  .gantt-editor .ge-segmented button { min-height: var(--touch-target-min); }
+}
+/* On a phone the panel spans the toolbar rather than hanging off the button's edge. */
+.gantt-editor[data-narrow="true"] .ge-toolbar { position: relative; }
+.gantt-editor[data-narrow="true"] .ge-style-wrap { position: static; }
+.gantt-editor[data-narrow="true"] .ge-style-panel { right: 0; top: 100%; }
+.gantt-editor[data-narrow="true"] .ge-style-row { grid-template-columns: 1fr; gap: var(--space-1); }
+.gantt-editor[data-narrow="true"] .ge-style-row .ge-segmented { display: flex; }
+.ge-tabs { display: none; gap: var(--space-1); }
+.gantt-editor[data-narrow="true"] .ge-tabs { display: flex; }
+.gantt-editor[data-narrow="true"] .ge-tabs button { flex: 1; }
+.ge-notice { margin: 0; color: var(--state-warning); }
+.ge-notice[hidden] { display: none; }
+
+.ge-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  align-items: start;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-note);
+}
+.ge-body[hidden] { display: none; }
+/* Chart above, tasks below: each pane scrolls on its own, sized by the divider (rows set inline). */
+.gantt-editor:not([data-narrow="true"])[data-layout="stacked"] .ge-body { grid-template-columns: minmax(0, 1fr); align-items: stretch; overflow: hidden; }
+.gantt-editor:not([data-narrow="true"])[data-layout="stacked"] .ge-timeline-wrap,
+.gantt-editor:not([data-narrow="true"])[data-layout="stacked"] .ge-table-wrap { min-height: 0; overflow: auto; }
+.gantt-editor:not([data-narrow="true"])[data-layout="stacked"] .ge-table-wrap { position: static; border-right: 0; }
+/* Stacked, the task table has the whole width: the name column takes what is spare. */
+.gantt-editor:not([data-narrow="true"])[data-layout="stacked"] .ge-table { width: 100%; }
+.gantt-editor:not([data-narrow="true"])[data-layout="stacked"] .ge-table td:nth-child(2) { width: 100%; }
+.gantt-editor:not([data-narrow="true"])[data-layout="stacked"] .ge-table td:nth-child(2) input { width: 100%; min-width: 11rem; }
+.ge-divider {
+  height: var(--space-3);
+  border-block: 1px solid var(--border-subtle);
+  background: var(--surface-sunken);
+  cursor: row-resize;
+  touch-action: none;
+}
+.ge-divider:hover { background: var(--surface-hover); }
+.gantt-editor[data-narrow="true"] .ge-divider { display: none; }
+.ge-grip-cell { width: 0; }
+.gantt-editor .ge-grip { min-width: var(--control-height); padding: 0; border-color: transparent; background: transparent; color: var(--text-muted); cursor: grab; touch-action: none; }
+.ge-row.ge-moving { opacity: 0.55; }
+.ge-row[data-drop="before"] td { box-shadow: inset 0 3px 0 var(--accent-primary); }
+.ge-row[data-drop="after"] td { box-shadow: inset 0 -3px 0 var(--accent-primary); }
+.ge-drop-line { stroke: var(--accent-primary); stroke-width: 3; pointer-events: none; }
+.ge-color-cell { white-space: nowrap; }
+.ge-ends-cell { white-space: nowrap; }
+.gantt-editor .ge-ends-cell select { width: 6.5rem; margin-right: var(--space-1); }
+.gantt-editor .ge-ends-cell input[type="number"] { width: 4rem; }
+.ge-swatch { display: inline-block; width: 0.9rem; height: 0.9rem; margin-right: var(--space-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); vertical-align: middle; }
+/* The picker opens from Custom… in the menu; it stays usable from the keyboard as its own control. */
+.gantt-editor .ge-picker { width: var(--control-height); min-width: var(--control-height); padding: 0; margin-left: var(--space-1); border: 0; background: transparent; vertical-align: middle; }
+.gantt-editor .ge-picker[data-hidden="true"] { position: absolute; width: 1px; min-width: 0; height: 1px; min-height: 0; margin: 0; opacity: 0; pointer-events: none; }
+.ge-color-cell { position: relative; }
+.ge-row[data-current="true"] { background: var(--surface-selected); }
+.ge-bar[data-current="true"] .ge-shape { stroke-width: 3; }
+.gantt-editor[data-narrow="true"] .ge-body { grid-template-columns: minmax(0, 1fr); }
+.gantt-editor[data-narrow="true"][data-tab="table"] .ge-timeline-wrap,
+.gantt-editor[data-narrow="true"][data-tab="chart"] .ge-table-wrap { display: none; }
+
+.ge-table-wrap { position: sticky; left: 0; z-index: 1; background: var(--surface-note); border-right: 1px solid var(--border-subtle); }
+.gantt-editor[data-narrow="true"] .ge-table-wrap { position: static; border-right: 0; overflow-x: auto; }
+.ge-table { border-collapse: collapse; white-space: nowrap; }
+.ge-table thead tr { height: 40px; }
+.ge-table th { padding: 0 var(--space-2); color: var(--text-muted); font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui); text-align: left; }
+.ge-table tbody tr { height: 48px; }
+.ge-table tbody tr[data-stripe] { background: var(--surface-sunken); }
+/* The thin row closing each phase: quiet until pointed at (SPEC §13.3). Its height is set
+   inline, matching the room the timeline leaves for it. */
+.ge-table tbody tr.ge-add-row td { padding-block: 0; }
+.gantt-editor .ge-add-task {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  height: calc(100% - 4px);
+  padding: 0 var(--space-2);
+  border: 1px dashed transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-align: left;
+}
+.gantt-editor .ge-add-task:hover:not(:disabled),
+.gantt-editor .ge-add-task:focus-visible { border-color: var(--border-subtle); background: var(--surface-hover); color: var(--accent-primary); }
+.ge-table td { padding: 0 var(--space-1); vertical-align: middle; }
+.ge-table input[type="text"] { width: 11rem; }
+.ge-table input[type="number"] { width: 3.75rem; }
+.ge-table select { max-width: 9rem; }
+.ge-section-row input[type="text"] { width: 100%; font-weight: var(--weight-bold); }
+.ge-flags { display: inline-flex; gap: var(--space-1); margin-left: var(--space-1); }
+.gantt-editor .ge-flag,
+.gantt-editor .ge-remove { min-width: var(--control-height); padding: 0; color: var(--text-muted); }
+.gantt-editor .ge-flag[aria-pressed="true"] { color: var(--accent-primary); font-weight: var(--weight-bold); }
+.gantt-editor .ge-flag[data-field="crit"][aria-pressed="true"] { color: var(--state-danger); border-color: var(--state-danger); }
+.ge-error { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; margin-left: var(--space-1); border-radius: var(--radius-round); background: var(--state-danger); color: var(--surface-raised); font-weight: var(--weight-bold); }
+.ge-row[aria-invalid="true"] input[data-field="name"] { border-color: var(--state-danger); }
+
+.ge-timeline-wrap { overflow-x: auto; }
+.ge-timeline { display: block; }
+.ge-stripe { fill: var(--surface-sunken); }
+.ge-grid { stroke: var(--border-subtle); stroke-width: 1; }
+.ge-tick,
+.ge-month,
+.ge-section-label { fill: var(--text-muted); font: var(--text-xs)/1 var(--font-ui); }
+.ge-month,
+.ge-section-label { font-weight: var(--weight-bold); }
+.ge-today { stroke: var(--state-warning); stroke-width: 2; }
+.ge-arrow { fill: none; stroke: var(--text-muted); stroke-width: 1.5; }
+.ge-arrow-head { fill: var(--text-muted); }
+
+/* why: Chrome reads touch-action from the <svg>'s own box, not from the shapes inside it, so a
+   rule on a bar alone let a touch drag be cancelled as a pan. pan-y keeps native vertical
+   scrolling; horizontal moves reach the editor, which drags bars and pans empty space. */
+.ge-timeline { touch-action: pan-y; cursor: grab; }
+.ge-bar { cursor: grab; }
+.ge-phase-band,
+.ge-phase-stripe { pointer-events: none; }
+.ge-section-label { font-weight: var(--weight-bold); }
+.ge-bar.ge-dragging { cursor: grabbing; }
+.ge-bar .ge-shape { fill: var(--surface-accent-soft); stroke: var(--accent-primary); stroke-width: 1.5; }
+.ge-bar[data-state="active"] .ge-shape { stroke-width: 3; }
+.ge-bar[data-state="done"] .ge-shape { fill: var(--surface-sunken); stroke: var(--text-muted); }
+.ge-bar[data-crit="true"] .ge-shape { stroke: var(--state-danger); stroke-width: 2.5; }
+.ge-bar[data-error="true"] .ge-shape { stroke: var(--state-danger); stroke-dasharray: 4 3; }
+.ge-bar:focus { outline: none; }
+.ge-bar:focus-visible .ge-shape { stroke: var(--focus-ring); stroke-width: 3; }
+.ge-bar-label { fill: var(--text-primary); font: var(--weight-medium) var(--text-xs)/1 var(--font-ui); pointer-events: none; }
+.ge-resize { fill: transparent; cursor: ew-resize; }
+.ge-link { fill: var(--surface-note); stroke: var(--accent-primary); stroke-width: 1.5; cursor: crosshair; opacity: 0.35; }
+.ge-bar:hover .ge-link,
+.ge-bar:focus-visible .ge-link,
+.ge-bar.ge-dragging .ge-link { opacity: 1; }
+.ge-link-drag { stroke: var(--accent-primary); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
+@media (pointer: coarse) { .ge-link { opacity: 1; } }
+
+.ge-source {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 8rem;
+  max-height: 14rem;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  font: var(--text-xs)/var(--leading-snug) var(--font-mono);
+  resize: vertical;
+}
+.ge-source[hidden] { display: none; }
+.ge-status { min-height: 1.2em; margin: 0; color: var(--text-muted); }
+.ge-conflict { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--state-warning); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.ge-conflict[hidden] { display: none; }
+.ge-footer { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: var(--space-2); }
+
+.ge-phase-outline { stroke-width: 1.5px; }

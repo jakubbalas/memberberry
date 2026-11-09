@@ -2,14 +2,15 @@
 import { readFileSync } from "node:fs";
 import { Editor } from "@tiptap/core";
 import { TextSelection } from "@tiptap/pm/state";
-import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyUpdate, Doc } from "yjs";
 
 import type { MermaidOutcome, MermaidRenderer } from "../mermaid/renderer.js";
 import { load, schema, updateFromMarkdown } from "../notes.js";
 import { THEME_CHANGE_EVENT } from "../shell/theme.js";
 import { createYjsBinding, PROSEMIRROR_ROOT } from "./collaboration.js";
-import { mermaidViews } from "./mermaid-view.js";
+import { editGanttAt, isGanttSource, mermaidViews } from "./mermaid-view.js";
+import { placeCursorBelowTitle } from "./note-editor.js";
 import { createMemberberryExtensions } from "./schema.js";
 import { editorMarkdown } from "./source.js";
 
@@ -102,7 +103,7 @@ it("hides the source until it is edited, then shows it", async () => {
   expect([hidden, f.block()?.classList.contains("mb-mermaid-source-open"), f.toggle()?.textContent]).toEqual([false, true, "Done"]);
 });
 
-it("puts the caret inside the source when Edit source is pressed", async () => {
+it("puts the caret inside the source when Edit code is pressed", async () => {
   const f = await open(NOTE);
   await ready(f);
   f.toggle()?.click();
@@ -197,13 +198,13 @@ it("waits until the diagram scrolls into view, and stops observing after", async
   expect([before, f.renderer.calls.length, observer?.disconnected]).toEqual([0, 1, true]);
 });
 
-it("offers Show source on a read-only note without moving the selection", async () => {
+it("offers Show code on a read-only note without moving the selection", async () => {
   const f = await open(NOTE, { editable: false });
   await ready(f);
   const label = f.toggle()?.textContent;
   f.toggle()?.click();
   expect([label, f.toggle()?.textContent, f.block()?.classList.contains("mb-mermaid-source-open")])
-    .toEqual(["Show source", "Hide source", true]);
+    .toEqual(["Show code", "Hide code", true]);
 });
 
 it("turns back into an ordinary code block when the language changes", async () => {
@@ -239,4 +240,136 @@ it("moves the caret into an adjacent hidden diagram with the arrow keys", async 
   f.editor.view.dispatch(f.editor.state.tr.setSelection(TextSelection.create(f.editor.state.doc, after)));
   f.editor.view.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
   expect([down, f.editor.state.selection.$head.parent.attrs["lang"]]).toEqual(["mermaid", "mermaid"]);
+});
+
+it("offers Edit chart only for a Gantt chart in an editable note", async () => {
+  const editable = await open(NOTE);
+  await ready(editable);
+  const shown = editable.block()?.querySelector<HTMLButtonElement>(".mb-mermaid-chart")?.hidden;
+  editable.destroy();
+  const readOnly = await open(NOTE, { editable: false });
+  await ready(readOnly);
+  const readOnlyHidden = readOnly.block()?.querySelector<HTMLButtonElement>(".mb-mermaid-chart")?.hidden;
+  readOnly.destroy();
+  const flow = await open("```mermaid\nflowchart LR\n  A --> B\n```\n");
+  await ready(flow);
+  expect([shown, readOnlyHidden, flow.block()?.querySelector<HTMLButtonElement>(".mb-mermaid-chart")?.hidden]).toEqual([false, true, true]);
+});
+
+it("recognises a Gantt source past blank lines and comments", () => {
+  expect([isGanttSource("\n%% plan\n  gantt\n"), isGanttSource("flowchart LR"), isGanttSource("")]).toEqual([true, false, false]);
+});
+
+it("saves the visual editor's chart into the same block after text above it changed", async () => {
+  HTMLDialogElement.prototype.showModal ??= function showModal(this: HTMLDialogElement) { this.open = true; };
+  HTMLDialogElement.prototype.close ??= function close(this: HTMLDialogElement) { this.open = false; };
+  const f = await open(NOTE);
+  await ready(f);
+  await editGanttAt(f.editor.view, f.mermaidStart());
+  const dialog = document.querySelector<HTMLDialogElement>("dialog.gantt-editor");
+  // A collaborator's edit above the chart moves its position while the dialog is open.
+  f.editor.view.dispatch(f.editor.state.tr.insertText("Earlier ", 1));
+  const title = dialog?.querySelector<HTMLInputElement>('[aria-label="Chart title"]');
+  if (title === null || title === undefined) throw new Error("no dialog");
+  title.value = "Roadmap";
+  title.dispatchEvent(new Event("change", { bubbles: true }));
+  [...(dialog?.querySelectorAll("button") ?? [])].find((node) => node.textContent === "Save")?.click();
+  expect(await editorMarkdown(f.ydoc)).toContain("# Earlier Plan\n\nBefore\n\n```mermaid\ngantt\n    title Roadmap\n");
+});
+
+it("leaves the code hidden when the diagram is clicked; only Edit code opens it", async () => {
+  const f = await open(NOTE);
+  await ready(f);
+  const preview = f.block()?.querySelector<HTMLElement>(".mb-mermaid-preview");
+  for (const type of ["mousedown", "mouseup", "click"]) preview?.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+  const afterClick = f.block()?.classList.contains("mb-mermaid-source-open");
+  f.toggle()?.click();
+  expect([afterClick, f.toggle()?.textContent, f.block()?.classList.contains("mb-mermaid-source-open")]).toEqual([false, "Done", true]);
+});
+
+it.each([
+  ["the last block of a note", `# Plan\n\n\`\`\`mermaid\n${GANTT}\n\`\`\`\n`],
+  ["the only block of a note", `\`\`\`mermaid\n${GANTT}\n\`\`\`\n`],
+])("hides the code again with Done when the diagram is %s", async (_where, markdown) => {
+  const f = await open(markdown);
+  await ready(f);
+  // A note that is only a diagram starts with the caret, and so its code, inside it.
+  if (f.toggle()?.textContent === "Done") f.toggle()?.click();
+  f.toggle()?.click();
+  const opened = f.block()?.classList.contains("mb-mermaid-source-open");
+  f.toggle()?.click();
+  expect([opened, f.block()?.classList.contains("mb-mermaid-source-open"), f.toggle()?.textContent]).toEqual([true, false, "Edit code"]);
+});
+
+
+it("opens a note that starts with a diagram with its code hidden", async () => {
+  const f = await open(`\`\`\`mermaid\n${GANTT}\n\`\`\`\n\nAfter\n`);
+  await ready(f);
+  expect([f.block()?.classList.contains("mb-mermaid-source-open"), f.editor.state.selection.$head.parent.textContent]).toEqual([false, "After"]);
+});
+
+it("places the opening caret below the title but outside a diagram there", async () => {
+  const f = await open(`# Plan\n\n\`\`\`mermaid\n${GANTT}\n\`\`\`\n\nAfter\n`);
+  await ready(f);
+  placeCursorBelowTitle(f.editor);
+  expect([f.block()?.classList.contains("mb-mermaid-source-open"), f.editor.state.selection.$head.parent.textContent]).toEqual([false, "After"]);
+});
+
+it("still lets Edit code put the caret in the code of a diagram that starts the note", async () => {
+  const f = await open(`\`\`\`mermaid\n${GANTT}\n\`\`\`\n\nAfter\n`);
+  await ready(f);
+  f.toggle()?.click();
+  expect([f.block()?.classList.contains("mb-mermaid-source-open"), f.editor.state.selection.$head.parent.attrs["lang"]]).toEqual([true, "mermaid"]);
+});
+
+it("leaves the caret in a note that is only a diagram, rather than edit the note to move it", async () => {
+  const f = await open(`\`\`\`mermaid\n${GANTT}\n\`\`\`\n`);
+  await ready(f);
+  expect([f.editor.state.doc.childCount, f.editor.state.selection.$head.parent.attrs["lang"]]).toEqual([1, "mermaid"]);
+});
+
+describe("double-clicking a diagram", () => {
+  beforeAll(() => {
+    HTMLDialogElement.prototype.showModal ??= function showModal(this: HTMLDialogElement) { this.open = true; };
+    HTMLDialogElement.prototype.close ??= function close(this: HTMLDialogElement) { this.open = false; };
+  });
+  afterEach(() => { for (const dialog of document.querySelectorAll("dialog.gantt-editor")) dialog.remove(); });
+  const doubleClick = (node: Element | null | undefined) => node?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+  const dialog = () => document.querySelector("dialog.gantt-editor");
+
+  it("opens the visual editor on a Gantt chart", async () => {
+    const f = await open(NOTE);
+    await ready(f);
+    doubleClick(f.block()?.querySelector(".mb-mermaid-preview"));
+    await vi.waitFor(() => { expect(dialog()).not.toBeNull(); });
+    expect(f.block()?.classList.contains("mb-mermaid-source-open")).toBe(false);
+  });
+
+  it("does nothing on a diagram that is not a Gantt chart", async () => {
+    const f = await open("Intro\n\n```mermaid\nflowchart LR\n  A --> B\n```\n");
+    await ready(f);
+    doubleClick(f.block()?.querySelector(".mb-mermaid-preview"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect([dialog(), f.block()?.classList.contains("mb-mermaid-source-open")]).toEqual([null, false]);
+  });
+
+  it("does nothing in a read-only note", async () => {
+    const f = await open(NOTE, { editable: false });
+    await ready(f);
+    doubleClick(f.block()?.querySelector(".mb-mermaid-preview"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(dialog()).toBeNull();
+  });
+});
+
+it("colours a Gantt chart's task bars from its colour lines", async () => {
+  const renderer = recorder((source) => ({
+    kind: "ok",
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" id="m1"><rect id="m1-d" class="task"></rect><rect id="m1-x" class="task"></rect><text>${source.length}</text></svg>`,
+  }));
+  const f = await open(NOTE.replace("    Design :d, 2026-11-02, 5d", "    %% color d green\n    %% color x #3a7bd5\n    %% color nope red\n    Design :d, 2026-11-02, 5d"), { renderer });
+  await ready(f);
+  const bars = [...(f.block()?.querySelectorAll<SVGElement>(".mb-mermaid-preview rect") ?? [])].map((bar) => [bar.id, bar.style.fill, bar.style.stroke]);
+  expect(bars[0]).toEqual(["m1-d", "var(--note-background-green)", "var(--note-color-green)"]);
+  expect([bars[1]?.[0], /#3a7bd5|rgb\(58, 123, 213\)/u.test(bars[1]?.[2] ?? "")]).toEqual(["m1-x", true]);
 });

@@ -1,6 +1,6 @@
 # Handoff
 
-## Current state (2026-11-09): Mermaid diagrams, the index-lock sync fix, CRDT sidecar quarantine, inbox paging, zone-rebuild memory
+## Current state (2026-11-09): Mermaid diagrams, visual Gantt editor, the index-lock sync fix, CRDT sidecar quarantine, inbox paging, zone-rebuild memory
 
 Two branches were merged into `main` (not pushed): `mermaid-diagrams` (Mermaid diagrams,
 A38, SPEC §13.2, plus the §21.10 perf fixture) and `claude/xenodochial-gagarin-43e282` (the
@@ -11,9 +11,14 @@ separately; the merged result has had focused tests only (see the end of Verific
 
 Mermaid diagrams are in scope (A38, SPEC §13.2). The reason is Gantt charts: the team wants
 Memberberry as a Confluence replacement. A ` ```mermaid ` code block renders as a preview.
-Its source shows when the caret is inside (via Edit source, a click on the preview, or an
-arrow key from the adjacent block) and hides on Done or when the caret leaves. Read-only notes
-get Show source.
+Its source shows when the caret is inside (via Edit code, or an arrow key from the adjacent
+block; a click on the diagram deliberately does not open it) and hides on Done or when the caret leaves. Read-only notes
+get Show code. Done after the last block once failed to hide the code (the caret search fell
+back into the block). It is fixed and covered by DOM and browser tests. A note whose first
+body line is a diagram now opens with the code hidden. An `appendTransaction` moves any
+unrequested caret move out of diagram code, and deliberate entries carry `MERMAID_ENTER`. A
+note that is only a diagram still opens showing its code, because moving the caret would mean
+editing the note.
 
 - `web/src/mermaid/`: `renderer.ts` (lazy `import("mermaid")`, strict security, serialized
   queue, LRU cache keyed by width + theme + source), `sanitize.ts` (second pass: scripts,
@@ -42,12 +47,116 @@ Mermaid open items:
   pre-rendering is undecided.
 - No re-render on window resize; a chart re-lays out on its next edit or open.
 - Arrow-key entry works only between sibling blocks. A diagram nested in a list or callout is
-  reached by clicking or with Edit source.
+  reached with Edit code.
 - `npm audit` reports 29 advisories (3 critical), the same count as before Mermaid. One
   critical advisory is in DOMPurify 3.4.15 (IN_PLACE mode), which Mermaid's strict mode uses,
   now reachable from every note. `sanitize.ts` is the independent second pass. Not triaged.
 - The Confluence Cloud side (a Forge macro wrapping `mermaid`, or a Marketplace Mermaid app)
   is a separate project, not in this repo.
+
+### Visual Gantt editor (A39, SPEC §13.3)
+
+A drag-and-drop editor over Mermaid `gantt` text. The note still stores only the fence.
+- `web/src/gantt/`: `model.ts` (parse, schedule, serialize; unedited lines kept verbatim),
+  `edit.ts` (pure edits), `gantt-editor.ts` (the modal: table plus SVG timeline, drag, keyboard,
+  undo), `gantt.css`. It imports nothing from the app; `model.test.ts` fails if it does.
+- Phase colours can be overridden: `%% section-color <value> <name>` lines (`sectionColors`,
+  `drawnPhases`, `colorHue` and `PHASE_COLOURS` in `src/gantt/colors.ts`), `setSectionColor` in
+  `edit.ts` (rename carries the colour, remove drops it), a colour control on editor phase rows,
+  `huesOf` for the editor timeline, and `paintPhase` in the note view.
+- Phases in note charts are coloured: `PHASE_COLOURS` and per-phase rules in `GANTT_CSS`,
+  `numberSectionStyles` 6, and `phaseBands`/`markPhases` adding left stripes and dividers after
+  render. Screenshots are `local/debug/gantt-render/phases-*.png`.
+- Chart design in notes: `ganttLayout` (left margin from the longest phase name, bar and
+  font sizes), `GANTT_CSS` (token-only `themeCSS`), and `thinLabels`/`thinAxis` (hide
+  overlapping date labels after render). Before and after screenshots are in
+  `local/debug/gantt-render/`.
+- Task row: an *Ends* control (end date, hours, days or weeks; `setEndKind`), with hours
+  scheduled as fractional days. The Critical toggle is removed; existing `crit` tags are kept.
+- Task colours (A40): `%% color <id> <name|#hex>` lines, `src/gantt/colors.ts` (parse, styles),
+  `setColor` in `edit.ts`, the editor's Colour column, and the note view colouring Mermaid's
+  `rect#<diagram id>-<task id>` after render. `colors.ts` is exempt from the lazy guard.
+- Double-click (or double tap) on a Gantt chart opens the editor; the browser test uses a real
+  CDP double tap on mobile.
+- `web/src/editor/mermaid-view.ts`: *Edit chart* on Gantt sources in editable notes, and
+  `editGanttAt`, which follows the block through collaborators' edits (plugin state) and saves
+  in one transaction. The Insert menu has *Gantt chart* (`block-catalog.ts`).
+- `perf/bundle.ts` keeps `src/gantt/` lazy; it loads as about 28 KB of JS and 7 KB of CSS.
+- Moving tasks between phases: grip drag in the task list (auto-scrolls), vertical bar drag in
+  the chart (desktop; on a phone the grip), and Alt+Up and Alt+Down. `moveTask` in `edit.ts`
+  keeps every date by rewriting one-field tasks to explicit `after`, guarded by a property test.
+  The dialog fits its timeline once right after `showModal()`. Leaving that to the
+  ResizeObserver replaced elements a frame after opening, which raced user input and tests.
+- No colour and chart style (A41): `none` is a task or phase colour (plain bar, no band). Chart
+  options are `%% option <key> <value>` lines: `chartOptions` in `colors.ts`, `setOption` in
+  `edit.ts`, segmented choices in the editor's *Style* panel. In the note, `ganttLayout` and `configFor`
+  read `rows zoomed` and `phases row`; `markPhases` (now exported, tested in
+  `src/editor/mermaid-phases.dom.test.ts` against trimmed real Mermaid output) draws name cells
+  or header rows, and `phasesAsRows` shifts Mermaid's drawing to open header rows. Screenshots:
+  `local/debug/gantt-render/opt-*.png`.
+- Long labels: `fitText` (`src/gantt/fit-text.ts`, property-tested, exempt from the lazy guard)
+  cuts a name with "…"; `shortenLabels` and `revealFullText` (`src/mermaid/labels.ts`, DOM
+  tests stub `getComputedTextLength`) fit the note's task and phase names after render and
+  show the full name in `.mb-mermaid-tip` on hover or tap. The editor timeline uses an
+  estimated width plus an SVG `<title>`.
+- Note viewer: `src/mermaid/chart-viewer.ts` (zoom steps, fit, anchored zoom, wheel and pinch,
+  mouse drag, Today), mounted by `mermaid-view.ts` for Gantt charts only; `max-height` option
+  sets `data-max-height` on the preview. A capped chart taller than its box gets a sticky
+  `.mb-chart-dates` header copied from the axis (`src/mermaid/date-header.ts`), synced by the
+  viewer after each attach and zoom. It is HTML, not SVG, so `.mb-mermaid-preview svg`
+  locators still match one element. Its `top` is 1px past the padding on purpose: on a
+  fractional-DPR phone a row of chart showed above it otherwise.
+- Add rows: each phase in the editor's task list ends with a thin *+ Add task* row (`addRow`).
+  Rows are no longer evenly spaced, so the timeline places them by `rowTops`, and the vertical
+  bar drag finds its row with `rowAt`. Table striping is `data-stripe`, not `:nth-child`.
+- Editor top bar: heading with Undo and Redo, then one toolbar (title, zoom and layout as
+  segmented controls, *Style*, actions at the far end), wrapping on a phone. Screenshots of
+  the dark theme: `local/debug/gantt-render/toolbar-dark-*.png`.
+- Layout: by default the chart sits above the tasks, with a resizable divider. *Side by side*
+  is the alternative, and the choice is remembered per browser. Focus links a row to its bar.
+  A ResizeObserver redraws the timeline to fill its pane, but only when the width changes and
+  never mid-drag. Redrawing on its first callback replaced elements under the pointer and made
+  a browser test flaky.
+
+Verification: 151 gantt unit tests and 8 note phase-layout DOM tests, with seeded property tests: any text round-trips unchanged,
+random edit sequences stay valid and editable, canonical rewrites parse back. There are also 3
+Mermaid-view tests, a bundle-guard test, and `e2e/gantt-editor.spec.ts` (14 tests) plus
+`e2e/mermaid.spec.ts`, 40 passing runs on desktop and mobile after the chart-style change: render, drag, connector link, Insert menu, keyboard, a real touch drag, the stacked
+layout and divider, and moving a task between phases (grip by mouse and touch, chart drag). Mutation
+probes went red for: canonical rewrite of untouched lines (after the generator was made to vary
+spacing), weekend handling, remove-pinning, ensureId, the import boundary, position tracking,
+the lazy guard, the touch `pan-y` fix, and for chart style: the header shift, name-only hiding,
+the picture's growth, the milestone origin, default-writes-no-line, the editor's phase fill and
+tall-row CSS, and for the date header: no sync on zoom or attach, no cap or height check, no
+removal for a non-Gantt diagram, unscaled positions, the header placed after the chart. The
+editor, gantt, mermaid and bundle suites (1367), typecheck, token-check and perf-bundle pass;
+both Gantt browser specs pass (46 runs). The full web suite, `make check` and the full
+`make e2e` were not run for this change. Screenshots were inspected on desktop and mobile,
+light theme only for chart style and the date header.
+
+Open:
+- The Confluence Forge macro is not built. It is a separate repo, and installing it needs a
+  Confluence Cloud admin.
+- The editor's own timeline is its own SVG, not Mermaid's render, so it looks close to the
+  note's preview but not identical.
+- A bar label's fit is estimated from name length. `excludes` other than weekends, other date
+  formats and `until` open read-only.
+- Tall rows: Mermaid decides whether a task name fits inside its bar, and a name that only just
+  fits touches the bar's edges.
+- Not yet tried on a real phone. The touch path is covered by CDP touch events in Chromium.
+
+### "Update available" stuck on the dev server (SPEC §7.4)
+- On 9011 the page is the server's HTML rewritten to load `/src/main.ts`, so it got a
+  bootstrap and registered `dist/sw.js`. Every `npm run build` installed a new waiting worker,
+  and since no build contains a source page's entry files, the banner never cleared.
+  `isSourcePage` (`src/pwa/updates.ts`) now keeps the watcher off such a page, and `main.ts`
+  calls `retireWorkers` instead of registering in dev. Unit and regression tests pass;
+  `e2e/pwa-update.spec.ts` passes with `--workers=1`. Not checked signed-in on 9011 (no dev
+  credentials here): the user's next reload there should clear the banner.
+- Open: `e2e/pwa-update.spec.ts` rewrites the shared `web/dist` in place, so its tests race
+  when run in parallel (`ENOTEMPTY` renaming into `dist/assets/pwa-update-test`) and leave
+  `dist/pwa-update-*` staging folders behind. It also changes what a running `make dev`
+  serves while it runs. Run it with `--workers=1` until it gets its own web root.
 
 ### Index lock no longer starves sync
 
