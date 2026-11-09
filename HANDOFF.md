@@ -152,11 +152,11 @@ the base commit (see below).
   base commit without this change, all from macOS `/private/var` vs `/var` under the sandbox
   TMPDIR: the two onboarding config-write tests (http.rs:268) and
   `targeted_indexing_removes_a_note_replaced_by_a_symlink` (indexing.rs:351).
-- Browser: `local/debug/perf-note777-loop.mts` (gitignored) loops the open-note steps against
+- Browser: `local/debug/sync-fix/perf-note777-loop.mts` (gitignored) loops the open-note steps against
   one perf server, logging WebSocket frames and HTTP timing. Before the fix each iteration took
   11–21 s. After: 2.6–6 s unthrottled and 9.5–13.5 s at 4x CPU throttle, with the body 0.5 s
   after the click.
-- `make perf` ran every scenario on both profiles after this fix (`local/debug/perf-after-fix*.log`;
+- `make perf` ran every scenario on both profiles after this fix (`local/debug/sync-fix/perf-after-fix*.log`;
   desktop cold start 5712 → 312 ms). The rows it left over budget are tracked under "Next and
   open work" below with current numbers.
 
