@@ -1801,8 +1801,10 @@ decisions:
   `MissingDependencies`. Serving it would make the note unopenable — every client's schema
   admission refuses it, and the server refuses every later update against it. The
   coordinator therefore moves it to `.memberberry/crdt/quarantine/<name>.bin.<n>` (numbered,
-  never overwritten, never deleted) and rebuilds from the Markdown note, as for a missing
-  sidecar. Nothing readable is lost: the Markdown was written from what that state
+  never overwritten) and rebuilds from the Markdown note, as for a missing sidecar. A
+  quarantined copy holds the note's content, so it belongs to the note. It moves with the
+  sidecar on rename, trash and restore, and is deleted with it when trash retention purges the
+  note; nothing else deletes it. Nothing readable is lost: the Markdown was written from what that state
   materialized. Accepted edits newer than the last Markdown write, if any, stay only in the
   quarantined file. To keep such a log from being written, `replace` and compaction refuse
   a pending document, and `append` refuses to *start* a log with an update that cannot stand

@@ -1101,6 +1101,8 @@ fn load_or_quarantine(sidecar: &Sidecar) -> Result<Option<mb_crdt::SidecarState>
 pub fn relocate_sidecar(vault_root: &Path, from: &str, to: &str) -> Result<(), SyncError> {
     let old = sidecar_path(vault_root, from);
     let new = sidecar_path(vault_root, to);
+    let copies = quarantined_copies(&old)?;
+    let destination = new.clone();
     for (old, new) in [(marker_path(&old), marker_path(&new)), (old, new)] {
         if !old.exists() {
             continue;
@@ -1113,18 +1115,80 @@ pub fn relocate_sidecar(vault_root: &Path, from: &str, to: &str) -> Result<(), S
         }
         fs::rename(&old, &new).map_err(|source| SyncError::Write { path: old, source })?;
     }
+    // why: a quarantined copy holds the note's content (§7.3). Left under the old name it
+    // would outlive the note's permanent deletion, so it moves with the sidecar.
+    for copy in copies {
+        let target = free_quarantine_slot(&destination)?;
+        fs::rename(&copy, &target).map_err(|source| SyncError::Write { path: copy, source })?;
+    }
     Ok(())
 }
 
-/// Removes a note's derived CRDT sidecar and marker when its trash retention expires.
+/// Removes a note's derived CRDT sidecar, marker and quarantined copies when its trash
+/// retention expires.
 pub fn remove_sidecar(vault_root: &Path, identity: &str) -> Result<(), SyncError> {
     let sidecar = sidecar_path(vault_root, identity);
-    for path in [marker_path(&sidecar), sidecar] {
+    let copies = quarantined_copies(&sidecar)?;
+    for path in [marker_path(&sidecar), sidecar].into_iter().chain(copies) {
         if path.exists() {
             fs::remove_file(&path).map_err(|source| SyncError::Write { path, source })?;
         }
     }
     Ok(())
+}
+
+/// The quarantined copies of `sidecar` (`quarantine/<name>.<n>`, written by
+/// [`Sidecar::quarantine`]).
+fn quarantined_copies(sidecar: &Path) -> Result<Vec<PathBuf>, SyncError> {
+    let (directory, name) = quarantine_location(sidecar);
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(SyncError::Write { path: directory, source }),
+    };
+    let prefix = format!("{name}.");
+    let mut copies = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| SyncError::Write { path: directory.clone(), source })?;
+        let file = entry.file_name();
+        let numbered = file
+            .to_str()
+            .and_then(|file| file.strip_prefix(&prefix))
+            .is_some_and(|number| number.parse::<u64>().is_ok());
+        if numbered {
+            copies.push(entry.path());
+        }
+    }
+    Ok(copies)
+}
+
+/// The first unused `quarantine/<name>.<n>` for `sidecar`; never an existing copy.
+fn free_quarantine_slot(sidecar: &Path) -> Result<PathBuf, SyncError> {
+    let (directory, name) = quarantine_location(sidecar);
+    fs::create_dir_all(&directory).map_err(|source| SyncError::Write {
+        path: directory.clone(),
+        source,
+    })?;
+    let mut attempt = 1_u64;
+    loop {
+        let candidate = directory.join(format!("{name}.{attempt}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+        attempt += 1;
+    }
+}
+
+fn quarantine_location(sidecar: &Path) -> (PathBuf, String) {
+    let directory = sidecar
+        .parent()
+        .map_or_else(|| PathBuf::from("quarantine"), |parent| parent.join("quarantine"));
+    let name = sidecar
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    (directory, name)
 }
 
 fn sidecar_path(vault_root: &Path, relative: &str) -> PathBuf {

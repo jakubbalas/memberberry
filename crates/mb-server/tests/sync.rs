@@ -996,3 +996,89 @@ fn an_update_accepted_after_the_sidecar_was_deleted_starts_a_self_contained_log(
         "after\n"
     );
 }
+
+/// Opens `name` with a sidecar whose updates miss their base, so the server quarantines it.
+/// Returns the live sidecar's file name, which the quarantined copy is named after.
+fn quarantine_note(dir: &TempDir, vault: &Vault, name: &str) -> String {
+    dir.write(name, "the file is the truth\n");
+    let canonical = vault.canonical_note(name).unwrap();
+    let before: std::collections::BTreeSet<_> = sidecar_names(dir).into_iter().collect();
+    drop(NoteCoordinator::open(vault, &canonical).unwrap());
+    let created = sidecar_names(dir)
+        .into_iter()
+        .find(|file| !before.contains(file))
+        .unwrap();
+    mb_crdt::Sidecar::new(dir.path().join(".memberberry/crdt").join(&created))
+        .append(&update_from_an_unrelated_document())
+        .unwrap();
+    drop(NoteCoordinator::open(vault, &canonical).unwrap());
+    created
+}
+
+fn sidecar_names(dir: &TempDir) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir.path().join(".memberberry/crdt")) else {
+        return Vec::new();
+    };
+    entries
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".bin"))
+        .collect()
+}
+
+fn quarantined(dir: &TempDir) -> std::collections::BTreeSet<String> {
+    match std::fs::read_dir(dir.path().join(".memberberry/crdt/quarantine")) {
+        Ok(entries) => entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect(),
+        Err(_) => std::collections::BTreeSet::new(),
+    }
+}
+
+#[test]
+fn quarantined_copies_follow_their_note_when_its_sidecar_moves() {
+    // A rename, a move to trash and a restore all relocate the sidecar. A quarantined copy
+    // left under the old name would outlive the note's permanent deletion (SPEC §7.3).
+    let dir = TempDir::new("sync-quarantine-follows");
+    let vault = vault(&dir);
+    let one = quarantine_note(&dir, &vault, "One.md");
+    let identity = vault.canonical_note("One.md").unwrap().identity().to_string();
+
+    mb_server::sync::relocate_sidecar(dir.path(), &identity, "Moved.md").unwrap();
+
+    let moved = only_sidecar(&dir).file_name().unwrap().to_str().unwrap().to_string();
+    assert_eq!(quarantined(&dir), [format!("{moved}.1")].into_iter().collect(), "was {one}.1");
+}
+
+#[test]
+fn a_moved_quarantined_copy_never_overwrites_one_already_there() {
+    let dir = TempDir::new("sync-quarantine-no-overwrite");
+    let vault = vault(&dir);
+    let one = quarantine_note(&dir, &vault, "One.md");
+    let two = quarantine_note(&dir, &vault, "Two.md");
+    let from = vault.canonical_note("One.md").unwrap().identity().to_string();
+    let to = vault.canonical_note("Two.md").unwrap().identity().to_string();
+    // why: the live sidecar of the target is moved aside first, as a rename onto a
+    // trashed note's identity never happens; only the quarantined copies may collide.
+    std::fs::remove_file(dir.path().join(".memberberry/crdt").join(&two)).unwrap();
+
+    mb_server::sync::relocate_sidecar(dir.path(), &from, &to).unwrap();
+
+    assert_eq!(
+        quarantined(&dir),
+        [format!("{two}.1"), format!("{two}.2")].into_iter().collect(),
+        "{one}.1 must arrive as a new number, not replace {two}.1"
+    );
+}
+
+#[test]
+fn purging_a_note_deletes_its_quarantined_copies_and_no_one_elses() {
+    let dir = TempDir::new("sync-quarantine-purge");
+    let vault = vault(&dir);
+    quarantine_note(&dir, &vault, "One.md");
+    let two = quarantine_note(&dir, &vault, "Two.md");
+    let identity = vault.canonical_note("One.md").unwrap().identity().to_string();
+
+    mb_server::sync::remove_sidecar(dir.path(), &identity).unwrap();
+
+    assert_eq!(quarantined(&dir), [format!("{two}.1")].into_iter().collect());
+}
