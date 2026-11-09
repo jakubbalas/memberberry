@@ -103,18 +103,21 @@ impl Index {
         // when a note just moved from a readable zone into a denied one.
         self.zone_segments.clear();
         let zones = zones(&self.conn)?;
+        // why: each note's text is moved, never cloned, from the search index's copy into its
+        // zone's changes. The corpus is the largest thing this function holds, and every
+        // extra copy of it showed up in the server's resident memory (SPEC §21.2).
         let text = self.search.all_text()?;
-        let mut notes = notes(&self.conn, &text)?;
+        let notes = notes(&self.conn, text)?;
         let mut changes: BTreeMap<String, Vec<Change>> = zones
             .iter()
             .map(|zone| (zone.zone_id.clone(), Vec::new()))
             .collect();
-        for (path, note) in &mut notes {
-            let Some(zone) = containing_zone(&zones, path) else {
+        for note in notes {
+            let Some(zone) = containing_zone(&zones, &note.path) else {
                 continue;
             };
             if let Some(zone_changes) = changes.get_mut(&zone.zone_id) {
-                zone_changes.push(Change::Upsert(note.clone()));
+                zone_changes.push(Change::Upsert(note));
             }
         }
 
@@ -129,7 +132,7 @@ impl Index {
                 zone.zone_id.clone(),
                 PublishedSegment {
                     acl_hash: zone.acl_hash.clone(),
-                    bytes: segment.as_bytes().to_vec(),
+                    bytes: segment.into_bytes(),
                 },
             );
         }
@@ -310,10 +313,11 @@ fn containing_zone<'a>(zones: &'a [Zone], path: &str) -> Option<&'a Zone> {
         .max_by_key(|zone| prefix_depth(&zone.path_prefix))
 }
 
+/// Every indexed note with its visible text, which is moved out of `text`.
 fn notes(
     conn: &rusqlite::Connection,
-    text: &BTreeMap<String, String>,
-) -> Result<Vec<(String, Note)>, Error> {
+    mut text: BTreeMap<String, String>,
+) -> Result<Vec<Note>, Error> {
     let mut statement =
         conn.prepare_cached("SELECT id, path, uuid, title, icon FROM notes ORDER BY path")?;
     let rows = statement.query_map([], |row| {
@@ -335,15 +339,14 @@ fn notes(
                 .query_map([row_id], |row| row.get(0))?
                 .collect::<Result<Vec<String>, _>>()?;
             let id = id.and_then(|value| value.parse::<NoteId>().ok());
-            let note = Note {
+            Ok(Note {
                 id,
                 title: title.unwrap_or_default(),
-                path: path.clone(),
+                text: text.remove(&path).unwrap_or_default(),
+                path,
                 tags,
                 icon,
-                text: text.get(&path).cloned().unwrap_or_default(),
-            };
-            Ok((path, note))
+            })
         })
         .collect()
 }

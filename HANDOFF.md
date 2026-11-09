@@ -80,6 +80,21 @@ Fix:
 A whole-vault reconcile now takes about 140 ms. SPEC §14.2 records the rule and the remaining
 limit: a real note edit still triggers a full rebuild under the lock.
 
+### Server memory after a zone rebuild
+
+Cause of the 84–413 MB swing in "Server memory, idle" (SPEC §21.11): every start rebuilds the
+zone segments. `Segment::build` held every note's term set at once, a 233 MB heap peak for a
+5.7 MB segment. macOS then keeps the freed pages resident as "reclaimable", and `ps` RSS
+counts them until memory pressure takes them. A bare server read 327 MB RSS with a 30 MB
+footprint. Fix: `Segment::build`/`merge` accumulate postings per note (`Draft` in
+`mb-search`), and `zones.rs` moves text instead of cloning it. The output is byte-identical
+(`cmp` of the 10k zone file; the merge property test asserts merge == build). Rebuild peak is
+now 56 MB, and bare-server startup RSS is 130 MB. Regression test:
+`crates/mb-search/tests/peak_memory.rs` (dev-dep `peak_alloc`). It fails on the old code
+(15.7x the input text against a 4x bound). Verified: mb-search and mb-index suites, clippy,
+wasm32 build of mb-search, mb-server leak_suite (45). `indexing.rs:351` fails as it does on
+the base commit (see below).
+
 ## Verification
 
 - `http::tick_tests` (5 tests). The two recovery-sweep regressions failed before the
@@ -107,8 +122,8 @@ limit: a real note edit still triggers a full rebuild under the lock.
   - INP: desktop 136 ms vs 100, mobile 480 ms vs 200
   - desktop longest task: 880 ms vs 50
   - mobile longest task: 90 ms against a recorded 65 (ceiling 78)
-  - idle server memory: 393 MB vs 150 MB. Run 1 measured 86 MB, so it swings with
-    something not yet identified; it is not fixed.
+  - idle server memory: 393 MB vs 150 MB. Run 1 measured 86 MB. Cause found and partly
+    fixed since: see "Server memory after a zone rebuild" below.
   Mobile quick-switcher still measures nothing ("results did not change within 30000 ms"), as
   before. These rows need a fix-or-record decision, and nothing was recorded here.
 
@@ -125,9 +140,15 @@ no full-suite result is claimed.
   The per-note incremental delta, or moving the rebuild off the lock, is the follow-up.
 - The perf vault is cached in `target/perf/vault`, including `.memberberry/` state and any
   notes the keystroke scenario edited. `cachedNoteCount` skips `perf-fixtures/`.
-- The "idle server memory" row is read after the whole perf run, not while idle, which
-  explains its swing (86 vs 393 MB at an identical 10,000 notes). The row's measurement needs
-  fixing before its number means anything.
+- Server memory (SPEC §21.11) still reads 173–197 MB by `ps` during a perf run, against 150,
+  with a physical footprint of 31–58 MB. Needs a budget decision: measure the footprint, or
+  return pages after a rebuild (FFI, so `unsafe`, which the workspace forbids). Keep the
+  `server-memory-idle` breach (recorded on main, uncommitted at the time) until then, at
+  about 200 MB rather than 413.
+- `make perf` mobile open-note fails ("Note 777" never appears in the switcher, or "Note 0"
+  never shows) on this branch's harness. The main checkout had uncommitted harness fixes for
+  it, and even with them the run failed on mobile. So no complete `make perf` report exists
+  for this change.
 - `make perf` has not been run on the merged main.
 
 - Settings scope deliberately omitted: no palette command for Settings, no server-admin

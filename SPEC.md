@@ -3859,7 +3859,11 @@ they held the lock almost continuously on the 10k perf vault: about 6.5 s of reb
 6.5 s. The queued routes filled the browser's six connections per host, so a second note's
 sync socket could not open (`make perf` open-note, 2026-11-08). Both are fixed. The index
 reconciles the whole vault only on its 60 s sweep or a watcher overflow. The incremental per-note delta above is
-what removes the limit. Reopening an index reconstructs the
+what removes the limit. A full rebuild's **memory** is bounded rather than proportional to every
+note's term set: `Segment::build` accumulates postings one note at a time and each note's text
+is moved, not copied, from the Tantivy read into its zone's changes. Building the 10k perf
+vault's segment peaks at about 56 MB of heap; it peaked at 233 MB before, and the server kept
+that as resident memory (§21.11). Reopening an index reconstructs the
 in-memory assembly from the published derived sources even when the ACL rows did not change;
 stale zone files are removed. `Reader::client_segments` evaluates the live ACL and returns only
 segments whose zone ID and ACL hash match that reader's permitted epoch. The previous in-memory
@@ -4585,7 +4589,9 @@ Written down because each one is a way to over-read a figure this harness prints
   the session already holds is the only reading of that budget that can be true.
 - **Server memory is resident set size after the whole run**, read from `ps`, not before it.
   The stricter of the two readings of "idle", and the one that includes the title cache warmed
-  by a 10 000-note index request.
+  by a 10 000-note index request. On macOS RSS also counts freed pages the allocator has
+  marked reusable, so it reports the run's peak more than its idle state, and it swings with
+  machine-wide memory pressure (§21.11).
 - **A budget nothing measured is a hole, not a pass.** The report prints those separately from
   the metrics that are not measurable yet, and each of the latter names the milestone that
   unblocks it: full-text search and client index size (M9), peak memory (M9 — the budget is
@@ -4847,6 +4853,44 @@ assumed. The real cost is one main-thread task of about 76 ms on the throttled p
 lays the chart out against the DOM, so it cannot move to a worker. That task is the A38
 exception, recorded in `breaches.json` for mobile only. The desktop keystroke figure is the
 same one-frame resolution limit as `keystroke-to-paint` (§21.4), not a diagram cost.
+
+### 21.11 Measured: server memory after a zone rebuild
+
+The "Server memory, idle" row read 83.7, 277.8 and 412.9 MB in three runs on an unchanged main
+(2026-11-09). The cause was a transient peak plus how macOS reports memory, not a leak and not
+work still in flight. Measured on an Apple Silicon laptop, debug build, the 10k perf vault:
+
+- **The peak was ours.** Every server start rebuilds the zone segments, because segments are
+  held in memory (§14.2). `Segment::build` used to collect every note's term set as a
+  `BTreeSet<Vec<u8>>` (one heap allocation per term) before encoding. The corpus text was
+  also held two more times in `zones.rs`. A counting allocator measured **233 MB** of live heap
+  to build a **5.7 MB** segment. A bare `memberberry serve` with no client then read **327 MB**
+  RSS. Its physical footprint was 30 MB.
+- **macOS keeps the freed pages resident.** After the build, live heap is about 10 MB. The
+  system allocator marks the freed small-region pages reusable but leaves them mapped:
+  `footprint` showed 275 MB "reclaimable". `ps` counts those pages in RSS until the kernel
+  takes them back under memory pressure. So the reading depended on how busy the machine
+  was, not on the server. Later edits reuse those pages and do not raise the reading again.
+
+The fix builds postings one note at a time, and moves the text instead of copying it. The
+encoded bytes are identical. The rebuild now peaks at **56 MB**, and a bare server's startup
+RSS is **130 MB** (footprint peak 81 MB, from 282 MB). `mb-search/tests/peak_memory.rs` gates the
+build at 4x its input text. The old code measured 15.7x and the new code 2.4x.
+
+**Still over budget by `ps`.** During a perf run, the server's RSS sat between 173 and 197 MB
+after the desktop scenarios and the start of the mobile ones. Over the same samples,
+its physical footprint stayed between 31 and 58 MB. The difference is the same allocator
+retention, now after legitimate transients: the startup rebuild, and the browser loading the
+10k-note catalog, graph and search segment. Two levers remain. Neither has been taken, and
+choosing between them is a budget decision:
+
+- read the physical footprint instead of RSS (`footprint`/`task_info` on macOS, `Pss_Anon` or
+  `RssAnon` on Linux), since that is what the OS will not take back, or
+- return the pages after a rebuild (`malloc_zone_pressure_relief` on macOS, `malloc_trim` on
+  glibc). That needs FFI, and the workspace forbids `unsafe` (AGENTS.md §4.2).
+
+Linux production RSS was not measured. glibc retains freed memory differently, so the macOS
+figures here are not a prediction for a Linux server.
 
 ## 22. Testing strategy
 
