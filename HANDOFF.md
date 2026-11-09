@@ -98,19 +98,9 @@ limit: a real note edit still triggers a full rebuild under the lock.
   one perf server, logging WebSocket frames and HTTP timing. Before the fix each iteration took
   11–21 s. After: 2.6–6 s unthrottled and 9.5–13.5 s at 4x CPU throttle, with the body 0.5 s
   after the click.
-- `make perf` now runs every scenario on both profiles. It was run twice: after the index fix
-  (`local/debug/perf-after-fix.log`) and after both fixes (`local/debug/perf-after-fix2.log`).
-  Desktop cold start dropped from 5712 ms (before) to 878 and 312 ms, within budget. Rows
-  still over budget in the final run, **not** recorded in `web/perf/breaches.json`, all over
-  before this fix too:
-  - open-note: desktop 155 ms vs 80, mobile 1036 ms vs 150
-  - INP: desktop 136 ms vs 100, mobile 480 ms vs 200
-  - desktop longest task: 880 ms vs 50
-  - mobile longest task: 90 ms against a recorded 65 (ceiling 78)
-  - idle server memory: 393 MB vs 150 MB. Run 1 measured 86 MB, so it swings with
-    something not yet identified; it is not fixed.
-  Mobile quick-switcher still measures nothing ("results did not change within 30000 ms"), as
-  before. These rows need a fix-or-record decision, and nothing was recorded here.
+- `make perf` ran every scenario on both profiles after this fix (`local/debug/perf-after-fix*.log`;
+  desktop cold start 5712 → 312 ms). The rows it left over budget are tracked under "Next and
+  open work" below with current numbers.
 
 Merged main (2026-11-09): all mb-index suites, `http::tick_tests` (5), the Mermaid and
 perf-harness vitest files (111 tests) and web typecheck pass. Full make check and local
@@ -119,16 +109,57 @@ no full-suite result is claimed.
 
 ## Next and open work
 
-- Perf rows above still over budget need a fix-or-record decision (SPEC §21.3).
 - A real note edit still causes a full zone-segment rebuild under the index lock (SPEC §14.2
   honest limit). Index-backed routes also lock a `std::sync::Mutex` inline in async handlers.
   The per-note incremental delta, or moving the rebuild off the lock, is the follow-up.
 - The perf vault is cached in `target/perf/vault`, including `.memberberry/` state and any
   notes the keystroke scenario edited. `cachedNoteCount` skips `perf-fixtures/`.
-- The "idle server memory" row is read after the whole perf run, not while idle, which
-  explains its swing (86 vs 393 MB at an identical 10,000 notes). The row's measurement needs
-  fixing before its number means anything.
-- `make perf` has not been run on the merged main.
+- **`make perf` completes on merged main** (2026-11-09, `local/debug/perf-merged-main-fixed.log`)
+  after two harness fixes (`cf2970a`):
+  - `web/perf/tabs.ts` (+ test): open-note picks tabs by note path, not position. The diagram
+    scenario runs first and leaves its tab in front, so tab 0 was the Gantt note.
+  - `diagramTypingSaved` in `measure.ts` (+ `typingSaved` test in `server.test.ts`): the
+    diagram scenario waits until its 60 typed characters are in the `.md` file before the next
+    scenario loads a page. Without it, mobile open-note's quick-switcher click never completed
+    (Playwright stuck at "performing click action"; 4 of 4 full runs). Bisected: skipping the
+    diagram typing, or waiting ~1.8 s for it to save, both fix it. **Why** leaving a page with
+    unsent edits causes that is unexplained: a trace showed an idle main thread and no input
+    events reaching the page, and a standalone repro (`local/debug/perf-mobile-switch.mts`,
+    typing then leaving at once) never hung. Whether a real user could hit it is unknown.
+- **Inbox paging (SPEC §10.3, 2026-11-09, `42cc7cd`).** Groups draw 50 rows, then
+  "Show N more"; the sidebar Tasks view draws no rows while hidden or collapsed. Before/after
+  `make perf` (`local/debug/perf-merged-main-fixed.log` → `perf-after-inbox-paging.log`):
+  open-note desktop 156→14.9 ms, mobile 968→58 ms; INP desktop 120→16 ms, mobile 208→32 ms;
+  longest task desktop 820→0 ms, mobile 3403→96 ms. Tests: `tasks.test.ts` (paging + seeded
+  property test), `InboxPane.dom.test.ts` (5 new; 4 existing ones now open the Tasks view
+  first, since hidden rows are no longer drawn), `e2e/inbox.spec.ts` "draws a page of a large
+  group…" (desktop + mobile). Probes went red for: no cap, rows drawn while hidden, collapsed
+  sidebar ignored, Show-more from below a page, page size 1000 (browser). The `task-scroll`
+  and `task-display` mobile specs failed because their row was behind "Show more" in the
+  shared E2E vault; they now use the inbox's Note filter (`onlyNote`).
+- **`make perf` breaches are all recorded** (SPEC §21.4 "Measured, merged main"). The final
+  run (`local/debug/perf-final.log`) failed only on the three rows since recorded in
+  `web/perf/breaches.json`. Re-judging its `target/perf/report.json` against the new file gives
+  no failing row; a fresh `make perf` has not been run since recording. Follow-ups:
+  - **Server memory** (recorded at 413 MB): 83.7 / 277.8 / 412.9 MB across runs, and stable
+    once read, so not in-flight work. The cause is unknown and needs a heap investigation.
+    A "wait until settled" reading was tried and removed: it settled at once and explained
+    nothing.
+  - **Mobile longest task** (recorded at 111 ms): startup work on the main thread. A CPU
+    profile (`local/debug/mobile-coldstart-*.cpuprofile`, script
+    `perf-mobile-coldstart-profile.mts`) attributes it to `putNotes` (IndexedDB catalog),
+    `putSearchSegment` and `mb_search::Segment` validation.
+  - Mobile quick-switcher still measures nothing.
+- **A note can become permanently unopenable — fix on branch `claude/busy-rubin-112b0f` (`06edea1`), not merged into main or reviewed here.**
+- Server memory follow-up: branch `claude/quirky-lumiere-325cc1` (`5920960`, not merged or reviewed here) cuts the zone-segment rebuild peak 233 → 56 MB and bare-server startup 327 → 130 MB; after a perf run it still reads 173–197 MB, so the `server-memory-idle` record stays. The perf vault cached
+  in this checkout had a server CRDT sidecar for Note 777 (written 2026-09-16) whose *first*
+  record already has missing dependencies (Yjs pending structs). The server sends it on
+  subscribe; the client's schema admission correctly refuses it, so every client shows
+  "Refresh required" for that note. A fresh vault does not produce it. How the server
+  persisted such a record, and why load does not detect it (Invariant I1 says a rebuild from
+  Markdown must work), is uninvestigated. Evidence kept at
+  `local/debug/perf-vault-broken-note777/` (`.memberberry/crdt/b29b635c….bin`) and the
+  captured payload `local/debug/note777-sync-payload.bin`.
 
 - Settings scope deliberately omitted: no palette command for Settings, no server-admin
   editing of shared emoji from the dialog (the admin API still exists), no replacing an

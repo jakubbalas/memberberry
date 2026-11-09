@@ -15,9 +15,9 @@
   },
   "longest-task": {
     "recorded": {
-      "mobile": 65
+      "mobile": 111
     },
-    "reason": "SPEC \u00a721.1: the throttled mobile cold start has a 65 ms main-thread task against the 50 ms budget while instantiating WASM and mounting the editor. Desktop remains inside budget and is deliberately not excepted. Re-measure after reducing or splitting the initial WASM module."
+    "reason": "SPEC \u00a721.1: on the 10k perf vault the throttled mobile cold start has several 75-111 ms main-thread tasks (2026-11-09). A CPU profile attributes them to work spread across startup, not one cause: writing the 10,000-note catalog to IndexedDB (putNotes), storing and validating client search segments in WASM (putSearchSegment, mb_search::Segment::postings / validate_postings), and mounting the app. It was 65 ms when first recorded on a smaller setup, and 90 ms on main before Mermaid or inbox paging. Desktop records no task over 50 ms and is deliberately not excepted. Removing it means moving catalog and segment storage off the main thread or chunking it."
   },
   "graph-fps": {
     "recorded": {
@@ -33,8 +33,16 @@
   },
   "diagram-keystroke-to-paint": {
     "recorded": {
-      "desktop": 16.4
+      "desktop": 16.4,
+      "mobile": 16.9
     },
-    "reason": "SPEC \u00a721.4: the same double-requestAnimationFrame resolution as keystroke-to-paint, which is recorded at 16.4 ms desktop for the same reason. This row is not part of the A38 exception: typing on a diagram page must keep the keystroke budget, and mobile measured 15.9 ms."
+    "reason": "SPEC \u00a721.4: the same double-requestAnimationFrame resolution as keystroke-to-paint, which is recorded at 16.4 ms desktop and 16.6 ms mobile for the same reason. Mobile measured 15.9, 16.9 and 15.8 ms across runs on 2026-11-08/09: one 60 Hz frame either side of the line. This row is not part of the A38 exception: typing on a diagram page must keep the keystroke budget."
+  },
+  "server-memory-idle": {
+    "recorded": {
+      "desktop": 433004544,
+      "mobile": 433004544
+    },
+    "reason": "SPEC \u00a721.1: resident memory after the whole perf run on the 10k vault, debug build, varies between runs with no code change: 83.7, 277.8 and 412.9 MB on 2026-11-09 (recorded at the worst). It is not work still in flight: readings 1 s apart were identical. The cause is not yet known (allocator retention, index rebuild buffers and the sync registry are candidates). Recorded so the run can gate other rows while it is investigated; remove once explained and back under 150 MB."
   }
 }

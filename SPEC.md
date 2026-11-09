@@ -4691,6 +4691,26 @@ mobile quick-switcher (zero surviving samples), while all other non-recorded met
 inside budget; desktop graph, keystroke paint and mobile longest-task remain the explicitly
 recorded breaches described above.
 
+**Measured, merged main (2026-11-09).** The first complete run since the harness hung at
+open-note. Paging the task inbox (§10.3) moved four rows back inside budget: open note
+156 → 15 ms desktop and 968 → 57 ms mobile; INP 120 → 24 ms and 208 → 40 ms; desktop longest
+task 820 → 0 ms. The sidebar inbox had been drawing every open task, about 170,000 hidden
+elements on this vault. Three breaches are newly recorded in `breaches.json`, each with its
+reason:
+
+- **Mobile longest task, 111 ms** (was recorded at 65). A CPU profile shows several 75–111 ms
+  tasks at startup, not one cause. They come from writing the 10,000-note catalog to
+  IndexedDB, storing and validating client search segments in WASM, and mounting the app.
+  Removing it means moving that storage off the main thread or chunking it.
+- **Mobile diagram keystroke → paint, 16.9 ms.** The same one-frame resolution limit as
+  `keystroke-to-paint` (§21.4); it measured 15.8 ms in the next run.
+- **Server memory, 413 MB against 150 MB.** It reads 83.7, 277.8 and 412.9 MB in three runs
+  with no code change. It is not work still in flight: two readings 1 s apart were
+  identical. The cause is unknown. Recorded at the worst reading so the run can gate the other
+  rows while it is investigated.
+
+Mobile quick-switcher remains a hole (one surviving sample of twelve).
+
 ### 21.5 What building the harness found
 
 None of these are performance numbers. They are things nothing had looked at, which is what a
@@ -4856,7 +4876,8 @@ The render is well inside the Open note budget on both devices, which is better 
 assumed. The real cost is one main-thread task of about 76 ms on the throttled phone. Mermaid
 lays the chart out against the DOM, so it cannot move to a worker. That task is the A38
 exception, recorded in `breaches.json` for mobile only. The desktop keystroke figure is the
-same one-frame resolution limit as `keystroke-to-paint` (§21.4), not a diagram cost.
+same one-frame resolution limit as `keystroke-to-paint` (§21.4), not a diagram cost. Mobile
+later measured 16.9 ms (2026-11-09) and is recorded for the same reason.
 
 ## 22. Testing strategy
 
