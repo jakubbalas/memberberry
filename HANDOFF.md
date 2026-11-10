@@ -272,6 +272,14 @@ no full-suite result is claimed.
 
 ## Next and open work
 
+- **Desktop client is specified, not started (2026-11-10, A42, SPEC §7.6, roadmap M19).**
+  Tauri 2 with an embedded `mb-server`; a replica is a Markdown vault folder. On demand,
+  note/folder pins and full vault are one rule model. No code, no `desktop/` or
+  `mb-replica/` yet. S7–S10 in SPEC §25 are the defaults the user accepted without
+  discussing each. §7.6.7 (A43) covers unsent edits to a note that left the readable set:
+  a recovered note plus a banner. The content rule (only this device's changed blocks plus
+  their enclosing block) was proposed, not discussed by the user. **The web client has the
+  same gap today** and is meant to adopt §7.6.7; it is not built there either.
 - A truncated, checksum-invalid or wrong-header sidecar still fails closed (SPEC §7.3), so
   that note stays unopenable until someone deletes the sidecar. Quarantine-and-rebuild could
   cover those cases too. It was left out because a truncated tail can hold accepted edits

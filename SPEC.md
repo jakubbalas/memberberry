@@ -590,7 +590,7 @@ and produce something worse. The editor view layer is TypeScript.
 4. **HTML → block-document conversion for the web clipper (§16)** reuses the canonical
    block model rather than growing a second, divergent converter.
 5. **Task metadata parsing (§10)** is shared by editor chips, index, and query views.
-6. **A future Tauri desktop client** reuses the core natively, with no WASM boundary.
+6. **The Tauri desktop client (§7.6)** reuses the core natively, with no WASM boundary.
 
 **Where WASM is weaker than I would like, stated so it is not a surprise:** the browser
 cannot write your filesystem, so client-side Markdown serialization serves source-view,
@@ -620,6 +620,9 @@ crates/
                   media, sync coordinator, history, sharing.
   mb-cli/         memberberry {serve, vault, user, normalize, reindex,
                   import-obsidian, export, doctor, gen-vault, inspect}
+  mb-replica/     (M19, §7.6) Desktop sync client: upstream link over the §7.1
+                  protocol, availability rules, residency manifest, release sweep.
+desktop/          (M19, §7.6) Tauri 2 host: embeds mb-server on loopback, loads web/
 web/
   src/editor/     Tiptap schema (generated from schema.json) + y-prosemirror
   src/shell/      Svelte 5 workspace: panes, tabs, sidebars, adaptive layout
@@ -1358,6 +1361,8 @@ ships.
 | E31 | **Immediate configured-location folder creation** (§6.1; backend reviewed, t-006 UI implementation active) | Strict enabled signed-session-admin and same-origin/header authority precedes config/filesystem work; repeat after waits and at mkdir/publication. One exact child under a pinned allowed parent, no-follow beneath configured root, current registry/identity checks and no collisions/overlaps. No content grant, ACL/registry creation or registration receipt. Owned-only cleanup; post-create ambiguity never implies rollback or safe replay. Readback verifies the exact child identity before success. |
 | E32 | **Folder deletion** (§8.2) | `DELETE /api/v1/vaults/{slug}/folders` takes `{path, confirmation?}` with an 8 KiB body limit. `AuthorizedVault::delete_folder` requires editor/owner on the folder and every descendant before disclosing confirmation requirements or mutating. Unknown, denied, unsupported, hidden, symlinked and excluded trees receive the same neutral 404; server admin grants no bypass. Full preflight is bounded to 100,000 entries. Any actual note/subfolder requires the exact basename (409 otherwise); empty folders need no confirmation. Every sync room closes before note files move to the existing Markdown trash, followed by nonrecursive directory removal, index reconciliation and deletion auditing. I/O errors can leave partial deletion and return a generic no-store refusal; the client refreshes before retry. |
 | E33 | **Vault settings and emoji management** (§20.4, §11.2) | `GET`/`PUT …/settings`, `DELETE …/emoji-entries/…` and emoji renames require vault-wide `owner`, checked per request from the live ACL. Editors, viewers, non-members and server admins who are not owners get the same 404 as an unknown vault, with no setting or emoji name in the body and nothing written. Shared server emoji answer as missing on the vault routes. Emoji renames are E14 privileged rewrites, and the reply counts only notes the owner can read. The `data-vault-owner` bootstrap flag only controls whether the dialog is offered. |
+| E34 | **Desktop embedded server** (§7.6.2; specified, M19) | Binds loopback only on an OS-assigned port. Every HTTP request and WebSocket upgrade carries a per-launch 256-bit CSPRNG token handed to the webview through Tauri, never in a URL, compared in constant time; `Host` and `Origin` must match the loopback origin, so a DNS-rebinding page and any other local process are refused. The token is never written to disk or logged. |
+| E35 | **Replica revocation purge** (§7.6.6; specified, M19) | On every upstream reconcile, a note no longer in the readable set loses its file, CRDT sidecar, media, metadata row, search postings and pins, whatever its pin. Until reconcile succeeds nothing new is fetched for it. Unsent edits to such a note are first written out as a local recovered note holding only this device's changes, never uploaded without the user's choice (§7.6.7). |
 
 **Every sync-frame denial is one reply.** An unknown vault, a path that does not resolve,
 a missing ACL and a role of `none` all return the same `not_found` error frame. Sending
@@ -1709,7 +1714,7 @@ phone). Tiered, and always intersected with the user's readable set:
 | **Always** | Permitted client index zone segments + snippets (§14.2) | Eager. ~8MB at 10k notes. |
 | **On demand** | Note body (Y doc) | On first open; stays resident and syncs thereafter. |
 | **Pinned** | Note body | Forced eager for notes/folders marked "available offline". |
-| **Opt-in** | Everything readable | `offline.replicate_all = true` for small vaults. |
+| **Opt-in** | Everything readable | `offline.replicate_all = true` for small vaults. Not built in the web client; the desktop expresses it as a folder pin on the vault root (§7.6.3). |
 
 Consequence, stated honestly in the UI rather than hidden: offline you can **search
 everything you may read and see snippets**, navigate the graph, and **open anything you
@@ -2002,6 +2007,198 @@ A20 says to surface it properly, so it is designed rather than left as an accide
   part of the CRDT document.
 - Presence has no offline representation: offline you are alone, and the UI says so rather
   than showing stale avatars.
+
+### 7.6 Desktop client and the local replica (A42)
+
+**Status: specified, not built.** Milestone M19 (§23).
+
+An installable desktop application for macOS, Windows and Linux whose point is that notes
+live **on this machine as Markdown files**, so C2 holds on the laptop as well as the
+server. A desktop build that only wrapped the server's URL would add nothing over the PWA
+(§7.4) and is not what this section specifies.
+
+#### 7.6.1 Technology — Tauri 2
+
+- **Tauri 2, not Electron.** The UI is the existing Svelte bundle, unchanged, in the
+  operating system's webview (WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux).
+  The host process is Rust, so `mb-core`, `mb-crdt`, `mb-search`, `mb-index` and
+  `mb-server` link in natively — §5.2's sixth point — with no WASM boundary on the desktop
+  path. Electron would ship a second Chromium per install and put a Node process between
+  the UI and a Rust core.
+- **Not a native UI toolkit.** §5.2 already declines rebuilding the editor outside
+  ProseMirror; SwiftUI, Qt, egui or Flutter would each mean exactly that.
+- **No updater, no crash reporter, no telemetry (C1).** Tauri's updater plugin is not
+  included. A new version is installed by the user.
+- **The cost, stated:** three webview engines instead of one. The E2E suite (§22.6) is
+  Chromium today; M19 adds a WebKit project, because macOS and Linux render with WebKit.
+  WebKitGTK is the slowest of the three, so the §21 budgets are measured on Linux
+  separately rather than assumed from macOS.
+
+#### 7.6.2 Architecture — a replica is a vault
+
+```
+Tauri webview (the existing Svelte UI)
+        │  HTTP + WebSocket, loopback only (E34)
+        ▼
+embedded mb-server ── serves ──▶ <replica>/notes/**/*.md + .memberberry/   (Layers 1–3, §3.1)
+        │  sync client: the existing §7.1 protocol + scoped API token
+        ▼
+remote mb-server (the user's own; absent for a local-only vault)
+```
+
+- **The replica folder has the vault layout of §4.1.** One folder per vault, chosen by the
+  user, default `~/Memberberry/<server-host>/<vault-slug>/`. Notes are plain files a text
+  editor can open while the app is closed; a change made there takes the §3.4
+  external-change path in the embedded server, then syncs upstream.
+- **The embedded server is `mb-server`,** not a second implementation. The webview talks to
+  it exactly as the browser talks to a remote one, so the UI carries no desktop branch. The
+  upstream link is a new crate, `mb-replica`: a sync *client* speaking the §7.1 protocol and
+  the existing metadata and index endpoints. Upstream sees one more client, so E1–E4 apply
+  to it unchanged and the server needs no replica-specific read path.
+- **Replica bookkeeping lives in `<replica>/.memberberry/replica/`.** It holds the upstream
+  URL, device id, availability rules and the residency manifest (§7.6.4). **The upstream
+  API token is in the OS keychain**, never in the replica folder (AGENTS.md §3.3).
+- **A local-only vault is a replica with no upstream:** an ordinary vault with a one-user
+  `access.toml`, served by the same embedded server. It is the default way to try the app.
+  Connecting a local-only vault to a server later (uploading it) is out of scope for M19.
+- **Per-device settings live in `<OS config dir>/memberberry/settings.toml`.** This is the
+  home §7.2 says the client caps lacked; the desktop's release limits are configurable from
+  it and from a settings panel.
+
+#### 7.6.3 Availability — one rule model for "open", "download" and "everything"
+
+Every readable note in a replica is in exactly one of two states: **resident** (its `.md`
+file and CRDT sidecar are on disk and syncing) or **not resident** (metadata and search
+snippet only). What makes a note resident is a set of rules:
+
+| Rule | Set by | Effect |
+|---|---|---|
+| **On demand** | Opening a note | Becomes resident; may be released by §7.6.5 |
+| **Pin note** | "Keep this note downloaded" | Resident while the pin exists; never released |
+| **Pin folder** | "Keep this folder downloaded" | A path-prefix rule: every readable note under it, including notes created or moved in later |
+| **Full vault** | "Keep the whole vault downloaded" | A folder pin on the vault root. Not a separate mode |
+
+- **The vault default is one of `on-demand` or `full`.** Defaults: `on-demand` for a
+  replica of a server vault, `full` for a local-only vault (where nothing could be released
+  anyway). Per-folder and per-note pins refine the default.
+- **A folder pin is re-expanded on every metadata change**, not resolved once into a list of
+  paths: a pin that silently misses notes created after it was set breaks the promise it
+  made. This lifts §7.2's "folders cannot be pinned yet" for the desktop; the web client
+  adopts the same rule model when it gains folder pins.
+- **Removing a pin does not delete anything.** Its notes return to on-demand and age out
+  under §7.6.5.
+- **Pinning a note pins its media.** An attachment referenced by a resident pinned note is
+  downloaded with it. A pinned note with broken images is not available offline in any
+  sense a person would recognise. On-demand media is fetched when displayed and released
+  with its note.
+- **The eager tiers of §7.2 are unchanged:** metadata for every readable note and the
+  permitted search zones are always replicated, so offline search and the graph cover the
+  whole readable vault whatever is resident.
+
+#### 7.6.4 What the folder shows, and telling eviction from deletion
+
+**Only resident notes are files** (S7). A text editor opened on an on-demand replica sees
+the notes this device holds, and that set changes as notes are released. The alternative, a
+hidden cache with only pinned notes as real files, would make the folder lie in the other
+direction: a note the app is showing would not be on disk.
+
+That makes a missing file ambiguous, so the replica keeps a **residency manifest**: every
+note the app made resident, and every note it released.
+
+- **A file the app released is not a deletion.** Releases are recorded before the file is
+  removed, so a crash between the two leaves a manifest entry and no file, which reads as
+  released.
+- **A resident file removed outside the app is a deletion** and propagates upstream as a
+  delete to trash (§4.1, recoverable for `trash_retention_days`), subject to E17's editor
+  requirement. C2 makes the file the truth; deleting it in a file manager means what it
+  says. A viewer's deletion is refused upstream and the file is restored locally.
+- **A file created outside the app** under `notes/` is a new note (§6.10) and needs editor
+  rights at that path upstream. Refused, it stays local, marked "not uploaded".
+- **With the manifest gone** (`rm -rf .memberberry/`, I1), no missing file can be told
+  apart, so **none is treated as a deletion**. Every file present is re-imported, every
+  absent one reads as not resident, and nothing propagates until the manifest is rebuilt
+  from upstream. Failing towards "keep" is the only direction that cannot lose a note.
+- **A note the user may only view is written read-only** (file mode 0444 or the platform
+  equivalent). An edit forced through anyway stays on this device as a `> [!conflict]`
+  callout (§3.5) and is never sent; the server would refuse it under E3 in any case.
+
+#### 7.6.5 Releasing on-demand notes
+
+The desktop has room the phone does not, so its limits are generous and time-based first.
+
+- **A note not opened for 30 days is released**, and while resident bodies plus their media
+  exceed **1 GB**, the least recently opened go first. Both are configurable per device
+  (§7.6.2). The sweep runs at start and after a note becomes resident, as §7.2's does.
+- **Never released:** a pinned note, a note open in any tab, and a note with changes not yet
+  acknowledged upstream. "Unacknowledged" includes an external edit whose file hash differs
+  from the `.last-write` sidecar (§3.1): the file was changed and the change has not reached
+  the server. As in §7.2, exempt notes still count towards the cap, and a device whose exempt
+  notes exceed it stays over rather than discarding writing.
+- **Releasing removes the `.md` file, its CRDT sidecar and unpinned media,** after the
+  manifest records it. The metadata row and search snippet remain.
+
+#### 7.6.6 Permissions and the replica
+
+- **The replica holds only what upstream sent, and upstream sends only the readable set.**
+  No ACL decision is made locally for a server vault. The replica does not receive
+  `access.toml`; it receives each note's effective role, which drives read-only files and
+  the editor's read-only mode as an affordance, never as the boundary.
+- **Revocation purges on reconcile (E35).** When a note leaves the readable set, its file,
+  sidecar, media, metadata row and search postings are deleted on the next reconnect, pins
+  included. This is §6.7's documented limit (a revoked user keeps the replica until they
+  reconnect) made precise, not removed.
+- **What a replica does not protect against, stated in the UI:** anyone with access to this
+  machine's disk reads the files (A6; ACLs are not encryption), and an unreachable server
+  means a revocation has not happened yet.
+- **Presence is not sent for background work.** The embedded server forwards awareness
+  upstream only for notes open in the webview. Pin sweeps, folder-pin expansion and
+  release carry none, as §7.2 requires of the web client.
+
+#### 7.6.7 Unsent edits to a note that left the readable set (A43)
+
+A device can hold edits the server has never seen for a note that, by the time it
+reconnects, is no longer in the user's readable set. Four things cause that, and the device
+cannot tell them apart, nor may it ask (§6.5):
+
+1. **Permissions changed:** `access.toml` now gives this user no role on the note.
+2. **Moved out of reach:** the note was renamed or moved into a folder this user cannot read.
+3. **Deleted:** someone else sent it to trash.
+4. **Removed from the vault:** case 1 for every note at once.
+
+The rule is the same for all four. **The user's writing is never discarded without the user
+choosing to, and nothing is sent upstream without the user choosing where.**
+
+- **On reconcile, the edits are written out at once as a local recovered note**,
+  `notes/Recovered/<title> (offline edits).md`, a plain Markdown file (C2). It is marked
+  "not uploaded" and never syncs on its own. The original file, sidecar and media are then
+  purged as E35 requires. The only state outside `notes/` is the bookkeeping that says which
+  recovered notes are awaiting a choice.
+- **What it contains is the user's own unsent changes**, not the note: the blocks this device
+  inserted or modified since the last upstream-acknowledged state, each with the minimum
+  surrounding block needed to read it (the paragraph an insertion landed in). Blocks the
+  device never changed are not carried. This is what keeps case 1 from becoming a copy of a
+  note the owner revoked.
+- **A banner flags it.** A workspace-level banner says how many recovered notes await a
+  choice and opens the first. Opening a recovered note shows a banner at its top, worded the
+  same for all four causes ("This note is no longer available on the server. Your offline
+  edits were kept here."), with two actions, both keyboard-reachable (§8.4):
+  - **Create the note again:** a normal create (E17, §6.10) at the original path. If it
+    succeeds, the recovered note moves there and syncs. If it is refused, the refusal is
+    E17's uniform one, which says nothing about whether a note occupies that path, and the
+    banner keeps only the second action.
+  - **Make a new note:** the create prompt (§6.10), prefilled with the recovered note's
+    title and the vault root, so the user picks the name and folder. The recovered note
+    moves there and syncs.
+- **The banner stays until the user chooses.** Dismissing it for the session is allowed;
+  it returns on the next start. A user who wants the edits gone deletes the recovered note
+  like any other note.
+- **The original path is known only to this device.** It is the path the user could read when
+  the edits were made, so showing it reveals nothing new. The server is never asked why the
+  note left the readable set.
+- **Not desktop-only.** The web client's IndexedDB replica (§7.2) has the same gap today:
+  its dirty body is exempt from eviction, but nothing defines what reconcile does with it.
+  The web client adopts this rule, with the recovered note held in its local store until a
+  choice is made, since it cannot write a file.
 
 ---
 
@@ -5862,8 +6059,18 @@ browser. Nothing will be opening a browser here.
 - [x] Remappable default keymap (§8.4)
 - [x] Backup job; docker-compose with MinIO; deployment and security docs
 
+### M19 — Desktop client and local replica (A42, §7.6)
+- [ ] Tauri 2 host embedding `mb-server` on loopback, with E34's per-launch token
+- [ ] Local-only vaults: create and open a vault folder with no upstream
+- [ ] `mb-replica`: upstream sync over §7.1 with a keychain-held scoped API token
+- [ ] Availability rules: on demand, note pin, folder pin, vault-root pin; pinned media
+- [ ] Residency manifest; external delete/create propagation; I1 fails towards "keep"
+- [ ] Release sweep: 30 days unopened, 1 GB cap, per-device `settings.toml`
+- [ ] E35 revocation purge, with recovered notes and their banner (§7.6.7)
+- [ ] Playwright WebKit project (§22.6); §21 budgets measured on WebKitGTK
+- [ ] Leak suite: E34 and E35; I1 over a partial replica
+
 ### Post-v1 candidates
-- Tauri desktop shell (reuses `mb-core` natively, no WASM boundary)
 - gonnadoit integration over the HTTP/WS API
 - Task recurrence (§10.4); TOTP 2FA; comments and mentions
 - Published-site mode (folder-level public publishing)
@@ -5920,6 +6127,8 @@ to replace a product comparison with a description. Do not reverse these without
 | A38 | Mermaid diagrams (motivated by Gantt charts for replacing Confluence; reverses A9's exclusion) | *"we should bring in mermaid and document that we accept that midrange android might experience issue with pages that do have mermaid diagrams. Wherever possible we find alternatives"* | Mermaid ` ```mermaid ` fences render via a lazy chunk (§13.2). Pages with diagrams carry a scoped exception to the §21.2 mobile budgets; every other page keeps them. |
 | A39 | Visual Gantt editor | *"for both Confluence AND memberberry, I want to have some nice UI with awesome UX way how to build gantt charts"*; then: *"Full drag-and-drop now"*, *"Inside memberberry repo"*, *"Memberberry first"* | A shared drag-and-drop editor over Mermaid `gantt` text, in `web/src/gantt/`. Memberberry first; a Confluence Forge macro reuses it later (§13.3). Storage stays the §13.2 fence. |
 | A41 | Gantt "no colour" and chart style | *"it should also be possible to select "no color" (even for tasks). Then we might want to have some overall chart config where we can select "style" - one of it will be if the whole section has background color or only the section name row. another if it should be more "zoomed in" or fixed height"*; then: *"we might want to have also possibility and separated config for if we want to have phase shown as a row or a column like we have now and based on that we would have only a header row or a column with color. If it is a color, there should be some "border" colored"*, and *"Row height"* | `none` as a task or phase colour; `%% option phases column\|row`, `phase-fill whole\|name`, `rows fixed\|zoomed` lines, set from the editor toolbar (§13.3). |
+| A42 | Installable desktop app with local notes | *"I want to have an app I can install on my devices"*; then: *"Lets start with already thinking about running things locally. We should support both "lazy loading" where we load only things that we open locally (can have some special rules for releasing older notes) and / or we decide deliberatly to "download this note" And / or to have a support for "full local vault""*; then, on the proposed defaults: *"Yes, write the spec"* | Tauri 2 desktop client whose replica is a Markdown vault folder served by an embedded `mb-server`. On demand, note/folder pins and full vault are one rule model (§7.6). Removes "native desktop apps" from the v1 exclusions; native mobile apps stay excluded. |
+| A43 | Unsent edits to a note that left the readable set | *"When there is a problem, that should be flagged with some banner and user should have the option to select if it should create that note again or make a new  note"* | Edits are kept as a local recovered note holding only this device's changes; a banner offers "Create the note again" (E17 at the original path) or "Make a new note". Same rule for permission change, move, delete and vault removal, and for the web client (§7.6.7). |
 | A40 | Gantt task colours | *"Next up - I want to be able to set colours for tasks"*; then: *"lets recognise both. If the color starts with # and is hex - use any color. otherwise lets have preselected note colors and then a picker"* | `%% color <id> <value>` comment lines. A value is a note colour name or `#rgb`/`#rrggbb` hex; the editor offers the note colours and a custom picker (§13.3). |
 
 ---
@@ -5927,7 +6136,7 @@ to replace a product comparison with a description. Do not reverse these without
 ## 25. Assumptions and status
 
 **Every question raised during design has been answered (§24). No open question blocks any
-milestone.** Implementation can begin at M0.
+milestone.**
 
 The following were decided without being asked, because they were needed to make an
 answered decision coherent. Each is small, each is reversible, and each is listed here so
@@ -5941,6 +6150,10 @@ it is visible rather than buried:
 | S4 | Deleting a note leaves inbound links dangling as ghost nodes | §4.3 | Avoids editing other users' notes as a side effect of your delete. |
 | S5 | Trash retention 30 days; share-link default expiry 30 days | §4.1, §17.1 | Conventional defaults, both configurable; trash uses `trash_retention_days`. |
 | S6 | Presence is suppressed on mobile below 768px (avatars kept, caret labels dropped) | §7.5 | Name labels over a phone-width editor obscure the text they annotate. |
+| S7 | **Only resident notes are files** in a desktop replica; released notes leave the folder | §7.6.4 | A hidden cache would make the folder omit notes the app is showing. Costs a residency manifest to tell release from deletion. |
+| S8 | Pinning a note downloads its media | §7.6.3 | A pinned note with broken images is not available offline. |
+| S9 | Local-only vaults ship in the first desktop build; vault default is `on-demand` for server replicas and `full` for local-only | §7.6.2, §7.6.3 | Same code with no upstream, and the simplest way to try the app. |
+| S10 | Desktop release limits: 30 days unopened, 1 GB cap, configurable per device | §7.6.5 | The desktop has room the phone's 500-note / 50 MB cap was sized against. |
 
 If any of these is wrong, say so — none is load-bearing enough to be expensive to change
 before the milestone that implements it.
@@ -5950,4 +6163,5 @@ before the milestone that implements it.
 Recorded so they read as decisions rather than omissions: freeform canvas workspaces,
 multi-column page layouts and synced blocks, database views with formulas, task recurrence, cross-vault
 links, plugin system, encryption at rest, TOTP 2FA, comments and mentions, published-site
-mode, Excalidraw collaborative editing, native desktop and mobile apps.
+mode, Excalidraw collaborative editing, native mobile apps. (Native desktop moved into scope by A42,
+§7.6.)
