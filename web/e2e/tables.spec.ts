@@ -134,7 +134,7 @@ test("visual tables edit headers, grow, reorder and persist as Markdown", async 
   await page.keyboard.type("Beta");
   await page.getByRole("button", { name: "Row up", exact: true }).click();
   await expect(table.locator("tr").nth(1)).toContainText("Beta");
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     await page.getByRole("button", { name: "Move table row 1", exact: true })
       .dragTo(table.locator("tr").nth(2).locator("td").nth(1));
     await expect(table.locator("tr").nth(1)).toContainText("Alpha");

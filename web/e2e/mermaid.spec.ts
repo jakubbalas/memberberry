@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 const GANTT = [
@@ -46,7 +46,7 @@ test("a Gantt chart renders, edits as text, and the file stays plain Markdown", 
   await expect(source).toBeHidden();
   await diagram.getByRole("button", { name: "Edit code" }).click();
   await expect(source).toBeVisible();
-  await page.keyboard.press("End");
+  await lineKey(page, "End");
   await page.keyboard.press("Enter");
   await page.keyboard.type("    Build :b, after vd, 4d");
   await expect(diagram.locator(".mb-mermaid-preview svg")).toContainText("Build", { timeout: 20_000 });
@@ -67,13 +67,13 @@ test("the arrow keys reach a hidden diagram's source", async ({ page }, info) =>
   await expect(diagram).toHaveAttribute("data-mermaid-state", "ready", { timeout: 20_000 });
 
   await editor.getByText("Before", { exact: true }).click();
-  await page.keyboard.press("End");
+  await lineKey(page, "End");
   await page.keyboard.press("ArrowDown");
   await expect(diagram.locator(".mb-mermaid-source")).toBeVisible();
 
   await editor.getByText("After", { exact: true }).click();
   await expect(diagram.locator(".mb-mermaid-source")).toBeHidden();
-  await page.keyboard.press("Home");
+  await lineKey(page, "Home");
   await page.keyboard.press("ArrowUp");
   await expect(diagram.locator(".mb-mermaid-source")).toBeVisible();
 });
@@ -203,7 +203,18 @@ test("a Gantt chart shortens names that do not fit and shows them in full on hov
   expect(fit, "the shortened name sits inside its bar and the phase name stays left of the bars").toEqual({ insideBar: true, inChart: true, namesClear: true });
   const tip = diagram.getByRole("tooltip");
   if (info.project.name === "mobile") await label.tap();
-  else await label.hover();
+  else {
+    // why: the mouse goes to the centre of the box the browser reports for the label, not
+    // where `hover()` aims. Playwright computes its own point for SVG text, and under WebKit
+    // that point misses the glyphs (it reports the <svg> as covering the label), although
+    // the browser's own hit test lands on the text across this box in both engines.
+    await label.scrollIntoViewIfNeeded();
+    const box = await label.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    });
+    await page.mouse.move(box.x, box.y);
+  }
   await expect(tip).toHaveText(long);
   await page.screenshot({ path: info.outputPath("gantt-long-names.png") });
 });
@@ -247,7 +258,7 @@ test("a long Gantt chart can be capped in height, zoomed and dragged around", as
   expect((await size()).width).toBeGreaterThan(capped.width);
   await page.screenshot({ path: info.outputPath("gantt-viewer-zoomed.png") });
 
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     const box = await preview.boundingBox();
     if (box === null) throw new Error("no preview");
     const before = await preview.evaluate((node) => [node.scrollLeft, node.scrollTop]);

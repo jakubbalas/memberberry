@@ -84,7 +84,12 @@ const SCRATCH_PURPOSES: readonly string[] = [
   "theme-memberberry-dark",
   "theme-memberberry-pastel",
 ];
-const SCRATCH_PROJECTS: readonly string[] = ["desktop", "mobile"];
+/**
+ * Every Playwright project in `playwright.config.ts`. Each gets its own scratch notes, empty
+ * vaults and drawings, since `fullyParallel` runs them all against one server.
+ */
+export const E2E_PROJECTS: readonly string[] = ["desktop", "mobile", "webkit"];
+const SCRATCH_PROJECTS: readonly string[] = E2E_PROJECTS;
 
 const SCRATCH_BODY = "# Scratch\n\nA note this test may edit.\n\n- [ ] Ship the workspace shell \u{1F4C5} 2026-09-30 \u{23EB}\n";
 
@@ -154,19 +159,38 @@ function scratchBody(purpose: string, project: string): string {
   return SCRATCH_BODY;
 }
 
+const DRAWING_BODY =
+  "---\nexcalidraw-plugin: parsed\n---\n\n# Drawing\n```compressed-json\n"
+    + '{"type":"excalidraw","version":2,"source":"https://excalidraw.com","elements":[{"id":"rect","type":"rectangle","x":0,"y":0,"width":120,"height":80,"angle":0,"strokeColor":"#1e1e1e","backgroundColor":"#ffffff","fillStyle":"solid","strokeWidth":2,"strokeStyle":"solid","roughness":1,"opacity":100,"groupIds":[],"frameId":null,"index":"a0","roundness":{"type":3},"seed":1,"version":1,"versionNonce":1,"isDeleted":false,"boundElements":[],"updated":1,"link":null,"locked":false}],"appState":{"viewBackgroundColor":"#ffffff","collaborators":[]},"files":{}}'
+    + "\n```\n";
+
 /** Notes the suite can rely on being present. Kept small and canonical on purpose. */
 export const E2E_NOTES: Readonly<Record<string, string>> = {
   "Welcome.md": "# Welcome\n\nA note that already exists, for the reader to open.\n",
-  "Drawings/Host.desktop.md": "# Drawing host\n\n![[Diagram.desktop.excalidraw]]\n",
-  "Drawings/Host.mobile.md": "# Drawing host\n\n![[Diagram.mobile.excalidraw]]\n",
-  "drawings/Diagram.desktop.excalidraw.md":
-    "---\nexcalidraw-plugin: parsed\n---\n\n# Drawing\n```compressed-json\n"
-    + '{"type":"excalidraw","version":2,"source":"https://excalidraw.com","elements":[{"id":"rect","type":"rectangle","x":0,"y":0,"width":120,"height":80,"angle":0,"strokeColor":"#1e1e1e","backgroundColor":"#ffffff","fillStyle":"solid","strokeWidth":2,"strokeStyle":"solid","roughness":1,"opacity":100,"groupIds":[],"frameId":null,"index":"a0","roundness":{"type":3},"seed":1,"version":1,"versionNonce":1,"isDeleted":false,"boundElements":[],"updated":1,"link":null,"locked":false}],"appState":{"viewBackgroundColor":"#ffffff","collaborators":[]},"files":{}}'
-    + "\n```\n",
-  "drawings/Diagram.mobile.excalidraw.md":
-    "---\nexcalidraw-plugin: parsed\n---\n\n# Drawing\n```compressed-json\n"
-    + '{"type":"excalidraw","version":2,"source":"https://excalidraw.com","elements":[{"id":"rect","type":"rectangle","x":0,"y":0,"width":120,"height":80,"angle":0,"strokeColor":"#1e1e1e","backgroundColor":"#ffffff","fillStyle":"solid","strokeWidth":2,"strokeStyle":"solid","roughness":1,"opacity":100,"groupIds":[],"frameId":null,"index":"a0","roundness":{"type":3},"seed":1,"version":1,"versionNonce":1,"isDeleted":false,"boundElements":[],"updated":1,"link":null,"locked":false}],"appState":{"viewBackgroundColor":"#ffffff","collaborators":[]},"files":{}}'
-    + "\n```\n",
+  // One note per project for tests that insert a link. `Projects/Roadmap.md` is read-only for
+  // the suite because tests count its backlinks and graph neighbours; a test linking to it in
+  // parallel changed those counts under them.
+  ...Object.fromEntries(
+    E2E_PROJECTS.map((project) => [
+      `Targets/Linkable-${project}.md`,
+      `# Linkable-${project}\n\nA note link-inserting tests point at.\n`,
+    ]),
+  ),
+  // One note per project to bookmark: bookmarks are per user, and every project signs in as
+  // the same one, so a shared note would be bookmarked already by whichever ran first.
+  ...Object.fromEntries(
+    E2E_PROJECTS.map((project) => [
+      `Bookmark target ${project}.md`,
+      `# Bookmark target ${project}\n\nA note the bookmark test marks.\n`,
+    ]),
+  ),
+  // One drawing and host per project: the drawing spec edits them.
+  ...Object.fromEntries(
+    E2E_PROJECTS.flatMap((project) => [
+      [`Drawings/Host.${project}.md`, `# Drawing host\n\n![[Diagram.${project}.excalidraw]]\n`],
+      [`drawings/Diagram.${project}.excalidraw.md`, DRAWING_BODY],
+    ]),
+  ),
   [CURRENT_PERIODIC_NOTES.weekly]: "# Current week\n\nA readable weekly note.\n",
   [CURRENT_PERIODIC_NOTES.monthly]: "# Current month\n\nA readable monthly note.\n",
   // Read-only: nothing in the suite may edit this one, which is what lets a test assert on

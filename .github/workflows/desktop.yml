@@ -1,0 +1,98 @@
+name: Desktop packages (manual)
+
+# The installable desktop packages (SPEC §7.6.1): a DMG for macOS, a .deb and an AppImage
+# for Linux, an MSI for Windows. Each is built on its own OS, which is why this exists: one
+# Mac can make only the macOS one. Manually dispatched, like E2E — a package is made when
+# someone means to hand one out, not on every push.
+#
+# Unsigned by decision (A49): no certificates, no notarization, no secrets in this workflow.
+# The macOS bundle is ad-hoc signed by Tauri (`tauri.macos.conf.json`), which is not an
+# identity and needs none.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # One frontend for every platform, built where the WASM toolchain is simplest.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@wasm-pack
+      - name: Build the WebAssembly bindings
+        run: make wasm-ci
+      - run: npm ci
+        working-directory: web
+      - name: Build the frontend
+        run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+
+  package:
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # why: both architectures in one app, so the one DMG runs on Intel and Apple silicon.
+          - os: macos-latest
+            target: universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          # why: the oldest supported runner, so the packages need the oldest glibc and run on
+          # more distributions than a build on the newest would.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rust-targets: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust-targets: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+      - name: Linux build dependencies (WebKitGTK, Secret Service)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev patchelf file
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Build the packages
+        working-directory: desktop
+        shell: bash
+        run: cargo tauri build --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memberberry-${{ matrix.target }}
+          path: |
+            desktop/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            desktop/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            desktop/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            desktop/target/${{ matrix.target }}/release/bundle/msi/*.msi
+          if-no-files-found: error

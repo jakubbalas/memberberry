@@ -272,14 +272,306 @@ no full-suite result is claimed.
 
 ## Next and open work
 
-- **Desktop client is specified, not started (2026-11-10, A42, SPEC §7.6, roadmap M19).**
-  Tauri 2 with an embedded `mb-server`; a replica is a Markdown vault folder. On demand,
-  note/folder pins and full vault are one rule model. No code, no `desktop/` or
-  `mb-replica/` yet. S7–S10 in SPEC §25 are the defaults the user accepted without
-  discussing each. §7.6.7 (A43) covers unsent edits to a note that left the readable set:
-  a recovered note plus a banner. The content rule (only this device's changed blocks plus
-  their enclosing block) was proposed, not discussed by the user. **The web client has the
-  same gap today** and is meant to adopt §7.6.7; it is not built there either.
+- **M20 OIDC built (M20a + M20b), not committed (2026-11-11; SPEC §6.8.2, A47, E38).**
+  An `[oidc]` table in `server.toml` (issuer, client_id, client_secret, redirect_url, name,
+  scopes, groups_claim, password_login) puts "Sign in with <name>" on the sign-in page. Code
+  + PKCE + nonce; the ID token is validated by its claims (TLS-trusted back channel, no
+  JWKS); accounts link by (iss, sub) or, once, by a verified email equal to exactly one
+  account's (`memberberry user set-email`); new accounts have no access and are never admin.
+  **M20b:** `access.toml` accepts `group:<name>` wherever it names a user; groups come from
+  the `groups` claim at each sign-in and are attached in `access_for`, so every enforcement
+  point (and the search zones) honours them. Code: `crates/mb-auth/src/oidc.rs`,
+  `crates/mb-server/src/http/oidc.rs`, `crates/mb-core/src/permissions.rs` (`GroupName`,
+  `with_group_grants`, `vault_role`, `rule_paths`, `principals`), `crates/mb-server/src/access.rs`,
+  `crates/mb-index/src/zones.rs`, CLI `user set-email`.
+  - **Verified:** `mb-auth` oidc (13 + 4 unit), `mb-core` group permissions (12, including
+    two properties: a group grant equals the same grant written onto the user, and groups
+    change nothing for a non-member), `access` (group parsing, save round trip), `invites`
+    (group grants survive an accepted invite), `mb-index` zones (a group member's search
+    segments), `mb-server` `oidc` (10), leak suite E38 (forged/stale/mismatched sign-ins; groups
+    grant exactly their access, honour their `none`, and lapse at the next sign-in). Mutations
+    that went red: verified-email rule, nonce, audience, grant combination, group path rules,
+    groups not attached in `access_for`, zones ignoring groups, invites dropping groups. **In a
+    real browser** (temporary probe with a fake provider, deleted): provider sign-in round trip
+    to the linked account (M20a; groups were not exercised in a browser — no UI changed).
+  - **Not verified:** against a real authentik or Keycloak — the `groups` and `email_verified`
+    claims are the common shapes (authentik sends `groups` in the profile scope; Keycloak needs
+    a "Group Membership" mapper, and sends paths like `/family` unless "Full group path" is
+    off). Try one before relying on it.
+  - **Open:** the callback is not rate-limited; discovery is fetched per sign-in; there is no
+    UI listing a user's groups or editing `access.toml` group grants (edit the file).
+- **Desktop app: M19 slices 1, 2a, 2b and 2c built, none committed (2026-11-11).** Slice 1
+  is the Tauri app over an embedded `mb-server` with E34's guard (SPEC §7.6.8); 2a device
+  sign-in (§6.8.1, E36, A44); 2b the sync engine (§7.6.9, A45); **2c (§7.6.10, A46, E37)
+  is what the user asked for after trying 2b:** every server vault appears in the app once
+  connected and works online like the browser (the embedded server forwards the vault's
+  routes and sync frames upstream with the device token); right-click → **Make available
+  offline** / **Online only** on a note or folder, and the file settings menu for the whole
+  vault; offline, downloaded notes work from disk and the rest are greyed. Code:
+  `crates/mb-server/src/replica{.rs,/}` (`plan.rs` three-way planner, `pins.rs`, `wire.rs`,
+  `upstream.rs`), `crates/mb-server/src/http/{desktop,desktop_connect,desktop_sync,
+  desktop_forward,replica_local,devices}.rs`, `crates/mb-server/src/desktop.rs`
+  (`CachedSecrets`: the Keychain is read once per launch), `desktop/`, and on the web side
+  `web/src/shell/device-offline{.ts,.svelte.ts}` plus the tree/menu wiring in
+  `NoteTree.svelte`, `ContextMenu.svelte`, `Workspace.svelte`.
+  - **Verified:** `replica` (27: every structural case, pins, releases, lost pin file, I1,
+    revoked device), `replica_api` (11), `desktop` (18), `desktop_connect` (23: vaults
+    appear, online with nothing on disk, offline/online-only, a folder-held note refused,
+    going offline lists every note), leak suite E34/E36/E37 (49 total), `--lib` (136: planner,
+    wire, pins property and unit tests), web shell (91 files, 1323 tests, plus the new
+    `device-offline*` and `NoteTreeOffline.dom` tests). Mutations that went red: per-frame
+    device auth, shared-origin check, keep-changed-notes rule, forwarding the window's
+    cookie, the offline listing merge, the menu's action slot, the Keychain cache. **In a real
+    browser** (Chromium pane, temporary probe standing in for the Tauri host, deleted after):
+    the server vault is in the vault list with no download; a note opens and an edit made in
+    the app reaches the server's file with nothing on disk; right-click → Make available
+    offline writes the file and shows the mark; with the server stopped, the vault lists
+    both notes, the online-only one greyed and refusing to open with its message, and the
+    downloaded one opens and an edit lands in its file.
+  - **Fixed from the user's report (2026-11-11):** the workspace footer's "Log out" in the
+    app only bounced back to the picker (the guard signs the window straight back in); the
+    app's pages now carry `data-desktop` and the footer shows **Servers**. Tests:
+    `SidebarAccount.dom.test.ts`, `bootstrap.test.ts`, `desktop` (page carries the flag),
+    `http` (a normal server's does not); checked in a browser.
+  - **Several servers and signing out (2026-11-11, SPEC §7.6.11, A48), from the user's
+    request to "log out" and connect to more than one server.** `desktop.toml` holds
+    `[[servers]]` (an old `[server]` table is read as a one-entry list); each pass and each
+    forward uses only its own vault's server and token. The Servers page (`/desktop/connect`)
+    lists each server with **Sign out** and **Connect another server**
+    (`/desktop/connect/new`); the picker has one group per server. Sign-out
+    (`GET /desktop/disconnect?server=` confirms, `POST` acts) runs a last pass, revokes the
+    token, then **removes** the server's vaults and folders (only inside the notes home) or
+    **keeps** them as offline vaults with the server listed signed out (**Sign in again**,
+    **Remove notes**). Signing in over kept notes as a different account is refused and the
+    new token revoked. New code: `AppState::replica_unregister`,
+    `onboarding::unregister_vault`, `desktop_sync::{pass_server, remove_server_notes,
+    sign_out_page, delete_inside}`. Tests: `desktop_connect` (37, 14 new), leak suite
+    `e37_two_servers_each_vault_reaches_only_its_own_server_with_its_own_token`, unit tests for
+    the deletion guard and the settings migration. Mutations that went red: forwarding to the
+    first signed-in server instead of the vault's own; dropping the different-account refusal.
+    Checked in a browser with a two-server probe (deleted after): picker groups, Servers page,
+    sign-out keep then remove (folders and settings gone, the other server untouched), phone
+    width (inline `code` now wraps on the server's own pages).
+    Not covered: a held note's text is only named on the sign-out page, not offered for
+    export before removal; a kept vault's offline edits are merged on signing in again like
+    any offline period, not checked in the real app.
+  - **macOS keychain double prompt (2026-11-13, SPEC §7.6.1, A49).** Not a code bug: the app
+    reads the token once per launch. The item's ACL and partition list name the build that
+    created it by cdhash, and an ad-hoc build has no stable identity, so every new version
+    asks twice. The user chose to document it: README "Desktop app" tells people to choose
+    Always Allow; Developer ID is their later call. Your own login keychain item was created
+    by the debug build, which is why the packaged app prompts on this Mac.
+  - **Installable desktop packages, unsigned (2026-11-12, SPEC §7.6.1, A49).** Per-OS
+    `desktop/tauri.{macos,linux,windows}.conf.json`: DMG (ad-hoc signed, macOS 11+), .deb +
+    AppImage, MSI. `make desktop-build` makes this OS's; `.github/workflows/desktop.yml`
+    (manual dispatch, no secrets) builds all three, universal on macOS, from one `web/dist`.
+    `scripts/desktop-workflow-test.py` runs in CI (red when a package target is dropped).
+    **Checked here:** the arm64 DMG mounts with the app and an Applications link, signature
+    verifies (adhoc, hardened runtime), `web/` is bundled, the packaged binary starts and
+    listens on 127.0.0.1 only; `spctl` rejects it, as expected unnotarized. The universal
+    build the workflow runs also built here (34 MB DMG, x86_64 + arm64), and its Intel slice
+    started under Rosetta and listened on loopback.
+    **Not checked:** the workflow has never run — the Linux and Windows legs (WebKitGTK and
+    keyring deps, WiX for the MSI, whether the Windows build compiles at all) are unproven
+    until it is dispatched; nothing was installed on a clean machine or another user account.
+  - **The `block-selection` flake was an app bug, now fixed (2026-11-12, SPEC §7.4).** Every
+    page load reconnected each editor's socket about 200 ms after it was admitted: `afterLoad`
+    fires `WORKSPACE_REFRESH` → the workspace's `onresume` → `reconcileOfflineData` →
+    `RESUME_SYNC`, and `sync.ts` `onResume` always closed and reopened the socket. The drop
+    flipped the single-editor gate to "offline", which invalidates the block selection —
+    so a selection made in that window vanished (the same happened on every window focus).
+    §7.4 says a return keeps the selection. `onResume` now reconnects only a socket that has
+    lived through a hidden page (or opened in one); the page is an injectable `page` option,
+    `document` by default. Unit tests in `sync.test.ts` "resuming with a page…" (the keep and
+    per-socket cases red with the guard removed, the hidden-tab case red with that rule
+    removed). Measured: a page load opened 2 sockets in 12 of 15 loads before, 1 in 15 of 15
+    after; `block-selection.spec` with `--repeat-each=4` across three projects went from 13
+    of 96 failing to 96 of 96 passing. A wider focused set (block-catalog, autosave, offline,
+    numbered-list, history-trash, block-selection): 69 passed. **Not touched and still
+    intermittent, failing the same with and without this change:** `pwa-refresh` "return
+    refresh updates closed pinned text…" (Chromium) and `conflicts` 98/180 in WebKit.
+    `conflicts` and `pwa-refresh` reuse one note name per project, so `--repeat-each` makes
+    their repeats collide; judge them on single runs.
+  - **Third full `make e2e` (2026-11-12): 119 failed** — 111 the Linux-only folder specs, 6
+    `block-selection` (the known flake, in all three projects), and `topbar` "quick find opens
+    the switcher…" on desktop and mobile: it pressed Enter straight after typing, and under
+    load the result list was still empty, so nothing opened. It now waits until the top
+    result is Roadmap (9/9 across projects). Everything fixed in the two rounds below held;
+    `pwa-refresh` passed this run. **So outside Linux-only specs, only `block-selection`
+    remains** — flaky in every engine and on the 2026-11-09 baseline, not yet investigated.
+  - **Second full `make e2e` (2026-11-12): 127 failed** — 111 the Linux-only folder specs, 16
+    others. Fixed since:
+    - **A real sync bug (web client, browser and app alike):** coming back online while the
+      backoff's retry socket was still connecting opened a *second* socket; the first kept its
+      listeners, so both sent the same offline edits and the server merged them twice —
+      duplicated text and two identical conflict callouts. WebKit's timing hit it every time
+      (`conflicts.spec` failed alone too). `attach` now replaces a socket only after detaching
+      and closing it, and `onOnline` leaves a connecting socket alone (`sync.ts`; test
+      `does not open a second socket while one is still connecting`, red without the guard).
+      Conflict specs then 12/12 over three runs, WebKit + desktop.
+    - The keyboard tree test's first-folder walk met an empty folder `name-emoji` creates; it
+      now reaches the `Projects` fixture folder by arrows (passes with `name-emoji` first).
+    - The emoji picker test clicks the picker's own buttons by exact name (a second `:tada:`
+      button existed in two busy runs); 9/9 across projects.
+    - `inbox`'s grouping test filters to the `Inbox` folder: in a busy shared vault the no-date
+      group can pass 50 rows and push the fixture behind "Show more" (§10.3), the same cause
+      `task-scroll`/`task-display` already filter for. Passes alone; a full run confirms.
+    **Still open:** `pwa-refresh` (intermittent, both runs), `block-selection` (known flake),
+    and `block-move` / `task-scroll` (one each, passed alone).
+  - **First full `make e2e` with WebKit, on the user's MacBook (2026-11-12): 153 failed.**
+    Triage (from `web/test-results/`): **111 are the Linux-only folder specs** (`folder-*`,
+    `shallow-folder-*`, `new-vault`, `navigation-improvements` folder menus), 37 per project,
+    failing on macOS by design (SPEC §6). Of the other 42, fixed since:
+    - **Shared-vault interference, made likelier by a third project.** `block-catalog` and
+      `document-links` inserted links to `Projects/Roadmap.md`, which `graph` and `backlinks`
+      count the neighbours of; they now link to a per-project `Targets/Linkable-<project>.md`.
+      The tree keyboard test took "first folder's first child" as a note while other tests
+      create folders; it now steps down to the first note.
+    - **A broken helper:** `history-trash`'s `hideMobileContext` *opened* the context sheet
+      (it built a "Hide Context" locator and never used it); it passed only while the sheet
+      was short. Three projects' scratch notes, all titled "Scratch", made the unlinked-mention
+      list long enough to cover the editor.
+    - **WebKit-specific:** `selection-menu` and `toggles` pressed Home/Shift+End (now
+      `lineKey`); the global graph resized its canvas inside its `ResizeObserver` callback,
+      which WebKit reports as an error — now measured in the next frame (`GlobalGraph.svelte`);
+      `perf-readiness` blocks the service worker (WebKit does not route a worker's requests)
+      and writes its em dash as an entity (WebKit's driver decoded the fulfilled body as
+      Latin-1); the 16px favicon sample allows WebKit's wider edge blend (32 vs 12 at 16px
+      only); the PWA install/update/refresh specs and the offline branding test skip WebKit
+      (service-worker flows with the network off; the app has none).
+    - Rerun after the fixes, each affected spec in all three projects: 127 + 26 + 18 passed,
+      none failed; history-trash 3/3; selection-menu and toggles 14/14 (WebKit + desktop).
+    **Still open:** `pwa-refresh` "return refresh updates closed pinned text…" is intermittent
+    in Chromium (2 of 6 on mobile here; desktop and mobile in the user's run), not tied to a
+    change this session; `block-selection` is the known flake in every engine; the rest of the
+    42 (block-move, bookmarks, inbox, topbar, folder-actions, task-scroll, emoji picker) failed
+    only in the full run and passed alone, so the full run's load is suspected, not shown.
+    A second full `make e2e` is what tells.
+  - **WebKit Playwright project (2026-11-12, SPEC §22.6, §7.6.1).** `webkit` project in
+    `web/playwright.config.ts` (desktop size); `make e2e` installs WebKit and runs all three
+    projects, `make e2e-webkit` runs WebKit alone, and the manual workflow installs it with
+    `--with-deps`. Harness: `E2E_PROJECTS` in `e2e/environment.ts` drives scratch notes,
+    empty vaults, drawings and a per-project bookmark note (bookmarks are per user, so the
+    shared `Welcome` bookmark raced between projects — latent since mobile never ran that
+    test); specs' `=== "desktop"` became `!== "mobile"`; `lineKey` in `e2e/fixtures.ts`;
+    the failure fixture excuses WebKit's wording for loads cut off by navigation only.
+    **Found and fixed in the app:** (1) the workspace asked every server for the desktop
+    app's `/offline` state, a 404 on every load and every 3 s — this broke the whole Chromium
+    E2E suite on this branch too (13 of 30 in two specs); now only the app asks
+    (`CommandCenter.dom` test). (2) The image editor chunk's failed load was an unhandled
+    rejection and left a dead "Edit image" button (`editor-shell-image-import.dom.test.ts`).
+    (3) A failed emoji-catalog load was cached for the page's life (`emoji-catalog.retry.test.ts`).
+    **Run here** (focused, not the full suite): 26 specs in WebKit — 97 passed, 19 skipped
+    by design or by existing skips, 1 failed: `block-selection` Tab/Shift+Tab, the known flake,
+    which failed in Chromium too when repeated. Chromium desktop+mobile over every touched
+    spec: 199 passed. Web unit suite: 3171 passed. One Chromium mobile run of
+    `offline.spec.ts` died inside Playwright ("browser has been closed" creating a context);
+    6/6 on repeat. **Not run:** the full suite in any project (yours, `make e2e`); WebKitGTK
+    on Linux; the §21 budgets on WebKit. Still open: `openGraph` in `Workspace.svelte` has the
+    same unhandled-import shape (only when the graph is opened); `home.spec.ts` is not safe
+    under `--repeat-each` (fixed folder name, fills an empty vault).
+  - **Media sync built (2026-11-12, SPEC §7.6.10 "Media follows its note", §7.6.3, E35).**
+    In `replica.rs`: `upload_media_of` runs before each `Upload` / locally changed `Exchange`
+    (and in `place_recovered`), `download_media` after the notes, then
+    `AppState::replica_media_prune` (the server's own `media::prune_orphaned`, sparing recent
+    upload grants); `media.json` is the known-on-both-sides set. `Upstream::{media,
+    upload_media}` (note: the route's parameter includes `media/`, so the URL says it twice);
+    `LocalStore::write_exact` is now `pub(crate)` and checks the hash. `vault_gone` is async
+    and prunes too. Tests: `replica` (+6: download, not for unkept notes, upload before the
+    note and once, purge keeps shared media, recovered media never uploaded, create-again
+    takes media), leak suite `e35_media_follows_the_readable_set_and_its_address_grants_nothing`.
+    Mutations that went red: media route without its reference check, no prune, uploads for
+    every action. **In a browser** (temporary probe, deleted): a note kept offline brought its
+    image; with the server stopped the image rendered from disk. **Not covered:** an image
+    inserted while offline then reconnected was tested in Rust only, not clicked through;
+    PDFs and drawings follow the same path but were not tried; S3-backed servers were not
+    tried (the address scheme is the same).
+  - **E35 revocation purge and recovered notes built (2026-11-12, SPEC E35, §7.6.6, §7.6.7,
+    A43).** The user chose that a recovered note holds **the whole note** (A43). Planner:
+    `DeleteLocal` is gone; a note gone from a complete list is `Purge` (unchanged) or `Recover`
+    (changed, or held by an older pass); a refused local create stays held. A pass matches a
+    moved note by `id` across the whole listing, so a move out of a pinned folder is not a
+    loss. `replica/recovered.rs` (bookkeeping, names, `without_id`), `replica::{recover,
+    vault_gone, place_recovered}`, `AppState::{replica_create_markdown, replica_scrub}` (the
+    unused `replica_delete` was removed). A vault missing from upstream's vault list is
+    settled in `pass_all` (`settle_gone_vault`). `POST /api/v1/vaults/{slug}/recovered`
+    (local, never forwarded) places a note; a pass lock (`SyncStatus::exclusive`) keeps a pass
+    from running mid-choice; the window socket answers a recovered note's frames locally and
+    the forwarded note list gains recovered notes. **Found by the leak suite and fixed:** a
+    purged note's title survived in the index's SQLite WAL and its body in a Tantivy segment;
+    `mb-index` now sets `secure_delete` and has `Index::scrub` (WAL truncate + segment
+    merge), called after any pass that purged. Web: `RecoveredBanner.svelte`, the workspace
+    line with Open/Later, `Recovery` threaded through `PaneTree`/`MobileMain` to `NotePane`.
+    Tests: `replica` (+13), `desktop_connect` (+6, including the socket), leak suite (+2 E35),
+    `mb-index` `rebuild` (scrub), plan unit tests and properties updated,
+    `RecoveredBanner.dom` (7), `CommandCenter.dom` (+3), `device-offline` (+5). Mutations that
+    went red: no `secure_delete`, no scrub after a pass, recovered notes not excluded from the
+    plan, `Recover` turned into `Purge`, tab not following the note, recovered frames
+    forwarded. **In a browser** (temporary probe, deleted): note edited here and deleted on
+    the server → workspace line → Open → banner and text → Create the note again put it back
+    on the server and the tab followed; at phone width, a note recreated upstream by someone
+    else → Create again refused (only Make a new note left) → `Ideas/Hello mine` created,
+    the other person's note untouched.
+    **Not covered:** the web client's own recovered notes (§7.6.7 "Not desktop-only");
+    backlinks, history and graph panels for a recovered note say unavailable (they are
+    forwarded); a server note deleted on the server outside an index pass is noticed only
+    when the server's own index catches up; secure delete and scrub also apply to ordinary
+    server deletes' index rows but the server does not scrub after a delete (its trash keeps
+    the body anyway).
+  - **`cargo clippy --all-targets` fails on `tests/leak_suite.rs`** (`indexing_slicing`, one
+    `type_complexity`): four sites in committed code (around line 1067) and seven in the
+    uncommitted E36/E37/E38 tests. Not from the E35 work; the file's `#![allow]` covers
+    `expect`/`unwrap`/`panic` but not indexing. Either add it there with a reason or use
+    `.get()`.
+  - **Everyday gaps closed (2026-11-12, SPEC §7.6.8, §7.6.10, E36).** (1) A note URL without
+    `.md` opens the note: the `note` handler names a server vault's note by its path
+    (`view.identity`, else `<url>.md`). (2) `target="_blank"` links and `window.open` go to
+    the system browser through Tauri's `on_new_window`; the decision is
+    `mb_server::desktop::link_target`, shared with `on_navigation`. (3) Bookmarks, saved
+    layout and share links work through the app: `authorize_bookmarks` and
+    `authorize_workspace` use `vault_user` (adds device tokens), `share_manager` takes a
+    session or a device token (not an API token); the forwarder makes a created share's
+    `/s/<token>` absolute on the vault's server. (4) The palette's offline command drives
+    the app's pins (`noteCommand`), and `PinnedNotes` is not created in the app. (5) A
+    "Offline. …" notice above the tree while the vault's server is unreachable
+    (`offlineNotice`). Tests: `desktop_connect` (+5: short URL, `.md` URL, bookmarks, layout,
+    share link through the app), leak suite
+    `e36_a_devices_bookmarks_layout_and_shares_are_its_users_and_filtered_like_them`,
+    `desktop::tests` (link targets), `desktop_forward` units (share URL),
+    `device-offline.test.ts` (+6), `CommandCenter.dom.test.ts` (+4 desktop cases). Mutations
+    that went red: origin prefix without a boundary, no share editor check, no share URL
+    rewrite, snapshot not passed to the palette, notice hidden. **In a browser** (temporary
+    probe, deleted): `/v/work/Hello` opened the server's note; stopping the server showed the
+    notice in the sidebar, desktop and phone width. **Not verified:** the new-window hook in
+    the real Tauri window (it compiles; clicking an external link there is the check).
+  - **Vault picker redesigned (2026-11-11):** cards grouped "On <server>" (badge, Manage) and
+    "On this device", with plain-language counts; checked in a browser in dark, light, phone
+    width and offline. Leak suite `the_vault_picker_counts_only_notes_the_viewer_can_read`.
+  - **Not verified:** anything in the real Tauri window; Windows and Linux; reconnection after
+    an offline edit in a browser (the end-to-end tests cover it, the probe server could not
+    come back).
+  - **Found while testing, not fixed (pre-existing):** the service worker cannot register
+    under the desktop server.
+  - **Testing gotchas:** two servers on `127.0.0.1` in one browser overwrite each other's
+    `mb_session`; the pane refuses `localhost`. `cargo test` stops at the first failing
+    binary and `tests/http.rs` always fails twice (known, below), so use `--no-fail-fast` or
+    run it alone. A probe/test upstream started with plain `axum::serve` has no maintenance
+    loop, so its Markdown is written only when a note is closed.
+  - **Open items:** held notes (view-only edits, refused creates) are only listed on the
+    connected page, with no resolve action and no tree mark; the Servers page, not
+    the workspace, is where sign-in state lives; view-only notes are not written read-only;
+    a retained full-resolution original stays on the server (offline "view original" shows
+    the display copy); a short URL naming a note by title alone in
+    another folder resolves only when downloaded; first load of a server vault makes many
+    forwarded requests (one client per server now, but still serial round trips); a pass's
+    local file work runs on the async runtime; passes continue every 5 s after a revocation;
+    ~3 s blank window at launch (FSEvents); opening an existing folder is Linux-only (E29);
+    the `.app` is unsigned (each dev rebuild asks for Keychain access once); self-signed servers cannot be connected to;
+    `device revoke` needs an admin password.
+  - **Next:** the user asked to finalise the app. The everyday gaps and E35 are done (above).
+    Media sync and the WebKit project are done too. Signing/notarization is declined for now (A49:
+    unsigned packages, installed directly). Then: the §21 budgets on WebKitGTK. M19's 30-day /
+    1 GB release sweep is likely moot under A46 — confirm with the user before striking it.
 - A truncated, checksum-invalid or wrong-header sidecar still fails closed (SPEC §7.3), so
   that note stays unopenable until someone deletes the sidecar. Quarantine-and-rebuild could
   cover those cases too. It was left out because a truncated tail can hold accepted edits
@@ -346,8 +638,8 @@ no full-suite result is claimed.
     state. `task-display`, `backlinks` and `graph` (mobile) then passed 3 of 3.
   - `perf-readiness` could never pass since `f50f8a8`: `timeToEditor` waited 90 s and the test
     allowed 45 s. `timeToEditor` takes a deadline; the test passes 5 s.
-  - **Still flaky, and equally flaky on the baseline:** `block-selection` (Tab/Shift+Tab,
-    menus), `workspace` (varying cases). Different cases fail on each run; not caused by the
+  - **Still flaky, and equally flaky on the baseline:** `workspace` (varying cases).
+    (`block-selection` was here too; it was the reconnect-on-load bug, fixed above.) Different cases fail on each run; not caused by the
     day's work, not fixed.
   - `pwa-update` no longer races: each test copies `web/dist` into a temp directory and runs
     its own server on an OS-assigned port, so it never writes to `dist`. It passes in parallel
@@ -389,6 +681,10 @@ no full-suite result is claimed.
 
 ## Local development and gotchas
 
+- The desktop app (`make desktop-dev`) uses `~/Library/Application Support/app.memberberry.desktop`
+  and `~/Memberberry` unless `MEMBERBERRY_DESKTOP_DATA` / `MEMBERBERRY_NOTES_HOME` point
+  elsewhere. Use the overrides for testing. `desktop/` is outside the root workspace, so
+  `make check` does not build it; it has its own `Cargo.lock` and `target/`.
 - make dev uses frontend 9011/backend 9010; these may be live user services. Do not stop
   or reuse them. Startup builds the backend shell; never copy web/index.html over dist.
 - Rebuild before focused browser verification: npm --prefix web run build, then

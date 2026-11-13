@@ -1041,12 +1041,25 @@ fn quarantined_copies_follow_their_note_when_its_sidecar_moves() {
     let dir = TempDir::new("sync-quarantine-follows");
     let vault = vault(&dir);
     let one = quarantine_note(&dir, &vault, "One.md");
-    let identity = vault.canonical_note("One.md").unwrap().identity().to_string();
+    let identity = vault
+        .canonical_note("One.md")
+        .unwrap()
+        .identity()
+        .to_string();
 
     mb_server::sync::relocate_sidecar(dir.path(), &identity, "Moved.md").unwrap();
 
-    let moved = only_sidecar(&dir).file_name().unwrap().to_str().unwrap().to_string();
-    assert_eq!(quarantined(&dir), [format!("{moved}.1")].into_iter().collect(), "was {one}.1");
+    let moved = only_sidecar(&dir)
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        quarantined(&dir),
+        [format!("{moved}.1")].into_iter().collect(),
+        "was {one}.1"
+    );
 }
 
 #[test]
@@ -1055,8 +1068,16 @@ fn a_moved_quarantined_copy_never_overwrites_one_already_there() {
     let vault = vault(&dir);
     let one = quarantine_note(&dir, &vault, "One.md");
     let two = quarantine_note(&dir, &vault, "Two.md");
-    let from = vault.canonical_note("One.md").unwrap().identity().to_string();
-    let to = vault.canonical_note("Two.md").unwrap().identity().to_string();
+    let from = vault
+        .canonical_note("One.md")
+        .unwrap()
+        .identity()
+        .to_string();
+    let to = vault
+        .canonical_note("Two.md")
+        .unwrap()
+        .identity()
+        .to_string();
     // why: the live sidecar of the target is moved aside first, as a rename onto a
     // trashed note's identity never happens; only the quarantined copies may collide.
     std::fs::remove_file(dir.path().join(".memberberry/crdt").join(&two)).unwrap();
@@ -1065,7 +1086,9 @@ fn a_moved_quarantined_copy_never_overwrites_one_already_there() {
 
     assert_eq!(
         quarantined(&dir),
-        [format!("{two}.1"), format!("{two}.2")].into_iter().collect(),
+        [format!("{two}.1"), format!("{two}.2")]
+            .into_iter()
+            .collect(),
         "{one}.1 must arrive as a new number, not replace {two}.1"
     );
 }
@@ -1076,9 +1099,16 @@ fn purging_a_note_deletes_its_quarantined_copies_and_no_one_elses() {
     let vault = vault(&dir);
     quarantine_note(&dir, &vault, "One.md");
     let two = quarantine_note(&dir, &vault, "Two.md");
-    let identity = vault.canonical_note("One.md").unwrap().identity().to_string();
+    let identity = vault
+        .canonical_note("One.md")
+        .unwrap()
+        .identity()
+        .to_string();
 
     mb_server::sync::remove_sidecar(dir.path(), &identity).unwrap();
 
-    assert_eq!(quarantined(&dir), [format!("{two}.1")].into_iter().collect());
+    assert_eq!(
+        quarantined(&dir),
+        [format!("{two}.1")].into_iter().collect()
+    );
 }

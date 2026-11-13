@@ -209,3 +209,57 @@ fn opening_a_path_that_cannot_be_a_file_is_an_error_rather_than_a_panic() {
     std::fs::create_dir_all(&path).expect("create a directory in its place");
     assert!(Index::open(&path).is_err());
 }
+
+/// Every file in `dir` whose bytes hold `marker`.
+fn files_holding(dir: &std::path::Path, marker: &str) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if std::fs::read(&path).is_ok_and(|bytes| {
+                bytes
+                    .windows(marker.len())
+                    .any(|window| window == marker.as_bytes())
+            }) {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// E35: a removed note leaves no bytes in the database or its log once scrubbed. Without
+/// `secure_delete` its row survives in free pages; without the checkpoint, in the log.
+#[test]
+fn a_removed_note_leaves_no_bytes_behind_once_scrubbed() {
+    let dir = TempDir::new("scrub");
+    let path = dir.path().join("graph.sqlite");
+    let mut index = Index::open(&path).expect("open");
+    index
+        .upsert(&note(
+            "Secret.md",
+            "# scrub-title-marker\n\n#scrub-tag-marker\n",
+        ))
+        .expect("upsert");
+    index
+        .upsert(&note("Other.md", "# Other\n"))
+        .expect("upsert");
+    index.publish().expect("publish");
+    assert!(
+        !files_holding(dir.path(), "scrub-title-marker").is_empty(),
+        "control"
+    );
+    index.remove("Secret.md").expect("remove");
+    index.publish().expect("publish");
+    index.scrub().expect("scrub");
+    for marker in ["scrub-title-marker", "scrub-tag-marker"] {
+        assert_eq!(
+            files_holding(dir.path(), marker),
+            Vec::<std::path::PathBuf>::new(),
+            "{marker}"
+        );
+    }
+}

@@ -16,6 +16,15 @@ use rand_core::RngCore;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+mod devices;
+mod oidc;
+pub use devices::{
+    DEVICE_CODE_SECONDS, DeviceApproval, DeviceCode, DeviceGrant, DeviceId, DeviceIdentity,
+    DeviceRecord, DeviceToken, pkce_challenge, valid_device_name, valid_pkce_value,
+    valid_redirect_uri,
+};
+pub use oidc::{OidcAccount, OidcIdentity};
+
 /// A durable user identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UserId(i64);
@@ -428,6 +437,14 @@ impl AuthDb {
         }
         transaction
             .execute("DELETE FROM sessions WHERE user_id = ?1", [user_id.get()])
+            .map_err(Error::Database)?;
+        // A reset may mean the account was compromised: every device it approved goes too
+        // (§6.8.1).
+        transaction
+            .execute(
+                "UPDATE device_tokens SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
+                params![now_seconds()?, user_id.get()],
+            )
             .map_err(Error::Database)?;
         transaction.commit().map_err(Error::Database)
     }
@@ -1163,22 +1180,7 @@ impl AuthDb {
 
     /// Looks up a user by stable database identifier.
     pub fn user_by_id(&self, user_id: UserId) -> Result<Option<User>, Error> {
-        self.connection
-            .query_row(
-                "SELECT id, username, display_name, disabled, is_admin FROM users WHERE id = ?1",
-                [user_id.get()],
-                |row| {
-                    Ok(User {
-                        id: UserId(row.get(0)?),
-                        username: row.get(1)?,
-                        display_name: row.get(2)?,
-                        disabled: row.get(3)?,
-                        is_admin: row.get(4)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(Error::Database)
+        user_by_id_in(&self.connection, user_id)
     }
 
     /// Looks up a user by their durable username.
@@ -1266,6 +1268,8 @@ impl AuthDb {
             )
             .map_err(Error::Database)?;
         self.make_share_expiry_nullable()?;
+        self.migrate_devices()?;
+        self.migrate_oidc()?;
         self.ensure_cookie_signing_key()
     }
 
@@ -1457,6 +1461,26 @@ fn verify_password(password: &str, hash: &str) -> Result<bool, Error> {
         .is_ok())
 }
 
+/// [`AuthDb::user_by_id`] on any connection, including an open transaction.
+fn user_by_id_in(connection: &Connection, user_id: UserId) -> Result<Option<User>, Error> {
+    connection
+        .query_row(
+            "SELECT id, username, display_name, disabled, is_admin FROM users WHERE id = ?1",
+            [user_id.get()],
+            |row| {
+                Ok(User {
+                    id: UserId(row.get(0)?),
+                    username: row.get(1)?,
+                    display_name: row.get(2)?,
+                    disabled: row.get(3)?,
+                    is_admin: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Error::Database)
+}
+
 fn now_seconds() -> Result<i64, Error> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1575,6 +1599,9 @@ const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ZHVtbXktc2FsdC0xNmJ5dGV
 /// Authentication storage or credential validation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An email address that is not plausibly one (§6.8.2).
+    #[error("that is not an email address")]
+    InvalidEmail,
     /// SQLite failed.
     #[error("auth database: {0}")]
     Database(rusqlite::Error),
@@ -1638,4 +1665,7 @@ pub enum Error {
     /// A public link path is not a contained vault-relative note path.
     #[error("share link note path is invalid")]
     InvalidSharePath,
+    /// A device approval named an invalid device, redirect URI or PKCE challenge.
+    #[error("device approval is invalid")]
+    InvalidDeviceApproval,
 }

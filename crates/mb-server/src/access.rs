@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use mb_core::{Access, Member, NotePath, Role, Rule, Username};
+use mb_core::{Access, GroupName, Member, NotePath, Role, Rule, Username};
 use serde::{Deserialize, Serialize};
 
 /// A parsed `access.toml` plus its canonical in-memory policy.
@@ -24,37 +24,45 @@ impl AccessFile {
         let raw: RawAccess = toml::from_str(source).map_err(|error| AccessError::Malformed {
             message: error.to_string(),
         })?;
-        let members = raw
-            .members
-            .into_iter()
-            .map(|member| {
-                Ok(Member {
-                    user: username(&member.user)?,
-                    role: Role::parse(&member.role).map_err(AccessError::Invalid)?,
-                })
-            })
-            .collect::<Result<Vec<_>, AccessError>>()?;
-        let rules = raw
-            .rules
-            .into_iter()
-            .map(|rule| {
-                let grants = rule
-                    .grant
-                    .into_iter()
-                    .map(|(user, role)| {
-                        Ok((
-                            username(&user)?,
-                            Role::parse(&role).map_err(AccessError::Invalid)?,
-                        ))
-                    })
-                    .collect::<Result<BTreeMap<_, _>, AccessError>>()?;
-                Ok(Rule {
-                    path: NotePath::parse(&rule.path).map_err(AccessError::Invalid)?,
+        let mut members = Vec::new();
+        let mut group_members = Vec::new();
+        for member in raw.members {
+            let role = Role::parse(&member.role).map_err(AccessError::Invalid)?;
+            match principal(&member.user)? {
+                Principal::User(user) => members.push(Member { user, role }),
+                Principal::Group(group) => group_members.push((group, role)),
+            }
+        }
+        let mut rules = Vec::new();
+        let mut group_rules = Vec::new();
+        for rule in raw.rules {
+            let path = NotePath::parse(&rule.path).map_err(AccessError::Invalid)?;
+            let mut grants = BTreeMap::new();
+            let mut group_grants = BTreeMap::new();
+            for (name, role) in rule.grant {
+                let role = Role::parse(&role).map_err(AccessError::Invalid)?;
+                match principal(&name)? {
+                    Principal::User(user) => {
+                        grants.insert(user, role);
+                    }
+                    Principal::Group(group) => {
+                        group_grants.insert(group, role);
+                    }
+                }
+            }
+            // A rule may grant to users, groups or both; an empty one is still refused.
+            if !grants.is_empty() || group_grants.is_empty() {
+                rules.push(Rule {
+                    path: path.clone(),
                     grants,
-                })
-            })
-            .collect::<Result<Vec<_>, AccessError>>()?;
+                });
+            }
+            if !group_grants.is_empty() {
+                group_rules.push((path, group_grants));
+            }
+        }
         Access::new(members, rules)
+            .and_then(|access| access.with_group_grants(group_members, group_rules))
             .map(Self)
             .map_err(AccessError::Invalid)
     }
@@ -105,8 +113,23 @@ impl AccessFile {
     }
 }
 
-fn username(value: &str) -> Result<Username, AccessError> {
-    Username::parse(value).map_err(AccessError::Invalid)
+/// Who an `access.toml` entry names: a user, or a provider group as `group:<name>` (§6.8.2).
+enum Principal {
+    User(Username),
+    Group(GroupName),
+}
+
+const GROUP_PREFIX: &str = "group:";
+
+fn principal(value: &str) -> Result<Principal, AccessError> {
+    match value.strip_prefix(GROUP_PREFIX) {
+        Some(group) => GroupName::parse(group)
+            .map(Principal::Group)
+            .map_err(AccessError::Invalid),
+        None => Username::parse(value)
+            .map(Principal::User)
+            .map_err(AccessError::Invalid),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,26 +157,49 @@ struct RawRule {
 
 impl From<&Access> for RawAccess {
     fn from(access: &Access) -> Self {
-        Self {
-            members: access
-                .members()
-                .map(|(user, role)| RawMember {
-                    user: user.to_string(),
-                    role: role.as_str().to_string(),
-                })
-                .collect(),
-            rules: access
-                .rules()
-                .map(|rule| RawRule {
-                    path: rule.path.to_string(),
-                    grant: rule
-                        .grants
-                        .iter()
-                        .map(|(user, role)| (user.to_string(), role.as_str().to_string()))
-                        .collect(),
-                })
-                .collect(),
+        let members = access
+            .members()
+            .map(|(user, role)| RawMember {
+                user: user.to_string(),
+                role: role.as_str().to_string(),
+            })
+            .chain(access.group_members().map(|(group, role)| RawMember {
+                user: format!("{GROUP_PREFIX}{group}"),
+                role: role.as_str().to_string(),
+            }))
+            .collect();
+        // why: group grants must survive a save — an invite accepted, a member added — or
+        // writing the file back would silently revoke every group's access.
+        let mut by_path: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        let mut order: Vec<String> = Vec::new();
+        for rule in access.rules() {
+            let path = rule.path.to_string();
+            if !by_path.contains_key(&path) {
+                order.push(path.clone());
+            }
+            let grants = by_path.entry(path).or_default();
+            for (user, role) in &rule.grants {
+                grants.insert(user.to_string(), role.as_str().to_string());
+            }
         }
+        for (path, grants) in access.group_rules() {
+            let path = path.to_string();
+            if !by_path.contains_key(&path) {
+                order.push(path.clone());
+            }
+            let entry = by_path.entry(path).or_default();
+            for (group, role) in grants {
+                entry.insert(format!("{GROUP_PREFIX}{group}"), role.as_str().to_string());
+            }
+        }
+        let rules = order
+            .into_iter()
+            .map(|path| RawRule {
+                grant: by_path.remove(&path).unwrap_or_default(),
+                path,
+            })
+            .collect();
+        Self { members, rules }
     }
 }
 

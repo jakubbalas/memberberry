@@ -3,8 +3,9 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { E2E_NOTES, E2E_USER, E2E_WEB_ROOT, REPO } from "./environment.js";
-import { expect, signIn, test as base } from "./fixtures.js";
+import { expect, lineKey, signIn, test as base } from "./fixtures.js";
 import type { Page } from "@playwright/test";
+
 
 // Two complete precache downloads run on the resource-limited release fixture.
 base.setTimeout(90_000);
@@ -99,6 +100,12 @@ const test = base.extend<{ updateServer: UpdateServer }>({
   baseURL: async ({ updateServer }, use) => { await use(updateServer.origin); },
 });
 
+// why: the browser PWA's service worker — install, update and refresh with the network off.
+// The desktop app has no service worker (its offline mode is the embedded server, SPEC
+// §7.6.10), and Playwright's WebKit fails a navigation made with the network off ("internal
+// error") before the worker can answer.
+test.skip(({ browserName }) => browserName === "webkit", "the browser PWA's service worker; the app has none");
+
 async function checkCurrentWorker(page: Page): Promise<void> {
   // Finish the startup update job before publishing a new worker; the browser coalesces
   // simultaneous update jobs and could otherwise finish checking the previous bytes.
@@ -188,7 +195,7 @@ test("an update cannot reload over unsent offline edits", async ({ page, context
     failures.allow(/ERR_INTERNET_DISCONNECTED|Failed to fetch|Failed to load resource|WebSocket/);
     await context.setOffline(true);
     await editor.getByText("A note this test may edit").click();
-    await page.keyboard.press("End");
+    await lineKey(page, "End");
     await page.keyboard.type(" Kept while updating.");
     await page.getByRole("button", { name: "Reload to update" }).click();
     await expect(page.getByText("Reconnect and sync your notes before updating.")).toBeVisible();

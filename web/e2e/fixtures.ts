@@ -15,7 +15,7 @@ import { test as base, expect, type Page } from "@playwright/test";
 // `environment.ts` is the single source of truth for what the E2E server contains, so the
 // credentials and note paths asserted here cannot drift from what was provisioned. It is a
 // separate module from `serve.ts` because importing that one would start a second server.
-import { E2E_NOTES, E2E_USER } from "./environment.js";
+import { E2E_NOTES, E2E_ORIGIN, E2E_USER } from "./environment.js";
 
 export { E2E_NOTES, E2E_USER };
 
@@ -26,9 +26,10 @@ export interface Failures {
 
 export const test = base.extend<{ failures: Failures }>({
   failures: [
-    async ({ page }, use) => {
+    async ({ page, browserName }, use) => {
       const allowed: RegExp[] = [];
       const problems: string[] = [];
+      const webkit = browserName === "webkit";
       const record = (message: string): void => {
         problems.push(message);
       };
@@ -44,7 +45,9 @@ export const test = base.extend<{ failures: Failures }>({
         // debounced layout save on every `page.goto`. Recording it would mean every test
         // that navigates twice has to allow it, and an allowlist everyone copies is not a
         // check. Every *other* failure, and every response >= 400, still counts.
+        // WebKit says "cancelled" for the same thing.
         if (reason.includes("net::ERR_ABORTED")) return;
+        if (webkit && reason === "cancelled") return;
         record(`request failed: ${request.method()} ${request.url()} — ${reason}`);
       });
       page.on("response", (response) => {
@@ -57,7 +60,9 @@ export const test = base.extend<{ failures: Failures }>({
         },
       });
 
-      const unexpected = problems.filter((p) => !allowed.some((pattern) => pattern.test(p)));
+      const unexpected = problems.filter(
+        (p) => !allowed.some((pattern) => pattern.test(p)) && !(webkit && cutOff(p)),
+      );
       expect(unexpected, "the browser reported problems this test did not allow").toEqual([]);
     },
     { auto: true },
@@ -65,6 +70,53 @@ export const test = base.extend<{ failures: Failures }>({
 });
 
 export { expect };
+
+/**
+ * Moves the caret, or extends the selection, to the start or end of the line.
+ *
+ * why: macOS WebKit follows the Mac convention, as the desktop app's WKWebView does — `Home`
+ * and `End` scroll the page and leave the caret where it is, and the line keys are Cmd+← and
+ * Cmd+→. Chromium, and WebKitGTK on Linux, take `Home` and `End`.
+ */
+export async function lineKey(page: Page, key: "Home" | "End" | "Shift+Home" | "Shift+End"): Promise<void> {
+  const macWebKit = process.platform === "darwin" && page.context().browser()?.browserType().name() === "webkit";
+  if (!macWebKit) {
+    await page.keyboard.press(key);
+    return;
+  }
+  const mac = {
+    Home: "Meta+ArrowLeft",
+    End: "Meta+ArrowRight",
+    "Shift+Home": "Shift+Meta+ArrowLeft",
+    "Shift+End": "Shift+Meta+ArrowRight",
+  } as const;
+  await page.keyboard.press(mac[key]);
+}
+
+const ORIGIN_HOST = new URL(E2E_ORIGIN).host;
+
+/**
+ * Whether WebKit's `problem` only reports a load that navigation or teardown cut off.
+ *
+ * why: Chromium drops a load the page abandoned; WebKit reports it, and in its own words.
+ * A `fetch` cut off by navigation becomes an uncaught "…due to access control checks" — for a
+ * same-origin URL that can mean nothing else, since this app makes no cross-origin request.
+ * (A dynamic `import()` cut off the same way is *not* excused: the app handles a failed
+ * chunk load itself, so an uncaught one is a bug.) Closing a
+ * sync socket that was still connecting — an editor torn down on a tab switch — is logged
+ * as an error by WebKit, in one of two wordings. Each is the same event `net::ERR_ABORTED` excuses on Chromium;
+ * anything else WebKit reports still fails the test.
+ */
+function cutOff(problem: string): boolean {
+  if (problem.startsWith("uncaught exception: ") && problem.endsWith(" due to access control checks.")) {
+    return problem.includes(`${ORIGIN_HOST}/`);
+  }
+  return (
+    problem.startsWith(`console error: WebSocket connection to 'ws://${ORIGIN_HOST}/api/v1/sync' failed:`) &&
+    (problem.endsWith("WebSocket is closed before the connection is established.") ||
+      problem.endsWith("Socket is not connected"))
+  );
+}
 
 /**
  * Signs in as the provisioned owner and waits for the authenticated root.

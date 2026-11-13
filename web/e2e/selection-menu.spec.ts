@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import type { EditorView } from "@tiptap/pm/view";
 import { E2E_ORIGIN, E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
 
 test("document mapping cannot revive retained controls; fresh native keyboard and pointer selections work", async ({ page }, info) => {
   await signIn(page);
@@ -39,7 +39,7 @@ test("document mapping cannot revive retained controls; fresh native keyboard an
   await page.keyboard.press("Alt+F10");
   await expect(popup).toBeHidden();
   await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("Home");
+  await lineKey(page, "Home");
   for (let i = 0; i < 5; i++) await page.keyboard.press("Shift+ArrowRight");
   await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("Later");
   await expect(popup).toBeVisible();
@@ -83,7 +83,7 @@ test("destination-only link edits preserve authored titles on disk and independe
   const editor = page.locator(EDITOR);
   const popup = page.getByRole("toolbar", { name: "Selected text formatting" });
   const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
-  const select = async () => { await editor.locator("p").click(); await page.keyboard.press("Home"); await page.keyboard.press("Shift+End"); await expect(popup).toBeVisible(); };
+  const select = async () => { await editor.locator("p").click(); await lineKey(page, "Home"); await lineKey(page, "Shift+End"); await expect(popup).toBeVisible(); };
   await select();
   await popup.getByRole("button", { name: "Link", exact: true }).click();
   await expect(popup.getByRole("textbox", { name: "Link destination", exact: true })).toHaveValue("https://example.com");
@@ -119,8 +119,8 @@ test("destination-only link edits preserve authored titles on disk and independe
 const EDITOR = ".editor-surface .tiptap";
 async function selectLater(page: Page): Promise<void> {
   await page.locator(`${EDITOR} p`).last().click();
-  await page.keyboard.press("Home");
-  await page.keyboard.press("Shift+End");
+  await lineKey(page, "Home");
+  await lineKey(page, "Shift+End");
   await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("Later words");
 }
 
@@ -262,8 +262,8 @@ test("native inline marks and safe link dialog retain selection on desktop and t
   await page.getByRole("button", { name: "Toggle Markdown source view" }).click();
   await expect(editor).toBeVisible();
   await editor.locator("h1").click();
-  await page.keyboard.press("Home");
-  await page.keyboard.press("Shift+End");
+  await lineKey(page, "Home");
+  await lineKey(page, "Shift+End");
   await expect(popup).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

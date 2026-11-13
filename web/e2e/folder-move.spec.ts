@@ -16,7 +16,7 @@ test("folders move into another folder and back to root with their notes", async
   const tree = page.getByRole("tree", { name: "Notes", exact: true });
   const row = (path: string) => tree.getByTitle(path, { exact: true });
   await expect(row(source)).toHaveAttribute("draggable", "true");
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     await row(source).dragTo(row(destination));
   } else {
     await page.getByRole("button", { name: `Folder actions for ${source}`, exact: true }).click();
@@ -28,7 +28,7 @@ test("folders move into another folder and back to root with their notes", async
   expect(readFileSync(join(E2E_VAULT, destination, source, "Nested/Note.md"), "utf8")).toBe("# Note\n");
   expect(existsSync(join(E2E_VAULT, destination, source, "Empty"))).toBe(true);
   expect(existsSync(join(E2E_VAULT, source))).toBe(false);
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     await row(`${destination}/${source}`).dragTo(page.getByRole("group", { name: "Vault root", exact: true }));
   } else {
     await page.getByRole("button", { name: `Folder actions for ${source}`, exact: true }).click();

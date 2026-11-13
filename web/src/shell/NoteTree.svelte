@@ -23,6 +23,7 @@
   import NamePrompt from "./NamePrompt.svelte";
   import { validFolder } from "./folders.js";
   import { readTreeExpansion, writeTreeExpansion, type TreeExpansion } from "./tree-expansion.js";
+  import { actionFor, openable, vaultAction, type OfflineAction, type OfflineSnapshot } from "./device-offline.js";
 
   interface Props {
     readonly catalog: NoteCatalog;
@@ -48,9 +49,13 @@
     readonly onmove?: (from: string, to: string, kind: "note" | "folder") => Promise<string | undefined>;
     readonly target?: EventTarget | undefined;
     readonly expansion?: TreeExpansion;
+    /** A desktop server vault's offline state (§7.6.10); absent everywhere else. */
+    readonly offline?: OfflineSnapshot | undefined;
+    /** Applies an offline menu entry. */
+    readonly onoffline?: (action: OfflineAction) => void;
   }
 
-  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder, onopenfolder, showFilenames = false, onfilenames, ondelete, ondeletefolder, onmove, target, expansion }: Props = $props();
+  const { catalog, bookmarks, activeNote, onopen, emptyFolders = [], oncreate, onfolder, onopenfolder, showFilenames = false, onfilenames, ondelete, ondeletefolder, onmove, target, expansion, offline, onoffline }: Props = $props();
 
   let expanded = $state<ReadonlySet<string>>(new Set());
   let cursor = $state(0);
@@ -194,6 +199,11 @@
   }
 
   const basename = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
+  /** The offline entry for a menu, as a context-menu action. */
+  const offlineActions = (action: OfflineAction | undefined): { label: string; onselect: () => void }[] =>
+    action === undefined || onoffline === undefined ? [] : [{ label: action.label, onselect: () => onoffline(action) }];
+  const downloaded = (path: string): boolean => offline?.downloaded.includes(path) === true;
+  const unavailable = (path: string): boolean => offline !== undefined && !openable(offline, path);
   const label = (row: (typeof rows)[number]): string =>
     row.node.kind === "note" ? (showFilenames ? basename(row.node.path) : row.node.title ?? row.node.name) : emojiName(row.node.name, nameCatalog);
 
@@ -376,6 +386,7 @@
             data-kind={row.node.kind}
             data-current={row.node.kind === "note" && row.node.path === activeNote}
             data-dragging={row.node.path === draggingPath}
+            data-unavailable={row.node.kind === "note" && unavailable(row.node.path)}
             data-drop-target={row.node.kind === "folder" && row.node.path === dropFolder}
             style={`--tree-depth: ${row.depth}`}
             title={row.node.path}
@@ -415,6 +426,11 @@
             {/if}
 
             {#if row.node.kind === "note"}
+              {#if downloaded(row.node.path)}
+                <span class="tree-offline" title="Available offline"><Icon name="offline" /><span class="visually-hidden">Available offline</span></span>
+              {:else if unavailable(row.node.path)}
+                <span class="visually-hidden">Online only; not available while offline</span>
+              {/if}
               {#if row.node.conflicts > 0}
                 <span class="tree-conflicts" aria-label={conflictLabel(row.node.conflicts)}>
                   {row.node.conflicts}
@@ -470,6 +486,7 @@
   x={settings.x}
   y={settings.y}
   options={[{ label: "Show filenames", checked: showFilenames, ontoggle: () => onfilenames?.(!showFilenames) }]}
+  actions={offline === undefined ? [] : offlineActions(vaultAction(offline))}
   ondismiss={() => (settings = undefined)}
 />
 {:else if context?.kind === "folder"}
@@ -478,6 +495,7 @@
   label="Folder actions"
   x={context.x}
   y={context.y}
+  actions={offline === undefined ? [] : offlineActions(actionFor(offline, context.path, "folder"))}
   oncreate={oncreate === undefined ? undefined : () => {
     if (context !== undefined) oncreate(`${context.path}/`);
     context = undefined;
@@ -525,6 +543,7 @@
   }}
   bookmarked={context !== undefined && bookmarks.has(context.path)}
   onbookmark={toggleBookmark}
+  actions={offline === undefined || context === undefined ? [] : offlineActions(actionFor(offline, context.path, "note"))}
   ondismiss={() => (context = undefined)}
 />
 {/if}

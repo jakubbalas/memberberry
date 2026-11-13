@@ -58,6 +58,10 @@ pub enum AuditAction {
     NoteDeleted,
     /// A note was restored from trash.
     NoteRestored,
+    /// An account's email set or cleared (§6.8.2).
+    AccountEmail,
+    /// A device was approved, issued a token, or disconnected (§6.8.1).
+    Device,
 }
 
 /// The outcome of an audit event.

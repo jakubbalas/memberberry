@@ -2752,3 +2752,1680 @@ mod folder_delete_cases;
 fn e32_folder_delete_authorizes_all_descendants_before_confirmation_or_mutation() {
     folder_delete_cases::permission_preflight();
 }
+
+/// E34: on the desktop app's loopback server, anything but the launched window — another
+/// local process, or a web page reaching loopback through DNS rebinding — gets one identical
+/// refusal and no byte of note content, from every kind of route.
+#[tokio::test]
+async fn e34_nothing_but_the_launched_window_reaches_the_desktop_server() {
+    use mb_server::desktop::{DesktopPaths, DesktopServer};
+    let dir = TempDir::new("e34");
+    let paths = DesktopPaths {
+        app_data: dir.path().join("app-data"),
+        notes_home: dir.path().join("Memberberry"),
+        web_root: dir.path().join("web"),
+    };
+    let server = DesktopServer::start(
+        &paths,
+        &mb_server::desktop::DesktopIdentity {
+            display_name: "Jo".into(),
+            device_name: "Jo's laptop".into(),
+        },
+        mb_server::desktop::DesktopHost {
+            secrets: std::sync::Arc::new(mb_server::desktop::MemorySecrets::default()),
+            browser: std::sync::Arc::new(mb_server::desktop::RecordingBrowser::default()),
+        },
+    )
+    .expect("desktop server");
+    let origin = format!("http://127.0.0.1:{}", server.port());
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let launched = client
+        .get(server.launch_url())
+        .send()
+        .await
+        .expect("launch");
+    let desktop = launched
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok()?.split(';').next())
+        .find(|pair| pair.starts_with("mb_desktop="))
+        .expect("desktop cookie")
+        .to_string();
+    let created = client
+        .post(format!("{origin}/vaults/new"))
+        .header(reqwest::header::COOKIE, &desktop)
+        .header(reqwest::header::ORIGIN, &origin)
+        .form(&[("name", "Journal"), ("slug", "journal")])
+        .send()
+        .await
+        .expect("create vault");
+    assert!(created.status().is_redirection());
+    std::fs::write(
+        paths.notes_home.join("journal/notes/diary.md"),
+        "# Diary\n\nprivate-e34-marker\n",
+    )
+    .expect("note");
+
+    let probes = [
+        "/",
+        "/api/v1/vaults",
+        "/api/v1/vaults/journal/notes",
+        "/v/journal/diary",
+        "/api/v1/sync",
+        "/assets/index.js",
+    ];
+    let rebound = format!("attacker.example:{}", server.port());
+    let mut bodies = std::collections::BTreeSet::new();
+    for path in probes {
+        let attempts = [
+            client.get(format!("{origin}{path}")),
+            client
+                .get(format!("{origin}{path}"))
+                .header(reqwest::header::COOKIE, &desktop)
+                .header(reqwest::header::HOST, &rebound),
+            client
+                .get(format!("{origin}{path}"))
+                .header(reqwest::header::COOKIE, &desktop)
+                .header(reqwest::header::ORIGIN, "https://attacker.example"),
+            client.get(format!("{origin}{path}")).header(
+                reqwest::header::COOKIE,
+                "mb_desktop=0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+        ];
+        for attempt in attempts {
+            let response = attempt.send().await.expect("probe");
+            assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN, "{path}");
+            let body = response.text().await.expect("body");
+            assert!(!body.contains("private-e34-marker") && !body.contains("Diary"));
+            bodies.insert(body);
+        }
+    }
+    let replayed = client
+        .get(server.launch_url())
+        .send()
+        .await
+        .expect("replayed launch");
+    assert_eq!(replayed.status(), reqwest::StatusCode::FORBIDDEN);
+    bodies.insert(replayed.text().await.expect("body"));
+    assert_eq!(bodies.len(), 1, "every refusal is the same answer");
+
+    // The positive control: the launched window does read the note, so the refusals above
+    // are the guard's and not a vault that serves nothing.
+    let window = client
+        .get(format!("{origin}/v/journal/diary"))
+        .header(reqwest::header::COOKIE, &desktop)
+        .send()
+        .await
+        .expect("window read");
+    assert_eq!(window.status(), reqwest::StatusCode::OK);
+    assert!(
+        window
+            .text()
+            .await
+            .expect("body")
+            .contains("private-e34-marker")
+    );
+    server.stop().expect("stop");
+}
+
+/// E36: a device token reads exactly what its user reads — another user's private note is as
+/// absent for it as for its user's own browser — and an administrator's device administers
+/// nothing.
+#[tokio::test]
+async fn e36_a_device_reads_what_its_user_reads_and_administers_nothing() {
+    use mb_server::http::{AppState, router};
+    let dir = TempDir::new("e36");
+    let make = |slug: &str, policy: &str, text: &str| {
+        let root = dir.path().join(slug);
+        std::fs::create_dir_all(root.join("notes")).expect("notes");
+        std::fs::write(root.join("access.toml"), policy).expect("policy");
+        std::fs::write(root.join("notes/hello.md"), text).expect("note");
+        Vault::open(Slug::parse(slug).expect("slug"), slug, root).expect("vault")
+    };
+    let vaults = vec![
+        make(
+            "private",
+            "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+            "# Hello\n\nprivate-e36-marker\n",
+        ),
+        make(
+            "shared",
+            "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[members]]\nuser = \"bob\"\nrole = \"viewer\"\n",
+            "# Hello\n\nshared-e36-marker\n",
+        ),
+    ];
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("alice");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("bob");
+    let verifier = "v".repeat(43);
+    let redirect = "http://127.0.0.1:4000/desktop/connect/callback";
+    let mut grant = |user_id| {
+        let code = auth
+            .approve_device(mb_auth::DeviceApproval {
+                user_id,
+                device_name: "Laptop",
+                redirect_uri: redirect,
+                code_challenge: &mb_auth::pkce_challenge(&verifier),
+            })
+            .expect("approve");
+        auth.exchange_device_code(&code, &verifier, redirect)
+            .expect("exchange")
+            .expect("grant")
+            .token
+            .expose_secret()
+            .to_string()
+    };
+    let alice_device = grant(alice.id);
+    let bob_device = grant(bob.id);
+    let state = AppState::authenticated(vaults, auth)
+        .expect("state")
+        .with_vault_management(dir.path().join("server.toml"), false)
+        .expect("management");
+    let state = std::sync::Arc::new(state);
+    let errors = state.maintain_index(&mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "{errors:?}");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = router(std::sync::Arc::clone(&state));
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let read = |token: &str, path: &str| {
+        client
+            .get(format!("{origin}{path}"))
+            .bearer_auth(token.to_string())
+            .send()
+    };
+
+    for path in [
+        "/v/private/hello",
+        "/v/private/",
+        "/api/v1/vaults/private/notes",
+    ] {
+        let response = read(&bob_device, path).await.expect("probe");
+        let status = response.status();
+        let body = response.text().await.expect("body");
+        assert!(!status.is_success(), "{path} answered {status}");
+        assert!(!body.contains("private-e36-marker"), "{path}");
+    }
+    let vaults = read(&bob_device, "/api/v1/vaults")
+        .await
+        .expect("vaults")
+        .text()
+        .await
+        .expect("body");
+    assert!(vaults.contains("shared") && !vaults.contains("private"));
+    // The positive control: the same device does read what its user may.
+    let shared = read(&bob_device, "/v/shared/hello")
+        .await
+        .expect("shared")
+        .text()
+        .await
+        .expect("body");
+    assert!(shared.contains("shared-e36-marker"));
+
+    let planted = client
+        .post(format!("{origin}/vaults/new"))
+        .bearer_auth(&alice_device)
+        .header(reqwest::header::ORIGIN, &origin)
+        .form(&[("name", "Planted"), ("slug", "planted")])
+        .send()
+        .await
+        .expect("create vault");
+    assert!(!planted.status().is_success() && !planted.status().is_redirection());
+    assert!(!dir.path().join("vaults/planted").exists());
+    server.abort();
+}
+
+/// E36 for what a workspace keeps per user (§7.6.10): a device's bookmarks, saved layout and
+/// share links are its user's, behind the same filter as that user's browser. The app needs
+/// them to work in a server vault; none of them may reach a vault, note or link its user
+/// cannot.
+#[tokio::test]
+async fn e36_a_devices_bookmarks_layout_and_shares_are_its_users_and_filtered_like_them() {
+    use mb_server::http::{AppState, router};
+    let dir = TempDir::new("e36-workspace");
+    let make = |slug: &str, policy: &str| {
+        let root = dir.path().join(slug);
+        std::fs::create_dir_all(root.join("notes")).expect("notes");
+        std::fs::write(root.join("access.toml"), policy).expect("policy");
+        std::fs::write(root.join("notes/hello.md"), "# Hello\n").expect("note");
+        Vault::open(Slug::parse(slug).expect("slug"), slug, root).expect("vault")
+    };
+    let vaults = vec![
+        make(
+            "private",
+            "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+        ),
+        make(
+            "shared",
+            "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[members]]\nuser = \"bob\"\nrole = \"viewer\"\n",
+        ),
+    ];
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("alice");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("bob");
+    let verifier = "v".repeat(43);
+    let redirect = "http://127.0.0.1:4000/desktop/connect/callback";
+    let mut grant = |user_id| {
+        let code = auth
+            .approve_device(mb_auth::DeviceApproval {
+                user_id,
+                device_name: "Laptop",
+                redirect_uri: redirect,
+                code_challenge: &mb_auth::pkce_challenge(&verifier),
+            })
+            .expect("approve");
+        auth.exchange_device_code(&code, &verifier, redirect)
+            .expect("exchange")
+            .expect("grant")
+            .token
+            .expose_secret()
+            .to_string()
+    };
+    let alice_device = grant(alice.id);
+    let bob_device = grant(bob.id);
+    let state = AppState::authenticated(vaults, auth)
+        .expect("state")
+        .with_data_dir(dir.path().join("data"));
+    let state = std::sync::Arc::new(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = router(std::sync::Arc::clone(&state));
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let send = |method: reqwest::Method, token: &str, path: &str, body: &str| {
+        client
+            .request(method, format!("{origin}{path}"))
+            .bearer_auth(token.to_string())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string())
+            .send()
+    };
+    use reqwest::Method;
+
+    // The positive controls: Alice's device keeps her bookmarks, layout and links.
+    let routes = [
+        ("/api/v1/vaults/private/bookmarks", "[\"hello.md\"]"),
+        (
+            "/api/v1/vaults/private/workspace/laptop",
+            "{\"tabs\":[\"hello.md\"]}",
+        ),
+    ];
+    for (route, body) in routes {
+        let saved = send(Method::PUT, &alice_device, route, body)
+            .await
+            .expect("save");
+        assert!(saved.status().is_success(), "{route}: {}", saved.status());
+        let loaded = send(Method::GET, &alice_device, route, "")
+            .await
+            .expect("load");
+        assert!(loaded.status().is_success(), "{route}");
+        assert!(
+            loaded.text().await.expect("body").contains("hello.md"),
+            "{route}"
+        );
+    }
+    let created = send(
+        Method::POST,
+        &alice_device,
+        "/api/v1/vaults/private/shares",
+        "{\"note\":\"hello.md\",\"never_expires\":true}",
+    )
+    .await
+    .expect("share");
+    assert!(created.status().is_success(), "{}", created.status());
+    let listed = send(
+        Method::GET,
+        &alice_device,
+        "/api/v1/vaults/private/shares",
+        "",
+    )
+    .await
+    .expect("links")
+    .text()
+    .await
+    .expect("body");
+    assert!(listed.contains("hello.md"), "{listed}");
+
+    // Bob's device reaches none of it in a vault he is not in, and shares nothing he only
+    // views.
+    for (method, route, body) in [
+        (Method::GET, "/api/v1/vaults/private/bookmarks", ""),
+        (
+            Method::PUT,
+            "/api/v1/vaults/private/bookmarks",
+            "[\"hello.md\"]",
+        ),
+        (Method::GET, "/api/v1/vaults/private/workspace/laptop", ""),
+        (Method::PUT, "/api/v1/vaults/private/workspace/laptop", "{}"),
+        (Method::GET, "/api/v1/vaults/private/shares", ""),
+        (
+            Method::POST,
+            "/api/v1/vaults/private/shares",
+            "{\"note\":\"hello.md\",\"never_expires\":true}",
+        ),
+        (
+            Method::POST,
+            "/api/v1/vaults/shared/shares",
+            "{\"note\":\"hello.md\",\"never_expires\":true}",
+        ),
+    ] {
+        let response = send(method.clone(), &bob_device, route, body)
+            .await
+            .expect("probe");
+        let status = response.status();
+        let text = response.text().await.expect("body");
+        assert!(!status.is_success(), "{method} {route} answered {status}");
+        assert!(!text.contains("hello.md"), "{method} {route}: {text}");
+    }
+    // Alice's layout is not Bob's, even in a vault they share.
+    let bobs = send(
+        Method::GET,
+        &bob_device,
+        "/api/v1/vaults/shared/workspace/laptop",
+        "",
+    )
+    .await
+    .expect("bob layout");
+    assert_eq!(bobs.status(), reqwest::StatusCode::NO_CONTENT);
+    server.abort();
+}
+
+/// E36 on the sync path (§7.6.9): a device token opens the sync socket as its user, reads
+/// only what that user reads, cannot write where the user may only view, and is
+/// re-authenticated per frame, so a revocation lands on the very next frame.
+#[tokio::test]
+async fn e36_a_device_syncs_only_what_its_user_reads_and_dies_with_its_revocation() {
+    use futures_util::{SinkExt, StreamExt};
+    use mb_server::http::{AppState, router};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::protocol::Message;
+
+    let dir = TempDir::new("e36-sync");
+    let make = |slug: &str, policy: &str| {
+        let root = dir.path().join(slug);
+        std::fs::create_dir_all(root.join("notes")).expect("notes");
+        std::fs::write(root.join("access.toml"), policy).expect("policy");
+        std::fs::write(root.join("notes/hello.md"), "# Hello\n\ne36-sync-marker\n").expect("note");
+        Vault::open(Slug::parse(slug).expect("slug"), slug, root).expect("vault")
+    };
+    let vaults = vec![
+        make(
+            "private",
+            "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+        ),
+        make(
+            "shared",
+            "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[members]]\nuser = \"bob\"\nrole = \"viewer\"\n",
+        ),
+    ];
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("alice");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("bob");
+    let verifier = "v".repeat(43);
+    let redirect = "http://127.0.0.1:4000/desktop/connect/callback";
+    let code = auth
+        .approve_device(mb_auth::DeviceApproval {
+            user_id: bob.id,
+            device_name: "Laptop",
+            redirect_uri: redirect,
+            code_challenge: &mb_auth::pkce_challenge(&verifier),
+        })
+        .expect("approve");
+    let token = auth
+        .exchange_device_code(&code, &verifier, redirect)
+        .expect("exchange")
+        .expect("grant")
+        .token
+        .expose_secret()
+        .to_string();
+    let state = std::sync::Arc::new(AppState::authenticated(vaults, auth).expect("state"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("addr");
+    let app = router(std::sync::Arc::clone(&state));
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+    let mut request = format!("ws://{address}/api/v1/sync")
+        .into_client_request()
+        .expect("request");
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {token}").parse().expect("header"),
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("a device token opens the sync socket");
+    let schema = mb_server::sync::current_schema_version().expect("schema");
+    let subscribe = |vault: &str| {
+        Message::Text(
+            serde_json::json!({"type":"subscribe","vault":vault,"note":"hello.md","schema_version":schema})
+                .to_string()
+                .into(),
+        )
+    };
+    // Readable: admitted, then the full state arrives.
+    socket.send(subscribe("shared")).await.expect("send");
+    let admitted = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .expect("reply")
+        .expect("open")
+        .expect("frame");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(admitted.to_text().expect("text")).expect("json")
+            ["type"],
+        "admitted"
+    );
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .expect("reply")
+        .expect("open")
+        .expect("frame");
+    let Message::Binary(state_frame) = reply else {
+        panic!("expected the shared note's state, got {reply:?}");
+    };
+    assert_eq!(state_frame.first(), Some(&0x01));
+
+    // Unreadable: refused exactly as a note that does not exist.
+    socket.send(subscribe("private")).await.expect("send");
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .expect("reply")
+        .expect("open")
+        .expect("frame");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(reply.to_text().expect("text")).expect("json")["code"],
+        "not_found"
+    );
+
+    // View-only: an update is refused.
+    let mut frame = vec![0x02];
+    frame.extend_from_slice(&6u16.to_be_bytes());
+    frame.extend_from_slice(&8u16.to_be_bytes());
+    frame.extend_from_slice(b"sharedhello.md");
+    frame.extend_from_slice(&[0, 0]);
+    socket
+        .send(Message::Binary(frame.into()))
+        .await
+        .expect("send");
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .expect("reply")
+        .expect("open")
+        .expect("frame");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(reply.to_text().expect("text")).expect("json")["code"],
+        "read_only"
+    );
+
+    // Revoked while the socket stays open: the next frame is denied.
+    let revoked = reqwest::Client::new()
+        .delete(format!("http://{address}/api/v1/devices/self"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("revoke");
+    assert!(revoked.status().is_success());
+    socket.send(subscribe("shared")).await.expect("send");
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .expect("reply")
+        .expect("open")
+        .expect("frame");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(reply.to_text().expect("text")).expect("json")["code"],
+        "not_found",
+        "a device token is re-authenticated per frame"
+    );
+    server.abort();
+}
+
+/// E37 (§7.6.10): the desktop app forwards only a registered server vault's routes, only
+/// with the device token, and never its own cookies; upstream's answer comes back as is.
+#[tokio::test]
+async fn e37_forwarding_carries_only_the_device_token_and_only_server_vault_routes() {
+    use mb_server::desktop::{
+        DesktopHost, DesktopIdentity, DesktopPaths, DesktopServer, MemorySecrets, RecordingBrowser,
+        SecretStore,
+    };
+    use mb_server::http::{AppState, router};
+    use std::sync::{Arc, Mutex};
+
+    let dir = TempDir::new("e37");
+    let make = |slug: &str, owner: &str| {
+        let root = dir.path().join("server").join(slug);
+        std::fs::create_dir_all(root.join("notes")).expect("notes");
+        std::fs::write(
+            root.join("access.toml"),
+            format!("[[members]]\nuser = \"{owner}\"\nrole = \"owner\"\n"),
+        )
+        .expect("policy");
+        std::fs::write(root.join("notes/Hello.md"), "# Hello\n\ne37-marker\n").expect("note");
+        Vault::open(Slug::parse(slug).expect("slug"), slug, root).expect("vault")
+    };
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("alice");
+    auth.create_user(mb_auth::NewUser {
+        username: "bob",
+        display_name: "Bob",
+        password: "correct horse battery staple",
+    })
+    .expect("bob");
+    let verifier = "v".repeat(43);
+    let redirect = "http://127.0.0.1:4000/desktop/connect/callback";
+    let code = auth
+        .approve_device(mb_auth::DeviceApproval {
+            user_id: alice.id,
+            device_name: "Laptop",
+            redirect_uri: redirect,
+            code_challenge: &mb_auth::pkce_challenge(&verifier),
+        })
+        .expect("approve");
+    let token = auth
+        .exchange_device_code(&code, &verifier, redirect)
+        .expect("exchange")
+        .expect("grant")
+        .token
+        .expose_secret()
+        .to_string();
+    let server = Arc::new(
+        AppState::authenticated(vec![make("work", "alice"), make("secret", "bob")], auth)
+            .expect("server"),
+    );
+    let _ = server.maintain_index(&mb_server::watch::Changes::All);
+    let seen: Arc<Mutex<Vec<(String, axum::http::HeaderMap)>>> = Arc::default();
+    let record = Arc::clone(&seen);
+    let app = router(server).layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let record = Arc::clone(&record);
+            async move {
+                if let Ok(mut seen) = record.lock() {
+                    seen.push((request.uri().path().to_string(), request.headers().clone()));
+                }
+                next.run(request).await
+            }
+        },
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+
+    let paths = DesktopPaths {
+        app_data: dir.path().join("app"),
+        notes_home: dir.path().join("home"),
+        web_root: dir.path().join("web"),
+    };
+    std::fs::create_dir_all(&paths.app_data).expect("app data");
+    std::fs::write(
+        paths.app_data.join("desktop.toml"),
+        format!(
+            "[server]\norigin = \"{origin}\"\nusername = \"alice\"\ndisplay_name = \"Alice\"\ndevice_id = 1\n"
+        ),
+    )
+    .expect("settings");
+    let secrets = Arc::new(MemorySecrets::default());
+    secrets.set(&origin, &token).expect("token");
+    let desktop = DesktopServer::start(
+        &paths,
+        &DesktopIdentity {
+            display_name: "Jo".into(),
+            device_name: "Laptop".into(),
+        },
+        DesktopHost {
+            secrets,
+            browser: Arc::new(RecordingBrowser::default()),
+        },
+    )
+    .expect("desktop");
+    let local = format!("http://127.0.0.1:{}", desktop.port());
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let launched = client
+        .get(desktop.launch_url())
+        .send()
+        .await
+        .expect("launch");
+    let cookie = launched
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok()?.split(';').next())
+        .find(|pair| pair.starts_with("mb_desktop="))
+        .expect("desktop cookie")
+        .to_string();
+    let get = |path: &str| {
+        client
+            .get(format!("{local}{path}"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+    };
+    let created = client
+        .post(format!("{local}/vaults/new"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .header(reqwest::header::ORIGIN, &local)
+        .form(&[("name", "Mine"), ("slug", "mine")])
+        .send()
+        .await
+        .expect("local vault");
+    assert!(created.status().is_redirection());
+    let mut registered = false;
+    for _ in 0..100 {
+        let listed = get("/api/v1/vaults")
+            .await
+            .expect("vaults")
+            .text()
+            .await
+            .expect("body");
+        if listed.contains("\"work\"") {
+            registered = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(registered, "the server vault was never registered");
+    assert!(
+        !get("/api/v1/vaults")
+            .await
+            .expect("vaults")
+            .text()
+            .await
+            .expect("body")
+            .contains("secret"),
+        "a vault the user cannot read upstream must not appear"
+    );
+
+    // Forwarded, with the device token and nothing of the window's.
+    let notes = get("/api/v1/vaults/work/notes")
+        .await
+        .expect("notes")
+        .text()
+        .await
+        .expect("body");
+    assert!(notes.contains("Hello.md"), "{notes}");
+    // Upstream's own denial comes back unchanged.
+    let denied = get("/api/v1/vaults/work/backlinks/Nowhere")
+        .await
+        .expect("denied");
+    assert_eq!(denied.status(), reqwest::StatusCode::NOT_FOUND);
+    // Not forwarded: a local vault, and a vault that is not a registered server vault.
+    drop(get("/api/v1/vaults/mine/notes").await.expect("local"));
+    let secret = get("/api/v1/vaults/secret/notes").await.expect("secret");
+    assert!(!secret.text().await.expect("body").contains("e37-marker"));
+
+    let seen = seen.lock().expect("seen").clone();
+    let forwarded: Vec<&(String, axum::http::HeaderMap)> = seen
+        .iter()
+        .filter(|(path, _)| path == "/api/v1/vaults/work/notes")
+        .collect();
+    assert!(!forwarded.is_empty(), "the notes request reached upstream");
+    for (path, headers) in &seen {
+        assert!(
+            headers.get("cookie").is_none(),
+            "{path} carried a cookie upstream"
+        );
+        assert!(
+            !path.contains("/vaults/mine/"),
+            "a local vault's route was forwarded: {path}"
+        );
+        assert!(
+            !path.contains("/vaults/secret/"),
+            "an unregistered vault was forwarded: {path}"
+        );
+    }
+    for (_, headers) in forwarded {
+        assert_eq!(
+            headers.get("authorization").and_then(|v| v.to_str().ok()),
+            Some(format!("Bearer {token}").as_str())
+        );
+    }
+    desktop.stop().expect("stop");
+}
+
+/// The vault picker's note count (§6.5): a count is a claim about how many notes exist, so it
+/// counts only what the viewer can read — the same argument as E16's tag counts.
+#[tokio::test]
+async fn the_vault_picker_counts_only_notes_the_viewer_can_read() {
+    use mb_server::http::{AppState, router};
+    let dir = TempDir::new("leak-picker");
+    dir.write("Open.md", "# Open\n");
+    dir.write("Private/Salary.md", "# Salary\n");
+    dir.write("Private/Bonus.md", "# Bonus\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[members]]\nuser = \"bob\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { bob = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("alice");
+    let bob = auth
+        .create_user(mb_auth::NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: "correct horse battery staple",
+        })
+        .expect("bob");
+    let token = auth.create_session(bob.id, 4_102_444_800).expect("session");
+    let cookie = format!(
+        "mb_session={}",
+        auth.signed_session_cookie(&token).expect("cookie")
+    );
+    let app = router(std::sync::Arc::new(
+        AppState::authenticated(vec![vault], auth).expect("state"),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let page = reqwest::Client::new()
+        .get(format!("{origin}/"))
+        .header(reqwest::header::COOKIE, cookie)
+        .send()
+        .await
+        .expect("picker")
+        .text()
+        .await
+        .expect("body");
+    assert!(page.contains("1 note<"), "{page}");
+    assert!(!page.contains("3 notes"), "{page}");
+    server.abort();
+}
+
+#[path = "support/oidc_provider.rs"]
+mod oidc_provider;
+
+/// E38 (§6.8.2): every way a provider sign-in can be forged or stale ends without a session,
+/// and an unverified email never reaches an existing account's vaults.
+#[tokio::test]
+async fn e38_a_forged_stale_or_mismatched_provider_sign_in_yields_no_session() {
+    use mb_server::http::{AppState, router};
+    use oidc_provider::{Provider, finish, start};
+
+    let provider = Provider::start().await;
+    let dir = TempDir::new("e38");
+    dir.write("Secret.md", "# Secret\n\ne38-marker\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    );
+    let vault = Vault::open(Slug::parse("home").expect("slug"), "Home", dir.path()).expect("vault");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("alice");
+    auth.set_email(alice.id, Some("alice@example.com"))
+        .expect("email");
+    let state = std::sync::Arc::new(
+        AppState::authenticated(vec![vault], auth)
+            .expect("state")
+            .with_oidc(provider.config(true))
+            .expect("oidc"),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = router(state);
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+
+    // Each case breaks exactly one thing about an otherwise valid sign-in as alice.
+    let cases: Vec<(&str, Box<dyn Fn(&mut serde_json::Value)>)> = vec![
+        (
+            "wrong nonce",
+            Box::new(|c| c["nonce"] = "not-the-nonce".into()),
+        ),
+        (
+            "wrong audience",
+            Box::new(|c| c["aud"] = "someone-else".into()),
+        ),
+        (
+            "wrong authorized party",
+            Box::new(|c| c["azp"] = "someone-else".into()),
+        ),
+        (
+            "wrong issuer",
+            Box::new(|c| c["iss"] = "https://evil.example".into()),
+        ),
+        ("expired", Box::new(|c| c["exp"] = 1_000_000_000_i64.into())),
+    ];
+    for (n, (why, break_it)) in cases.iter().enumerate() {
+        let attempt = start(&origin).await;
+        let mut claims = provider.claims(&attempt.nonce, "sub-alice", "alice@example.com", true);
+        break_it(&mut claims);
+        let code = format!("code-{n}");
+        provider.issue(&code, &attempt.challenge, claims);
+        assert!(
+            finish(&origin, &attempt, &code, &attempt.cookie)
+                .await
+                .is_none(),
+            "{why} produced a session"
+        );
+    }
+
+    // A state that is not this browser's, and a replay of a used one.
+    let attempt = start(&origin).await;
+    provider.issue(
+        "forged",
+        &attempt.challenge,
+        provider.claims(&attempt.nonce, "sub-alice", "alice@example.com", true),
+    );
+    assert!(
+        finish(&origin, &attempt, "forged", "mb_oidc=someone-elses-state")
+            .await
+            .is_none(),
+        "forged state"
+    );
+    let attempt = start(&origin).await;
+    provider.issue(
+        "once",
+        &attempt.challenge,
+        provider.claims(&attempt.nonce, "sub-alice", "alice@example.com", true),
+    );
+    assert!(
+        finish(&origin, &attempt, "once", &attempt.cookie)
+            .await
+            .is_some(),
+        "the valid sign-in"
+    );
+    provider.issue(
+        "once",
+        &attempt.challenge,
+        provider.claims(&attempt.nonce, "sub-alice", "alice@example.com", true),
+    );
+    assert!(
+        finish(&origin, &attempt, "once", &attempt.cookie)
+            .await
+            .is_none(),
+        "replayed state"
+    );
+
+    // An unverified email signs in, but to a new account that sees nothing of alice's.
+    let attempt = start(&origin).await;
+    provider.issue(
+        "unverified",
+        &attempt.challenge,
+        provider.claims(&attempt.nonce, "sub-mallory", "alice@example.com", false),
+    );
+    let session = finish(&origin, &attempt, "unverified", &attempt.cookie)
+        .await
+        .expect("a session for a new account");
+    let client = reqwest::Client::new();
+    for path in ["/", "/v/home/Secret", "/api/v1/vaults/home/notes"] {
+        let body = client
+            .get(format!("{origin}{path}"))
+            .header(reqwest::header::COOKIE, &session)
+            .send()
+            .await
+            .expect("probe")
+            .text()
+            .await
+            .expect("body");
+        assert!(
+            !body.contains("e38-marker") && !body.contains("Secret.md"),
+            "{path}: {body}"
+        );
+    }
+    server.abort();
+}
+
+/// M20b (§6.8.2): a provider group's grant reaches exactly its members — notes, listings,
+/// search — including its explicit `none`, and lapses at the member's next sign-in without
+/// the group.
+#[tokio::test]
+async fn e38_provider_groups_grant_exactly_their_access_and_lapse_at_the_next_sign_in() {
+    use mb_server::http::{AppState, router};
+    use oidc_provider::{Provider, finish, start};
+
+    let provider = Provider::start().await;
+    let dir = TempDir::new("e38-groups");
+    dir.write("Shared.md", "# Shared\n\ngroup-shared-marker\n");
+    dir.write("Private/Salary.md", "# Salary\n\ngroup-private-marker\n");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"group:family\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { \"group:family\" = \"none\" }\n",
+    );
+    let vault = Vault::open(Slug::parse("home").expect("slug"), "Home", dir.path()).expect("vault");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    auth.setup_first_user(mb_auth::NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: "correct horse battery staple",
+    })
+    .expect("alice");
+    let state = std::sync::Arc::new(
+        AppState::authenticated(vec![vault], auth)
+            .expect("state")
+            .with_oidc(provider.config(true))
+            .expect("oidc"),
+    );
+    let errors = state.maintain_index(&mb_server::watch::Changes::All);
+    assert!(errors.is_empty(), "{errors:?}");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = router(std::sync::Arc::clone(&state));
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+
+    let sign_in = |sub: &'static str, groups: Vec<&'static str>| {
+        let provider = &provider;
+        let origin = origin.clone();
+        async move {
+            let attempt = start(&origin).await;
+            let mut claims =
+                provider.claims(&attempt.nonce, sub, &format!("{sub}@example.com"), true);
+            claims["groups"] = serde_json::json!(groups);
+            let code = format!("{sub}-{}", attempt.nonce);
+            provider.issue(&code, &attempt.challenge, claims);
+            finish(&origin, &attempt, &code, &attempt.cookie)
+                .await
+                .expect("a session")
+        }
+    };
+    let client = reqwest::Client::new();
+    let read = |session: String, path: &'static str| {
+        let client = client.clone();
+        let origin = origin.clone();
+        async move {
+            client
+                .get(format!("{origin}{path}"))
+                .header(reqwest::header::COOKIE, session)
+                .send()
+                .await
+                .expect("probe")
+                .text()
+                .await
+                .expect("body")
+        }
+    };
+
+    // In the group: the vault-wide grant, minus the group's explicit `none`.
+    let bob = sign_in("bob", vec!["family"]).await;
+    assert!(
+        read(bob.clone(), "/v/home/Shared")
+            .await
+            .contains("group-shared-marker")
+    );
+    for path in [
+        "/v/home/Private/Salary",
+        "/api/v1/vaults/home/notes",
+        "/api/v1/vaults/home/search?q=group",
+    ] {
+        let body = read(bob.clone(), path).await;
+        assert!(
+            !body.contains("group-private-marker") && !body.contains("Salary"),
+            "{path}: {body}"
+        );
+    }
+    assert!(
+        read(bob.clone(), "/api/v1/vaults/home/notes")
+            .await
+            .contains("Shared.md")
+    );
+
+    // Not in the group: nothing at all.
+    let carol = sign_in("carol", vec!["other"]).await;
+    for path in ["/", "/v/home/Shared", "/api/v1/vaults/home/notes"] {
+        let body = read(carol.clone(), path).await;
+        assert!(
+            !body.contains("group-shared-marker") && !body.contains("Shared.md"),
+            "{path}: {body}"
+        );
+    }
+
+    // Out of the group at the next sign-in: the old session's access lapses too, because
+    // access is resolved from the account's current groups on every request.
+    let bob_again = sign_in("bob", vec![]).await;
+    for session in [bob, bob_again] {
+        let body = read(session, "/v/home/Shared").await;
+        assert!(!body.contains("group-shared-marker"), "{body}");
+    }
+    server.abort();
+}
+
+/// Starts a server with vault `work` owned by alice holding `marker`, records every request
+/// it receives, and issues alice a device token for it.
+async fn e37_recorded_upstream(
+    dir: &std::path::Path,
+    marker: &str,
+) -> (
+    String,
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<(String, axum::http::HeaderMap)>>>,
+) {
+    use mb_server::http::{AppState, router};
+    use std::sync::{Arc, Mutex};
+    let root = dir.join("work");
+    std::fs::create_dir_all(root.join("notes")).expect("notes");
+    std::fs::write(
+        root.join("access.toml"),
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    )
+    .expect("policy");
+    std::fs::write(
+        root.join("notes/Hello.md"),
+        format!("# Hello\n\n{marker}\n"),
+    )
+    .expect("note");
+    let vault = Vault::open(Slug::parse("work").expect("slug"), "Work", root).expect("vault");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("alice");
+    let verifier = "v".repeat(43);
+    let redirect = "http://127.0.0.1:4000/desktop/connect/callback";
+    let code = auth
+        .approve_device(mb_auth::DeviceApproval {
+            user_id: alice.id,
+            device_name: "Laptop",
+            redirect_uri: redirect,
+            code_challenge: &mb_auth::pkce_challenge(&verifier),
+        })
+        .expect("approve");
+    let token = auth
+        .exchange_device_code(&code, &verifier, redirect)
+        .expect("exchange")
+        .expect("grant")
+        .token
+        .expose_secret()
+        .to_string();
+    let server = Arc::new(AppState::authenticated(vec![vault], auth).expect("server"));
+    let _ = server.maintain_index(&mb_server::watch::Changes::All);
+    let seen: Arc<Mutex<Vec<(String, axum::http::HeaderMap)>>> = Arc::default();
+    let record = Arc::clone(&seen);
+    let app = router(server).layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let record = Arc::clone(&record);
+            async move {
+                if let Ok(mut seen) = record.lock() {
+                    seen.push((request.uri().path().to_string(), request.headers().clone()));
+                }
+                next.run(request).await
+            }
+        },
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+    (origin, token, seen)
+}
+
+/// E37 with two servers (§7.6.11): each vault's requests reach only the server it came from,
+/// carrying only that server's token, and a server signed out of receives nothing more.
+#[tokio::test]
+async fn e37_two_servers_each_vault_reaches_only_its_own_server_with_its_own_token() {
+    use mb_server::desktop::{
+        DesktopHost, DesktopIdentity, DesktopPaths, DesktopServer, MemorySecrets, RecordingBrowser,
+        SecretStore,
+    };
+    use std::sync::Arc;
+
+    let dir = TempDir::new("e37-two");
+    let (a_origin, a_token, a_seen) = e37_recorded_upstream(&dir.path().join("a"), "from-a").await;
+    let (b_origin, b_token, b_seen) = e37_recorded_upstream(&dir.path().join("b"), "from-b").await;
+    let paths = DesktopPaths {
+        app_data: dir.path().join("app"),
+        notes_home: dir.path().join("home"),
+        web_root: dir.path().join("web"),
+    };
+    std::fs::create_dir_all(&paths.app_data).expect("app data");
+    std::fs::write(
+        paths.app_data.join("desktop.toml"),
+        format!(
+            "[[servers]]\norigin = \"{a_origin}\"\nusername = \"alice\"\ndisplay_name = \"Alice\"\ndevice_id = 1\n\
+             [[servers]]\norigin = \"{b_origin}\"\nusername = \"alice\"\ndisplay_name = \"Alice\"\ndevice_id = 1\n"
+        ),
+    )
+    .expect("settings");
+    let secrets = Arc::new(MemorySecrets::default());
+    secrets.set(&a_origin, &a_token).expect("token a");
+    secrets.set(&b_origin, &b_token).expect("token b");
+    let kept_secrets = Arc::clone(&secrets);
+    let desktop = DesktopServer::start(
+        &paths,
+        &DesktopIdentity {
+            display_name: "Jo".into(),
+            device_name: "Laptop".into(),
+        },
+        DesktopHost {
+            secrets,
+            browser: Arc::new(RecordingBrowser::default()),
+        },
+    )
+    .expect("desktop");
+    let local = format!("http://127.0.0.1:{}", desktop.port());
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let launched = client
+        .get(desktop.launch_url())
+        .send()
+        .await
+        .expect("launch");
+    let cookie = launched
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok()?.split(';').next())
+        .find(|pair| pair.starts_with("mb_desktop="))
+        .expect("desktop cookie")
+        .to_string();
+    let get = |path: String| {
+        client
+            .get(format!("{local}{path}"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+    };
+    let mut registered = false;
+    for _ in 0..100 {
+        let listed = get("/api/v1/vaults".into())
+            .await
+            .expect("vaults")
+            .text()
+            .await
+            .expect("body");
+        if listed.contains("\"work\"") && listed.contains("\"work-2\"") {
+            registered = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(registered, "both servers' vaults were never registered");
+    // Which local address belongs to which server is decided by which pass ran first.
+    let settings = std::fs::read_to_string(paths.app_data.join("desktop.toml")).expect("settings");
+    let parsed: toml::Value = toml::from_str(&settings).expect("toml");
+    let local_of = |origin: &str| {
+        parsed["replicas"]
+            .as_array()
+            .expect("replicas")
+            .iter()
+            .find(|r| r["origin"].as_str() == Some(origin))
+            .and_then(|r| r["local"].as_str())
+            .expect("replica")
+            .to_string()
+    };
+    let (a_local, b_local) = (local_of(&a_origin), local_of(&b_origin));
+    // Each server's note carries its own marker; a search answers from the server it reaches.
+    let read = |slug: String, marker: &'static str| {
+        let get = &get;
+        async move {
+            get(format!("/api/v1/vaults/{slug}/search?q={marker}"))
+                .await
+                .expect("note")
+                .text()
+                .await
+                .expect("body")
+        }
+    };
+    let hit = |answer: &str| answer.contains("Hello.md");
+    assert!(
+        hit(&read(a_local.clone(), "from-a").await),
+        "A's vault did not reach A"
+    );
+    assert!(
+        !hit(&read(a_local.clone(), "from-b").await),
+        "A's vault reached B"
+    );
+    assert!(
+        hit(&read(b_local.clone(), "from-b").await),
+        "B's vault did not reach B"
+    );
+    assert!(
+        !hit(&read(b_local.clone(), "from-a").await),
+        "B's vault reached A"
+    );
+    let bearer = |token: &str| format!("Bearer {token}");
+    let carried = |seen: &std::sync::Mutex<Vec<(String, axum::http::HeaderMap)>>, token: &str| {
+        seen.lock().expect("seen").iter().any(|(_, headers)| {
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .is_some_and(|v| v.as_bytes() == bearer(token).as_bytes())
+        })
+    };
+    assert!(
+        !carried(&a_seen, &b_token),
+        "server A was sent server B's token"
+    );
+    assert!(
+        !carried(&b_seen, &a_token),
+        "server B was sent server A's token"
+    );
+    assert!(carried(&a_seen, &a_token) && carried(&b_seen, &b_token));
+
+    // Sign out of B, keeping its notes: B's vault stays, and is never forwarded again.
+    let signed_out = client
+        .post(format!("{local}/desktop/disconnect"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .header(reqwest::header::ORIGIN, &local)
+        .form(&[("server", b_origin.as_str()), ("notes", "keep")])
+        .send()
+        .await
+        .expect("sign out");
+    assert!(signed_out.status().is_redirection());
+    // Only forwarding searches (the background pass never does), so counting searches
+    // isolates forwarding from the pass.
+    let note_requests = || {
+        b_seen
+            .lock()
+            .expect("seen")
+            .iter()
+            .filter(|(path, _)| path.ends_with("/search"))
+            .count()
+    };
+    let before = note_requests();
+    let after_sign_out = read(b_local.clone(), "from-b").await;
+    assert_eq!(
+        note_requests(),
+        before,
+        "a signed-out server's vault was forwarded"
+    );
+    assert!(!hit(&after_sign_out), "{after_sign_out}");
+    // why: the background pass needs a token to contact a server at all.
+    assert!(
+        kept_secrets.get(&b_origin).expect("store").is_none(),
+        "the signed-out server's token is still kept"
+    );
+    drop(desktop.stop());
+}
+
+/// A server vault alice owns and a desktop replica of it keeping everything offline, for
+/// E35. Returns the server, the replica and both folders.
+struct E35 {
+    _dir: TempDir,
+    server: std::sync::Arc<mb_server::http::AppState>,
+    upstream_root: std::path::PathBuf,
+    local: mb_server::http::AppState,
+    local_root: std::path::PathBuf,
+    config: mb_server::replica::ReplicaConfig,
+    upstream: mb_server::replica::upstream::Upstream,
+}
+
+async fn e35_replica(notes: &[(&str, &str)]) -> E35 {
+    use mb_server::http::{AppState, router};
+    use mb_server::replica::pins::{self, PinKind};
+    let dir = TempDir::new("e35");
+    let upstream_root = dir.path().join("server/work");
+    std::fs::create_dir_all(upstream_root.join("notes")).expect("notes");
+    std::fs::write(
+        upstream_root.join("access.toml"),
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n",
+    )
+    .expect("policy");
+    for (path, text) in notes {
+        let file = upstream_root.join("notes").join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("folder");
+        std::fs::write(file, text).expect("note");
+    }
+    let vault =
+        Vault::open(Slug::parse("work").expect("slug"), "Work", &upstream_root).expect("vault");
+    let mut auth = mb_auth::AuthDb::open_in_memory().expect("auth");
+    let alice = auth
+        .setup_first_user(mb_auth::NewUser {
+            username: "alice",
+            display_name: "Alice",
+            password: "correct horse battery staple",
+        })
+        .expect("alice");
+    let verifier = "v".repeat(43);
+    let redirect = "http://127.0.0.1:4000/desktop/connect/callback";
+    let code = auth
+        .approve_device(mb_auth::DeviceApproval {
+            user_id: alice.id,
+            device_name: "Laptop",
+            redirect_uri: redirect,
+            code_challenge: &mb_auth::pkce_challenge(&verifier),
+        })
+        .expect("approve");
+    let token = auth
+        .exchange_device_code(&code, &verifier, redirect)
+        .expect("exchange")
+        .expect("grant")
+        .token
+        .expose_secret()
+        .to_string();
+    let server = std::sync::Arc::new(AppState::authenticated(vec![vault], auth).expect("server"));
+    let _ = server.maintain_index(&mb_server::watch::Changes::All);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = router(std::sync::Arc::clone(&server));
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+    let app_data = dir.path().join("app");
+    std::fs::create_dir_all(&app_data).expect("app data");
+    let mut local_auth = mb_auth::AuthDb::open(&app_data.join("auth.db")).expect("local auth");
+    mb_server::desktop::ensure_local_user(&mut local_auth, "Jo").expect("local user");
+    let local = AppState::authenticated(vec![], local_auth)
+        .expect("local")
+        .with_vault_management_root(app_data.join("server.toml"), dir.path().join("home"), false)
+        .expect("management");
+    let config = mb_server::replica::ReplicaConfig {
+        local: "work".into(),
+        upstream: "work".into(),
+        name: "Work".into(),
+        origin: origin.clone(),
+    };
+    let local_root = dir.path().join("home/work");
+    mb_server::replica::create_local(&local, &config, &local_root).expect("replica");
+    let mut kept = pins::load(&local_root, []).expect("pins");
+    kept.set(PinKind::Vault, "", true);
+    pins::save(&local_root, &kept).expect("pins");
+    let upstream = mb_server::replica::upstream::Upstream::new(&origin, &token).expect("upstream");
+    E35 {
+        _dir: dir,
+        server,
+        upstream_root,
+        local,
+        local_root,
+        config,
+        upstream,
+    }
+}
+
+impl E35 {
+    async fn pass(&self) -> mb_server::replica::PassReport {
+        mb_server::replica::pass(&self.local, &self.config, &self.upstream)
+            .await
+            .expect("pass")
+    }
+
+    fn revoke(&self, policy: &str) {
+        std::fs::write(self.upstream_root.join("access.toml"), policy).expect("policy");
+        assert!(self.server.reload_access().is_empty());
+    }
+
+    fn edit_here(&self, path: &str, text: &str) {
+        let file = self.local_root.join("notes").join(path);
+        std::fs::write(&file, text).expect("edit");
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .and_then(|f| f.set_modified(later))
+            .expect("touch");
+    }
+}
+
+/// Every file under `root` whose bytes hold `marker`: notes, sidecars, trash, indexes,
+/// title caches and the replica's own state alike.
+fn e35_files_holding(root: &std::path::Path, marker: &str) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if std::fs::read(&path).is_ok_and(|bytes| {
+                bytes
+                    .windows(marker.len())
+                    .any(|window| window == marker.as_bytes())
+            }) {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// E35 (§7.6.6, §7.6.7): a note whose access was removed leaves nothing on the device —
+/// file, sidecar, trash, index, title or listing — and edits made here to another such note
+/// are kept as a recovered note on this device only, never sent upstream without a choice.
+#[tokio::test]
+async fn e35_a_revoked_note_leaves_no_trace_and_offline_edits_stay_on_this_device() {
+    let fx = e35_replica(&[
+        ("Private/Plain.md", "# e35-title-plain\n\ne35-body-plain\n"),
+        ("Private/Edited.md", "# Edited\n\ne35-body-edited\n"),
+        ("Open.md", "# Open\n"),
+    ])
+    .await;
+    fx.pass().await;
+    assert!(
+        !e35_files_holding(&fx.local_root, "e35-body-plain").is_empty(),
+        "control"
+    );
+    fx.edit_here(
+        "Private/Edited.md",
+        "# Edited\n\ne35-body-edited\n\ne35-offline-line\n",
+    );
+    fx.revoke(
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    fx.pass().await;
+    fx.pass().await;
+    for marker in ["e35-title-plain", "e35-body-plain"] {
+        assert_eq!(
+            e35_files_holding(&fx.local_root, marker),
+            Vec::<std::path::PathBuf>::new(),
+            "{marker}"
+        );
+    }
+    // The recovered note is here, and its text never reached the server.
+    assert!(
+        std::fs::read_to_string(
+            fx.local_root
+                .join("notes/Recovered/Edited (offline edits).md")
+        )
+        .is_ok_and(|text| text.contains("e35-offline-line"))
+    );
+    assert_eq!(
+        e35_files_holding(&fx.upstream_root, "e35-offline-line"),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
+/// E35 for a whole vault (§7.6.7 case 4): removed from it, the device keeps nothing of it
+/// but the recovered notes — no unedited note, and no listing of the notes it held.
+#[tokio::test]
+async fn e35_a_vault_the_user_was_removed_from_leaves_only_their_recovered_notes() {
+    let fx = e35_replica(&[
+        ("Plain.md", "# e35-vault-title\n\ne35-vault-body\n"),
+        ("Edited.md", "# Edited\n"),
+    ])
+    .await;
+    fx.pass().await;
+    fx.edit_here("Edited.md", "# Edited\n\ne35-vault-offline-line\n");
+    fx.revoke("[[members]]\nuser = \"bob\"\nrole = \"owner\"\n");
+    let left = mb_server::replica::vault_gone(&fx.local, &fx.config)
+        .await
+        .expect("settled");
+    assert_eq!(left, 1);
+    for marker in ["e35-vault-title", "e35-vault-body"] {
+        assert_eq!(
+            e35_files_holding(&fx.local_root, marker),
+            Vec::<std::path::PathBuf>::new(),
+            "{marker}"
+        );
+    }
+    assert_eq!(
+        e35_files_holding(&fx.upstream_root, "e35-vault-offline-line"),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
+/// PNG-signed bytes holding `marker`, and their content address.
+fn e35_image(marker: &str) -> (Vec<u8>, String) {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend_from_slice(marker.as_bytes());
+    let path = mb_server::media::LocalStore::object_path(&bytes, "png").expect("address");
+    (bytes, path)
+}
+
+/// E35 and E11 for media on a desktop replica (§7.6.3): a revoked note's image leaves this
+/// device with it, and naming an image's address in a note here fetches nothing the user
+/// cannot already see — the address is not the permission.
+#[tokio::test]
+async fn e35_media_follows_the_readable_set_and_its_address_grants_nothing() {
+    let (revoked, revoked_path) = e35_image("e35-revoked-image");
+    let (hidden, hidden_path) = e35_image("e35-hidden-image");
+    let fx = e35_replica(&[
+        (
+            "Private/Pic.md",
+            &format!("# Pic\n\n![p]({revoked_path})\n"),
+        ),
+        (
+            "Secret/Only.md",
+            &format!("# Only\n\n![s]({hidden_path})\n"),
+        ),
+        ("Open.md", "# Open\n"),
+    ])
+    .await;
+    for (bytes, path) in [(&revoked, &revoked_path), (&hidden, &hidden_path)] {
+        let file = fx.upstream_root.join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("folder");
+        std::fs::write(file, bytes).expect("media");
+    }
+    // Secret was never this user's; Private is, until it is revoked below.
+    fx.revoke(
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[rules]]\npath = \"Secret\"\ngrant = { alice = \"none\" }\n",
+    );
+    fx.pass().await;
+    assert!(fx.local_root.join(&revoked_path).exists(), "control");
+    fx.edit_here("Open.md", &format!("# Open\n\n![guess]({hidden_path})\n"));
+    fx.revoke(
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n[[rules]]\npath = \"Secret\"\ngrant = { alice = \"none\" }\n[[rules]]\npath = \"Private\"\ngrant = { alice = \"none\" }\n",
+    );
+    fx.pass().await;
+    fx.pass().await;
+    for marker in ["e35-revoked-image", "e35-hidden-image"] {
+        assert_eq!(
+            e35_files_holding(&fx.local_root, marker),
+            Vec::<std::path::PathBuf>::new(),
+            "{marker}"
+        );
+    }
+}

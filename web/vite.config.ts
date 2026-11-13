@@ -5,6 +5,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const backendOrigin = "http://127.0.0.1:9010";
+const backend = { target: backendOrigin, changeOrigin: false };
 
 function authenticatedBackendPages(): Plugin {
   return {
@@ -124,13 +125,18 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 9011,
     strictPort: true,
+    // why: `changeOrigin: false` everywhere. The server refuses a form POST whose Origin does
+    // not match its Host; Vite's string shorthand rewrites Host to 9010 while the browser
+    // sends Origin 9011, which made every form on 9011 look cross-origin.
     proxy: {
-      "/api": { target: backendOrigin, ws: true },
-      "/login": backendOrigin,
-      "/setup": backendOrigin,
-      "/vaults": backendOrigin,
-      "/s": backendOrigin,
-      "/v": backendOrigin,
+      "/api": { ...backend, ws: true },
+      "/devices": backend,
+      "/login": backend,
+      "/logout": backend,
+      "/setup": backend,
+      "/vaults": backend,
+      "/s": backend,
+      "/v": backend,
     },
   },
   preview: { port: 9011, strictPort: true },

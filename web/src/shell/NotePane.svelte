@@ -20,6 +20,8 @@
   import { type NoteSurface, type TaskEditAction, openNoteSurface } from "./note-surface.js";
   import type { Tab } from "./workspace.js";
   import type { DailyView } from "./daily.svelte.js";
+  import type { Recovery } from "./device-offline.js";
+  import RecoveredBanner from "./RecoveredBanner.svelte";
 
   interface Props {
     readonly tab: Tab | undefined;
@@ -32,9 +34,13 @@
     readonly daily?: DailyView | undefined;
     readonly ondailyopen?: ((path: string) => void) | undefined;
     readonly ontitlechange?: ((title: string) => string | undefined) | undefined;
+    /** A server vault in the desktop app: its recovered notes (§7.6.7). */
+    readonly recovery?: Recovery | undefined;
   }
 
-  const { tab, session, onscroll, open = openNoteSurface, taskEdit, daily, ondailyopen, ontitlechange }: Props = $props();
+  const { tab, session, onscroll, open = openNoteSurface, taskEdit, daily, ondailyopen, ontitlechange, recovery }: Props = $props();
+
+  const recovered = $derived(tab === undefined ? undefined : recovery?.find(tab.note));
 
   let pane = $state<HTMLElement | undefined>(undefined);
   let surface = $state<HTMLElement | undefined>(undefined);
@@ -175,6 +181,9 @@
           <button type="button" aria-label="Previous day" disabled={previousDaily === undefined} onclick={() => previousDaily && ondailyopen?.(previousDaily.path)}>Previous day</button>
           <button type="button" aria-label="Next day" disabled={nextDaily === undefined} onclick={() => nextDaily && ondailyopen?.(nextDaily.path)}>Next day</button>
         </nav>
+      {/if}
+      {#if recovered !== undefined && recovery !== undefined}
+        <RecoveredBanner note={recovered} onplace={(to) => recovery.place(recovered, to)} />
       {/if}
       <section
         class="editor-panel"

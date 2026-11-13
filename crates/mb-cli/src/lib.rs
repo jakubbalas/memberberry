@@ -28,6 +28,9 @@ USAGE:
     memberberry vault remove --slug S --actor A           Unregister a vault (server admin; never deletes notes)
     memberberry user setup --username U         Create the first server administrator
     memberberry user reset-password --username U --actor A  Replace a user's password
+    memberberry user set-email --username U --email E --actor A  Set the email a provider sign-in links to
+    memberberry device list --username U        Show a user's connected devices
+    memberberry device revoke --id N --actor A  Disconnect a device, such as a lost laptop
     memberberry normalize [--check] [PATH]...   Rewrite notes into canonical Markdown
     memberberry inspect [PATH]                  Show the parsed structure of one note
     memberberry import-obsidian [--write] VAULT Scan an Obsidian vault; add IDs only with --write
@@ -73,8 +76,9 @@ pub fn reads_password_from_terminal(args: &[String]) -> bool {
     let subcommand = args.get(1).map(String::as_str);
     matches!(
         (command, subcommand),
-        (Some("user"), Some("setup" | "reset-password"))
+        (Some("user"), Some("setup" | "reset-password" | "set-email"))
             | (Some("vault"), Some("create" | "remove"))
+            | (Some("device"), Some("revoke"))
     )
 }
 
@@ -90,6 +94,7 @@ pub fn run(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write) -> Result
         Some("serve") => serve(rest, out),
         Some("vault") => vault(rest, stdin, out),
         Some("user") => user(rest, stdin, out),
+        Some("device") => device(rest, stdin, out),
         Some("normalize") => normalize(rest, stdin, out),
         Some("inspect") => inspect(rest, stdin, out),
         Some("import-obsidian") => import_obsidian(rest, out),
@@ -233,18 +238,21 @@ fn serve(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
         .web_root
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("web/dist"));
-    let state = std::sync::Arc::new(
-        mb_server::http::AppState::authenticated_with_audit_and_web_root(
-            vaults,
-            auth,
-            Some(audit),
-            web_root,
-        )
-        .map_err(|error| error.to_string())?
-        .with_data_dir(data_dir.to_path_buf())
-        .with_vault_management(path, addr.ip().is_loopback())
-        .map_err(|error| error.to_string())?,
-    );
+    let oidc = config.oidc.clone();
+    let state = mb_server::http::AppState::authenticated_with_audit_and_web_root(
+        vaults,
+        auth,
+        Some(audit),
+        web_root,
+    )
+    .map_err(|error| error.to_string())?
+    .with_data_dir(data_dir.to_path_buf())
+    .with_vault_management(path, addr.ip().is_loopback())
+    .map_err(|error| error.to_string())?;
+    let state = std::sync::Arc::new(match oidc {
+        Some(oidc) => state.with_oidc(oidc).map_err(|error| error.to_string())?,
+        None => state,
+    });
     runtime
         .block_on(mb_server::http::serve(state, addr))
         .map_err(|e| e.to_string())?;
@@ -444,10 +452,11 @@ fn user(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write) -> Result<Ex
     match args.first().map(String::as_str) {
         Some("setup") => user_setup(args, stdin, out, &database),
         Some("reset-password") => user_reset_password(args, stdin, out, &database),
+        Some("set-email") => user_set_email(args, stdin, out, &database),
         Some(other) => Err(format!(
-            "unknown user command `{other}`: expected setup or reset-password"
+            "unknown user command `{other}`: expected setup, reset-password or set-email"
         )),
-        None => Err("user needs a subcommand: setup or reset-password".to_string()),
+        None => Err("user needs a subcommand: setup, reset-password or set-email".to_string()),
     }
 }
 
@@ -469,6 +478,131 @@ fn user_setup(
         })
         .map_err(|error| error.to_string())?;
     writeln!(out, "created server administrator {}", user.username).map_err(io("writing"))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `memberberry device` — the server-side half of device sign-in (`SPEC.md` §6.8.1).
+fn device(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write) -> Result<ExitCode, String> {
+    let database = auth_db_path(args);
+    match args.first().map(String::as_str) {
+        Some("list") => device_list(args, out, &database),
+        Some("revoke") => device_revoke(args, stdin, out, &database),
+        Some(other) => Err(format!(
+            "unknown device command `{other}`: expected list or revoke"
+        )),
+        None => Err("device needs a subcommand: list or revoke".to_string()),
+    }
+}
+
+fn device_list(args: &[String], out: &mut dyn Write, database: &Path) -> Result<ExitCode, String> {
+    let username = flag(args, "--username").ok_or("device list needs --username USER")?;
+    let auth = mb_auth::AuthDb::open(database).map_err(|error| error.to_string())?;
+    let user = auth
+        .user_by_username(username)
+        .map_err(|error| error.to_string())?
+        .ok_or("unknown user")?;
+    let devices = auth
+        .list_devices(user.id)
+        .map_err(|error| error.to_string())?;
+    if devices.is_empty() {
+        writeln!(out, "{username} has no connected devices").map_err(io("writing"))?;
+    }
+    for device in devices {
+        let status = match (device.revoked_at, device.last_used_at) {
+            (Some(_), _) => "revoked".to_string(),
+            (None, Some(at)) => format!("last used {at}"),
+            (None, None) => "never used".to_string(),
+        };
+        writeln!(out, "{}\t{}\t{status}", device.id.get(), device.name).map_err(io("writing"))?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `memberberry user set-email`: the email a provider sign-in links to (§6.8.2). An empty
+/// `--email ""` clears it. Administrator only, audited, like a password reset.
+fn user_set_email(
+    args: &[String],
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    database: &Path,
+) -> Result<ExitCode, String> {
+    let username = flag(args, "--username").ok_or("user set-email needs --username USER")?;
+    let email = flag(args, "--email").ok_or("user set-email needs --email ADDRESS")?;
+    let actor = flag(args, "--actor").ok_or("user set-email needs --actor ADMIN")?;
+    let password = read_password(stdin)?;
+    let auth = mb_auth::AuthDb::open(database).map_err(|error| error.to_string())?;
+    let target = std::slice::from_ref(username);
+    let admin = auth
+        .authenticate(actor, &password)
+        .map_err(|error| error.to_string())?;
+    if !admin.is_some_and(|user| user.is_admin) {
+        append_audit(
+            database,
+            Some(actor),
+            target,
+            mb_server::audit::AuditAction::AccountEmail,
+            mb_server::audit::AuditResult::Denied,
+        )?;
+        return Err("administrator authentication failed".to_string());
+    }
+    let user = auth
+        .user_by_username(username)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "unknown user".to_string())?;
+    auth.set_email(user.id, Some(email.as_str()).filter(|e| !e.is_empty()))
+        .map_err(|error| error.to_string())?;
+    append_audit(
+        database,
+        Some(actor),
+        target,
+        mb_server::audit::AuditAction::AccountEmail,
+        mb_server::audit::AuditResult::Success,
+    )?;
+    writeln!(out, "set the email of {username}").map_err(|error| error.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn device_revoke(
+    args: &[String],
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    database: &Path,
+) -> Result<ExitCode, String> {
+    let id = flag(args, "--id")
+        .and_then(|id| id.parse::<i64>().ok())
+        .ok_or("device revoke needs --id N (from `device list`)")?;
+    let actor = flag(args, "--actor").ok_or("device revoke needs --actor ADMIN")?;
+    let password = read_password(stdin)?;
+    let auth = mb_auth::AuthDb::open(database).map_err(|error| error.to_string())?;
+    let target = [format!("device {id}")];
+    let admin = auth
+        .authenticate(actor, &password)
+        .map_err(|error| error.to_string())?;
+    if !admin.is_some_and(|user| user.is_admin) {
+        append_audit(
+            database,
+            Some(actor),
+            &target,
+            mb_server::audit::AuditAction::Device,
+            mb_server::audit::AuditResult::Denied,
+        )?;
+        return Err("administrator authentication failed".to_string());
+    }
+    let revoked = auth
+        .revoke_device_by_id(mb_auth::DeviceId::new(id))
+        .map_err(|error| error.to_string())?;
+    append_audit(
+        database,
+        Some(actor),
+        &target,
+        mb_server::audit::AuditAction::Device,
+        mb_server::audit::AuditResult::Success,
+    )?;
+    if revoked {
+        writeln!(out, "device {id} disconnected").map_err(io("writing"))?;
+    } else {
+        writeln!(out, "device {id} was not connected").map_err(io("writing"))?;
+    }
     Ok(ExitCode::SUCCESS)
 }
 

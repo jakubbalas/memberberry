@@ -72,6 +72,15 @@ describe("reading the bootstrap", () => {
     }
   });
 
+  it("knows it is in the desktop app only from an explicit flag, on both kinds of page", () => {
+    const note = { "data-vault": "personal", "data-note": "One.md", "data-user": "alice" };
+    const home = { "data-vault": "personal", "data-user": "alice", "data-home": "true" };
+    expect(readNoteBootstrap(element({ ...note, "data-desktop": "true" }))?.desktop).toBe(true);
+    expect(readHomeBootstrap(element({ ...home, "data-desktop": "true" }))?.desktop).toBe(true);
+    expect(readNoteBootstrap(element({ ...note, "data-desktop": "1" }))?.desktop).toBeUndefined();
+    expect(readNoteBootstrap(element(note))?.desktop).toBeUndefined();
+  });
+
   it("offers settings only for an explicit owner flag, on both kinds of page", () => {
     const note = { "data-vault": "personal", "data-note": "One.md", "data-user": "alice" };
     const home = { "data-vault": "personal", "data-user": "alice", "data-home": "true" };

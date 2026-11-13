@@ -504,3 +504,52 @@ fn a_reopened_index_rebuilds_zone_segments_on_its_first_publish() {
     let mut index = Index::open(&path).expect("reopen");
     assert!(publish_rebuilds(&mut index, &zones_dir));
 }
+
+/// M20b (§6.8.2, §14.2): a provider group's members get exactly the group's search zones —
+/// its vault-wide grant, minus its explicit `none` — and nobody else gets any of it.
+#[test]
+fn e6_a_group_members_client_assembly_follows_the_groups_grants() {
+    use std::collections::BTreeSet;
+
+    use mb_core::GroupName;
+    let dir = TempDir::new("group-zones");
+    let path = dir.path().join(".memberberry/index/graph.sqlite");
+    let family = GroupName::parse("family").expect("group");
+    let access = Access::new(vec![], vec![])
+        .expect("policy")
+        .with_group_grants(
+            vec![(family.clone(), Role::Viewer)],
+            vec![(
+                NotePath::parse("Private").expect("path"),
+                BTreeMap::from([(family.clone(), Role::None)]),
+            )],
+        )
+        .expect("group grants")
+        .with_user_groups(&BTreeMap::from([(user("bob"), BTreeSet::from([family]))]));
+    let mut index = Index::open(&path).expect("index");
+    index.replace_zones(&access).expect("zones");
+    upsert(
+        &mut index,
+        "Shared.md",
+        "# Shared\n\ngroupberry shared\n",
+        1,
+    );
+    upsert(
+        &mut index,
+        "Private/Salary.md",
+        "# Salary\n\ngroupberry private-marker\n",
+        2,
+    );
+    index.publish().expect("publish");
+
+    let bob = index
+        .reader(&access, &user("bob"))
+        .expect("bob reader")
+        .client_segments();
+    assert_eq!(matched_paths(&bob, "groupberry"), ["Shared.md"]);
+    let outsider = index
+        .reader(&access, &user("mallory"))
+        .expect("outsider reader")
+        .client_segments();
+    assert!(outsider.is_empty());
+}

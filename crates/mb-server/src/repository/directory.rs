@@ -104,23 +104,20 @@ fn child(parent: &str, name: &str) -> String {
 impl AuthorizedVault<'_> {
     fn direct_directory_access(&self, raw: &str) -> bool {
         if raw.is_empty() {
-            self.access
-                .members()
-                .any(|(u, role)| u == &self.user && role != Role::None)
+            self.access.vault_role(&self.user) != Role::None
         } else {
             self.can_read(raw)
         }
     }
     fn possible_directory_access(&self, raw: &str) -> bool {
         self.direct_directory_access(raw)
-            || self.access.rules().any(|rule| {
+            || self.access.rule_paths().iter().any(|path| {
                 (raw.is_empty()
-                    || rule
-                        .path
+                    || path
                         .as_str()
                         .strip_prefix(raw)
                         .is_some_and(|s| s.starts_with('/')))
-                    && self.access.effective_role(&self.user, &rule.path) != Role::None
+                    && self.access.effective_role(&self.user, path) != Role::None
             })
     }
     fn existing_directory_access(
@@ -132,10 +129,10 @@ impl AuthorizedVault<'_> {
         if self.direct_directory_access(raw) {
             return Ok(true);
         }
-        for rule in self.access.rules() {
-            let target = rule.path.as_str();
+        for path in self.access.rule_paths() {
+            let target = path.as_str();
             if !(raw.is_empty() || target.strip_prefix(raw).is_some_and(|s| s.starts_with('/')))
-                || self.access.effective_role(&self.user, &rule.path) == Role::None
+                || self.access.effective_role(&self.user, &path) == Role::None
             {
                 continue;
             }

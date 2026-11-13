@@ -34,10 +34,10 @@ jobs:
       # The suite provisions a real server with the real binary, so it needs the real binary.
       - name: Build the server
         run: cargo build -p mb-cli
-      - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Install Chromium and WebKit
+        run: npx playwright install --with-deps chromium webkit
         working-directory: web
-      - name: End-to-end, desktop and mobile
+      - name: End-to-end, desktop, mobile and WebKit
         shell: bash
         env:
           DEBUG: pw:browser

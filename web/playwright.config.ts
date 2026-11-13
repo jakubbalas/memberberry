@@ -44,6 +44,12 @@ export default defineConfig({
       use: { viewport: { width: 1280, height: 800 } },
     },
     {
+      // The desktop app's engine (SPEC.md §7.6.1): WKWebView on macOS, WebKitGTK on Linux.
+      // Desktop layout only — the app is a desktop window, and no phone runs it.
+      name: "webkit",
+      use: { browserName: "webkit", viewport: { width: 1280, height: 800 } },
+    },
+    {
       // < 768px: the mobile layout of SPEC.md §8.3. Pixel-7a class, which is the device
       // §21.1 writes the budgets against. `hasTouch` matters — long-press drag handles and
       // the `VisualViewport` toolbar only exist on a touch pointer.

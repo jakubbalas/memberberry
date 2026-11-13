@@ -126,14 +126,18 @@ test("the emoji picker searches offline and writes literal toned Unicode", async
   await page.keyboard.type(" :party:");
   await expect(editor).toContainText("🎉");
 
+  // why: the picker's own buttons, by exact name. Under load the full run once found a
+  // second `:tada:` button elsewhere on the page (two runs, WebKit), which is not the control
+  // this test is about.
+  const picker = page.getByRole("dialog", { name: "Emoji picker", exact: true });
   await page.getByRole("button", { name: "Insert emoji" }).click();
-  await page.getByRole("searchbox", { name: "Search emoji" }).fill("wave");
-  await page.getByRole("button", { name: "skin-tone-3" }).click();
-  await page.getByRole("button", { name: ":wave:" }).click();
+  await picker.getByRole("searchbox", { name: "Search emoji" }).fill("wave");
+  await picker.getByRole("button", { name: "skin-tone-3", exact: true }).click();
+  await picker.getByRole("button", { name: ":wave:", exact: true }).click();
 
   await page.getByRole("button", { name: "Insert emoji" }).click();
-  await page.getByRole("searchbox", { name: "Search emoji" }).fill("tada");
-  await page.getByRole("button", { name: ":tada:" }).click();
+  await picker.getByRole("searchbox", { name: "Search emoji" }).fill("tada");
+  await picker.getByRole("button", { name: ":tada:", exact: true }).click();
 
   const path = join(E2E_VAULT, ...note.split("/"));
   await expect

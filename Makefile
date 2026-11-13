@@ -46,6 +46,21 @@ watch: ## Watch files and re-run the fast tests
 prod: prod-build ## Build and run the complete production app
 	@target/release/memberberry serve
 
+.PHONY: desktop-dev
+desktop-dev: web-build ## Run the desktop app (SPEC §7.6) from this checkout
+	cd desktop && $(CARGO) run
+
+.PHONY: desktop-build
+# Unsigned by decision (A49). Packages land in desktop/target/release/bundle/: a DMG on macOS,
+# .deb and AppImage on Linux, MSI on Windows — each only on its own OS. The manual
+# "Desktop packages" workflow builds all three (universal on macOS).
+desktop-build: web-build ## Build this OS's installable desktop packages (needs `cargo install tauri-cli`)
+	cd desktop && $(CARGO) tauri build
+
+.PHONY: desktop-test
+desktop-test: ## The desktop server's tests: E34, local user, remembered port
+	$(CARGO) test -p mb-server --test desktop
+
 .PHONY: prod-build
 prod-build: web-build ## Build the production web bundle and optimised server binary
 	$(CARGO) build --release -p mb-cli
@@ -226,10 +241,17 @@ web-check:
 # Builds everything the suite needs, because a stale bundle or a stale binary is exactly the
 # class of failure this suite exists to catch and it should not be able to cause a false one.
 .PHONY: e2e
-e2e: web-build ## Playwright E2E in a real browser, desktop and mobile (SPEC 22, 23 M7)
+e2e: web-build ## Playwright E2E in a real browser: Chromium desktop and mobile, WebKit desktop (SPEC 22.6)
 	$(CARGO) build -p mb-cli
-	npm --prefix web exec -- playwright install chromium
+	npm --prefix web exec -- playwright install chromium webkit
 	npm --prefix web run e2e
+
+# Only the WebKit project: the desktop app's engine (SPEC 7.6.1), without the Chromium runs.
+.PHONY: e2e-webkit
+e2e-webkit: web-build ## Playwright E2E in WebKit only, the desktop app's engine (SPEC 7.6.1)
+	$(CARGO) build -p mb-cli
+	npm --prefix web exec -- playwright install webkit
+	npm --prefix web run e2e -- --project=webkit
 
 .PHONY: e2e-report
 e2e-report: ## Open the report from the last `make e2e`

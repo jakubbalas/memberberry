@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
 import type { Page } from "@playwright/test";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 
@@ -26,12 +26,12 @@ test("Shift+Enter keeps a second line in the same block and on disk", async ({ p
   const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
 
   await editor.getByText("First line", { exact: true }).click();
-  await page.keyboard.press("End");
+  await lineKey(page, "End");
   await expect.poll(() => modelCaretBlock(page)).toBe("First line");
   await page.keyboard.press("Shift+Enter");
   await page.keyboard.type("second line");
   await editor.getByText("item", { exact: true }).click();
-  await page.keyboard.press("End");
+  await lineKey(page, "End");
   // why: Playwright can press the next key before the browser's selectionchange reaches
   // ProseMirror, which then edits at the pre-click caret. Wait for the model to catch up.
   await expect.poll(() => modelCaretBlock(page)).toBe("item");
@@ -47,7 +47,7 @@ test("Shift+Enter keeps a second line in the same block and on disk", async ({ p
 
   // A heading is one line in Markdown: Shift+Enter must not leave a break the file cannot hold.
   await editor.getByText("Section", { exact: true }).click();
-  await page.keyboard.press("End");
+  await lineKey(page, "End");
   await expect.poll(() => modelCaretBlock(page)).toBe("Section");
   await page.keyboard.press("Shift+Enter");
   await page.keyboard.type("!");

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 test("Delete removes the complete highlighted mixed range and undo restores it", async ({ page }, info) => {
@@ -220,7 +220,7 @@ test("keyboard and touch menus select a range, move it once and clear with Escap
   }
   await expect(page.locator(".block-selection-highlight")).toHaveCount(2);
   await expect(page.locator(".block-selection-status")).toContainText("2 blocks selected");
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     await editor.getByText("Gamma", { exact: true }).click({ modifiers: ["Shift"] });
     await expect(page.locator(".block-selection-highlight")).toHaveCount(3);
     await editor.getByText("Beta", { exact: true }).click({ modifiers: ["Shift"] });
@@ -233,7 +233,7 @@ test("keyboard and touch menus select a range, move it once and clear with Escap
   await expect.poll(disk).toBe("# Title\n\nGamma\n\nAlpha\n\nBeta\n\nAfter\n");
   await page.keyboard.press("Escape"); await expect(page.locator(".block-selection-highlight")).toHaveCount(0);
   await page.keyboard.press("ControlOrMeta+z"); await expect.poll(disk).toBe(initial);
-  await editor.getByText("Beta", { exact: true }).click(); await page.keyboard.press("Home");
+  await editor.getByText("Beta", { exact: true }).click(); await lineKey(page, "Home");
   await page.keyboard.press("Shift+ArrowRight");
   await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("B");
   await expect(page.locator(".block-selection-highlight")).toHaveCount(0);

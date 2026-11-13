@@ -505,28 +505,39 @@ test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
     const tree = page.getByRole("tree", { name: "Notes" });
     await tree.focus();
 
-    // Whichever folder the cursor starts on, rather than a named one — see the ordering
-    // test above for why.
-    const rows = tree.getByRole("treeitem");
+    // A fixture folder reached by arrows alone, not "the first folder": other tests create
+    // folders in this shared vault while the suite runs, some of them empty, so the first
+    // folder may hold no note at all. `Projects` holds only read-only fixture notes.
+    const cursor = tree.locator('[role="treeitem"][aria-selected="true"]');
+    const label = async (): Promise<string> => (await cursor.locator(".tree-label").innerText()).trim();
+    await tree.press("Home");
+    for (let step = 0; step < 200 && (await label()) !== "Projects"; step += 1) {
+      await tree.press("ArrowDown");
+    }
+    expect(await label(), "arrows never reached the Projects folder").toBe("Projects");
     await tree.press("ArrowRight");
-    await expect(rows.first()).toHaveAttribute("aria-expanded", "true");
+    await expect(cursor).toHaveAttribute("aria-expanded", "true");
     await tree.press("ArrowDown");
-    const path = (await rows.nth(1).getAttribute("title")) ?? "";
-    const child = await rows.nth(1).locator(".tree-label").innerText();
+    expect(await cursor.getAttribute("aria-expanded"), "the first row in Projects is a note").toBeNull();
+    const path = (await cursor.getAttribute("title")) ?? "";
+    const child = await label();
+    expect(path.startsWith("Projects/")).toBe(true);
     await tree.press("Enter");
 
     await expect(page.getByRole("tab", { name: child })).toBeVisible();
     await expect(page.getByRole("tab", { name: child })).toHaveAttribute("title", path);
-    expect(info.project.name).toBe("desktop");
+    expect(info.project.name).not.toBe("mobile");
   });
 
-  test("bookmarks a note, and keeps it across a reload", async ({ page }) => {
+  test("bookmarks a note, and keeps it across a reload", async ({ page }, info) => {
     // The whole path: the menu writes to the server, the server stores it under this user,
     // and the next session reads it back — filtered by what they can still see.
     await openWorkspace(page);
     const tree = page.getByRole("tree", { name: "Notes" });
+    // This project's own note: the user, and so the bookmarks, are shared by every project.
+    const title = `Bookmark target ${info.project.name}`;
 
-    const actions = tree.getByRole("button", { name: "Note actions for Welcome", exact: true });
+    const actions = tree.getByRole("button", { name: `Note actions for ${title}`, exact: true });
     await actions.click();
     await page.getByRole("menuitem", { name: "Add bookmark", exact: true }).click();
     await actions.click();
@@ -542,12 +553,12 @@ test.describe("the note tree, bookmarks and breadcrumbs (§8.2)", () => {
         },
         { timeout: 10_000, intervals: [200] },
       )
-      .toContain("Welcome.md");
+      .toContain(`${title}.md`);
 
     await page.reload();
     await expect(page.locator(EDITOR).first()).toBeVisible();
     await expect(page.getByText("Bookmarks")).toBeVisible();
-    await expect(page.locator(".bookmark-list")).toContainText("Welcome");
+    await expect(page.locator(".bookmark-list")).toContainText(title);
   });
 
   test("shows the note path in its tab tooltip without duplicate breadcrumbs", async ({ page }) => {

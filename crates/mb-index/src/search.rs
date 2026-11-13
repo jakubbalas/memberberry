@@ -183,6 +183,20 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// Rewrites every segment without its deleted documents and removes the old files.
+    ///
+    /// A delete in Tantivy only marks a document; its stored text stays in the segment until
+    /// a merge rewrites it (E35).
+    pub(crate) fn scrub(&mut self) -> Result<(), Error> {
+        let segments = self.index.searchable_segment_ids()?;
+        if !segments.is_empty() {
+            self.writer.merge(&segments).wait()?;
+        }
+        self.writer.garbage_collect_files().wait()?;
+        self.reader.reload()?;
+        Ok(())
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.reader.searcher().num_docs() == 0
     }

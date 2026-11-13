@@ -20,6 +20,7 @@
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import { canGoBack, canGoForward } from "./workspace.js";
   import type { DailyView } from "./daily.svelte.js";
+  import type { Recovery } from "./device-offline.js";
 
   interface Props {
     readonly store: WorkspaceStore;
@@ -29,10 +30,11 @@
     readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
     readonly taskEdit?: { readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined;
     readonly daily?: DailyView | undefined;
+    readonly recovery?: Recovery | undefined;
     readonly ontitlechange?: (path: string, title: string) => string | undefined;
   }
 
-  const { store, session, open, titleOf, iconOf, taskEdit, daily, ontitlechange }: Props = $props();
+  const { store, session, open, titleOf, iconOf, taskEdit, daily, recovery, ontitlechange }: Props = $props();
 
   let sheetOpen = $state(false);
 
@@ -54,6 +56,7 @@
     onscroll={active === undefined ? undefined : (scroll) => store.setScroll(active.id, scroll)}
     taskEdit={editFor(active?.note)}
     {daily}
+    {recovery}
     ondailyopen={(path) => store.open(path)}
     {...(active === undefined || ontitlechange === undefined
       ? {}

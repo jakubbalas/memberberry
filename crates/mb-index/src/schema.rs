@@ -148,6 +148,10 @@ pub(crate) fn install(conn: &Connection) -> Result<(), Error> {
     // full reindex of 10 000 files.
     conn.pragma_update(None, "synchronous", "OFF")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    // why: a deleted note's rows are zeroed on the page rather than left readable in free
+    // space. The index holds titles, links and tags of notes; once a note is gone — deleted,
+    // or no longer readable on a desktop replica (E35) — none of that may linger on disk.
+    conn.pragma_update(None, "secure_delete", "ON")?;
 
     if version_of(conn)? == VERSION && has_tables(conn)? {
         return Ok(());

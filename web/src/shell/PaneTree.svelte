@@ -20,6 +20,7 @@
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
   import type { GroupId, WorkspaceNode } from "./workspace.js";
   import type { DailyView } from "./daily.svelte.js";
+  import type { Recovery } from "./device-offline.js";
 
   interface Props {
     readonly node: WorkspaceNode;
@@ -31,12 +32,13 @@
     readonly iconOf?: ((path: string) => string | null | undefined) | undefined;
     readonly taskEdit?: { readonly path: string; readonly ordinal: number; readonly action: TaskEditAction } | undefined;
     readonly daily?: DailyView | undefined;
+    readonly recovery?: Recovery | undefined;
     /** The same Markdown-derived title displayed by the note tree. */
     readonly titleOf?: ((path: string) => string | null) | undefined;
     readonly ontitlechange?: (path: string, title: string) => string | undefined;
   }
 
-  const { node, store, panes, session, open, iconOf, taskEdit, daily, target, titleOf, ontitlechange }: Props = $props();
+  const { node, store, panes, session, open, iconOf, taskEdit, daily, recovery, target, titleOf, ontitlechange }: Props = $props();
 
   /** The split's own box, which the divider measures a pointer position against. */
   let container = $state<HTMLElement | undefined>(undefined);
@@ -83,6 +85,7 @@
         : (scroll) => store.setScroll(active.id, scroll)}
       taskEdit={editFor(active?.note)}
       {daily}
+      {recovery}
       ondailyopen={(path) => store.open(path)}
       {...(active === undefined || ontitlechange === undefined
         ? {}
@@ -97,7 +100,7 @@
     bind:this={container}
   >
     <div class="pane-split-side">
-    <PaneTree node={node.first} {store} {panes} {session} {open} {iconOf} {taskEdit} {daily} {target} {titleOf} {...(ontitlechange === undefined ? {} : { ontitlechange })} />
+    <PaneTree node={node.first} {store} {panes} {session} {open} {iconOf} {taskEdit} {daily} {recovery} {target} {titleOf} {...(ontitlechange === undefined ? {} : { ontitlechange })} />
     </div>
     <SplitDivider
       split={node}
@@ -105,7 +108,7 @@
       onresize={(ratio) => store.resize(node.id, ratio)}
     />
     <div class="pane-split-side">
-      <PaneTree node={node.second} {store} {panes} {session} {open} {iconOf} {taskEdit} {daily} {target} {titleOf} {...(ontitlechange === undefined ? {} : { ontitlechange })} />
+      <PaneTree node={node.second} {store} {panes} {session} {open} {iconOf} {taskEdit} {daily} {recovery} {target} {titleOf} {...(ontitlechange === undefined ? {} : { ontitlechange })} />
     </div>
   </div>
 {/if}

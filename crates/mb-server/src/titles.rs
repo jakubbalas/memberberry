@@ -33,6 +33,16 @@ struct Fingerprint {
 }
 
 impl Fingerprint {
+    /// An opaque token that changes whenever this fingerprint does, for a replica asking
+    /// "has this note changed since I last synced it?" (§7.6.9).
+    fn version(&self) -> String {
+        let nanos = self
+            .modified
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |since| since.as_nanos());
+        format!("{}-{nanos}", self.len)
+    }
+
     fn of(path: &Path) -> Option<Self> {
         let meta = std::fs::metadata(path).ok()?;
         Some(Self {
@@ -52,6 +62,8 @@ struct Cached {
     conflicts: usize,
     /// Frontmatter icon, either a literal Unicode glyph or a custom shortcode.
     icon: Option<String>,
+    /// Frontmatter `id` (§4.3).
+    id: Option<String>,
 }
 
 struct ParsedSummary {
@@ -59,6 +71,7 @@ struct ParsedSummary {
     fingerprint: Fingerprint,
     title: Option<String>,
     icon: Option<String>,
+    id: Option<String>,
     conflicts: usize,
 }
 
@@ -75,6 +88,13 @@ pub struct NoteSummary {
     pub conflicts: usize,
     /// Open task metadata carried by the eager offline tier (§7.2, §10.3).
     pub tasks: Vec<NoteTaskSummary>,
+    /// The frontmatter `id` (§4.3), which a replica matches a note by across a rename.
+    pub id: Option<String>,
+    /// Changes whenever the note's file does; opaque. Empty when the file could not be read.
+    pub version: String,
+    /// Whether the caller may edit this note, so a replica can write view-only notes
+    /// read-only (§7.6.9). Set by the route, which knows the caller.
+    pub editable: bool,
 }
 
 /// The permission-filtered task metadata attached to a note summary.
@@ -147,6 +167,9 @@ impl TitleCache {
                 icon: None,
                 conflicts: 0,
                 tasks: Vec::new(),
+                id: None,
+                version: String::new(),
+                editable: false,
             })
             .collect();
 
@@ -161,11 +184,15 @@ impl TitleCache {
             };
             for (index, fingerprint, absolute) in fresh {
                 let path = paths.get(index).copied().unwrap_or_default();
+                if let Some(summary) = summaries.get_mut(index) {
+                    summary.version = fingerprint.version();
+                }
                 match entries.get(path) {
                     Some(cached) if cached.fingerprint == fingerprint => {
                         if let Some(summary) = summaries.get_mut(index) {
                             summary.title.clone_from(&cached.title);
                             summary.icon.clone_from(&cached.icon);
+                            summary.id.clone_from(&cached.id);
                             summary.conflicts = cached.conflicts;
                         }
                     }
@@ -187,22 +214,24 @@ impl TitleCache {
         let parsed: Vec<ParsedSummary> = stale
             .into_iter()
             .map(|(index, fingerprint, absolute)| {
-                let (title, icon, conflicts) = match std::fs::read_to_string(&absolute) {
+                let (title, icon, id, conflicts) = match std::fs::read_to_string(&absolute) {
                     Ok(source) => {
                         let document = mb_core::parse(&source);
                         (
                             mb_core::extract::title(&document),
                             document.frontmatter.icon.clone(),
+                            document.frontmatter.id.clone(),
                             mb_core::conflict::count(&document),
                         )
                     }
-                    Err(_) => (None, None, 0),
+                    Err(_) => (None, None, None, 0),
                 };
                 ParsedSummary {
                     index,
                     fingerprint,
                     title,
                     icon,
+                    id,
                     conflicts,
                 }
             })
@@ -219,6 +248,7 @@ impl TitleCache {
                         fingerprint: item.fingerprint,
                         title: item.title.clone(),
                         icon: item.icon.clone(),
+                        id: item.id.clone(),
                         conflicts: item.conflicts,
                     },
                 );
@@ -233,6 +263,7 @@ impl TitleCache {
             if let Some(summary) = summaries.get_mut(item.index) {
                 summary.title = item.title;
                 summary.icon = item.icon;
+                summary.id = item.id;
                 summary.conflicts = item.conflicts;
             }
         }

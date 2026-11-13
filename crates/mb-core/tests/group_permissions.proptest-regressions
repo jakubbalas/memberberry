@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 599265f315f86753e36311d7c1961cdd4ece6faf20c5158caaab89b48271f56f # shrinks to policy = Policy { own_member: Some(Editor), own_rules: {}, group_members: {1: Owner}, group_rules: {}, memberships: {1} }
+cc fbdb013f3e289bfc18465f0465323348519b163a44f01e8466d3e0d6837d0b55 # shrinks to policy = Policy { own_member: None, own_rules: {}, group_members: {}, group_rules: {(0, 0): Owner}, memberships: {0} }

@@ -3,10 +3,13 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
 
 for (const selection of ["blocks", "text"] as const) {
-  test(`Cmd/Ctrl+X cuts selected ${selection} and Cmd/Ctrl+V pastes into another note`, async ({ page, context }, info) => {
+  test(`Cmd/Ctrl+X cuts selected ${selection} and Cmd/Ctrl+V pastes into another note`, async ({ page, context, browserName }, info) => {
+    // why: Playwright can grant clipboard access only to Chromium; WebKit has no such
+    // permission, and its clipboard there cannot be read back. Not covered in WebKit.
+    test.skip(browserName === "webkit", "Playwright cannot grant WebKit clipboard access");
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await signIn(page);
     const id = `${info.project.name} ${selection} ${randomUUID()}`;
@@ -50,7 +53,7 @@ for (const selection of ["blocks", "text"] as const) {
     await page.goto(`/v/personal/${encodeURIComponent(destination)}`);
     await expect(editor).toBeVisible();
     await editor.getByText("Here", { exact: true }).click();
-    await page.keyboard.press("Home");
+    await lineKey(page, "Home");
     await page.keyboard.press("ControlOrMeta+v");
     await expect(editor).toContainText("Alpha ✨");
     await expect(editor).toContainText("ملاحظات Beta");

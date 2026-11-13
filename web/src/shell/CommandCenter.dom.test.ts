@@ -9,7 +9,7 @@
  */
 
 import { mount, tick, unmount } from "svelte";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import Workspace from "./Workspace.svelte";
 import { Bookmarks } from "./bookmarks.svelte.js";
@@ -83,6 +83,7 @@ function render(
     tags?: TagView;
     pins?: PinnedNotes;
     daily?: DailyView;
+    desktop?: boolean;
   } = {},
 ) {
   const ids = sessionIds();
@@ -118,6 +119,7 @@ function render(
       ...(options.tags === undefined ? {} : { tags: options.tags }),
       ...(options.pins === undefined ? {} : { pins: options.pins }),
       ...(options.daily === undefined ? {} : { daily: options.daily }),
+      ...(options.desktop === undefined ? {} : { desktop: options.desktop }),
     },
   });
   return { store, teardown: () => unmount(app) };
@@ -1028,6 +1030,234 @@ describe("keeping a note offline (SPEC §7.2)", () => {
       expect(row?.getAttribute("aria-disabled")).toBe("true");
     } finally {
       teardown();
+    }
+  });
+});
+
+describe("keeping a note offline in the desktop app (SPEC §7.6.10)", () => {
+  /** The app's embedded server answering the offline route for a server vault. */
+  function serverVault(pins: { vault: boolean; folders: string[]; notes: string[] }, online = true) {
+    const posted: unknown[] = [];
+    let current = pins;
+    const state = () => ({ server: true, online, pins: current, downloaded: current.notes, held: [] });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.endsWith("/offline")) return new Response("", { status: 404 });
+      if (init?.method === "POST") {
+        const body: unknown = JSON.parse(String(init.body));
+        posted.push(body);
+        const { path, offline } = body as { path: string; offline: boolean };
+        current = { ...current, notes: offline ? [...current.notes, path] : current.notes.filter((n) => n !== path) };
+      }
+      return new Response(JSON.stringify(state()), { headers: { "content-type": "application/json" } });
+    });
+    return { posted };
+  }
+
+  async function openPalette(): Promise<void> {
+    await flush();
+    shortcut("p");
+    await flush();
+    await flush();
+  }
+
+  function offlineRow(): HTMLElement | undefined {
+    return options().find((entry) => entry.textContent?.includes("offline"));
+  }
+
+  it("downloads the note in front through the app, not the browser's store", async () => {
+    const server = serverVault({ vault: false, folders: [], notes: [] });
+    const browserPins = new Set<string>();
+    const { teardown } = render({
+      notes: ["Projects/Roadmap.md"],
+      desktop: true,
+      pins: new PinnedNotes({
+        vault: "personal",
+        replica: async () =>
+          stubReplica({
+            pinned: async () => [...browserPins],
+            setPinned: async (_vault, note) => {
+              browserPins.add(note);
+            },
+          }),
+      }),
+    });
+    try {
+      await openPalette();
+      const row = offlineRow();
+      expect(row?.textContent?.trim().startsWith("Keep this note available offline")).toBe(true);
+      row?.click();
+      await flush();
+      await flush();
+      expect(server.posted).toEqual([{ kind: "note", path: "Projects/Roadmap.md", offline: true }]);
+      expect([...browserPins]).toEqual([]);
+    } finally {
+      teardown();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("offers to stop keeping a downloaded note offline", async () => {
+    const server = serverVault({ vault: false, folders: [], notes: ["Projects/Roadmap.md"] });
+    const { teardown } = render({ notes: ["Projects/Roadmap.md"], desktop: true });
+    try {
+      await openPalette();
+      const row = offlineRow();
+      expect(row?.textContent?.trim().startsWith("Stop keeping this note offline")).toBe(true);
+      row?.click();
+      await flush();
+      await flush();
+      expect(server.posted).toEqual([{ kind: "note", path: "Projects/Roadmap.md", offline: false }]);
+    } finally {
+      teardown();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("says so in the workspace while the server cannot be reached, and not while it can", async () => {
+    const notice = () => document.querySelector(".server-offline")?.textContent ?? "";
+    serverVault({ vault: false, folders: [], notes: ["Projects/Roadmap.md"] }, false);
+    const offline = render({ notes: ["Projects/Roadmap.md"], desktop: true });
+    try {
+      await flush();
+      await flush();
+      expect(notice()).toMatch(/^Offline\. Notes on this computer still open/);
+    } finally {
+      offline.teardown();
+      vi.unstubAllGlobals();
+    }
+    serverVault({ vault: false, folders: [], notes: [] }, true);
+    const online = render({ notes: ["Projects/Roadmap.md"], desktop: true });
+    try {
+      await flush();
+      await flush();
+      expect(document.querySelector(".server-offline")).toBeNull();
+    } finally {
+      online.teardown();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("refuses for a note its folder keeps offline", async () => {
+    const server = serverVault({ vault: false, folders: ["Projects"], notes: [] });
+    const { teardown } = render({ notes: ["Projects/Roadmap.md"], desktop: true });
+    try {
+      await openPalette();
+      const row = offlineRow();
+      expect(row?.getAttribute("aria-disabled")).toBe("true");
+      row?.click();
+      await flush();
+      expect(server.posted).toEqual([]);
+    } finally {
+      teardown();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("recovered notes in the desktop app (SPEC §7.6.7)", () => {
+  const RECOVERED = "Recovered/Roadmap (offline edits).md";
+
+  /** A server vault holding one recovered note; records what the app was asked to do. */
+  function withRecovered() {
+    const posted: unknown[] = [];
+    let recovered = [{ path: RECOVERED, original: "Projects/Roadmap.md" }];
+    const state = () => ({
+      server: true,
+      online: true,
+      pins: { vault: true, folders: [], notes: [] },
+      downloaded: [RECOVERED],
+      held: [],
+      recovered,
+    });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/recovered") && init?.method === "POST") {
+        posted.push(JSON.parse(String(init.body)));
+        recovered = [];
+        return new Response(JSON.stringify(state()), { headers: { "content-type": "application/json" } });
+      }
+      if (url.endsWith("/offline")) {
+        return new Response(JSON.stringify(state()), { headers: { "content-type": "application/json" } });
+      }
+      return new Response("", { status: 404 });
+    });
+    return { posted };
+  }
+
+  const notice = () => document.querySelector(".recovered-notice");
+  const buttonIn = (root: Element | null, label: string) =>
+    [...(root?.querySelectorAll("button") ?? [])].find((b) => b.textContent?.trim() === label);
+
+  it("says one awaits a choice and opens it, where its banner offers both choices", async () => {
+    withRecovered();
+    const { store, teardown } = render({ notes: ["Projects/Other.md"], desktop: true });
+    try {
+      await flush();
+      await flush();
+      expect(notice()?.textContent).toContain("1 note was kept from your offline edits");
+      buttonIn(notice(), "Open")?.click();
+      await flush();
+      expect(store.activeTab?.note).toBe(RECOVERED);
+      const banner = document.querySelector(".recovered-banner");
+      expect(buttonIn(banner, "Create the note again")).toBeDefined();
+      expect(buttonIn(banner, "Make a new note")).toBeDefined();
+    } finally {
+      teardown();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("creating it again asks the app, and the tab follows the note to where it was", async () => {
+    const server = withRecovered();
+    const { store, teardown } = render({ notes: [RECOVERED], desktop: true });
+    try {
+      await flush();
+      await flush();
+      buttonIn(document.querySelector(".recovered-banner"), "Create the note again")?.click();
+      await flush();
+      await flush();
+      expect(server.posted).toEqual([{ path: RECOVERED }]);
+      expect(store.activeTab?.note).toBe("Projects/Roadmap.md");
+      expect(notice()).toBeNull();
+    } finally {
+      teardown();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("Later puts the workspace line away", async () => {
+    withRecovered();
+    const { teardown } = render({ notes: ["Projects/Other.md"], desktop: true });
+    try {
+      await flush();
+      await flush();
+      buttonIn(notice(), "Later")?.click();
+      await flush();
+      expect(notice()).toBeNull();
+    } finally {
+      teardown();
+      vi.unstubAllGlobals();
+      sessionStorage.clear();
+    }
+  });
+});
+
+describe("the desktop app's offline state outside the app", () => {
+  it("is never asked for by a browser on a plain server", async () => {
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      asked.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      return new Response("", { status: 404 });
+    });
+    const { teardown } = render({ notes: ["Projects/Roadmap.md"] });
+    try {
+      await flush();
+      await flush();
+      expect(asked.filter((url) => url.endsWith("/offline"))).toEqual([]);
+    } finally {
+      teardown();
+      vi.unstubAllGlobals();
     }
   });
 });

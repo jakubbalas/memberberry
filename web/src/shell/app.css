@@ -239,6 +239,23 @@ button.task-chip-inline:hover { border-color: var(--accent-primary); color: var(
 .task-chip-inline[data-task-chip="due"] { border-color: color-mix(in srgb, var(--accent-primary) 40%, var(--border-subtle)); }
 .task-chip-label { color: var(--text-muted); font-weight: var(--weight-medium); }
 .offline-status { margin: var(--space-6) var(--space-4) 0; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+/* SPEC 7.6.10: the app cannot reach a server vault's server. The same dot as the editor's
+   connection status, which speaks only for the open note; this speaks for the vault. */
+.server-offline { display: flex; gap: var(--space-3); margin: var(--space-4) var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-muted); background: var(--surface-raised); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.server-offline::before { content: ""; flex: 0 0 auto; width: var(--space-4); height: var(--space-4); margin-top: var(--space-2); border-radius: var(--radius-round); background: var(--state-warning); }
+/* SPEC 7.6.7: recovered notes. The workspace line counts them; the banner on a recovered
+   note offers the two choices. Both keyboard-reachable buttons, both styled as the panel's. */
+.recovered-notice { margin: 0 var(--space-4) var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-primary); background: var(--surface-raised); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+.recovered-notice p, .recovered-banner p { margin: 0; }
+.recovered-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-3); }
+.recovered-actions button, .recovered-name button { min-height: var(--control-height); padding: 0 var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-primary); background: var(--surface-canvas); font: var(--weight-medium) var(--text-sm)/var(--leading-flat) var(--font-ui); cursor: pointer; }
+.recovered-actions button:focus-visible, .recovered-name button:focus-visible, .recovered-name input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+.recovered-banner { inline-size: min(100%, var(--editor-measure)); margin: var(--space-4) auto var(--space-5); padding: var(--space-4) var(--space-5); border: 1px solid var(--state-warning); border-radius: var(--radius-lg); color: var(--text-primary); background: var(--surface-raised); font: var(--text-sm)/var(--leading-snug) var(--font-ui); }
+.recovered-name { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: var(--space-4); }
+.recovered-name label { flex: 1 0 100%; color: var(--text-muted); font-size: var(--text-xs); }
+.recovered-name input { flex: 1 1 12rem; min-width: 0; min-height: var(--control-height); padding: 0 var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-primary); background: var(--surface-canvas); font: var(--text-sm)/var(--leading-flat) var(--font-ui); }
+.recovered-message:empty { display: none; }
+.recovered-banner p.recovered-message { margin-top: var(--space-3); color: var(--text-muted); }
 
 /* ------------------------------------------------------- callouts (SPEC 3.5, 4.4)
 
@@ -319,6 +336,9 @@ aside[data-callout="conflict"] > [data-callout-title] { color: var(--state-confl
 .tree-row[data-kind="folder"][aria-expanded="true"] .tree-twisty { transform: rotate(90deg); }
 .tree-row[data-current="true"] .tree-icon { color: var(--accent-primary); }
 .tree-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* §7.6.10: a note kept on this device, and one that cannot open while the server is away. */
+.tree-offline { flex: 0 0 auto; display: inline-flex; color: var(--text-muted); }
+.tree-row[data-unavailable="true"] { color: var(--text-muted); opacity: 0.55; }
 .tree-conflicts { flex: 0 0 auto; min-width: var(--space-5); padding: var(--space-1); border-radius: var(--radius-sm); color: var(--state-conflict); background: color-mix(in srgb, var(--state-conflict) 10%, var(--surface-raised)); font: var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui); text-align: center; }
 .tree-bookmark { flex: 0 0 auto; padding: 0 var(--space-1); border: 0; color: var(--text-muted); background: none; font-size: var(--text-xs); cursor: pointer; opacity: 0; }
 /* Revealed on hover or when set, so a column of empty stars does not compete with the names.

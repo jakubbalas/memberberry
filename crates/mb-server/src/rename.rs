@@ -147,6 +147,46 @@ impl<'a> Rename<'a> {
         self.note_with_title(from, to, None)
     }
 
+    /// Moves a note's file and history to `to` and changes no text anywhere (§7.6.9).
+    ///
+    /// why: a desktop replica replays renames between two servers that each hold the same
+    /// notes. A link or title rewrite made on both sides is two independent edits of the same
+    /// text, and merging them duplicates what they inserted. So the side the user renamed on
+    /// rewrites links as usual, those edits travel as ordinary note changes, and the other
+    /// side only moves the file. Authorization is [`Self::note_with_title`]'s.
+    ///
+    /// # Errors
+    ///
+    /// See [`RenameError`]. Every variant except `Failed` means nothing was written.
+    pub fn move_only(&self, from: &str, to: &str) -> Result<Renamed, RenameError> {
+        let view = AuthorizedVault::new(self.vault, self.access, self.actor.clone());
+        let identity = view.identity(from).map_err(|_| RenameError::Denied)?;
+        validate_shape(to)?;
+        for path in [identity.as_str(), to] {
+            if !self.may_write(path) {
+                return Err(RenameError::Denied);
+            }
+        }
+        let destination = self.destination(to)?;
+        self.sync
+            .close(self.vault, &identity)
+            .map_err(|error| RenameError::Failed(error.to_string()))?;
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| RenameError::Failed(error.to_string()))?;
+        }
+        std::fs::rename(self.vault.notes_root().join(&identity), &destination)
+            .map_err(|error| RenameError::Failed(error.to_string()))?;
+        crate::sync::relocate_sidecar(self.vault.root(), &identity, to)
+            .map_err(|error| RenameError::Failed(error.to_string()))?;
+        self.settle();
+        Ok(Renamed {
+            to: to.to_string(),
+            notes: 0,
+            references: 0,
+        })
+    }
+
     /// Renames a note and stores the caller's title in its first H1 when supplied.
     pub fn note_with_title(
         &self,
@@ -600,9 +640,7 @@ impl<'a> Rename<'a> {
     }
 
     fn is_owner(&self) -> bool {
-        self.access
-            .members()
-            .any(|(user, role)| user == &self.actor && role == Role::Owner)
+        self.access.vault_role(&self.actor) == Role::Owner
     }
 
     fn flush_open_notes(&self) -> Result<(), RenameError> {

@@ -129,6 +129,52 @@ impl fmt::Display for NotePath {
     }
 }
 
+/// A group from the user's identity provider, named in `access.toml` as `group:<name>`
+/// (`SPEC.md` §6.8.2, M20b). Compared exactly, case included: it is the provider's name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GroupName(String);
+
+impl GroupName {
+    /// Validates a provider group name: 1–128 characters, no control characters, no
+    /// surrounding whitespace.
+    pub fn parse(value: &str) -> Result<Self, AclError> {
+        let valid = !value.is_empty()
+            && value.chars().count() <= 128
+            && value.trim() == value
+            && !value.chars().any(char::is_control);
+        if valid {
+            Ok(Self(value.to_string()))
+        } else {
+            Err(AclError::InvalidGroup(value.to_string()))
+        }
+    }
+
+    /// The provider's spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for GroupName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Combines grants that apply at one level: an explicit `none` among them is final, and
+/// otherwise the most capable wins. `None` when nothing applies at this level.
+fn combine(grants: impl IntoIterator<Item = Role>) -> Option<Role> {
+    let mut combined: Option<Role> = None;
+    for grant in grants {
+        if grant == Role::None {
+            return Some(Role::None);
+        }
+        combined = Some(combined.map_or(grant, |current| current.min(grant)));
+    }
+    combined
+}
+
 /// A vault-wide membership assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Member {
@@ -152,6 +198,13 @@ pub struct Rule {
 pub struct Access {
     members: BTreeMap<Username, Role>,
     rules: Vec<Rule>,
+    /// Vault-wide grants to provider groups (M20b).
+    group_members: BTreeMap<GroupName, Role>,
+    /// Path grants to provider groups, beside `rules`' grants to users.
+    group_rules: BTreeMap<NotePath, BTreeMap<GroupName, Role>>,
+    /// Each user's groups from their latest provider sign-in. Supplied by the server, never
+    /// by `access.toml`; empty means groups grant nobody anything.
+    user_groups: BTreeMap<Username, BTreeSet<GroupName>>,
 }
 
 impl Access {
@@ -179,7 +232,111 @@ impl Access {
         Ok(Self {
             members: member_roles,
             rules,
+            ..Self::default()
         })
+    }
+
+    /// Adds grants to provider groups, vault-wide and per path (M20b).
+    ///
+    /// # Errors
+    ///
+    /// A group listed twice as a member, a path given two group rules, or an empty one.
+    pub fn with_group_grants(
+        mut self,
+        members: Vec<(GroupName, Role)>,
+        rules: Vec<(NotePath, BTreeMap<GroupName, Role>)>,
+    ) -> Result<Self, AclError> {
+        for (group, role) in members {
+            if self.group_members.insert(group.clone(), role).is_some() {
+                return Err(AclError::DuplicateMember(format!("group:{group}")));
+            }
+        }
+        for (path, grants) in rules {
+            if grants.is_empty() {
+                return Err(AclError::EmptyRule(path.to_string()));
+            }
+            if self.group_rules.insert(path.clone(), grants).is_some() {
+                return Err(AclError::DuplicateRule(path.to_string()));
+            }
+        }
+        Ok(self)
+    }
+
+    /// This policy with each user's current provider groups attached.
+    #[must_use]
+    pub fn with_user_groups(&self, groups: &BTreeMap<Username, BTreeSet<GroupName>>) -> Self {
+        let mut access = self.clone();
+        access.user_groups.clone_from(groups);
+        access
+    }
+
+    /// Whether any grant names a group, so groups can change what someone may do.
+    #[must_use]
+    pub fn has_group_grants(&self) -> bool {
+        !self.group_members.is_empty() || !self.group_rules.is_empty()
+    }
+
+    /// Iterates the vault-wide group grants in name order.
+    pub fn group_members(&self) -> impl Iterator<Item = (&GroupName, Role)> {
+        self.group_members
+            .iter()
+            .map(|(group, role)| (group, *role))
+    }
+
+    /// Iterates the per-path group grants in path order.
+    pub fn group_rules(&self) -> impl Iterator<Item = (&NotePath, &BTreeMap<GroupName, Role>)> {
+        self.group_rules.iter()
+    }
+
+    fn groups_of(&self, user: &Username) -> impl Iterator<Item = &GroupName> {
+        self.user_groups.get(user).into_iter().flatten()
+    }
+
+    /// The user's vault-wide role: their own membership and their groups', before any path
+    /// rule (`SPEC.md` §6.3, §6.8.2).
+    #[must_use]
+    pub fn vault_role(&self, user: &Username) -> Role {
+        let own = self.members.get(user).copied();
+        let groups = self
+            .groups_of(user)
+            .filter_map(|group| self.group_members.get(group).copied());
+        combine(own.into_iter().chain(groups)).unwrap_or(Role::None)
+    }
+
+    /// Every path a rule names, for users or for groups.
+    #[must_use]
+    pub fn rule_paths(&self) -> BTreeSet<NotePath> {
+        self.rules
+            .iter()
+            .map(|rule| rule.path.clone())
+            .chain(self.group_rules.keys().cloned())
+            .collect()
+    }
+
+    /// Everyone this policy can grant anything to: members, users named in rules, and users
+    /// whose groups are named anywhere.
+    #[must_use]
+    pub fn principals(&self) -> BTreeSet<Username> {
+        let named: BTreeSet<&GroupName> = self
+            .group_members
+            .keys()
+            .chain(self.group_rules.values().flat_map(BTreeMap::keys))
+            .collect();
+        self.members
+            .keys()
+            .cloned()
+            .chain(
+                self.rules
+                    .iter()
+                    .flat_map(|rule| rule.grants.keys().cloned()),
+            )
+            .chain(
+                self.user_groups
+                    .iter()
+                    .filter(|(_, groups)| groups.iter().any(|group| named.contains(group)))
+                    .map(|(user, _)| user.clone()),
+            )
+            .collect()
     }
 
     /// Resolves a user's role for one note path.
@@ -187,21 +344,38 @@ impl Access {
     /// More-specific matching rules override less-specific grants. An explicit `none`
     /// anywhere on the matching path is final, so an inherited denial cannot accidentally
     /// be reopened by a later rule.
+    ///
+    /// A grant to one of the user's provider groups counts exactly like a grant to the user
+    /// (§6.8.2): at one level the most capable applies, and an explicit `none` is final.
     #[must_use]
     pub fn effective_role(&self, user: &Username, note: &NotePath) -> Role {
-        let mut role = self.members.get(user).copied().unwrap_or(Role::None);
+        let mut role = self.vault_role(user);
         let mut most_specific = 0;
-        for rule in &self.rules {
-            let Some(grant) = rule.grants.get(user).copied() else {
+        let group_grant = |path: &NotePath| {
+            let grants = self.group_rules.get(path);
+            self.groups_of(user)
+                .filter_map(move |group| grants.and_then(|grants| grants.get(group)).copied())
+        };
+        let user_rules = self
+            .rules
+            .iter()
+            .map(|rule| (&rule.path, rule.grants.get(user).copied()));
+        let group_only = self
+            .group_rules
+            .keys()
+            .filter(|path| !self.rules.iter().any(|rule| &rule.path == *path))
+            .map(|path| (path, None));
+        for (path, own) in user_rules.chain(group_only) {
+            let Some(grant) = combine(own.into_iter().chain(group_grant(path))) else {
                 continue;
             };
-            if !rule.path.matches(note) {
+            if !path.matches(note) {
                 continue;
             }
             if grant == Role::None {
                 return Role::None;
             }
-            let specificity = rule.path.specificity();
+            let specificity = path.specificity();
             if specificity > most_specific {
                 role = grant;
                 most_specific = specificity;
@@ -230,6 +404,8 @@ pub enum AclError {
     InvalidUsername(String),
     /// The rule path could escape or ambiguously match a vault path.
     InvalidPath(String),
+    /// The group reference is not a valid provider group name.
+    InvalidGroup(String),
     /// A user appears in the vault-wide members list more than once.
     DuplicateMember(String),
     /// Two rules target the same normalized path.
@@ -243,6 +419,7 @@ impl fmt::Display for AclError {
         match self {
             Self::InvalidRole(value) => write!(formatter, "invalid role `{value}`"),
             Self::InvalidUsername(value) => write!(formatter, "invalid username `{value}`"),
+            Self::InvalidGroup(value) => write!(formatter, "invalid group name `{value}`"),
             Self::InvalidPath(value) => write!(formatter, "invalid ACL path `{value}`"),
             Self::DuplicateMember(value) => write!(formatter, "duplicate member `{value}`"),
             Self::DuplicateRule(value) => write!(formatter, "duplicate ACL rule `{value}`"),

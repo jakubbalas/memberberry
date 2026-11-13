@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 
@@ -18,8 +18,8 @@ test("Turn into makes a toggle that folds by button and keyboard without changin
   const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
 
   await editor.getByText("Meeting notes", { exact: true }).click();
-  await page.keyboard.press("Home");
-  await page.keyboard.press("Shift+End");
+  await lineKey(page, "Home");
+  await lineKey(page, "Shift+End");
   const popup = page.getByRole("toolbar", { name: "Selected text formatting" });
   await popup.getByRole("combobox", { name: "Turn into", exact: true }).selectOption("toggle");
   await expect.poll(disk, { timeout: 15_000 }).toContain("> [!note]+ Meeting notes");

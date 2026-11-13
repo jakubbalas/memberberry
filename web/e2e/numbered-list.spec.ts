@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
 
 for (const start of [1, 7]) {
   test(`typing ${start}. starts a numbered list that continues, exits and survives reload`, async ({ page }, info) => {
@@ -15,7 +15,7 @@ for (const start of [1, 7]) {
     await page.goto(`/v/personal/${encodeURIComponent(path)}`);
     const editor = page.locator(".editor-surface .tiptap");
     const paragraph = editor.locator(":scope > p");
-    await paragraph.click(); await page.keyboard.press("Home"); await page.keyboard.press("Shift+End");
+    await paragraph.click(); await lineKey(page, "Home"); await lineKey(page, "Shift+End");
     await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("Replace me");
     await page.keyboard.type(`${start}.`);
     await expect(editor.locator("ol")).toHaveCount(0);
@@ -54,7 +54,7 @@ test("Return continues numbered items, Shift+Return keeps a line, and an empty i
   const items = editor.locator("ol > li");
   await expect(items).toHaveCount(1);
   await items.locator("p").click();
-  await page.keyboard.press("End");
+  await lineKey(page, "End");
   // why: native selectionchange can arrive after Playwright's next keypress.
   await expect.poll(() => editor.evaluate((root) => {
     const model = (root as HTMLElement & { editor?: { state: { selection: { $head: { parent: { textContent: string } } } } } }).editor;

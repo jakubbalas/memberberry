@@ -53,6 +53,11 @@ export interface SyncProvider {
   destroy(): void;
 }
 
+/** The part of the DOM `document` that says whether the page is showing. */
+export type SyncPage = Pick<EventTarget, "addEventListener" | "removeEventListener"> & {
+  readonly visibilityState: DocumentVisibilityState;
+};
+
 export interface CreateSyncProviderOptions {
   readonly endpoint: string;
   readonly vault: string;
@@ -73,6 +78,12 @@ export interface CreateSyncProviderOptions {
    * `window`: it is unit-tested outside a DOM and could move into a worker.
    */
   readonly network?: Pick<EventTarget, "addEventListener" | "removeEventListener">;
+  /**
+   * Whether the page is showing — the DOM `document` in a browser. A socket that has stayed on
+   * a visible page since it opened was never suspended, so a resume leaves it alone. Without
+   * one, every resume reconnects.
+   */
+  readonly page?: SyncPage;
   /** Notified whenever the transport's connected state or pending count changes. */
   readonly onConnectionChange?: (state: ConnectionState) => void;
   /**
@@ -140,7 +151,10 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   admission.validate(options.document);
   const openSocket = options.connect ?? ((): WebSocket => new WebSocket(options.endpoint));
   const network = options.network ?? defaultNetwork();
+  const page = options.page ?? defaultPage();
   let socket: WebSocket | undefined;
+  /** The page was hidden at some point since the current socket opened (see `onResume`). */
+  let hiddenSinceOpened = false;
   let connected = false;
   let pending = 0;
   let synced = false;
@@ -338,9 +352,19 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
   };
   const attach = (): void => {
     if (destroyed || refreshRequired) return;
+    // why: one socket at a time, always. A socket replaced while still connecting kept its
+    // listeners, opened beside its successor and sent the same edits again; the server then
+    // merged them twice — duplicated text and a doubled conflict (§3.5).
+    if (socket !== undefined) {
+      const previous = socket;
+      detach();
+      previous.close();
+    }
     const next = openSocket();
     next.binaryType = "arraybuffer";
     socket = next;
+    // A page opened in a background tab can be suspended without ever announcing it.
+    hiddenSinceOpened = page?.visibilityState === "hidden";
     next.addEventListener("open", onOpen);
     next.addEventListener("message", onMessage);
     next.addEventListener("close", onClose);
@@ -398,6 +422,9 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
    */
   const onOnline = (): void => {
     if (destroyed || refreshRequired || connected) return;
+    // A connection already on its way is the one to wait for; starting another throws its
+    // progress away.
+    if (socket?.readyState === WebSocket.CONNECTING) return;
     if (retry !== undefined) {
       clearTimeout(retry);
       retry = undefined;
@@ -419,6 +446,11 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     if (typeof detail !== "object" || detail === null || !("vault" in detail) || detail.vault !== options.vault) return;
     // why: a suspended mobile socket may still claim OPEN without carrying bytes. A fresh
     // permission check has completed; reconnect the transport while retaining its Y doc.
+    // Only a socket that lived through a hidden page can be that socket. The workspace also
+    // reconciles on every load and window focus (§7.4), and reconnecting a live socket then
+    // dropped the connection under the editor about 200ms after it opened, clearing a
+    // block selection the user had just made. §7.4 says a return keeps the selection.
+    if (socket !== undefined && page !== undefined && !hiddenSinceOpened) return;
     onOffline();
     onOnline();
   };
@@ -442,10 +474,14 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
     });
     applyAwarenessUpdate(options.awareness, update, REMOTE_SYNC_ORIGIN);
   };
+  const onVisibility = (): void => {
+    if (page?.visibilityState === "hidden") hiddenSinceOpened = true;
+  };
   attach();
   network?.addEventListener("online", onOnline);
   network?.addEventListener("offline", onOffline);
   network?.addEventListener(RESUME_SYNC, onResume);
+  page?.addEventListener("visibilitychange", onVisibility);
   options.document.on("update", sendUpdate);
   options.awareness?.on("update", onAwareness);
 
@@ -469,6 +505,7 @@ export function createSyncProvider(options: CreateSyncProviderOptions): SyncProv
       network?.removeEventListener("online", onOnline);
       network?.removeEventListener("offline", onOffline);
       network?.removeEventListener(RESUME_SYNC, onResume);
+      page?.removeEventListener("visibilitychange", onVisibility);
       const closing = socket;
       detach();
       closing?.close();
@@ -615,4 +652,9 @@ function isAwarenessState(value: unknown): value is { readonly update: number[] 
 
 function isNumberArray(value: unknown): value is number[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "number");
+}
+
+/** The DOM `document`, or nothing outside one (a worker, a test without a DOM). */
+function defaultPage(): SyncPage | undefined {
+  return typeof globalThis.document === "object" ? globalThis.document : undefined;
 }

@@ -16,10 +16,12 @@
     readonly bookmarked?: boolean;
     /** Device-local settings share the action menu's keyboard and dismissal behavior. */
     readonly options?: readonly { readonly label: string; readonly checked: boolean; readonly ontoggle: () => void }[];
+    /** Further plain actions, such as the desktop app's offline entries (§7.6.10). */
+    readonly actions?: readonly { readonly label: string; readonly onselect: () => void }[];
     readonly ondismiss: () => void;
   }
 
-  const { open, x, y, label = "Note actions", oncreate, onrename, onopennewtab, onopenmain, onmove, ondelete, onbookmark, bookmarked = false, options = [], ondismiss }: Props = $props();
+  const { open, x, y, label = "Note actions", oncreate, onrename, onopennewtab, onopenmain, onmove, ondelete, onbookmark, bookmarked = false, options = [], actions = [], ondismiss }: Props = $props();
   let menu = $state<HTMLElement | undefined>(undefined);
   let left = $state(0);
   let top = $state(0);
@@ -108,6 +110,9 @@
     {#if onbookmark !== undefined}
       <button type="button" role="menuitem" tabindex="-1" onclick={() => activate(onbookmark)}>{bookmarked ? "Remove bookmark" : "Add bookmark"}</button>
     {/if}
+    {#each actions as action (action.label)}
+      <button type="button" role="menuitem" tabindex="-1" onclick={() => activate(action.onselect)}>{action.label}</button>
+    {/each}
     {#each options as option (option.label)}
       <button type="button" role="menuitemcheckbox" tabindex="-1" aria-checked={option.checked} onclick={() => activate(option.ontoggle)}><span class="menu-check" aria-hidden="true"></span>{option.label}</button>
     {/each}
