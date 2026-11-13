@@ -453,6 +453,7 @@ pub(super) fn unregister_vault(state: &AppState, raw_slug: &str) -> Result<PathB
     if let Ok(mut titles) = state.security.titles.write() {
         titles.remove(&slug);
     }
+    state.indexes.close(&slug);
     Ok(vault.root().to_path_buf())
 }
 

@@ -78,6 +78,11 @@ impl Connect {
         })
     }
 
+    /// The HTTP client for this app's requests to its servers.
+    pub(super) fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
     /// Every server this app knows, signed in or kept (§7.6.11).
     pub(super) fn servers(&self) -> Vec<ConnectedServer> {
         load_settings(&self.options.settings_path)
@@ -165,11 +170,12 @@ pub(super) async fn page_handler(State(state): State<Arc<AppState>>) -> Response
     if let Some((origin, _, _)) = connect.live_pending() {
         return waiting_page(&origin);
     }
-    let servers = connect.servers();
-    if servers.is_empty() {
+    if connect.servers().is_empty() {
         return address_form(None, "", false);
     }
-    servers_page(&state, connect, &servers)
+    // why: the vault picker lists every server with its account, state and Disconnect
+    // (§7.6.11), so there is no second page that says the same thing.
+    (StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response()
 }
 
 /// `GET /desktop/connect/new`: the address form, to add another server.
@@ -272,132 +278,6 @@ pub(super) async fn open(State(state): State<Arc<AppState>>, headers: HeaderMap)
         )
             .into_response();
     }
-    (
-        StatusCode::SEE_OTHER,
-        [(header::LOCATION, "/desktop/connect")],
-    )
-        .into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct SignOutQuery {
-    #[serde(default)]
-    server: String,
-}
-
-/// `GET /desktop/disconnect?server=<origin>`: what signing out of that server will do, and
-/// the choice A48 asks for each time. Changes nothing.
-pub(super) async fn sign_out_page(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Query(query): axum::extract::Query<SignOutQuery>,
-) -> Response {
-    let Some(connect) = connect_of(&state) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let Some(server) = connect.server(&query.server) else {
-        return see_servers();
-    };
-    super::desktop_sync::sign_out_page(&state, connect, &server)
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct SignOutForm {
-    #[serde(default)]
-    server: String,
-    /// `keep` keeps the server's notes on this computer; anything else removes them.
-    #[serde(default)]
-    notes: String,
-}
-
-/// `POST /desktop/disconnect`: sign out of one server (§7.6.11) — revoke this device there,
-/// forget its token, then remove or keep its notes as the form says.
-pub(super) async fn disconnect(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Form(form): Form<SignOutForm>,
-) -> Response {
-    let Some(connect) = connect_of(&state) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if !onboarding::same_origin(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let Some(server) = connect.server(&form.server) else {
-        return see_servers();
-    };
-    let keep = form.notes == "keep";
-    let revoked_upstream = if server.signed_out {
-        true
-    } else {
-        sign_out_upstream(&state, connect, &server).await
-    };
-    if connect.options.secrets.delete(&server.origin).is_err() {
-        return message_page(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Could not sign out",
-            "Memberberry could not remove this server's key from the system keychain. Try again.",
-        );
-    }
-    let settled = if keep {
-        connect.update_settings(|settings| {
-            for s in &mut settings.servers {
-                if s.origin == server.origin {
-                    s.signed_out = true;
-                }
-            }
-        })
-    } else {
-        super::desktop_sync::remove_server_notes(&state, connect, &server.origin)
-    };
-    connect.sync.wake_now();
-    if settled.is_err() {
-        return message_page(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Could not sign out",
-            "Memberberry could not finish signing out of this server. Try again.",
-        );
-    }
-    if revoked_upstream {
-        return see_servers();
-    }
-    let mut body = String::from("<p>This app is signed out of ");
-    push_escaped_text(&mut body, &server.origin);
-    body.push_str(
-        ", but the server could not be reached to revoke its access. Revoke it there with \
-         <code>memberberry device revoke</code>.</p><p><a class=\"mb-button mb-action\" \
-         href=\"/desktop/connect\">Back to your servers</a></p>",
-    );
-    (StatusCode::OK, page("Signed out", &body)).into_response()
-}
-
-/// Sends what can still be sent, then revokes this device's token on `server`. Whether the
-/// server confirmed the revocation (or already refused the token).
-async fn sign_out_upstream(state: &AppState, connect: &Connect, server: &ConnectedServer) -> bool {
-    // why: revoking on the server comes first and failing it is reported, not hidden. A
-    // device that forgot its token while the server still honours it is a credential nobody
-    // can see or use, but anyone who copies it can.
-    let token = match connect.options.secrets.get(&server.origin) {
-        Ok(Some(token)) => token,
-        Ok(None) => return true,
-        Err(_) => return false,
-    };
-    // why: one last pass, so edits made in the last few seconds are not lost to a removal.
-    if let Ok(upstream) = crate::replica::upstream::Upstream::new(&server.origin, &token) {
-        let _passing = connect.sync.exclusive().await;
-        super::desktop_sync::pass_server(state, connect, &server.origin, &upstream).await;
-    }
-    connect
-        .client
-        .delete(format!("{}/api/v1/devices/self", server.origin))
-        .bearer_auth(token)
-        .send()
-        .await
-        .is_ok_and(|response| {
-            response.status().is_success() || response.status() == StatusCode::UNAUTHORIZED
-        })
-}
-
-fn see_servers() -> Response {
     (
         StatusCode::SEE_OTHER,
         [(header::LOCATION, "/desktop/connect")],
@@ -590,8 +470,7 @@ fn address_form(error: Option<&str>, value: &str, has_servers: bool) -> Response
         "\" /></div><div class=\"mb-actions\"><button class=\"mb-button mb-action\" \
          type=\"submit\">Continue</button><a class=\"mb-button mb-quiet mb-action\" href=\"",
     );
-    body.push_str(if has_servers { "/desktop/connect" } else { "/" });
-    body.push_str("\">Cancel</a></div></form>");
+    body.push_str("/\">Cancel</a></div></form>");
     let status = if error.is_some() {
         StatusCode::BAD_REQUEST
     } else {
@@ -632,62 +511,6 @@ fn waiting_page(origin: &str) -> Response {
         StatusCode::OK,
         [(header::REFRESH, "3")],
         page_with(PagePolicy::SignIn, "Waiting for approval", &body),
-    )
-        .into_response()
-}
-
-fn servers_page(state: &AppState, connect: &Connect, servers: &[ConnectedServer]) -> Response {
-    let mut body = String::new();
-    for server in servers {
-        body.push_str("<section class=\"mb-server\"><h2>");
-        push_escaped_text(&mut body, super::desktop_sync::host_of(&server.origin));
-        body.push_str("</h2><p>");
-        if server.signed_out {
-            body.push_str("Signed out. Notes kept on this computer belong to <strong>");
-            push_escaped_text(&mut body, &server.display_name);
-            body.push_str("</strong> (");
-            push_escaped_text(&mut body, &server.username);
-            body.push_str("); they sync again when you sign in as them.</p>");
-        } else {
-            body.push_str("Signed in as <strong>");
-            push_escaped_text(&mut body, &server.display_name);
-            body.push_str("</strong> (");
-            push_escaped_text(&mut body, &server.username);
-            body.push_str(").</p>");
-        }
-        body.push_str(&super::desktop_sync::vaults_section(state, connect, server));
-        body.push_str("<div class=\"mb-actions\">");
-        if server.signed_out {
-            body.push_str(
-                "<form method=\"post\" action=\"/desktop/connect\"><input type=\"hidden\" \
-                 name=\"server\" value=\"",
-            );
-            push_escaped_attr(&mut body, &server.origin);
-            body.push_str(
-                "\"><button class=\"mb-button mb-action\" type=\"submit\">Sign in again\
-                 </button></form>",
-            );
-        }
-        body.push_str(
-            "<a class=\"mb-button mb-quiet mb-action\" href=\"/desktop/disconnect?server=",
-        );
-        push_escaped_attr(&mut body, &super::encode_query_value(&server.origin));
-        body.push_str("\">");
-        body.push_str(if server.signed_out {
-            "Remove notes"
-        } else {
-            "Sign out"
-        });
-        body.push_str("</a></div></section>");
-    }
-    body.push_str(
-        "<div class=\"mb-actions\"><a class=\"mb-button mb-action\" href=\"/\">Back to your \
-         vaults</a><a class=\"mb-button mb-quiet mb-action\" href=\"/desktop/connect/new\">\
-         Connect another server</a></div>",
-    );
-    (
-        StatusCode::OK,
-        page_with(PagePolicy::SignIn, "Your servers", &body),
     )
         .into_response()
 }

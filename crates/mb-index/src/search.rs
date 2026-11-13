@@ -111,6 +111,17 @@ impl SearchIndex {
         Self::from_index(index)
     }
 
+    /// Stops writing, waiting for any segment merge still running in the background.
+    ///
+    /// why: a commit starts merges on tantivy's own threads, and dropping the writer does
+    /// not wait for them. Their files keep appearing for a moment after the index is gone,
+    /// so a folder deleted right after its vault was closed fails as "not empty".
+    pub(crate) fn close(self) -> Result<(), Error> {
+        drop(self.reader);
+        self.writer.wait_merging_threads()?;
+        Ok(())
+    }
+
     pub(crate) fn in_memory() -> Result<Self, Error> {
         Self::from_index(TantivyIndex::create_in_ram(schema()))
     }

@@ -205,6 +205,7 @@ impl FileStamp {
 
 pub mod desktop;
 mod desktop_connect;
+mod desktop_disconnect;
 mod desktop_forward;
 mod desktop_sync;
 mod devices;
@@ -627,8 +628,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             .route("/desktop/connect/new", get(desktop_connect::new_server))
             .route(
                 "/desktop/disconnect",
-                get(desktop_connect::sign_out_page)
-                    .post(desktop_connect::disconnect)
+                get(desktop_disconnect::dialog)
+                    .post(desktop_disconnect::disconnect)
                     .layer(DefaultBodyLimit::max(8 * 1024)),
             )
     } else {
@@ -1152,8 +1153,49 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
     if state.authenticated_user(&headers).is_none() {
         return login_page(&state.sign_in_options()).into_response();
     }
-    // A card per vault, grouped by where it lives: on this device, or on each known server
-    // (§7.6.10, §7.6.11). In a browser there is one group and no heading.
+    page_with(
+        picker_policy(&state),
+        "Your vaults",
+        &vaults_home(&state, &headers),
+    )
+    .into_response()
+}
+
+/// The picker may submit forms only where it carries them: in the desktop app (§7.6.11).
+///
+/// why: in a browser the picker has no form at all, so it keeps `form-action 'none'` —
+/// a policy is widened only for a page whose job needs it.
+fn picker_policy(state: &AppState) -> PagePolicy {
+    if state.desktop.is_some() {
+        PagePolicy::Picker
+    } else {
+        PagePolicy::Content
+    }
+}
+
+/// The vault picker with `dialog` over it, the rest of the page inert behind it.
+///
+/// why: these pages run no script (their CSP forbids it), so a confirmation cannot be a
+/// script-driven modal. The picker is rendered underneath instead, so the dialog reads as
+/// one over the page the user was on, and its Cancel is a link back to that page.
+pub(super) fn vaults_home_with_dialog(
+    state: &AppState,
+    headers: &HeaderMap,
+    status: StatusCode,
+    title: &str,
+    dialog: &str,
+) -> Response {
+    let mut body = String::from("<div class=\"mb-under\" inert>");
+    body.push_str(&vaults_home(state, headers));
+    body.push_str("</div>");
+    body.push_str(dialog);
+    (status, page_with(picker_policy(state), title, &body)).into_response()
+}
+
+/// The vault picker's body: a card per vault the reader can open, grouped by where it
+/// lives — on this device, or on each known server (§7.6.10, §7.6.11). In a browser there
+/// is one group and no heading.
+fn vaults_home(state: &AppState, headers: &HeaderMap) -> String {
     let mut local_cards = String::new();
     let mut server_cards: BTreeMap<String, String> = BTreeMap::new();
     let mut visible = 0;
@@ -1161,7 +1203,7 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
         let Some(access) = state.access_for(vault.slug()) else {
             continue;
         };
-        let Some(view) = state.authorized_vault(vault, &access, &headers) else {
+        let Some(view) = state.authorized_vault(vault, &access, headers) else {
             continue;
         };
         if !view.has_any_access().unwrap_or(false) {
@@ -1172,33 +1214,34 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
         // why: counted through the authorized view, so a vault never says how many notes
         // exist that this reader cannot see (§6.5).
         let readable = view.notes().map_or(0, |notes| notes.len());
-        let meta = match &server {
-            Some(summary) => summary.describe(),
-            None => count_notes(readable),
+        let (meta, warning) = match &server {
+            Some(summary) => (summary.describe(), summary.unsent_line()),
+            None => (count_notes(readable), None),
         };
         let out = match state.server_vault(vault.slug().as_str()) {
             Some(config) => server_cards.entry(config.origin).or_default(),
             None => &mut local_cards,
         };
-        push_vault_card(out, vault, &meta);
+        push_vault_card(out, vault, &meta, warning.as_deref());
     }
+    let desktop = state.desktop.is_some();
     let mut body = String::from(
         "<div class=\"mb-vaults-head\"><p>Open a vault and pick up where you left off.</p><div class=\"mb-actions\">",
     );
-    if state.is_server_admin(&headers) {
+    if state.is_server_admin(headers) {
         body.push_str("<a class=\"mb-button mb-action\" href=\"/vaults/new\">New vault</a>");
     }
     // why: in the desktop app there is no one to log out — its guard signs the window
     // straight back in (§7.6.8) — so the button that did nothing becomes the way to a server.
-    if state.desktop.is_some() {
+    if desktop {
         body.push_str(
-            "<a class=\"mb-button mb-quiet mb-action\" href=\"/desktop/connect\">Servers</a>",
+            "<a class=\"mb-button mb-quiet mb-action\" href=\"/desktop/connect/new\">Connect a server</a>",
         );
     } else {
         body.push_str("<a class=\"mb-button mb-quiet mb-action\" href=\"/logout\">Log out</a>");
     }
     body.push_str("</div></div>");
-    if state.desktop.is_some() {
+    if desktop {
         let groups = state.server_groups();
         for (origin, heading) in &groups {
             body.push_str(heading);
@@ -1210,21 +1253,31 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
             );
             body.push_str("</section>");
         }
-        body.push_str("<section class=\"mb-vault-group\"><h2 class=\"mb-vault-group-head\">On this device</h2>");
+        body.push_str(
+            "<section class=\"mb-vault-group\" data-local=\"true\"><div class=\"mb-group-head\">",
+        );
+        body.push_str(DEVICE_MARK);
+        body.push_str(
+            "<div class=\"mb-group-id\"><h2 class=\"mb-group-title\">On this device</h2>\
+             <p class=\"mb-group-sub\">Plain Markdown in your Memberberry folder</p></div></div>",
+        );
         push_vault_grid(
             &mut body,
             &local_cards,
             "Vaults you create here live in your Memberberry folder.",
         );
         body.push_str("</section>");
-        if groups.is_empty() {
-            body.push_str(
-                "<a class=\"mb-vault-connect\" href=\"/desktop/connect\"><strong>Connect your server</strong>\
-                 <span>Work on your server's vaults here, online or with notes kept offline.</span></a>",
-            );
-        }
+        body.push_str("<a class=\"mb-vault-connect\" href=\"/desktop/connect/new\"><strong>");
+        body.push_str(if groups.is_empty() {
+            "Connect your server"
+        } else {
+            "Connect another server"
+        });
+        body.push_str(
+            "</strong><span>Work on a server's vaults here, online or with notes kept offline.</span></a>",
+        );
     } else if visible == 0 {
-        body.push_str(if state.is_server_admin(&headers) {
+        body.push_str(if state.is_server_admin(headers) {
             "<p class=\"mb-empty\">Create your first vault to get started.</p>"
         } else {
             "<p class=\"mb-empty\">No vaults are shared with you yet. Ask your administrator for an invitation.</p>"
@@ -1232,8 +1285,11 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
     } else {
         push_vault_grid(&mut body, &local_cards, "");
     }
-    page("Your vaults", &body).into_response()
+    body
 }
+
+/// This computer, drawn, for the picker's "On this device" heading.
+const DEVICE_MARK: &str = "<span class=\"mb-group-mark\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"11\" rx=\"2\" /><path d=\"M2 19h20\" /></svg></span>";
 
 /// "3 notes", "1 note", "No notes yet".
 fn count_notes(count: usize) -> String {
@@ -1244,7 +1300,7 @@ fn count_notes(count: usize) -> String {
     }
 }
 
-fn push_vault_card(out: &mut String, vault: &Vault, meta: &str) {
+fn push_vault_card(out: &mut String, vault: &Vault, meta: &str, warning: Option<&str>) {
     out.push_str("<li><a class=\"mb-vault-card\" href=\"/v/");
     push_escaped_attr(out, vault.slug().as_str());
     out.push('"');
@@ -1266,7 +1322,13 @@ fn push_vault_card(out: &mut String, vault: &Vault, meta: &str) {
     push_escaped_text(out, vault.name());
     out.push_str("</span><span class=\"mb-vault-meta\">");
     push_escaped_text(out, meta);
-    out.push_str("</span></span></a></li>");
+    out.push_str("</span>");
+    if let Some(warning) = warning {
+        out.push_str("<span class=\"mb-vault-warn\">");
+        push_escaped_text(out, warning);
+        out.push_str("</span>");
+    }
+    out.push_str("</span></a></li>");
 }
 
 fn push_vault_grid(out: &mut String, cards: &str, empty: &str) {
@@ -6524,6 +6586,10 @@ enum PagePolicy {
     /// The device approval form (§6.8.1). It posts to this origin, and that post redirects
     /// to the device's loopback callback, which `form-action` also governs.
     DeviceApproval,
+    /// The vault picker. In the desktop app it carries a server's Sign in again form and
+    /// the Disconnect dialogs (§7.6.11), which post to this origin. It shows vault names and
+    /// counts, never note content.
+    Picker,
 }
 
 impl PagePolicy {
@@ -6533,7 +6599,7 @@ impl PagePolicy {
             // why: `'none'` on every page made the sign-in form unsubmittable, so nobody
             // could log in with a browser at all. Only this page has a form, and it posts
             // to its own origin; the note pages keep the stricter rule they need.
-            Self::SignIn | Self::VaultIndex | Self::PublicPassword => "'self'",
+            Self::SignIn | Self::VaultIndex | Self::Picker | Self::PublicPassword => "'self'",
             // why: a browser applies `form-action` to the redirect after a submit, so with
             // `'self'` alone the approval would be blocked on its way back to the device.
             // Loopback on any port is exactly the set `valid_redirect_uri` accepts.
@@ -6595,7 +6661,10 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
         PagePolicy::SignIn | PagePolicy::DeviceApproval => {
             out.push_str(" class=\"mb-auth\"");
         }
-        PagePolicy::Content | PagePolicy::PublicContent | PagePolicy::PublicPassword => {}
+        PagePolicy::Content
+        | PagePolicy::Picker
+        | PagePolicy::PublicContent
+        | PagePolicy::PublicPassword => {}
     }
     out.push_str(">\n<header>");
     out.push_str(BRAND);
@@ -6957,9 +7026,40 @@ a{color:var(--accent-primary)}\
 .mb-vaults-head p{margin:0;color:var(--text-muted);font:var(--text-sm)/var(--leading-snug) var(--font-ui)}\
 .mb-vaults-head .mb-actions{margin:0}\
 .mb-vault-group{margin:0 0 var(--space-8)}\
-.mb-vault-group-head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-4);margin:0 0 var(--space-5);color:var(--text-muted);font:var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui);letter-spacing:var(--tracking-wide);text-transform:uppercase}\
-.mb-vault-group-head a{margin-left:auto;color:var(--text-muted);font:var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui);letter-spacing:normal;text-transform:none;text-decoration:none}\
-.mb-vault-group-head a:hover{color:var(--accent-primary)}\
+.mb-vault-group{padding:var(--space-6) 0 0;border-top:1px solid var(--border-subtle)}\
+.mb-group-head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-4) var(--space-5);margin:0 0 var(--space-6)}\
+.mb-group-mark{display:grid;place-items:center;flex:0 0 auto;width:var(--space-8);height:var(--space-8);border-radius:var(--radius-md);color:var(--text-muted);background:var(--surface-raised)}\
+.mb-group-mark svg{width:var(--icon-size);height:var(--icon-size)}\
+.mb-group-id{display:flex;flex:1 1 12rem;flex-direction:column;gap:var(--space-1);min-width:0}\
+.mb-group-title{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);margin:0;overflow-wrap:anywhere;font:var(--weight-medium) var(--text-md)/var(--leading-snug) var(--font-ui)}\
+.mb-group-sub{margin:0;overflow-wrap:anywhere;color:var(--text-muted);font:var(--text-xs)/var(--leading-snug) var(--font-ui)}\
+.mb-group-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3)}\
+.mb-group-actions form{display:contents}\
+.mb-group-alert{margin:calc(-1 * var(--space-3)) 0 var(--space-6);padding:var(--space-4) var(--space-5);border-left:var(--space-1) solid var(--state-warning);border-radius:var(--radius-sm);color:var(--text-primary);background:var(--surface-raised);font:var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-small{min-height:var(--control-height);padding:0 var(--space-5);font-size:var(--text-xs)}\
+.mb-danger{border-color:var(--state-danger);color:var(--state-danger);background:var(--surface-note)}\
+.mb-danger:hover{color:var(--state-danger);background:color-mix(in srgb,var(--state-danger) 14%,var(--surface-note))}\
+.mb-vault-warn{display:inline-flex;align-items:center;gap:var(--space-2);color:var(--state-warning);font:var(--weight-medium) var(--text-xs)/var(--leading-snug) var(--font-ui)}\
+.mb-vault-warn::before{content:'';width:.4rem;height:.4rem;border-radius:var(--radius-round);background:currentColor}\
+.mb-modal{position:fixed;inset:0;z-index:10;display:grid;place-items:center;padding:var(--space-6);overflow-y:auto}\
+.mb-modal-backdrop{position:fixed;inset:0;background:color-mix(in srgb,var(--surface-canvas) 72%,transparent);backdrop-filter:blur(3px)}\
+.mb-dialog{position:relative;display:flex;flex-direction:column;gap:var(--space-5);width:min(30rem,100%);padding:var(--space-8) var(--space-7) var(--space-7);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);background:var(--surface-note);box-shadow:var(--shadow-lg)}\
+.mb-dialog h2{margin:0;font:var(--weight-medium) var(--text-xl)/var(--leading-snug) var(--font-title);overflow-wrap:anywhere}\
+.mb-dialog p{margin:0;font:var(--text-sm)/var(--leading-body) var(--font-ui)}\
+.mb-dialog form{display:flex;flex-direction:column;gap:var(--space-5)}\
+.mb-dialog .mb-dialog-quiet{color:var(--text-muted)}\
+.mb-dialog-icon{display:grid;place-items:center;width:var(--space-9);height:var(--space-9);border-radius:var(--radius-round);color:var(--state-warning);background:color-mix(in srgb,var(--state-warning) 16%,var(--surface-note))}\
+.mb-dialog[data-tone=danger] .mb-dialog-icon{color:var(--state-danger);background:color-mix(in srgb,var(--state-danger) 16%,var(--surface-note))}\
+.mb-dialog-icon svg{width:var(--icon-size);height:var(--icon-size)}\
+.mb-dialog-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:var(--space-4);margin-top:var(--space-3)}\
+.mb-unsent{display:flex;flex-direction:column;gap:var(--space-2);max-height:12rem;margin:0;padding:var(--space-3);overflow-y:auto;border:1px solid var(--border-subtle);border-radius:var(--radius-md);background:var(--surface-sunken);list-style:none}\
+.mb-unsent li{display:flex;flex-direction:column;gap:var(--space-1);padding:var(--space-3) var(--space-4)}\
+.mb-unsent-path{overflow-wrap:anywhere;font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-unsent-why{color:var(--text-muted);font:var(--text-xs)/var(--leading-snug) var(--font-ui)}\
+.mb-confirm{color:var(--text-muted);font:var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-confirm input{min-height:var(--touch-target-min);padding:var(--space-4) var(--space-5);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-primary);background:var(--surface-sunken);font:var(--text-md)/var(--leading-flat) var(--font-ui)}\
+.mb-confirm input:focus-visible,.mb-modal .mb-button:focus-visible{outline:var(--focus-ring-width) solid var(--focus-ring);outline-offset:var(--focus-ring-offset)}\
+.mb-under{min-height:100%}\
 .mb-badge{display:inline-flex;align-items:center;gap:var(--space-2);padding:var(--space-1) var(--space-3);border-radius:var(--radius-round);background:var(--surface-raised);font:var(--weight-medium) var(--text-2xs)/var(--leading-flat) var(--font-ui);letter-spacing:normal;text-transform:none}\
 .mb-badge::before{content:'';width:.5rem;height:.5rem;border-radius:var(--radius-round);background:currentColor}\
 .mb-badge[data-state=online]{color:var(--accent-primary)}\

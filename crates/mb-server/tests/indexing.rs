@@ -339,10 +339,14 @@ fn targeted_indexing_removes_a_note_replaced_by_a_symlink() {
             .is_empty()
     );
     assert_eq!(sources(&registry, &vault, "Shared.md"), ["Real/Source.md"]);
+    // why: watcher events carry canonical paths, and the indexer ignores any other spelling
+    // as outside the vault. On macOS the temp dir `/var` is a symlink to `/private/var`, so
+    // the raw `dir.path()` would make both checks below pass without indexing anything.
+    let root = dir.path().canonicalize().expect("canonical root");
     let hidden = dir.write(".hidden/Secret.md", "# Hidden\n\n[[Shared]]\n");
     std::fs::remove_file(dir.path().join("Real/Source.md")).expect("remove");
     std::os::unix::fs::symlink(hidden, dir.path().join("Real/Source.md")).expect("link");
-    let changed = Changes::Only(BTreeSet::from([dir.path().join("Real/Source.md")]));
+    let changed = Changes::Only(BTreeSet::from([root.join("Real/Source.md")]));
     assert!(
         registry
             .maintain(std::iter::once(&vault), &changed)
@@ -356,7 +360,7 @@ fn targeted_indexing_removes_a_note_replaced_by_a_symlink() {
     std::fs::remove_dir(dir.path().join("Real")).expect("remove real");
     std::os::unix::fs::symlink(dir.path().join(".hidden"), dir.path().join("Real"))
         .expect("directory link");
-    let changed = Changes::Only(BTreeSet::from([dir.path().join("Real/Secret.md")]));
+    let changed = Changes::Only(BTreeSet::from([root.join("Real/Secret.md")]));
     assert!(
         registry
             .maintain(std::iter::once(&vault), &changed)

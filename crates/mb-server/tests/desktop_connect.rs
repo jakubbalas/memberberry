@@ -27,6 +27,9 @@ struct Upstream {
     state: Arc<AppState>,
     _dir: tempfile::TempDir,
     _stop: tokio::sync::oneshot::Sender<()>,
+    /// While set, every request is answered 503, as a proxy in front of a stopped server
+    /// does.
+    down: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn upstream() -> Upstream {
@@ -80,7 +83,20 @@ async fn upstream() -> Upstream {
     );
     let errors = state.maintain_index(&mb_server::watch::Changes::All);
     assert!(errors.is_empty(), "{errors:?}");
-    let app = router(Arc::clone(&state));
+    let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refusing = Arc::clone(&down);
+    let app = router(Arc::clone(&state)).layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let refusing = Arc::clone(&refusing);
+            async move {
+                if refusing.load(std::sync::atomic::Ordering::SeqCst) {
+                    axum::response::IntoResponse::into_response(StatusCode::SERVICE_UNAVAILABLE)
+                } else {
+                    next.run(request).await
+                }
+            }
+        },
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener");
@@ -104,6 +120,7 @@ async fn upstream() -> Upstream {
         state,
         _dir: dir,
         _stop: stop,
+        down,
     }
 }
 
@@ -270,17 +287,12 @@ async fn approving_in_the_browser_connects_the_app_and_keeps_the_token_in_the_se
 }
 
 #[tokio::test]
-async fn the_connected_page_names_the_server_and_account() {
+async fn the_vault_picker_names_the_connected_server_and_account() {
     let upstream = upstream().await;
     let app = app().await;
     let authorize = app.start_connecting(&upstream.origin).await;
     approve_in_browser(&upstream, &authorize).await;
-    let page = app
-        .get("/desktop/connect")
-        .await
-        .text()
-        .await
-        .expect("body");
+    let page = app.get("/").await.text().await.expect("body");
     let host = upstream.origin.trim_start_matches("http://");
     assert!(page.contains(host) && page.contains("Alice"), "{page}");
 }
@@ -362,7 +374,7 @@ async fn disconnecting_revokes_the_token_on_the_server_and_forgets_it_here() {
     let disconnected = app
         .post(
             "/desktop/disconnect",
-            &[("server", upstream.origin.as_str()), ("notes", "remove")],
+            &[("server", upstream.origin.as_str())],
         )
         .await;
     assert_eq!(disconnected.status(), StatusCode::SEE_OTHER);
@@ -790,10 +802,18 @@ async fn offline_the_vault_lists_every_note_and_only_downloaded_ones_are_on_disk
 
 // ------------------------------------------------- several servers, signing out (§7.6.11)
 
-async fn sign_out(app: &App, upstream: &Upstream, notes: &str) -> reqwest::Response {
+async fn sign_out(app: &App, upstream: &Upstream) -> reqwest::Response {
     app.post(
         "/desktop/disconnect",
-        &[("server", upstream.origin.as_str()), ("notes", notes)],
+        &[("server", upstream.origin.as_str())],
+    )
+    .await
+}
+
+async fn sign_out_typing(app: &App, upstream: &Upstream, typed: &str) -> reqwest::Response {
+    app.post(
+        "/desktop/disconnect",
+        &[("server", upstream.origin.as_str()), ("confirm", typed)],
     )
     .await
 }
@@ -811,8 +831,58 @@ async fn with_downloaded_note(upstream: &Upstream, app: &App) -> std::path::Path
     note
 }
 
+/// As [`with_downloaded_note`], and waits until a pass has recorded it as in step with the
+/// server, so a later edit here is an edit rather than a first download.
+async fn with_synced_note(upstream: &Upstream, app: &App) -> std::path::PathBuf {
+    let note = with_downloaded_note(upstream, app).await;
+    let record = vault_folder(&note).join(".memberberry/replica/record.json");
+    assert!(
+        eventually(|| std::fs::read_to_string(&record).is_ok_and(|r| r.contains("Hello.md"))).await
+    );
+    note
+}
+
+/// A downloaded note edited here that the server will not take: Alice may only view it
+/// there now. Waits until a pass has held it.
+async fn with_unsent_note(upstream: &Upstream, app: &App) -> std::path::PathBuf {
+    let note = with_synced_note(upstream, app).await;
+    upstream.set_access(
+        "[[members]]\nuser = \"alice\"\nrole = \"viewer\"\n[[members]]\nuser = \"bob\"\nrole = \"owner\"\n",
+    );
+    let mut edited = std::fs::read_to_string(&note).expect("note");
+    edited.push_str("\nwritten-here-only\n");
+    std::fs::write(&note, edited).expect("edit");
+    assert!(
+        eventually_async(app, "/", "1 note not synced").await,
+        "the edit was never held"
+    );
+    note
+}
+
+/// The vault folder `note` is in.
+fn vault_folder(note: &std::path::Path) -> std::path::PathBuf {
+    note.parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .to_path_buf()
+}
+
+/// Leaves `upstream` as an earlier version of the app did on "Sign out, keep notes" (A48):
+/// listed as signed out, its vaults and notes still here.
+fn kept_from_an_earlier_version(app: &App, upstream: &Upstream) {
+    let path = app.paths.app_data.join("desktop.toml");
+    let settings = std::fs::read_to_string(&path).expect("settings");
+    let servers = settings.find("[[servers]]").expect("servers table");
+    let origin_line = format!("origin = \"{}\"", upstream.origin);
+    let at = servers + settings[servers..].find(&origin_line).expect("origin line");
+    let mut changed = settings.clone();
+    changed.insert_str(at + origin_line.len(), "\nsigned_out = true");
+    std::fs::write(&path, changed).expect("settings");
+    app.secrets.delete(&upstream.origin).expect("token");
+}
+
 #[tokio::test]
-async fn the_sign_out_page_offers_keeping_or_removing_downloaded_notes() {
+async fn the_disconnect_dialog_says_it_checks_first_and_what_it_removes() {
     let upstream = upstream().await;
     let app = app().await;
     with_downloaded_note(&upstream, &app).await;
@@ -825,15 +895,16 @@ async fn the_sign_out_page_offers_keeping_or_removing_downloaded_notes() {
     )
     .await;
     assert!(
-        page.contains("1 note is available offline")
-            && page.contains("value=\"keep\"")
-            && page.contains("value=\"remove\""),
+        page.contains("role=\"alertdialog\"")
+            && page.contains("has reached the server")
+            && page.contains("deletes the note kept offline")
+            && !page.contains("value=\"keep\""),
         "{page}"
     );
 }
 
 #[tokio::test]
-async fn with_nothing_downloaded_signing_out_asks_nothing() {
+async fn the_disconnect_dialog_can_be_submitted_under_the_pages_own_policy() {
     let upstream = upstream().await;
     let app = app().await;
     with_server_vault(&upstream, &app).await;
@@ -842,14 +913,11 @@ async fn with_nothing_downloaded_signing_out_asks_nothing() {
             .await,
     )
     .await;
-    assert!(
-        !page.contains("value=\"keep\"") && page.contains("value=\"remove\""),
-        "{page}"
-    );
+    assert!(page.contains("form-action 'self'"), "{page}");
 }
 
 #[tokio::test]
-async fn viewing_the_sign_out_page_changes_nothing() {
+async fn viewing_the_disconnect_dialog_changes_nothing() {
     let upstream = upstream().await;
     let app = app().await;
     with_server_vault(&upstream, &app).await;
@@ -859,17 +927,12 @@ async fn viewing_the_sign_out_page_changes_nothing() {
 }
 
 #[tokio::test]
-async fn signing_out_and_removing_deletes_the_notes_and_the_vault() {
+async fn disconnecting_with_everything_synced_deletes_the_notes_and_the_vault() {
     let upstream = upstream().await;
     let app = app().await;
-    let note = with_downloaded_note(&upstream, &app).await;
-    let folder = note
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap()
-        .to_path_buf();
+    let folder = vault_folder(&with_downloaded_note(&upstream, &app).await);
     assert_eq!(
-        sign_out(&app, &upstream, "remove").await.status(),
+        sign_out(&app, &upstream).await.status(),
         StatusCode::SEE_OTHER
     );
     let vaults = body(app.get("/api/v1/vaults").await).await;
@@ -877,60 +940,161 @@ async fn signing_out_and_removing_deletes_the_notes_and_the_vault() {
 }
 
 #[tokio::test]
-async fn signing_out_and_removing_forgets_the_server() {
+async fn disconnecting_with_everything_synced_forgets_the_server() {
     let upstream = upstream().await;
     let app = app().await;
     with_downloaded_note(&upstream, &app).await;
-    sign_out(&app, &upstream, "remove").await;
+    sign_out(&app, &upstream).await;
     let settings =
         std::fs::read_to_string(app.paths.app_data.join("desktop.toml")).expect("settings");
     assert!(!settings.contains(&upstream.origin), "{settings}");
 }
 
 #[tokio::test]
-async fn signing_out_and_keeping_leaves_the_notes_and_revokes_the_device() {
+async fn disconnecting_sends_an_edit_made_just_before() {
     let upstream = upstream().await;
     let app = app().await;
-    let note = with_downloaded_note(&upstream, &app).await;
-    let token = app.secrets.get(&upstream.origin).unwrap().expect("token");
-    assert_eq!(
-        sign_out(&app, &upstream, "keep").await.status(),
-        StatusCode::SEE_OTHER
-    );
-    let me = client()
-        .get(format!("{}/api/v1/devices/self", upstream.origin))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .expect("self");
-    assert!(
-        note.exists() && me.status() == StatusCode::UNAUTHORIZED,
-        "{}",
-        me.status()
-    );
+    let note = with_synced_note(&upstream, &app).await;
+    let mut edited = std::fs::read_to_string(&note).expect("note");
+    edited.push_str("\nlast-second-edit\n");
+    std::fs::write(&note, edited).expect("edit");
+    let response = sign_out(&app, &upstream).await;
+    let status = response.status();
+    assert_eq!(status, StatusCode::SEE_OTHER, "{}", body(response).await);
+    // why: the server writes its file after accepting a change, on its own flush.
+    upstream.state.sync_flush_for_test();
+    let on_server = std::fs::read_to_string(upstream.root.join("notes/Hello.md")).expect("note");
+    assert!(on_server.contains("last-second-edit"), "{on_server}");
 }
 
 #[tokio::test]
-async fn a_kept_server_is_listed_as_signed_out_with_sign_in_again() {
+async fn disconnecting_with_unsent_changes_asks_for_yes_and_names_the_note() {
     let upstream = upstream().await;
     let app = app().await;
-    with_downloaded_note(&upstream, &app).await;
-    sign_out(&app, &upstream, "keep").await;
-    let page = body(app.get("/desktop/connect").await).await;
+    with_unsent_note(&upstream, &app).await;
+    let response = sign_out(&app, &upstream).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = body(response).await;
     assert!(
-        page.contains("Signed out")
-            && page.contains("Sign in again")
-            && page.contains("Remove notes"),
+        page.contains("Changes not synced")
+            && page.contains("Work / Hello")
+            && page.contains("name=\"confirm\""),
         "{page}"
     );
 }
 
 #[tokio::test]
-async fn kept_notes_still_open_while_signed_out() {
+async fn disconnecting_with_unsent_changes_removes_nothing_until_confirmed() {
+    let upstream = upstream().await;
+    let app = app().await;
+    let note = with_unsent_note(&upstream, &app).await;
+    sign_out(&app, &upstream).await;
+    assert!(
+        note.exists() && app.secrets.get(&upstream.origin).unwrap().is_some(),
+        "something was removed"
+    );
+}
+
+#[tokio::test]
+async fn a_word_other_than_yes_is_refused_and_removes_nothing() {
+    let upstream = upstream().await;
+    let app = app().await;
+    let note = with_unsent_note(&upstream, &app).await;
+    let response = sign_out_typing(&app, &upstream, "y").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(note.exists() && body(response).await.contains("Type yes"));
+}
+
+#[tokio::test]
+async fn typing_yes_deletes_the_unsent_changes_and_disconnects() {
+    let upstream = upstream().await;
+    let app = app().await;
+    let note = with_unsent_note(&upstream, &app).await;
+    let folder = vault_folder(&note);
+    let response = sign_out_typing(&app, &upstream, " YES ").await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        !folder.exists() && app.secrets.get(&upstream.origin).unwrap().is_none(),
+        "the server's notes or token are still here"
+    );
+}
+
+#[tokio::test]
+async fn an_unreachable_server_with_notes_kept_here_asks_for_yes() {
+    let upstream = upstream().await;
+    let app = app().await;
+    let note = with_downloaded_note(&upstream, &app).await;
+    upstream.stop();
+    let response = sign_out(&app, &upstream).await;
+    let page = body(response).await;
+    assert!(
+        note.exists() && page.contains("cannot be reached") && page.contains("name=\"confirm\""),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn an_unreachable_server_with_nothing_kept_here_disconnects_without_asking() {
+    let upstream = upstream().await;
+    let app = app().await;
+    with_server_vault(&upstream, &app).await;
+    upstream.stop();
+    let response = sign_out(&app, &upstream).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = body(response).await;
+    assert!(
+        page.contains("could not be reached to revoke") && !page.contains("name=\"confirm\""),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn the_picker_lists_each_server_with_its_account_and_disconnect() {
+    let upstream = upstream().await;
+    let app = app().await;
+    with_server_vault(&upstream, &app).await;
+    let page = body(app.get("/").await).await;
+    assert!(
+        page.contains("Signed in as Alice")
+            && page.contains("href=\"/desktop/disconnect?server=http%3A%2F%2F127.0.0.1%3A"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn the_servers_address_goes_to_the_picker_once_connected() {
+    let upstream = upstream().await;
+    let app = app().await;
+    connected(&upstream, &app).await;
+    let response = app.get("/desktop/connect").await;
+    assert_eq!(
+        (
+            response.status(),
+            response.headers()[LOCATION].to_str().unwrap()
+        ),
+        (StatusCode::SEE_OTHER, "/")
+    );
+}
+
+#[tokio::test]
+async fn the_picker_can_post_its_sign_in_again_form() {
     let upstream = upstream().await;
     let app = app().await;
     with_downloaded_note(&upstream, &app).await;
-    sign_out(&app, &upstream, "keep").await;
+    kept_from_an_earlier_version(&app, &upstream);
+    let page = body(app.get("/").await).await;
+    assert!(
+        page.contains("Sign in again") && page.contains("form-action 'self'"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn kept_notes_from_an_earlier_version_still_open() {
+    let upstream = upstream().await;
+    let app = app().await;
+    with_downloaded_note(&upstream, &app).await;
+    kept_from_an_earlier_version(&app, &upstream);
     let notes = body(app.get("/api/v1/vaults/work/notes").await).await;
     assert!(notes.contains("Hello.md"), "{notes}");
 }
@@ -940,7 +1104,7 @@ async fn signing_in_again_as_the_same_person_resumes_the_kept_vault() {
     let upstream = upstream().await;
     let app = app().await;
     with_downloaded_note(&upstream, &app).await;
-    sign_out(&app, &upstream, "keep").await;
+    kept_from_an_earlier_version(&app, &upstream);
     let authorize = app.start_connecting(&upstream.origin).await;
     let landed = approve_in_browser(&upstream, &authorize).await;
     assert_eq!(landed.status(), StatusCode::OK);
@@ -957,11 +1121,24 @@ async fn signing_in_as_someone_else_over_kept_notes_is_refused_and_revoked() {
     let upstream = upstream().await;
     let app = app().await;
     with_downloaded_note(&upstream, &app).await;
-    sign_out(&app, &upstream, "keep").await;
+    kept_from_an_earlier_version(&app, &upstream);
     let authorize = app.start_connecting(&upstream.origin).await;
     let landed = approve_as(&upstream, &upstream.bob, &authorize).await;
     assert_eq!(landed.status(), StatusCode::CONFLICT);
     assert!(app.secrets.get(&upstream.origin).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn disconnecting_a_kept_server_asks_for_yes_because_its_edits_were_never_sent() {
+    let upstream = upstream().await;
+    let app = app().await;
+    let note = with_downloaded_note(&upstream, &app).await;
+    kept_from_an_earlier_version(&app, &upstream);
+    let page = body(sign_out(&app, &upstream).await).await;
+    assert!(
+        note.exists() && page.contains("never sent") && page.contains("name=\"confirm\""),
+        "{page}"
+    );
 }
 
 #[tokio::test]
@@ -986,7 +1163,7 @@ async fn two_servers_are_listed_and_their_vaults_sit_side_by_side() {
         eventually_async(&app, "/api/v1/vaults", "\"work-2\"").await,
         "the second server's vault never appeared"
     );
-    let servers = body(app.get("/desktop/connect").await).await;
+    let servers = body(app.get("/").await).await;
     let host = |u: &Upstream| u.origin.trim_start_matches("http://").to_string();
     assert!(
         servers.contains(&host(&first)) && servers.contains(&host(&second)),
@@ -1002,7 +1179,7 @@ async fn signing_out_of_one_server_leaves_the_other_signed_in() {
     with_server_vault(&first, &app).await;
     connected(&second, &app).await;
     assert!(eventually_async(&app, "/api/v1/vaults", "\"work-2\"").await);
-    sign_out(&app, &second, "remove").await;
+    sign_out(&app, &second).await;
     let vaults = body(app.get("/api/v1/vaults").await).await;
     assert!(
         app.secrets.get(&first.origin).unwrap().is_some()
@@ -1023,24 +1200,12 @@ async fn eventually_async(app: &App, path: &str, needle: &str) -> bool {
     false
 }
 
-#[tokio::test]
-async fn removing_kept_notes_warns_that_edits_since_signing_out_were_never_sent() {
-    let upstream = upstream().await;
-    let app = app().await;
-    with_downloaded_note(&upstream, &app).await;
-    sign_out(&app, &upstream, "keep").await;
-    let page = body(
-        app.get(&format!("/desktop/disconnect?server={}", upstream.origin))
-            .await,
-    )
-    .await;
-    assert!(
-        page.contains("since you signed out were never sent"),
-        "{page}"
-    );
-}
-
 impl Upstream {
+    /// Stops answering, as a server that went away behind its proxy does.
+    fn stop(&self) {
+        self.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Rewrites the vault's `access.toml` and makes the server read it.
     fn set_access(&self, policy: &str) {
         std::fs::write(self.root.join("access.toml"), policy).expect("policy");

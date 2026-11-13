@@ -128,6 +128,9 @@ impl Vault {
         !self.ignore_non_writable_folders || directory_is_writable(path)
     }
 
+    // why: only the shallow directory reader calls this, and it is compiled on Linux only
+    // (`repository::directory`, E29); elsewhere it would be dead code.
+    #[cfg(target_os = "linux")]
     pub(crate) fn directory_path_included(&self, relative: &str) -> bool {
         !self.ignore_non_writable_folders || self.without_symlinks(Path::new(relative))
     }

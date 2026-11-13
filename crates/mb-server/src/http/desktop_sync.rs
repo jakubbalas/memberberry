@@ -279,13 +279,51 @@ async fn pass_all(state: &AppState, connect: &Connect) {
     }
 }
 
-/// One pass over each of `origin`'s registered vaults, recording what it did.
+/// What a pass over one server's vaults left on this computer that the server does not
+/// have (§7.6.11). Empty when everything here has reached the server.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct Unsent {
+    /// Why the pass could not confirm that the server has every change made here. Set only
+    /// when this computer holds notes whose changes could be lost.
+    pub(super) unconfirmed: Option<&'static str>,
+    /// Notes with changes the server does not have: the vault's name, the note's path and
+    /// why, in words for the user.
+    pub(super) notes: Vec<UnsentNote>,
+}
+
+/// One note whose changes exist only on this computer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct UnsentNote {
+    pub(super) vault: String,
+    pub(super) path: String,
+    pub(super) why: String,
+}
+
+impl Unsent {
+    /// Whether removing this server's notes from this computer loses nothing.
+    pub(super) fn is_clean(&self) -> bool {
+        self.unconfirmed.is_none() && self.notes.is_empty()
+    }
+}
+
+/// Why a server vault's changes could not be confirmed as sent, when it is not signed in.
+const SIGNED_OUT_UNSENT: &str = "This computer is signed out of the server, so changes made \
+    here since then were never sent.";
+const UNREACHABLE_UNSENT: &str = "The server cannot be reached, so changes made here since it \
+    was last reached may not have been sent.";
+const REFUSED_UNSENT: &str = "The server no longer accepts this device, so changes made here \
+    could not be sent.";
+const FAILED_UNSENT: &str = "Memberberry could not finish checking that every change was sent.";
+
+/// One pass over each of `origin`'s registered vaults, recording what it did and returning
+/// what is still only on this computer.
 pub(super) async fn pass_server(
     state: &AppState,
     connect: &Connect,
     origin: &str,
     upstream: &Upstream,
-) {
+) -> Unsent {
+    let mut unsent = Unsent::default();
     let vaults = connect.sync.registered();
     for config in vaults.iter().filter(|r| r.origin == origin) {
         let outcome = replica::pass(state, config, upstream).await;
@@ -294,8 +332,34 @@ pub(super) async fn pass_server(
             &config.local,
             !matches!(outcome, Err(ReplicaError::Upstream(_))),
         );
+        let unconfirmed = match &outcome {
+            Ok(_) => None,
+            Err(ReplicaError::Upstream(_)) => Some(UNREACHABLE_UNSENT),
+            Err(ReplicaError::Unauthorized) => Some(REFUSED_UNSENT),
+            Err(_) => Some(FAILED_UNSENT),
+        };
+        // why: a vault with nothing on this computer has nothing to lose, whatever the
+        // server's state; only one holding notes can leave changes behind.
+        if unconfirmed.is_some() && holds_notes(state, &config.local) {
+            unsent.unconfirmed = unsent.unconfirmed.or(unconfirmed);
+        }
+        if let Ok(report) = &outcome {
+            for (path, why) in &report.held {
+                unsent.push(config, path, held_reason(*why));
+            }
+            for (path, why) in &report.failed {
+                unsent.push(config, path, &format!("did not sync: {why}"));
+            }
+        }
+        for path in connect.sync.recovered_of(&config.local) {
+            unsent.push(
+                config,
+                &path,
+                "kept here after it left what you can read on the server",
+            );
+        }
         let Ok(mut statuses) = connect.sync.by_vault.lock() else {
-            return;
+            return unsent;
         };
         let status = statuses.entry(config.local.clone()).or_default();
         match outcome {
@@ -309,13 +373,61 @@ pub(super) async fn pass_server(
             }
             Err(ReplicaError::Unauthorized) => {
                 status.error = Some(
-                    "The server no longer accepts this device. Sign out, then sign in again."
+                    "The server no longer accepts this device. Disconnect it, then connect \
+                     again."
                         .into(),
                 );
             }
             Err(error) => status.error = Some(error.to_string()),
         }
     }
+    unsent
+}
+
+impl Unsent {
+    fn push(&mut self, config: &ReplicaConfig, path: &str, why: &str) {
+        self.notes.push(UnsentNote {
+            vault: config.name.clone(),
+            path: path.to_string(),
+            why: why.to_string(),
+        });
+    }
+}
+
+/// What disconnecting `server` would lose, without a pass: for a server this computer is
+/// signed out of, which can no longer be reached with a token (§7.6.11).
+pub(super) fn unsent_while_signed_out(
+    state: &AppState,
+    connect: &Connect,
+    server: &ConnectedServer,
+) -> Unsent {
+    let mut unsent = Unsent::default();
+    for config in connect
+        .sync
+        .registered()
+        .iter()
+        .filter(|v| v.origin == server.origin)
+    {
+        if holds_notes(state, &config.local) {
+            unsent.unconfirmed = Some(SIGNED_OUT_UNSENT);
+        }
+        for path in connect.sync.recovered_of(&config.local) {
+            unsent.push(
+                config,
+                &path,
+                "kept here after it left what you can read on the server",
+            );
+        }
+    }
+    unsent
+}
+
+/// Whether server vault `local` has any note on this computer.
+fn holds_notes(state: &AppState, local: &str) -> bool {
+    // why: a folder that cannot be listed may hold anything, so it counts as holding notes.
+    !state
+        .replica_notes(local)
+        .is_ok_and(|notes| notes.is_empty())
 }
 
 /// Adds a server vault as a local one, unless it already is.
@@ -352,119 +464,6 @@ fn register(
     replica::create_local(state, &config, &root).map_err(|e| e.to_string())?;
     settings.replicas.push(config);
     save_settings(&connect.options.settings_path, &settings).map_err(|e| e.to_string())
-}
-
-/// The sign-out confirmation for `server` (§7.6.11): what is on this computer, what has not
-/// reached the server, and the choice between removing and keeping it.
-pub(super) fn sign_out_page(
-    state: &AppState,
-    connect: &Connect,
-    server: &ConnectedServer,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    let vaults: Vec<ReplicaConfig> = connect
-        .sync
-        .registered()
-        .into_iter()
-        .filter(|v| v.origin == server.origin)
-        .collect();
-    let downloaded: usize = vaults
-        .iter()
-        .filter_map(|v| state.replica_notes(&v.local).ok())
-        .map(|notes| notes.len())
-        .sum();
-    let held: Vec<(String, Held)> = vaults
-        .iter()
-        .flat_map(|v| connect.sync.held(&v.local))
-        .collect();
-    let unreachable =
-        !server.signed_out && vaults.iter().any(|v| !connect.sync.is_online(&v.local));
-    let host = host_of(&server.origin);
-    let mut body = String::from("<p>");
-    if server.signed_out {
-        body.push_str("Remove the notes this computer keeps from ");
-        push_escaped_text(&mut body, host);
-        body.push_str("? The copies on the server are not touched.</p>");
-    } else {
-        body.push_str("This device stops syncing with ");
-        push_escaped_text(&mut body, host);
-        body.push_str(" and its access there is revoked.</p>");
-    }
-    if downloaded > 0 {
-        body.push_str("<p>");
-        body.push_str(&match downloaded {
-            1 => "1 note is".to_string(),
-            n => format!("{n} notes are"),
-        });
-        body.push_str(" available offline on this computer.</p>");
-    }
-    // why: nothing syncs while signed out, so any edit made since has never been sent.
-    let edited_while_out = server.signed_out && downloaded > 0;
-    if !held.is_empty() || unreachable || edited_while_out {
-        body.push_str("<p class=\"mb-form-error\" role=\"alert\">");
-        if edited_while_out {
-            body.push_str("Changes made to these notes since you signed out were never sent. ");
-        }
-        if unreachable {
-            body.push_str(
-                "The server cannot be reached right now, so changes made since it was last \
-                 reached have not been sent. ",
-            );
-        }
-        if !held.is_empty() {
-            body.push_str("These notes have changes the server has not accepted: ");
-            for (i, (path, _)) in held.iter().enumerate() {
-                if i > 0 {
-                    body.push_str(", ");
-                }
-                body.push_str("<code>");
-                push_escaped_text(&mut body, path);
-                body.push_str("</code>");
-            }
-            body.push_str(". ");
-        }
-        body.push_str("Removing the notes from this computer loses those changes.</p>");
-    }
-    body.push_str(
-        "<form method=\"post\" action=\"/desktop/disconnect\"><input type=\"hidden\" \
-         name=\"server\" value=\"",
-    );
-    push_escaped_attr(&mut body, &server.origin);
-    body.push_str("\"><div class=\"mb-actions\">");
-    // why: with nothing on this computer there is nothing to choose between (§7.6.11).
-    if downloaded > 0 && !server.signed_out {
-        body.push_str(
-            "<button class=\"mb-button mb-action\" type=\"submit\" name=\"notes\" \
-             value=\"keep\">Sign out, keep notes on this computer</button>\
-             <button class=\"mb-button mb-quiet mb-action\" type=\"submit\" name=\"notes\" \
-             value=\"remove\">Sign out and remove them</button>",
-        );
-    } else {
-        body.push_str(
-            "<button class=\"mb-button mb-action\" type=\"submit\" name=\"notes\" \
-             value=\"remove\">",
-        );
-        body.push_str(if server.signed_out {
-            "Remove notes"
-        } else {
-            "Sign out"
-        });
-        body.push_str("</button>");
-    }
-    body.push_str(
-        "<a class=\"mb-button mb-quiet mb-action\" href=\"/desktop/connect\">Cancel</a>\
-         </div></form>",
-    );
-    let title = if server.signed_out {
-        "Remove kept notes"
-    } else {
-        "Sign out"
-    };
-    (
-        axum::http::StatusCode::OK,
-        super::page_with(super::PagePolicy::SignIn, title, &body),
-    )
-        .into_response()
 }
 
 /// Takes `origin`'s vaults out of the app, deletes their folders and forgets the server
@@ -563,92 +562,23 @@ fn delete_inside(home: Option<&Path>, root: &Path) -> Result<(), crate::Error> {
             resolved.display()
         )));
     }
-    std::fs::remove_dir_all(&resolved).map_err(crate::Error::Serve)
-}
-
-/// The connected page's list of the server's vaults and their state.
-pub(super) fn vaults_section(
-    state: &AppState,
-    connect: &Connect,
-    server: &ConnectedServer,
-) -> String {
-    let mut out = String::from("<h3>Vaults</h3>");
-    let vaults: Vec<ReplicaConfig> = connect
-        .sync
-        .vaults
-        .read()
-        .map(|vaults| {
-            vaults
-                .iter()
-                .filter(|v| v.origin == server.origin)
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-    if vaults.is_empty() {
-        out.push_str("<p class=\"mb-empty\">Looking for your vaults on this server…</p>");
-        return out;
+    // why: the vault is already unregistered, so nothing new starts writing here, but a
+    // reconcile or index merge that began before may still add a file for a moment. Such a
+    // file makes the walk fail as "not empty"; once that writer finishes, it succeeds.
+    let mut attempts = 0;
+    loop {
+        match std::fs::remove_dir_all(&resolved) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::DirectoryNotEmpty && attempts < 20 =>
+            {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(crate::Error::Serve(error)),
+        }
     }
-    let statuses = connect
-        .sync
-        .by_vault
-        .lock()
-        .map(|statuses| statuses.clone())
-        .unwrap_or_default();
-    out.push_str(if server.signed_out {
-        "<p>They stay in your vault list with what was kept on this computer.</p>"
-    } else {
-        "<p>They are in your vault list and work online. Right-click a note or folder to make \
-         it available offline.</p>"
-    });
-    out.push_str("<ul class=\"mb-list\">");
-    for vault in &vaults {
-        out.push_str("<li><a href=\"/v/");
-        push_escaped_attr(&mut out, &vault.local);
-        out.push_str("/\"><strong>");
-        push_escaped_text(&mut out, &vault.name);
-        out.push_str("</strong></a> ");
-        let root = state.replica_root(&vault.local).unwrap_or_default();
-        push_status(
-            &mut out,
-            &root,
-            connect.sync.is_online(&vault.local),
-            statuses.get(&vault.local),
-        );
-        out.push_str("</li>");
-    }
-    out.push_str("</ul>");
-    out
-}
-
-fn push_status(out: &mut String, root: &Path, online: bool, status: Option<&VaultStatus>) {
-    out.push_str("<p>");
-    out.push_str(if online {
-        "Online."
-    } else {
-        "Offline: showing what is on this device."
-    });
-    out.push_str(" Notes available offline are kept in <code>");
-    push_escaped_text(out, &root.display().to_string());
-    out.push_str("</code>.");
-    if let Some(error) = status.and_then(|s| s.error.as_ref()) {
-        out.push_str(" <span class=\"mb-form-error\" role=\"alert\">");
-        push_escaped_text(out, error);
-        out.push_str("</span>");
-    }
-    out.push_str("</p>");
-    let Some(status) = status.filter(|s| !s.held.is_empty()) else {
-        return;
-    };
-    out.push_str("<p>Not synced, kept on this device:</p><ul>");
-    for (path, why) in &status.held {
-        out.push_str("<li><code>");
-        push_escaped_text(out, path);
-        out.push_str("</code> — ");
-        out.push_str(held_reason(*why));
-        out.push_str("</li>");
-    }
-    out.push_str("</ul>");
 }
 
 /// Why a note is held, in words for the user.
@@ -976,7 +906,7 @@ pub(super) async fn recovered_place(
         ),
         Err(ReplicaError::Unauthorized) => json(
             StatusCode::FORBIDDEN,
-            &serde_json::json!({ "error": "The server no longer accepts this device. Sign out, then sign in again." }),
+            &serde_json::json!({ "error": "The server no longer accepts this device. Disconnect it, then connect again." }),
         ),
         Err(_) => offline(),
     }
@@ -992,9 +922,20 @@ pub(super) struct ServerVaultSummary {
     downloaded: usize,
     /// The whole vault is available offline.
     whole: bool,
+    /// Notes with changes only this computer has (held or recovered).
+    unsent: usize,
 }
 
 impl ServerVaultSummary {
+    /// A warning for the card when changes here have not reached the server.
+    pub(super) fn unsent_line(&self) -> Option<String> {
+        match self.unsent {
+            0 => None,
+            1 => Some("1 note not synced".to_string()),
+            n => Some(format!("{n} notes not synced")),
+        }
+    }
+
     /// One line for the card: how big it is and what of it is on this device.
     pub(super) fn describe(&self) -> String {
         let notes = |n: usize| {
@@ -1035,41 +976,101 @@ impl AppState {
             total: crate::replica::load_listing(&root).len(),
             downloaded: downloaded.len(),
             whole: pins.vault,
+            unsent: connect.sync.held(slug).len() + connect.sync.recovered_of(slug).len(),
         })
     }
 
     /// The picker's groups, one per known server (§7.6.11): its origin and the group's
-    /// opening HTML, which the caller closes after the vault cards.
+    /// opening HTML — the server's name, account, state and actions — which the caller
+    /// closes after the vault cards.
     pub(super) fn server_groups(&self) -> Vec<(String, String)> {
         let Some(connect) = connect_of(self) else {
             return Vec::new();
         };
         let vaults = connect.sync.registered();
+        let statuses = connect
+            .sync
+            .by_vault
+            .lock()
+            .map(|statuses| statuses.clone())
+            .unwrap_or_default();
         connect
             .servers()
             .into_iter()
             .map(|server| {
-                let online = vaults
+                let mine: Vec<&ReplicaConfig> = vaults
                     .iter()
                     .filter(|v| v.origin == server.origin)
-                    .all(|v| connect.sync.is_online(&v.local));
-                let mut out = String::from(
-                    "<section class=\"mb-vault-group\"><h2 class=\"mb-vault-group-head\">On ",
-                );
-                push_escaped_text(&mut out, host_of(&server.origin));
-                out.push_str(if server.signed_out {
-                    " <span class=\"mb-badge\" data-state=\"offline\">Signed out</span>"
-                } else if online {
-                    " <span class=\"mb-badge\" data-state=\"online\">Online</span>"
-                } else {
-                    " <span class=\"mb-badge\" data-state=\"offline\">Offline</span>"
-                });
-                out.push_str("<a href=\"/desktop/connect\">Manage</a></h2>");
-                (server.origin, out)
+                    .collect();
+                let online = mine.iter().all(|v| connect.sync.is_online(&v.local));
+                let error = mine
+                    .iter()
+                    .find_map(|v| statuses.get(&v.local).and_then(|s| s.error.clone()));
+                (
+                    server.origin.clone(),
+                    server_group_head(&server, online, error.as_deref()),
+                )
             })
             .collect()
     }
 }
+
+/// A server group's heading on the picker: who is signed in, whether it can be reached, and
+/// the way to sign in again or disconnect.
+fn server_group_head(server: &ConnectedServer, online: bool, error: Option<&str>) -> String {
+    let mut out = String::from("<section class=\"mb-vault-group\" data-server=\"");
+    push_escaped_attr(&mut out, &server.origin);
+    out.push_str("\"><div class=\"mb-group-head\">");
+    out.push_str(SERVER_MARK);
+    out.push_str("<div class=\"mb-group-id\"><h2 class=\"mb-group-title\">");
+    push_escaped_text(&mut out, host_of(&server.origin));
+    out.push_str(if server.signed_out {
+        " <span class=\"mb-badge\" data-state=\"offline\">Signed out</span>"
+    } else if online {
+        " <span class=\"mb-badge\" data-state=\"online\">Online</span>"
+    } else {
+        " <span class=\"mb-badge\" data-state=\"offline\">Offline</span>"
+    });
+    out.push_str("</h2><p class=\"mb-group-sub\">");
+    out.push_str(if server.signed_out {
+        "Signed out · notes kept for "
+    } else {
+        "Signed in as "
+    });
+    push_escaped_text(&mut out, &server.display_name);
+    out.push_str(" (");
+    push_escaped_text(&mut out, &server.username);
+    out.push_str(")</p></div><div class=\"mb-group-actions\">");
+    if server.signed_out {
+        out.push_str(
+            "<form method=\"post\" action=\"/desktop/connect\"><input type=\"hidden\" \
+             name=\"server\" value=\"",
+        );
+        push_escaped_attr(&mut out, &server.origin);
+        out.push_str(
+            "\"><button class=\"mb-button mb-small\" type=\"submit\">Sign in again\
+             </button></form>",
+        );
+    }
+    out.push_str("<a class=\"mb-button mb-quiet mb-small\" href=\"/desktop/disconnect?server=");
+    push_escaped_attr(&mut out, &super::encode_query_value(&server.origin));
+    out.push_str("\" aria-label=\"Disconnect ");
+    push_escaped_attr(&mut out, host_of(&server.origin));
+    out.push_str("\">Disconnect</a></div></div>");
+    if let Some(error) = error {
+        out.push_str("<p class=\"mb-group-alert\" role=\"status\">");
+        push_escaped_text(&mut out, error);
+        out.push_str("</p>");
+    }
+    out
+}
+
+/// A server, drawn, for a server group's heading.
+const SERVER_MARK: &str = "<span class=\"mb-group-mark\" aria-hidden=\"true\"><svg \
+    viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" \
+    stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"4\" width=\"18\" \
+    height=\"7\" rx=\"2\" /><rect x=\"3\" y=\"13\" width=\"18\" height=\"7\" rx=\"2\" />\
+    <path d=\"M7 7.5h.01M7 16.5h.01\" /></svg></span>";
 
 /// `https://notes.example.com:8443` → `notes.example.com:8443`.
 pub(super) fn host_of(origin: &str) -> &str {
@@ -1086,8 +1087,39 @@ mod summary_tests {
             total,
             downloaded,
             whole,
+            unsent: 0,
         }
         .describe()
+    }
+
+    #[test]
+    fn nothing_unsent_adds_no_warning() {
+        let summary = ServerVaultSummary {
+            online: true,
+            total: 3,
+            downloaded: 1,
+            whole: false,
+            unsent: 0,
+        };
+        assert_eq!(summary.unsent_line(), None);
+    }
+
+    #[test]
+    fn unsent_notes_are_counted_for_the_card() {
+        let summary = |unsent| ServerVaultSummary {
+            online: true,
+            total: 3,
+            downloaded: 3,
+            whole: false,
+            unsent,
+        };
+        assert_eq!(
+            (summary(1).unsent_line(), summary(2).unsent_line()),
+            (
+                Some("1 note not synced".to_string()),
+                Some("2 notes not synced".to_string())
+            )
+        );
     }
 
     #[test]
