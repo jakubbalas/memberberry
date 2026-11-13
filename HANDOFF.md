@@ -355,6 +355,18 @@ no full-suite result is claimed.
     Not covered: a held note's text is only named on the sign-out page, not offered for
     export before removal; a kept vault's offline edits are merged on signing in again like
     any offline period, not checked in the real app.
+  - **Folder-spec servers leaked on timeout (2026-11-13), fixed.** `e2e/folder-fixture.ts`
+    specs stop their server in `finally`, which never runs when a test times out, so every
+    folder spec failing on macOS left a `memberberry serve` behind with no parent: 71 had
+    accumulated on the user's Mac. The fixture now tracks its servers and SIGTERMs them on
+    the worker's `exit`. Shown with a temporary timed-out probe (server left running before,
+    gone after) and by `new-vault` + `folder-create` in three projects: 15 failed as expected
+    on macOS, no new orphans. Not covered: a worker Playwright SIGKILLs. Leftover
+    `$TMPDIR/memberberry-folders-*` from old runs are left for macOS to purge.
+  - **"App Update Required … macOS 28" notification (2026-11-13).** macOS 27's Rosetta notice;
+    it came from running the universal build's Intel slice under Rosetta as a test. Normal
+    launches on Apple silicon run the arm64 slice; no app change. The Intel slice stays for
+    Intel Macs (macOS 26 and earlier).
   - **macOS keychain double prompt (2026-11-13, SPEC §7.6.1, A49).** Not a code bug: the app
     reads the token once per launch. The item's ACL and partition list name the build that
     created it by cdhash, and an ad-hoc build has no stable identity, so every new version

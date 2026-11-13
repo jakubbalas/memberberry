@@ -26,6 +26,17 @@ async function freePort(): Promise<number> {
  });
 }
 
+/**
+ * Every folder server this worker has started and not yet seen exit.
+ *
+ * why: a spec stops its server in `finally`, which never runs when the test times out — the
+ * test body is abandoned mid-await. The worker then exits and the server, a child with no
+ * parent left, kept running: 71 of them accumulated on one Mac from the folder specs that
+ * fail on macOS by design. A signal sent from `exit` is synchronous, so it still lands.
+ */
+const running=new Set<ChildProcess>();
+process.once("exit",()=>{for(const child of running)child.kill("SIGTERM");});
+
 export async function folderServer(locations:"configured"|"empty"|"none"|"multiple"="configured",unprivileged=false): Promise<{root:string;config:string;serviceUid:number;serviceGid:number;readonly origin:string;readonly pid:number|undefined;restart:()=>Promise<void>;stop:()=>Promise<void>}> {
  const root=await mkdtemp(join(tmpdir(),"memberberry-folders-")),projects=join(root,"projects"),config=join(root,"server.toml");
  const binary=process.env["FOLDER_BINARY"]??join(REPO,"target/debug/memberberry");
@@ -34,14 +45,14 @@ export async function folderServer(locations:"configured"|"empty"|"none"|"multip
  let child:ChildProcess|undefined,stopped:Promise<void>=Promise.resolve(),origin="";
  async function halt():Promise<void>{if(child!==undefined&&child.exitCode===null&&child.signalCode===null)child.kill("SIGTERM");await stopped;child=undefined;}
  async function start():Promise<void>{
-  child=spawn(binary,["serve","--config",config],{cwd:REPO,...identity});const running=child;stopped=new Promise<void>(resolve=>running.once("close",()=>resolve()));
+  child=spawn(binary,["serve","--config",config],{cwd:REPO,...identity});const current=child;running.add(current);current.once("exit",()=>running.delete(current));stopped=new Promise<void>(resolve=>current.once("close",()=>resolve()));
   // Drain diagnostics without publishing fixture identity/authentication material.
-  running.stderr?.on("data",()=>undefined);
+  current.stderr?.on("data",()=>undefined);
   origin=await new Promise<string>((resolve,reject)=>{
    let output="";const timer=setTimeout(()=>reject(new Error("Disposable folder service readiness timed out")),15000);
-   running.once("error",()=>{clearTimeout(timer);reject(new Error("Disposable folder service could not start"));});
-   running.once("exit",()=>{clearTimeout(timer);reject(new Error("Disposable folder service exited before readiness"));});
-   running.stdout?.on("data",(b:Buffer)=>{output+=b.toString();const address=/listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(output)?.[1];if(address!==undefined){clearTimeout(timer);resolve(address);}});
+   current.once("error",()=>{clearTimeout(timer);reject(new Error("Disposable folder service could not start"));});
+   current.once("exit",()=>{clearTimeout(timer);reject(new Error("Disposable folder service exited before readiness"));});
+   current.stdout?.on("data",(b:Buffer)=>{output+=b.toString();const address=/listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(output)?.[1];if(address!==undefined){clearTimeout(timer);resolve(address);}});
   });
  }
  try{
