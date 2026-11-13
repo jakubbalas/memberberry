@@ -1,6 +1,13 @@
 # Handoff
 
-## Current state (2026-11-09): Mermaid diagrams, visual Gantt editor, the index-lock sync fix, CRDT sidecar quarantine, inbox paging, zone-rebuild memory
+## Latest (2026-11-13): disconnecting a desktop server, and the picker as the server hub (A50, SPEC §7.6.11)
+
+Not committed. The user asked for disconnect to check sync first and to delete only
+with a typed "yes" when changes are unsent, and for the start page to be the place for
+servers and local vaults, made to look good. Details are in the desktop bullet below
+(**Disconnecting a server**).
+
+## Earlier state (2026-11-09): Mermaid diagrams, visual Gantt editor, the index-lock sync fix, CRDT sidecar quarantine, inbox paging, zone-rebuild memory
 
 Two branches were merged into `main` (not pushed): `mermaid-diagrams` (Mermaid diagrams,
 A38, SPEC §13.2, plus the §21.10 perf fixture) and `claude/xenodochial-gagarin-43e282` (the
@@ -333,28 +340,86 @@ no full-suite result is claimed.
     app's pages now carry `data-desktop` and the footer shows **Servers**. Tests:
     `SidebarAccount.dom.test.ts`, `bootstrap.test.ts`, `desktop` (page carries the flag),
     `http` (a normal server's does not); checked in a browser.
-  - **Several servers and signing out (2026-11-11, SPEC §7.6.11, A48), from the user's
-    request to "log out" and connect to more than one server.** `desktop.toml` holds
-    `[[servers]]` (an old `[server]` table is read as a one-entry list); each pass and each
-    forward uses only its own vault's server and token. The Servers page (`/desktop/connect`)
-    lists each server with **Sign out** and **Connect another server**
-    (`/desktop/connect/new`); the picker has one group per server. Sign-out
-    (`GET /desktop/disconnect?server=` confirms, `POST` acts) runs a last pass, revokes the
-    token, then **removes** the server's vaults and folders (only inside the notes home) or
-    **keeps** them as offline vaults with the server listed signed out (**Sign in again**,
-    **Remove notes**). Signing in over kept notes as a different account is refused and the
-    new token revoked. New code: `AppState::replica_unregister`,
-    `onboarding::unregister_vault`, `desktop_sync::{pass_server, remove_server_notes,
-    sign_out_page, delete_inside}`. Tests: `desktop_connect` (37, 14 new), leak suite
-    `e37_two_servers_each_vault_reaches_only_its_own_server_with_its_own_token`, unit tests for
-    the deletion guard and the settings migration. Mutations that went red: forwarding to the
-    first signed-in server instead of the vault's own; dropping the different-account refusal.
-    Checked in a browser with a two-server probe (deleted after): picker groups, Servers page,
-    sign-out keep then remove (folders and settings gone, the other server untouched), phone
-    width (inline `code` now wraps on the server's own pages).
-    Not covered: a held note's text is only named on the sign-out page, not offered for
-    export before removal; a kept vault's offline edits are merged on signing in again like
-    any offline period, not checked in the real app.
+  - **Several servers (2026-11-11, A48) and disconnecting one (2026-11-13, SPEC §7.6.11,
+    A50).** `desktop.toml` holds `[[servers]]`; each pass and forward uses only its own
+    vault's server and token. **A50 replaced A48's sign-out:** there is no "keep notes"
+    choice and no Servers page any more. The vault picker (`vaults_home` in `http.rs`) shows
+    each server as a group (host, account, Online/Offline badge, **Disconnect**, the last pass's
+    error), local vaults under **On this device**, a "N notes not synced" line on cards, and
+    a **Connect another server** card. `/desktop/connect` redirects to `/` once connected.
+    Disconnect (`http/desktop_disconnect.rs`): GET shows a dialog over the inert picker.
+    POST holds the pass lock, runs a last pass (`desktop_sync::pass_server`, which now returns
+    `Unsent`), and then either revokes, forgets the token and removes the vaults
+    (`remove_server_notes`), or shows "Changes not synced" with a `confirm` field that only
+    "yes" passes (checked again server-side). Kept copies from A48 (`signed_out = true`)
+    still render with **Sign in again** and **Disconnect**.
+    - **Two bugs found on the way.** (1) The picker was served with `form-action 'none'`, so
+      no form on it could submit. A new `PagePolicy::Picker` allows `'self'`. Only the
+      browser showed this. (2) Removing a vault folder failed intermittently with
+      "Directory not empty" (about 1 in 4 runs in one test; the A48 remove path had it too):
+      tantivy kept merging after the vault was unregistered. Fixes: `Index::close` /
+      `IndexRegistry::close` wait for merges, called from `onboarding::unregister_vault`, and
+      `delete_inside` retries for up to 0.5 s on `DirectoryNotEmpty`. With both fixes, 20 of
+      20 runs passed.
+    - **Verified:** `desktop_connect` (55: clean disconnect, the last-second edit reaches the
+      server, unsent asks for yes, a wrong word gives 400 and removes nothing, " YES " works,
+      unreachable with and without notes kept, A48 kept copies, picker CSP), `desktop` (19),
+      leak suite (57), `mb-index` (all), summary unit tests. Mutation probes went red for:
+      skipping the yes check, `is_clean` always true, ignoring an unreachable server, any
+      word accepted, picker forms blocked, held notes dropped from the check. The leak suite's
+      `e37_two_servers_…` posted `notes=keep`, which A50 ignores, so it removed B and passed
+      without testing anything. It now writes B's A48 kept state into `desktop.toml`, and
+      goes red if that state is not written. In a browser
+      (a temporary two-server probe, deleted after), at desktop and phone width, in dark and
+      light: the picker, both dialogs, a wrong word blocked by the field, "yes" then a clean
+      disconnect.
+    - **`make check` on macOS (2026-11-13).** Two pre-existing failures, both fixed. (1)
+      `clippy -D warnings` failed on `main`: `vault.rs` `directory_path_included` (now
+      `cfg(target_os = "linux")` like its only caller), `repository/folder_delete.rs` tests
+      (module `allow(clippy::expect_used)` with a why), `mb-auth/tests/oidc.rs` (`.get`),
+      `tests/leak_suite.rs` (crate allows `indexing_slicing`; a type alias). (2)
+      `desktop_connect` failed with "Too many open files" in a terminal: macOS gives 256, each
+      test runs two servers with indexes and watchers, and libtest runs about one test per
+      core. It also fails on `main` at 256 (40 of 47). Nothing leaks: at 256 with
+      `--test-threads=1` all 55 pass. The Makefile's `RAISE_FILES` raises the soft limit to
+      8192 on every recipe that runs Rust tests, and from a 256 shell the suite then passes
+      55/55. **A bare `cargo test` in a default macOS terminal still hits it;** run
+      `ulimit -Sn 8192` first, or use the make targets.
+    - **Open, not investigated:** the packaged desktop app started from Finder also gets a
+      soft limit of 256 (launchd `maxfiles`) and does not raise it. One app is one server,
+      not the tests' ten, but every vault holds index, database and watcher files, so many
+      vaults could reach it. Not measured.
+    - **Also seen:** `scripts/full-test-test.py` fails on `main` (it expects `make e2e` to
+      install Chromium only; it now installs WebKit too). It is not part of `make check`.
+    - **Picker CSP:** only the desktop picker carries forms, so only it gets
+      `form-action 'self'` (`picker_policy`); the browser picker stays `'none'`, which
+      `tests/http.rs` `every_page_carries_a_content_security_policy` asserts.
+    - **macOS-only test failures fixed:** two `tests/http.rs` onboarding tests failed on
+      `main` on macOS because the management root is stored canonicalized and the macOS
+      temp dir `/var` is a symlink to `/private/var`; the helper now compares canonical
+      paths. Same cause in `tests/indexing.rs`
+      `targeted_indexing_removes_a_note_replaced_by_a_symlink`: it fed the indexer
+      non-canonical paths, which it ignores as outside the vault (watcher events are
+      canonical), so it failed on macOS — and its second check passed vacuously. It now
+      uses canonical paths; a probe that follows symlinks in `reindex` turns it red.
+      Clippy failures already on `main` (`folder_delete.rs`, `vault.rs`, `oidc.rs`,
+      `leak_suite.rs`) are fixed too.
+    - **Full `make e2e` (user-run, 2026-11-14): 118 failed, 731 passed.** 111 are the
+      Linux-only folder specs (37 per project, as before). The other 7 each passed alone in
+      the project that failed (`--retries=0`): `bookmarks` (desktop, tree focus),
+      `create` "accepts typing immediately" (webkit), `date-mentions` (mobile, date dialog),
+      `folder-actions` rename (mobile), and three where a workspace-state `PUT` was cut off
+      mid-flight and the problem guard counted it — `branding` offline (mobile),
+      `conflicts` resolve and `theme` secondary tools (webkit). None touches the desktop
+      pages this change altered. **Open:** the aborted workspace `PUT` is now the commonest
+      load-only failure; whether the client should stop reporting an aborted save, or the
+      specs should wait for it, is not decided.
+    - **Not done:** there is no Playwright
+      spec for the desktop pages, because E2E has no desktop fixture; the browser checks above
+      were manual. `make check` passes on macOS after these fixes (user-run, 2026-11-14). The bounded
+      retry in `delete_inside` has no deterministic test.
+      `held` is in memory, so the "not synced" card line appears only after the first pass
+      of a run.
   - **Folder-spec servers leaked on timeout (2026-11-13), fixed.** `e2e/folder-fixture.ts`
     specs stop their server in `finally`, which never runs when a test times out, so every
     folder spec failing on macOS left a `memberberry serve` behind with no parent: 71 had

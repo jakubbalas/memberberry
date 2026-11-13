@@ -39,6 +39,31 @@ pub struct IndexRegistry {
 }
 
 impl IndexRegistry {
+    /// Forgets `slug`'s index and closes it, so nothing writes into the vault's folder
+    /// afterwards (§7.6.11: a disconnected server's folders are deleted next).
+    ///
+    /// An index another request still holds is closed when that request lets it go; the
+    /// caller learns this as `false`.
+    pub fn close(&self, slug: &Slug) -> bool {
+        let Some(index) = self
+            .indexes
+            .write()
+            .ok()
+            .and_then(|mut open| open.remove(slug))
+        else {
+            return true;
+        };
+        match Arc::try_unwrap(index).map(Mutex::into_inner) {
+            Ok(Ok(index)) => {
+                if let Err(error) = index.close() {
+                    eprintln!("memberberry index: closing {slug}: {error}");
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// This vault's index, opening it if this is the first request for it.
     ///
     /// Returns `None` only if neither an on-disk nor an in-memory index could be created,

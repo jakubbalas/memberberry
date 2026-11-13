@@ -265,7 +265,10 @@ fn assert_created_vault_is_durable_and_owner_only(
         .iter()
         .find(|entry| entry.slug == "personal")
         .expect("personal");
-    assert_eq!(personal.path, root.to_str().expect("path"));
+    // why: the management root is stored canonicalized, and on macOS the temp directory
+    // (`/var/...`) is a symlink to `/private/var/...`, so the raw join never matches there.
+    let canonical = root.canonicalize().expect("created root");
+    assert_eq!(personal.path, canonical.to_str().expect("path"));
     let expected =
         mb_server::access::AccessFile::parse("[[members]]\nuser = 'alice'\nrole = 'owner'\n")
             .expect("owner-only");

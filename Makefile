@@ -9,6 +9,14 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 CARGO ?= cargo
+
+# Raises this recipe's soft limit on open files before running Rust tests.
+# why: macOS gives a terminal 256. The desktop suites start two whole servers per test (with
+# their indexes and file watchers) and libtest runs about one test per core at once, which
+# needs more than 256 together: `desktop_connect` failed 51 of 55 at 256 and passed all 55 at
+# 256 one test at a time, so nothing leaks. A soft limit may be raised up to the hard limit
+# without privilege; where it cannot, the tests run as before.
+RAISE_FILES := ulimit -Sn 8192 2>/dev/null || true;
 VAULT ?=
 ADMIN ?=
 NOTES ?= 10000
@@ -59,7 +67,7 @@ desktop-build: web-build ## Build this OS's installable desktop packages (needs 
 
 .PHONY: desktop-test
 desktop-test: ## The desktop server's tests: E34, local user, remembered port
-	$(CARGO) test -p mb-server --test desktop
+	$(RAISE_FILES) $(CARGO) test -p mb-server --test desktop
 
 .PHONY: prod-build
 prod-build: web-build ## Build the production web bundle and optimised server binary
@@ -107,23 +115,23 @@ lint: ## Clippy with warnings denied
 
 .PHONY: test
 test: ## All tests
-	$(CARGO) test --workspace
+	$(RAISE_FILES) $(CARGO) test --workspace
 
 .PHONY: test-release
 test-release: ## Tests too slow for a debug build (ignored there), run optimized
-	$(CARGO) test --release -p mb-search --test size
+	$(RAISE_FILES) $(CARGO) test --release -p mb-search --test size
 
 .PHONY: test-fast
 test-fast: ## Behavioural tests only — the inner loop
-	$(CARGO) test --workspace --test markdown
+	$(RAISE_FILES) $(CARGO) test --workspace --test markdown
 
 .PHONY: test-props
 test-props: ## Round-trip property suite (SPEC 22.1)
-	$(CARGO) test --workspace --test roundtrip
+	$(RAISE_FILES) $(CARGO) test --workspace --test roundtrip
 
 .PHONY: soak
 soak: ## Property suite at CASES=$(CASES) — finds rarer corners than CI does
-	PROPTEST_CASES=$(CASES) $(CARGO) test -p mb-core --test roundtrip --release
+	$(RAISE_FILES) PROPTEST_CASES=$(CASES) $(CARGO) test -p mb-core --test roundtrip --release
 
 .PHONY: fuzz
 fuzz: ## Fuzz TARGET=$(TARGET) for SECS=$(SECS) (SPEC 22.1). Needs nightly + cargo-fuzz.
@@ -150,14 +158,14 @@ bench: ## Hot-path benchmarks (AGENTS.md 4.5). Laptop numbers; the budget target
 coverage: ## Per-file coverage report (needs cargo-llvm-cov)
 	@$(CARGO) llvm-cov --version >/dev/null 2>&1 || { \
 		echo "Install first: cargo install cargo-llvm-cov"; exit 1; }
-	CARGO="$(CARGO)" python3 scripts/coverage-run.py --summary-only
+	$(RAISE_FILES) CARGO="$(CARGO)" python3 scripts/coverage-run.py --summary-only
 
 .PHONY: coverage-gate
 coverage-gate: ## Enforce the per-crate floors in AGENTS.md 2.1
 	@$(CARGO) llvm-cov --version >/dev/null 2>&1 || { \
 		echo "Install first: cargo install cargo-llvm-cov"; exit 1; }
 	@echo "Coverage floors (AGENTS.md 2.1):"
-	@set -o pipefail; CARGO="$(CARGO)" python3 scripts/coverage-run.py --json --summary-only | python3 scripts/coverage-gate.py
+	@$(RAISE_FILES) set -o pipefail; CARGO="$(CARGO)" python3 scripts/coverage-run.py --json --summary-only | python3 scripts/coverage-gate.py
 
 .PHONY: token-check
 token-check: ## Enforce the design-token contract, both directions (SPEC 20.1, 20.2)

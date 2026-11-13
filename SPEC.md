@@ -1628,8 +1628,10 @@ GET /desktop/connect/callback ◀──303── redirect_uri?code&state
   their devices, as it should if the account may have been compromised. Approval and
   revocation are audited (§6.9).
 
-**The desktop side** is §7.6.8's local server, reached from the home page's and the workspace footer's **Servers** (several servers, §7.6.11):
-- `GET /desktop/connect` shows the address form, the waiting page, or the Servers page.
+**The desktop side** is §7.6.8's local server, reached from the vault picker's **Connect a server** and the workspace footer's **Servers** (several servers, §7.6.11):
+- `GET /desktop/connect` shows the address form or the waiting page; once a server is
+  connected and nothing is waiting, it redirects to the vault picker, which lists the
+  servers. `GET /desktop/connect/new` is the address form for another server.
   The waiting page re-checks every 3 s with a `Refresh` header, since its CSP forbids
   script. Its **Open the sign-in page** button posts to `POST /desktop/connect/open`, which
   hands the live attempt's approval URL to the host's `Browser` (the default browser) and
@@ -1638,7 +1640,7 @@ GET /desktop/connect/callback ◀──303── redirect_uri?code&state
   cancelled navigation also cancels the refresh, which once left the window showing an
   attempt that had long expired. `POST /desktop/connect` starts an attempt: a fresh 256-bit
   `state` and PKCE verifier, valid 10 minutes, one at a time. `POST /desktop/connect/cancel`
-  abandons it; signing out of a server (§7.6.11) revokes the token on the server first, then
+  abandons it; disconnecting a server (§7.6.11) revokes the token on the server first, then
   forgets it, and says so plainly when the server could not be reached.
 - `GET /desktop/connect/callback` is the one path E34's guard admits without the desktop
   cookie, because the user's browser arrives there, not the window. The pending attempt's
@@ -2546,8 +2548,8 @@ target; this is the subset with a full-vault pin and nothing released.
   Downloaded notes edit normally against their local history, which descends from
   upstream's, so reconnecting merges without duplication (§7.6.9).
 - **Indicators.** A downloaded note carries a small mark in the tree. The vault picker
-  groups vaults by where they live — the connected server (with an Online/Offline badge and
-  a Manage link) and "On this device" — as cards whose one line says how many notes there
+  groups vaults by where they live — the connected server (with an Online/Offline badge, the
+  account and Disconnect, §7.6.11) and "On this device" — as cards whose one line says how many notes there
   are and what is on this device ("12 notes · 3 available offline", "Offline · 2 notes on
   this device"). Counts come from the reader's authorized view, never the raw folder (§6.5).
   In a browser there is one group and no heading. While the server cannot be reached, the
@@ -2590,41 +2592,63 @@ target; this is the subset with a full-vault pin and nothing released.
   failed forward. A short URL naming a note by title alone, in another folder, resolves only
   if the note is downloaded; otherwise it is taken as a path at the vault root.
 
-#### 7.6.11 Several servers, and signing out of one (A48)
+#### 7.6.11 Several servers, and disconnecting one (A48, A50)
 
 - **A list, not one server.** `desktop.toml` holds `[[servers]]`, each with its origin, the
-  account, the device id and whether this device is signed in there. Each signed-in server's
-  device token is in the keychain under its origin, as before. An installation written with
-  the single `[server]` table of §7.6.8 is read as a one-entry list. Every replica already
-  names its origin, so server vaults from two servers live side by side: their folders are
-  `~/Memberberry/<server-host>/<vault>/`, and a local address taken by another server's vault
-  gets a suffix (`work-2`), as §7.6.10 already does for a local one.
+  account and the device id. Each server's device token is in the keychain under its
+  origin. An installation written with the single `[server]` table of §7.6.8 is read as a
+  one-entry list. Every replica already names its origin, so server vaults from two servers
+  live side by side: their folders are `~/Memberberry/<server-host>/<vault>/`, and a local
+  address taken by another server's vault gets a suffix (`work-2`), as §7.6.10 already does
+  for a local one.
 - **Every pass and every forward is per server.** The sync loop runs each signed-in server's
   vaults with that server's token; a forward (E37) goes only to the origin its vault names,
   with only that origin's token. A vault whose server is not signed in is never forwarded and
   behaves as offline.
-- **The Servers page** (`/desktop/connect`; the vault picker's and workspace footer's
-  **Servers** link) lists every server with its account, vaults and state, a **Sign out**
-  button for each, and **Connect another server**. Connecting to an origin that is already
-  signed in is refused with a message; the picker groups vaults under each server.
-- **Signing out asks each time** (A48) what to do with that server's notes on this computer,
-  on a confirmation page that says how many notes are downloaded and which have changes the
-  server has not accepted (held notes, or the server unreachable):
-  - **Remove them** — the server's vaults leave the app, their folders under
-    `~/Memberberry/<server-host>/` are deleted, and the server is forgotten. Only folders
-    inside the notes home are ever deleted.
-  - **Keep them on this computer** — the vaults stay, working as offline (§7.6.10: downloaded
-    notes open and edit, the rest are greyed), and the server stays listed as signed out with
-    **Sign in again** and **Remove notes**. Signing in again as the same account resumes
-    syncing, and edits made meanwhile merge as after any offline period.
-  - Either way the device token is revoked on the server first (`DELETE
-    /api/v1/devices/self`); when the server cannot be reached the page says so and how to
-    revoke it there, and the token is forgotten here regardless. A server with nothing
-    downloaded is signed out without the question.
-- **A kept copy belongs to one account.** Signing in to a server whose kept notes belong to
-  another account is refused: the new device token is revoked at once and the page says to
-  remove the kept notes first. Otherwise one person's offline notes would be uploaded with
-  another person's token.
+- **The vault picker is where servers are managed** (A50). Under the page's **New vault**
+  and **Connect a server**, each server is a group: its host, the account signed in
+  ("Signed in as Alice (alice)"), an Online/Offline badge, a **Disconnect** button, the last
+  pass's error if it had one, and its vault cards. A card whose vault has notes the server
+  does not have says so ("1 note not synced"), counting held and recovered notes. Local
+  vaults are the **On this device** group, and a dashed card at the end connects another
+  server. `/desktop/connect` redirects to the picker once a server is connected, so the
+  workspace footer's **Servers** link lands there. Connecting to an origin that is already
+  signed in is refused with a message.
+- **Disconnecting is two dialogs over the picker** (A50). The pages run no script, so a
+  dialog is the picker rendered `inert` behind a modal; Cancel and the backdrop are links
+  back to `/`. The picker's CSP allows `form-action 'self'` for these forms; it shows vault
+  names and counts, never note content.
+  1. `GET /desktop/disconnect?server=<origin>` says what disconnecting does and changes
+     nothing: Memberberry checks that every change made here has reached the server, then
+     removes the connection, the server's vaults, and the notes kept offline (with how many).
+     The notes on the server are not touched.
+  2. `POST /desktop/disconnect` runs one last pass over the server's vaults, holding the
+     pass lock until the end so nothing is written between the check and the removal. The
+     notes count as **not synced** when the pass holds or fails a note, a recovered note
+     (§7.6.7) remains, or the pass could not reach the server, was refused, or failed while
+     notes are on this computer. A server with nothing on this computer has nothing to lose.
+  3. **All synced:** the device token is revoked on the server (`DELETE
+     /api/v1/devices/self`), forgotten here, the server's vaults leave the app, their
+     folders under `~/Memberberry/<server-host>/` are deleted, and the server is forgotten.
+     Only folders inside the notes home are ever deleted. When the server could not be
+     reached to revoke the token, the page says so and how to revoke it there.
+  4. **Not synced:** nothing is removed. A second dialog, "Changes not synced", lists each
+     note (vault / title) and why, and says to cancel and let them sync, or type **yes** to
+     delete them and disconnect. The field's `pattern` admits only "yes" (any case, spaces
+     trimmed), and the handler checks again: any other word is a `400` with the dialog shown
+     again. With "yes" it proceeds as in 3.
+- **Closing a vault closes its index first.** A disconnected vault's search index waits for
+  its background merges before the folder is deleted (`Index::close`), and the deletion
+  retries for up to half a second while a reconcile that started before the vault was
+  unregistered finishes writing. Without this, deletion failed as "directory not empty".
+- **Kept copies from earlier versions.** Under A48 a server could be signed out with its
+  notes kept (`signed_out = true` in `desktop.toml`). No version after A50 creates one, but
+  one is still shown: "Signed out · notes kept for …", with **Sign in again** and
+  **Disconnect**. Its edits were never sent, so disconnecting it always asks for "yes" when
+  it holds notes. **A kept copy belongs to one account.** Signing in again as another
+  account is refused: the new device token is revoked at once and the page says to remove
+  the kept notes first. Otherwise one person's offline notes would be uploaded with another
+  person's token.
 
 ## 8. Workspace and navigation shell (A10 — adaptive)
 
@@ -6510,7 +6534,8 @@ browser. Nothing will be opening a browser here.
 - [x] Server vaults online in the app with no download step; Available offline / Online only
       per note, folder or vault from the context menu; offline, downloaded notes work and the
       rest are greyed (§7.6.10, A46, E37)
-- [x] Several servers at once; sign out of one, removing or keeping its notes (§7.6.11, A48)
+- [x] Several servers at once, managed on the vault picker; disconnecting checks every
+      change was sent and asks for "yes" before deleting unsynced ones (§7.6.11, A48, A50)
 - [ ] Availability rules: on demand, note pin, folder pin, vault-root pin; pinned media
 - [x] Media follows the notes kept offline: download, upload, removal (§7.6.10)
 - [ ] Residency manifest; external delete/create propagation; I1 fails towards "keep"
@@ -6586,7 +6611,8 @@ to replace a product comparison with a description. Do not reverse these without
 | A41 | Gantt "no colour" and chart style | *"it should also be possible to select "no color" (even for tasks). Then we might want to have some overall chart config where we can select "style" - one of it will be if the whole section has background color or only the section name row. another if it should be more "zoomed in" or fixed height"*; then: *"we might want to have also possibility and separated config for if we want to have phase shown as a row or a column like we have now and based on that we would have only a header row or a column with color. If it is a color, there should be some "border" colored"*, and *"Row height"* | `none` as a task or phase colour; `%% option phases column\|row`, `phase-fill whole\|name`, `rows fixed\|zoomed` lines, set from the editor toolbar (§13.3). |
 | A42 | Installable desktop app with local notes | *"I want to have an app I can install on my devices"*; then: *"Lets start with already thinking about running things locally. We should support both "lazy loading" where we load only things that we open locally (can have some special rules for releasing older notes) and / or we decide deliberatly to "download this note" And / or to have a support for "full local vault""*; then, on the proposed defaults: *"Yes, write the spec"* | Tauri 2 desktop client whose replica is a Markdown vault folder served by an embedded `mb-server`. On demand, note/folder pins and full vault are one rule model (§7.6). Removes "native desktop apps" from the v1 exclusions; native mobile apps stay excluded. |
 | A49 | Signing and notarizing the desktop app | *"I don't need it now on stores, people can install my packages"* | Not now. Desktop packages (DMG, .deb, AppImage, MSI) ship unsigned and unnotarized, the macOS bundle ad-hoc signed only; no Apple Developer ID, Authenticode or store distribution. macOS asks the user to approve the app the first time (§7.6.1). Reversible: signing can be added to the bundle step later without changing the app. Asked again after the keychain double prompt: *"add the always allow and if needed I will do that Apple developer ID"* — install notes tell users to choose Always Allow; Developer ID is the user's later call. |
-| A48 | Several servers in the desktop app; signing out of one | *"I still want to be able to "log out" from a server and be able to connect to another server from that local app if I have multiple servers"*; then, asked what happens to downloaded notes on sign-out: *"Ask each time"*, and where it lives: *"A Servers page (Recommended)"* | §7.6.11. `desktop.toml` lists servers; each vault syncs and forwards only with its own server's token. A Servers page lists them with **Sign out** and **Connect another server**. Signing out asks whether to remove that server's notes from this computer or keep them (offline, resumed on signing in again as the same account). |
+| A48 | Several servers in the desktop app; signing out of one | *"I still want to be able to "log out" from a server and be able to connect to another server from that local app if I have multiple servers"*; then, asked what happens to downloaded notes on sign-out: *"Ask each time"*, and where it lives: *"A Servers page (Recommended)"* | §7.6.11. `desktop.toml` lists servers; each vault syncs and forwards only with its own server's token. A Servers page lists them with **Sign out** and **Connect another server**. Signing out asks whether to remove that server's notes from this computer or keep them (offline, resumed on signing in again as the same account). **Superseded in part by A50:** the Servers page and the keep choice are gone. |
+| A50 | Disconnecting a server from the desktop app | *"It should be possible to disconnect a server in which case there is a prompt that warns you, then it: checks if all notes were correctly synced to the server and if so it removes the connection and all local notes. If for some reason notes were not synced with the server, it produces another warning telling the user that there are local changes not synced and they either type "yes" in modal to delete or cancel and sync first."* Also: *"Local vaults stay as they are"*, and the start page should let you work with several servers *"and make it also pretty"* | §7.6.11. Replaces A48's sign-out choice: disconnecting always removes the server's vaults and notes from this computer, after a last pass confirms nothing is lost, or after the user types "yes" when something would be. The vault picker becomes where servers are managed (Disconnect per server, Connect a server); the separate Servers page is gone. Kept copies made under A48 still work and can be disconnected. |
 | A47 | OIDC: link by verified email, setup form for the first admin, passwords optional, groups as roles | Asked about linking, the first administrator, password sign-in and provider groups: *"Link by verified email"*, *"Setup form as today"*, *"Both, admin can turn off"*, *"Yes, map groups to roles"* | §6.8.2. Accounts gain an optional email for the link; an administrator is never created by a provider sign-in; `password_login` hides the password form; `access.toml` accepts `group:<name>` (M20b). |
 | A46 | Server vaults work online in the app; notes are downloaded or released one by one | *"When I log into my server - I don't want to have to download my vault, I want to be able to select it - but also have the option to download it - and see it and use it like I have now in the browser. Then I should be able to work on items online like in the browser, ability to download a note on right click - or release a note with Online only"*; then, asked about opened notes: *"No, stays online only"*, and about offline: *"All notes, others greyed"* | Supersedes A45's Download-a-vault flow (§7.6.10). Every vault the device's user can read appears in the app once connected and works online as in the browser. Right-click offers **Make available offline** (note, folder, or the whole vault) and **Online only**. Opening a note never keeps it. Offline, downloaded notes work and the rest are listed greyed. |
 | A45 | Whole-vault sync before OIDC; the user picks vaults; everything syncs both ways | Shown the connected page's *"Syncing its vaults comes next"*: *"lets go"*; then, asked which vaults: *"I pick each"*, and how much the first version covers: *"Everything, both ways"* | Slice 2b (§7.6.9) comes before M20. The connected page lists the server's vaults, each with **Download**; a downloaded vault is a full-vault replica (§7.6.3's vault-root pin). Edits, creates, renames and deletes travel in both directions from the first version, so nothing done in the app silently stays local. On-demand residency and release (§7.6.5) follow later. |

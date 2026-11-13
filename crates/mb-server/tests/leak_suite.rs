@@ -6,7 +6,13 @@
 //! The wire-level counterparts for E2-E4 live in `tests/websocket.rs`, which drives real
 //! sockets; the cases here pin the properties those frames must never violate.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+// why: a test that indexes past what it set up has failed; a panic says so plainly.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 mod support;
 
@@ -3673,7 +3679,8 @@ async fn e38_a_forged_stale_or_mismatched_provider_sign_in_yields_no_session() {
     });
 
     // Each case breaks exactly one thing about an otherwise valid sign-in as alice.
-    let cases: Vec<(&str, Box<dyn Fn(&mut serde_json::Value)>)> = vec![
+    type Breakage = Box<dyn Fn(&mut serde_json::Value)>;
+    let cases: Vec<(&str, Breakage)> = vec![
         (
             "wrong nonce",
             Box::new(|c| c["nonce"] = "not-the-nonce".into()),
@@ -4004,7 +4011,6 @@ async fn e37_two_servers_each_vault_reaches_only_its_own_server_with_its_own_tok
     let secrets = Arc::new(MemorySecrets::default());
     secrets.set(&a_origin, &a_token).expect("token a");
     secrets.set(&b_origin, &b_token).expect("token b");
-    let kept_secrets = Arc::clone(&secrets);
     let desktop = DesktopServer::start(
         &paths,
         &DesktopIdentity {
@@ -4117,16 +4123,16 @@ async fn e37_two_servers_each_vault_reaches_only_its_own_server_with_its_own_tok
     );
     assert!(carried(&a_seen, &a_token) && carried(&b_seen, &b_token));
 
-    // Sign out of B, keeping its notes: B's vault stays, and is never forwarded again.
-    let signed_out = client
-        .post(format!("{local}/desktop/disconnect"))
-        .header(reqwest::header::COOKIE, &cookie)
-        .header(reqwest::header::ORIGIN, &local)
-        .form(&[("server", b_origin.as_str()), ("notes", "keep")])
-        .send()
-        .await
-        .expect("sign out");
-    assert!(signed_out.status().is_redirection());
+    // B as an earlier version left it on "Sign out, keep notes" (A48; no longer offered
+    // since A50, but such copies still exist): B's vault stays, and is never forwarded again.
+    let settings_path = paths.app_data.join("desktop.toml");
+    let settings = std::fs::read_to_string(&settings_path).expect("settings");
+    let servers = settings.find("[[servers]]").expect("servers table");
+    let b_line = format!("origin = \"{b_origin}\"");
+    let at = servers + settings[servers..].find(&b_line).expect("B's entry");
+    let mut kept = settings.clone();
+    kept.insert_str(at + b_line.len(), "\nsigned_out = true");
+    std::fs::write(&settings_path, kept).expect("settings");
     // Only forwarding searches (the background pass never does), so counting searches
     // isolates forwarding from the pass.
     let note_requests = || {
@@ -4145,11 +4151,6 @@ async fn e37_two_servers_each_vault_reaches_only_its_own_server_with_its_own_tok
         "a signed-out server's vault was forwarded"
     );
     assert!(!hit(&after_sign_out), "{after_sign_out}");
-    // why: the background pass needs a token to contact a server at all.
-    assert!(
-        kept_secrets.get(&b_origin).expect("store").is_none(),
-        "the signed-out server's token is still kept"
-    );
     drop(desktop.stop());
 }
 

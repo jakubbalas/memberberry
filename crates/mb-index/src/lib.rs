@@ -151,6 +151,18 @@ impl Index {
         }
     }
 
+    /// Closes the index, returning once nothing writes to its files any more.
+    ///
+    /// Dropping an `Index` also closes it, but a search merge may still be writing for a
+    /// moment afterwards. Call this before deleting the directory it lives in.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a background merge failed.
+    pub fn close(self) -> Result<(), Error> {
+        self.search.close()
+    }
+
     fn try_open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path)?;
         names::register(&conn)?;

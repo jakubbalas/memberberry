@@ -161,8 +161,10 @@ fn a_sign_in_replaces_the_previous_groups() {
     db.set_groups(alice.id, &["family".into()]).expect("second");
     let groups = db.all_groups().expect("groups");
     assert_eq!(
-        groups["alice"].iter().cloned().collect::<Vec<_>>(),
-        vec!["family".to_string()]
+        groups
+            .get("alice")
+            .map(|names| names.iter().cloned().collect::<Vec<_>>()),
+        Some(vec!["family".to_string()])
     );
 }
 

@@ -140,6 +140,8 @@ impl AuthorizedVault<'_> {
 }
 
 #[cfg(test)]
+// why: a test that cannot set up its fixture should fail loudly, not return an error.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::FolderDeleteError;
     use crate::repository::AuthorizedVault;
