@@ -59,7 +59,23 @@ pub fn accept(
         role: scope.role,
     });
     let rules = original.policy().rules().cloned().collect();
-    let updated = AccessFile::from_access(Access::new(members, rules).map_err(InviteError::Acl)?);
+    // why: carried over explicitly — rebuilding from members and rules alone would drop
+    // every group grant and save the file without them (M20b).
+    let group_members = original
+        .policy()
+        .group_members()
+        .map(|(group, role)| (group.clone(), role))
+        .collect();
+    let group_rules = original
+        .policy()
+        .group_rules()
+        .map(|(path, grants)| (path.clone(), grants.clone()))
+        .collect();
+    let updated = AccessFile::from_access(
+        Access::new(members, rules)
+            .and_then(|access| access.with_group_grants(group_members, group_rules))
+            .map_err(InviteError::Acl)?,
+    );
     updated.save(vault.root())?;
     if let Err(error) = auth.accept_invite(token, new_user) {
         original.save(vault.root())?;

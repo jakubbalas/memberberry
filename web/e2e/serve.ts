@@ -26,6 +26,7 @@ import {
   E2E_DATA_DIR,
   E2E_NOTES,
   E2E_PORT,
+  E2E_PROJECTS,
   E2E_ROOT,
   E2E_USER,
   E2E_VAULT,
@@ -123,7 +124,7 @@ function provision(): string {
   // see that `vault create` wrote none of its own — deny by default then made a freshly
   // registered vault invisible to the person who had just created it. Registering these the
   // way a real first run does is what holds that fixed (§6.10).
-  for (const project of ["desktop", "mobile"]) {
+  for (const project of E2E_PROJECTS) {
     for (const purpose of E2E_EMPTY_PURPOSES) {
       const root = emptyVaultRoot(project, purpose);
       mkdirSync(root, { recursive: true });

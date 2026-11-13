@@ -26,7 +26,7 @@ import { join } from "node:path";
 import type { Browser, Locator, Page } from "@playwright/test";
 
 import { E2E_VAULT, scratchNote } from "./environment.js";
-import { expect, signIn, test, openSidebar } from "./fixtures.js";
+import { expect, lineKey, openSidebar, signIn, test } from "./fixtures.js";
 
 /** Every symptom of a browser with its network taken away, which these tests cause. */
 function allowDisconnection(failures: { allow(pattern: RegExp): void }): void {
@@ -117,7 +117,7 @@ test("an offline edit colliding with a file edit is marked, not silently merged"
     // The paragraph, not the heading or the task: §3.5's example is a paragraph both sides
     // rewrote, and a heading and a task item have their own block rules on top of that.
     await editor.getByText("A note this test may edit").click();
-    await page.keyboard.press("End");
+    await lineKey(page, "End");
     await page.keyboard.type(" Written on a train.");
     await expect(page.locator(".connection-status")).toContainText("unsent");
 
@@ -193,7 +193,7 @@ test("resolving a conflict keeps one version, and it reaches the file", async ({
   try {
     await context.setOffline(true);
     await editor.getByText("A note this test may edit").click();
-    await page.keyboard.press("End");
+    await lineKey(page, "End");
     await page.keyboard.type(" Mine.");
     await expect(page.locator(".connection-status")).toContainText("unsent");
 

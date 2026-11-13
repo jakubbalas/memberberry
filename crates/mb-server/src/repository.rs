@@ -107,11 +107,7 @@ impl<'a> AuthorizedVault<'a> {
     /// A vault-wide membership makes even an empty vault discoverable. A path-specific
     /// grant makes it discoverable once it applies to an existing readable note or empty folder.
     pub fn has_any_access(&self) -> Result<bool, Error> {
-        if self
-            .access
-            .members()
-            .any(|(member, role)| member == &self.user && role != Role::None)
-        {
+        if self.access.vault_role(&self.user) != Role::None {
             return Ok(true);
         }
         Ok(!self.empty_folders()?.is_empty() || !self.notes()?.is_empty())
@@ -119,14 +115,15 @@ impl<'a> AuthorizedVault<'a> {
 
     /// Returns whether this user may write anywhere in the vault.
     pub fn has_any_write_access(&self) -> Result<bool, Error> {
-        if self.access.members().any(|(member, role)| {
-            member == &self.user && matches!(role, Role::Owner | Role::Editor)
-        }) {
+        if matches!(
+            self.access.vault_role(&self.user),
+            Role::Owner | Role::Editor
+        ) {
             return Ok(true);
         }
-        if self.access.rules().any(|rule| {
+        if self.access.rule_paths().iter().any(|path| {
             matches!(
-                self.access.effective_role(&self.user, &rule.path),
+                self.access.effective_role(&self.user, path),
                 Role::Owner | Role::Editor
             )
         }) {
@@ -146,9 +143,7 @@ impl<'a> AuthorizedVault<'a> {
 
     /// Returns whether this caller is a vault owner, as required for vault-wide resources.
     pub fn is_owner(&self) -> bool {
-        self.access
-            .members()
-            .any(|(member, role)| member == &self.user && role == Role::Owner)
+        self.access.vault_role(&self.user) == Role::Owner
     }
 
     /// Lists custom emoji only for a caller who may discover this vault.
@@ -257,6 +252,17 @@ impl<'a> AuthorizedVault<'a> {
         self.vault.reserve(relative)
     }
 
+    /// Whether this user may edit the note at `relative`.
+    #[must_use]
+    pub fn may_edit(&self, relative: &str) -> bool {
+        NotePath::parse(relative).is_ok_and(|note| {
+            matches!(
+                self.access.effective_role(&self.user, &note),
+                Role::Owner | Role::Editor
+            )
+        })
+    }
+
     /// Returns whether this caller may still discover a note path, including a path whose
     /// file is currently in trash.
     #[must_use]
@@ -272,12 +278,11 @@ impl<'a> AuthorizedVault<'a> {
 
     fn may_read_subtree(&self, relative: &str) -> bool {
         self.can_read(relative)
-            || self.access.rules().any(|rule| {
-                rule.path
-                    .as_str()
+            || self.access.rule_paths().iter().any(|path| {
+                path.as_str()
                     .strip_prefix(relative)
                     .is_some_and(|suffix| suffix.starts_with('/'))
-                    && self.access.effective_role(&self.user, &rule.path) != Role::None
+                    && self.access.effective_role(&self.user, path) != Role::None
             })
     }
 }

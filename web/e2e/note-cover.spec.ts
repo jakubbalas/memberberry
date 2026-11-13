@@ -17,7 +17,7 @@ test("uploads, positions, reloads and removes a Markdown-backed cover", async ({
     return { button: button.x + button.width / 2, area: area.x + area.width / 2 };
   });
   expect(Math.abs(alignment.button - alignment.area)).toBeLessThanOrEqual(1);
-  if (testInfo.project.name === "desktop") {
+  if (testInfo.project.name !== "mobile") {
     await page.mouse.move(0, 0);
     await expect(add).toHaveCSS("opacity", "0");
     await empty.hover();
@@ -76,7 +76,7 @@ test("uploads, positions, reloads and removes a Markdown-backed cover", async ({
   await expect(menu).not.toHaveAttribute("open");
   await expect(page.getByRole("button", { name: "Remove cover", exact: true })).toBeHidden();
   await page.mouse.move(0, 0);
-  if (testInfo.project.name === "desktop") {
+  if (testInfo.project.name !== "mobile") {
     await expect(toggle).toHaveCSS("opacity", "0");
     await toggle.focus();
     await expect(toggle).toHaveCSS("opacity", "1");
@@ -99,7 +99,7 @@ test("uploads, positions, reloads and removes a Markdown-backed cover", async ({
   await expect(cover).toBeVisible();
   await expect(cover).toHaveCSS("object-position", "50% 0%");
   await expect(menu).not.toHaveAttribute("open");
-  if (testInfo.project.name === "desktop") {
+  if (testInfo.project.name !== "mobile") {
     await page.mouse.move(0, 0);
     await expect(toggle).toHaveCSS("opacity", "0");
     await cover.hover();

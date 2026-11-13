@@ -79,6 +79,15 @@
   import { requestPalette } from "./palette.js";
   import { detectPlatform, formatBinding, parseBinding } from "./hotkeys.js";
   import { obsidianDefaultBinding } from "./default-keymap.js";
+  import { DeviceOffline } from "./device-offline.svelte.js";
+  import {
+    offlineNotice,
+    openable,
+    recoveredAt,
+    recoveredNotice,
+    type OfflineAction,
+    type Recovery,
+  } from "./device-offline.js";
 
   interface Props {
     /** Background work follows a freshly authorized catalog, never an offline fallback. */
@@ -140,6 +149,8 @@
     readonly vaultAccent?: string | undefined;
     /** Whether to offer Settings. The server re-checks ownership on every settings route. */
     readonly owner?: boolean | undefined;
+    /** Served by the desktop app: no log-out, a link to its server page instead. */
+    readonly desktop?: boolean | undefined;
   }
 
   const {
@@ -173,6 +184,7 @@
     vaultTheme: bootTheme,
     vaultAccent: bootAccent,
     owner = false,
+    desktop = false,
     home = false,
   }: Props = $props();
 
@@ -213,6 +225,65 @@
   let folderBusy = $state(false);
   let folderError = $state<string | undefined>();
   let folderStatus = $state("");
+  // §7.6.10: a server vault in the desktop app. Absent in a browser and for local vaults,
+  // where the endpoint does not answer as a server vault.
+  const deviceOffline = $derived(new DeviceOffline({ vault: vaultSlug }));
+  // why: only the desktop app answers this route. In a browser it is a 404 on every load
+  // and every 3 s after, which the E2E suite rightly counts as a broken page.
+  $effect(() => (session === undefined || !desktop ? undefined : deviceOffline.watch()));
+  const serverOffline = $derived(offlineNotice(deviceOffline.snapshot));
+  // §7.6.7: notes that left the server with edits made here, awaiting the user's choice.
+  const recovery: Recovery = {
+    find: (path) => recoveredAt(deviceOffline.snapshot, path),
+    place: async (note, to) => {
+      const message = await deviceOffline.place(note.path, to);
+      if (message === undefined) {
+        const active = store.activeTab;
+        if (active?.note === note.path) store.navigate(active.id, to ?? note.original);
+        void catalog.refresh();
+      }
+      return message;
+    },
+  };
+  const recoveredLine = $derived(recoveredNotice(deviceOffline.snapshot));
+  /** Per window, so "Later" lasts until the app is started again. */
+  const laterKey = $derived(`memberberry:recovered-later:${vaultSlug}`);
+  let recoveredLater = $state(false);
+  $effect(() => {
+    try {
+      recoveredLater = sessionStorage.getItem(laterKey) === "1";
+    } catch {
+      recoveredLater = false;
+    }
+  });
+  function recoveredLaterNow(): void {
+    recoveredLater = true;
+    try {
+      sessionStorage.setItem(laterKey, "1");
+    } catch {
+      // Storage refused: "Later" still lasts for this page.
+    }
+  }
+  function openFirstRecovered(): void {
+    const first = deviceOffline.snapshot?.recovered[0];
+    if (first !== undefined) openNavigationNote(first.path, false);
+  }
+  let offlineStatus = $state("");
+  function applyOffline(action: OfflineAction): void {
+    offlineStatus = "";
+    void deviceOffline.apply(action).then((message) => {
+      offlineStatus = message ?? "";
+    });
+  }
+  function openFromTree(path: string, newTab = false): void {
+    const offline = deviceOffline.snapshot;
+    if (offline !== undefined && !openable(offline, path)) {
+      offlineStatus = "This note is online only. Connect to your server to open it.";
+      return;
+    }
+    offlineStatus = "";
+    openNavigationNote(path, newTab);
+  }
   let foldersLoading = $state(false);
   let folderRequest = 0;
 
@@ -318,8 +389,13 @@
   );
   // Only for a vault a server bootstrapped: pinning a note on a local-only replica would be
   // asking to keep offline the one document that is already nowhere else (§7.2).
+  // why: not in the desktop app. Its local vaults are already on disk, and a server vault's
+  // offline notes are the app's own pins (§7.6.10), which the command reaches through
+  // `deviceOffline` instead; a browser replica there would be a third copy nobody reads.
   const pins = untrack(() =>
-    session === undefined ? undefined : (suppliedPins ?? new PinnedNotes({ vault: session.vault })),
+    session === undefined || desktop
+      ? undefined
+      : (suppliedPins ?? new PinnedNotes({ vault: session.vault })),
   );
   // At mount rather than when the palette opens: the pin command is a toggle whose *wording*
   // depends on this, and one that appeared a frame after the list was first read would pop
@@ -722,6 +798,7 @@
     maximum={layout === "desktop" ? sidebarMaximum(viewportWidth, collapsed.right ? 0 : panelWidths.right) : undefined}
     onresize={(width) => resizeSidebar("left", width)}
     user={session?.user}
+    {desktop}
   >
     {#snippet controls()}
       <div class="navigation-tools" role="group" aria-label="Navigation views">
@@ -741,6 +818,18 @@
       <SearchPane view={search} onopen={openNavigationNote} />
     </section>
     <section class="navigation-view" id="navigation-notes" aria-label="Notes" hidden={navigationView !== "Notes"}>
+      {#if serverOffline !== undefined}
+        <p class="server-offline" role="status">{serverOffline}</p>
+      {/if}
+      {#if recoveredLine !== undefined && !recoveredLater}
+        <div class="recovered-notice" role="status">
+          <p>{recoveredLine}</p>
+          <div class="recovered-actions">
+            <button type="button" onclick={openFirstRecovered}>Open</button>
+            <button type="button" onclick={recoveredLaterNow}>Later</button>
+          </div>
+        </div>
+      {/if}
       <NoteTree
         expansion={{ vault: vaultSlug, user: session?.user ?? "local-demo", storage: chrome }}
         {catalog}
@@ -750,7 +839,9 @@
         onopenfolder={openFolder}
         showFilenames={sidebarPreferences.showFilenames}
         onfilenames={(showFilenames) => saveSidebarPreferences({ ...sidebarPreferences, showFilenames })}
-        onopen={openNavigationNote}
+        onopen={openFromTree}
+        offline={deviceOffline.snapshot}
+        onoffline={applyOffline}
         ondelete={(path) => void deleteFromTree(path)}
         ondeletefolder={deleteFolderFromTree}
         onmove={moveFromTree}
@@ -759,6 +850,7 @@
         {target}
       />
       {#if folderStatus}<p class="tree-empty" role="status">{folderStatus}</p>{/if}
+      {#if offlineStatus}<p class="tree-empty" role="status">{offlineStatus}</p>{/if}
       {#if session !== undefined}
         <details class="notebook-section">
           <summary><Icon name="chevron-right" />Share a note</summary>
@@ -799,9 +891,9 @@
     {:else if showingHome}
       <Home {catalog} onopen={openNavigationNote} oncreate={() => requestPalette("create", target ?? window)} />
     {:else if layout === "mobile"}
-      <MobileMain {store} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} ontitlechange={handleTitleChange} />
+      <MobileMain {store} {session} {open} {titleOf} {iconOf} {taskEdit} {daily} {recovery} ontitlechange={handleTitleChange} />
     {:else}
-      <PaneTree node={store.current.root} {store} {panes} {session} {open} {iconOf} {taskEdit} {daily} {target} {titleOf} ontitlechange={handleTitleChange} />
+      <PaneTree node={store.current.root} {store} {panes} {session} {open} {iconOf} {taskEdit} {daily} {recovery} {target} {titleOf} ontitlechange={handleTitleChange} />
     {/if}
   </main>
 
@@ -856,6 +948,8 @@
   {catalog}
   {tags}
   {pins}
+  offline={deviceOffline.snapshot}
+  onoffline={applyOffline}
   {renameNote}
   {renameTag}
   {createNote}

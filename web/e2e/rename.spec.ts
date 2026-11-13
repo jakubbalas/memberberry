@@ -73,7 +73,7 @@ test("renames the open note and rewrites the links that point at it", async ({ p
   await expect(page.locator(EDITOR).first().getByRole("heading", { level: 1 })).toHaveText(renamed);
   await expect(page.locator(EDITOR).first()).toContainText("A note this test may rename.");
   // The tab strip is desktop-only (§8.3), so this is the one assertion with a viewport.
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     await expect(page.locator(".tab", { hasText: renamed })).toBeVisible();
   }
 

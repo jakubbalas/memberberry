@@ -98,3 +98,47 @@ fn a_non_owner_cannot_issue_an_invite() {
         Err(invites::InviteError::Denied)
     ));
 }
+
+/// M20b: accepting an invite rewrites `access.toml`, and must not drop group grants on the
+/// way — that would silently revoke every group's access.
+#[test]
+fn accepting_an_invite_keeps_every_group_grant() {
+    let dir = TempDir::new("invite-groups");
+    dir.write(
+        "access.toml",
+        "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+         [[members]]\nuser = \"group:family\"\nrole = \"viewer\"\n\n\
+         [[rules]]\npath = \"Private\"\ngrant = { \"group:family\" = \"none\" }\n",
+    );
+    let vault = Vault::open(
+        Slug::parse("personal").expect("slug"),
+        "Personal",
+        dir.path(),
+    )
+    .expect("vault");
+    let access = AccessFile::load(dir.path()).expect("access");
+    let mut auth = AuthDb::open_in_memory().expect("auth");
+    auth.setup_first_user(NewUser {
+        username: "alice",
+        display_name: "Alice",
+        password: PASSWORD,
+    })
+    .expect("owner");
+    let actor = Username::parse("alice").expect("actor");
+    let token =
+        invites::issue(&vault, &access, &auth, &actor, Role::Viewer, 4_102_444_800).expect("issue");
+    invites::accept(
+        &vault,
+        &mut auth,
+        &token,
+        NewUser {
+            username: "bob",
+            display_name: "Bob",
+            password: PASSWORD,
+        },
+    )
+    .expect("accept");
+    let saved = AccessFile::load(dir.path()).expect("saved access");
+    assert_eq!(saved.policy().group_members().count(), 1);
+    assert_eq!(saved.policy().group_rules().count(), 1);
+}

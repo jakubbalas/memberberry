@@ -145,6 +145,13 @@ pub enum ServerFrame {
     Error {
         code: &'static str,
     },
+    /// A frame received from a desktop app's upstream, already addressed for this client
+    /// (§7.6.10). Passed through as it is.
+    #[serde(skip)]
+    Relay(Wire),
+    /// Ends this client's socket so it reconnects: the upstream it was relayed to has gone.
+    #[serde(skip)]
+    Close,
 }
 
 /// Tag byte for a full-state frame.
@@ -186,12 +193,36 @@ impl ServerFrame {
                 note,
                 update,
             ))),
+            Self::Relay(wire) => Some(wire.clone()),
+            Self::Close => None,
             other => serde_json::to_string(other).ok().map(Wire::Text),
         }
     }
 }
 
 impl ClientFrame {
+    /// The vault this frame addresses.
+    #[must_use]
+    pub fn vault(&self) -> &str {
+        match self {
+            Self::Subscribe { vault, .. }
+            | Self::Update { vault, .. }
+            | Self::Awareness { vault, .. }
+            | Self::Unsubscribe { vault, .. } => vault,
+        }
+    }
+
+    /// The note this frame addresses.
+    #[must_use]
+    pub fn note(&self) -> &str {
+        match self {
+            Self::Subscribe { note, .. }
+            | Self::Update { note, .. }
+            | Self::Awareness { note, .. }
+            | Self::Unsubscribe { note, .. } => note,
+        }
+    }
+
     /// Decodes a binary update frame. Clients send no other binary frame.
     #[must_use]
     pub fn from_binary(bytes: &[u8]) -> Option<Self> {
@@ -594,6 +625,102 @@ impl SyncRegistry {
             coordinator.flush()?;
         }
         Ok(())
+    }
+
+    /// A note's complete state for a desktop replica (§7.6.9), importing any external edit
+    /// to its file first so the replica never reads a state older than the file.
+    ///
+    /// Uses the open room when there is one; otherwise opens the note just for this and
+    /// releases it, so a replica sweeping a vault holds no rooms open.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the note cannot be opened or its file read.
+    pub fn current_state(
+        &self,
+        vault: &Vault,
+        canonical: &CanonicalNote,
+        authorize: ReadCheck<'_>,
+    ) -> Result<Vec<u8>, SyncError> {
+        let mut rooms = self.rooms()?;
+        let key = room_key(vault, canonical);
+        if let Some(room) = rooms.get_mut(&key) {
+            if let ExternalUpdate::Applied(update) = room.coordinator.inspect_external_change()? {
+                let slug = vault.slug().to_string();
+                broadcast(
+                    &mut room.peers,
+                    (&slug, canonical.identity()),
+                    authorize,
+                    |note| ServerFrame::Update {
+                        vault: slug.clone(),
+                        note: note.to_string(),
+                        update: update.clone(),
+                    },
+                );
+            }
+            return Ok(room.coordinator.full_update());
+        }
+        drop(rooms);
+        let mut coordinator = NoteCoordinator::open(vault, canonical)?;
+        if let ExternalUpdate::Applied(_) = coordinator.inspect_external_change()? {
+            coordinator.flush()?;
+        }
+        Ok(coordinator.full_update())
+    }
+
+    /// Applies an update from a replica's upstream, whether or not the note is open here.
+    ///
+    /// An open room broadcasts it to its peers as any update; a closed note is opened,
+    /// updated and written straight to Markdown, so the file is current when this returns.
+    ///
+    /// # Errors
+    ///
+    /// Fails, changing nothing, when the update is invalid or the note cannot be opened.
+    pub fn apply_detached(
+        &self,
+        vault: &Vault,
+        canonical: &CanonicalNote,
+        update: &[u8],
+        actor: &str,
+        authorize: ReadCheck<'_>,
+    ) -> Result<(), SyncError> {
+        let open = self.rooms()?.contains_key(&room_key(vault, canonical));
+        if open {
+            return self.apply_update_as(vault, canonical, update, actor, authorize);
+        }
+        let mut coordinator = NoteCoordinator::open(vault, canonical)?;
+        coordinator.apply_remote_update_as(update, Instant::now(), actor)?;
+        coordinator.flush()
+    }
+
+    /// Replaces a note's history with `state`, writing its Markdown from it (§7.6.9, S14).
+    ///
+    /// For a replica whose history no longer shares an origin with upstream's. Merging the
+    /// two would duplicate every block, so the note takes upstream's instead. Anyone with the
+    /// note open is told to reload, because their editor holds the history being replaced.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `state` is not a valid note or a file cannot be written.
+    pub fn adopt(
+        &self,
+        vault: &Vault,
+        canonical: &CanonicalNote,
+        state: &[u8],
+    ) -> Result<(), SyncError> {
+        let doc = document_from_update_v1(state)?;
+        let markdown = mb_core::to_markdown(&document_from_yrs(&doc)?);
+        let mut rooms = self.rooms()?;
+        let key = room_key(vault, canonical);
+        if let Some(room) = rooms.remove(&key) {
+            for peer in &room.peers {
+                drop(peer.outbound.send(ServerFrame::Error {
+                    code: "schema_refresh_required",
+                }));
+            }
+        }
+        atomic_write(canonical.path(), markdown.as_bytes())?;
+        seed_note(vault.root(), canonical.identity(), &doc, &markdown)
     }
 
     /// Broadcasts transient awareness to readers already admitted to the room (E4).
@@ -1083,6 +1210,27 @@ fn load_or_quarantine(sidecar: &Sidecar) -> Result<Option<mb_crdt::SidecarState>
     }
 }
 
+/// Gives a note whose Markdown was just written from `doc` that same history (§7.6.9).
+///
+/// The sidecar becomes `doc`, and the last-write marker records `markdown` as a version the
+/// document already contains, so the next open neither rebuilds a history from the file nor
+/// mistakes the file for an external edit.
+///
+/// # Errors
+///
+/// Fails if the sidecar or marker cannot be written.
+pub fn seed_note(
+    vault_root: &Path,
+    identity: &str,
+    doc: &Doc,
+    markdown: &str,
+) -> Result<(), SyncError> {
+    let sidecar_file = sidecar_path(vault_root, identity);
+    let marker = marker_path(&sidecar_file);
+    Sidecar::new(sidecar_file).replace(doc)?;
+    write_marker(&marker, &content_hash(markdown.as_bytes()))
+}
+
 /// Moves a note's CRDT sidecar and last-write marker to follow a rename (§6.6).
 ///
 /// why: the sidecar is named from a hash of the note's identity, so a renamed note would
@@ -1144,12 +1292,20 @@ fn quarantined_copies(sidecar: &Path) -> Result<Vec<PathBuf>, SyncError> {
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => return Err(SyncError::Write { path: directory, source }),
+        Err(source) => {
+            return Err(SyncError::Write {
+                path: directory,
+                source,
+            });
+        }
     };
     let prefix = format!("{name}.");
     let mut copies = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|source| SyncError::Write { path: directory.clone(), source })?;
+        let entry = entry.map_err(|source| SyncError::Write {
+            path: directory.clone(),
+            source,
+        })?;
         let file = entry.file_name();
         let numbered = file
             .to_str()
@@ -1180,9 +1336,10 @@ fn free_quarantine_slot(sidecar: &Path) -> Result<PathBuf, SyncError> {
 }
 
 fn quarantine_location(sidecar: &Path) -> (PathBuf, String) {
-    let directory = sidecar
-        .parent()
-        .map_or_else(|| PathBuf::from("quarantine"), |parent| parent.join("quarantine"));
+    let directory = sidecar.parent().map_or_else(
+        || PathBuf::from("quarantine"),
+        |parent| parent.join("quarantine"),
+    );
     let name = sidecar
         .file_name()
         .and_then(|name| name.to_str())

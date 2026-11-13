@@ -31,7 +31,8 @@ export type IconName =
   | "settings"
   | "plus"
   | "more"
-  | "close";
+  | "close"
+  | "offline";
 
 /**
  * The path commands for each icon, outermost shape first.
@@ -66,4 +67,6 @@ export const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
   plus: ["M12 5.5v13", "M5.5 12h13"],
   more: ["M5 12h.01", "M12 12h.01", "M19 12h.01"],
   close: ["m6.5 6.5 11 11", "m17.5 6.5-11 11"],
+  // A downward arrow into a tray: kept on this device (§7.6.10).
+  offline: ["M12 4v10.5", "m7.5 10 4.5 4.5 4.5-4.5", "M5 19.5h14"],
 };

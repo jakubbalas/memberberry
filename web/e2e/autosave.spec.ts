@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { offlineDatabaseName } from "../src/offline/database-name.js";
 import { E2E_ORIGIN, E2E_VAULT } from "./environment.js";
-import { expect, signIn, test, openSidebar } from "./fixtures.js";
+import { expect, lineKey, openSidebar, signIn, test } from "./fixtures.js";
 
 const EDITOR = ".editor-surface .tiptap";
 const SCHEMA = JSON.parse(readFileSync(join(import.meta.dirname, "../../crates/mb-core/schema.json"), "utf8")) as { version: number };
@@ -84,7 +84,7 @@ test("a newly created note autosaves to Markdown and a clean independent device,
     const box = await paragraph.boundingBox();
     if (!box) throw new Error("paragraph has no geometry");
     await paragraph.click({ position: { x: box.width - 2, y: box.height - 2 } });
-    await page.keyboard.press("End");
+    await lineKey(page, "End");
     await page.keyboard.insertText(offline);
     await expect(page.locator(EDITOR)).toContainText(initial + offline);
     expect(disk(path)).not.toContain(offline);

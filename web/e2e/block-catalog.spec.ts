@@ -60,7 +60,7 @@ test("block actions insert below and convert through desktop handles or mobile t
   await signIn(page);
   const { disk } = await createNote(page, info.project.name);
   const editor = page.locator(".editor-surface .tiptap");
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     await editor.getByText("Body", { exact: true }).hover();
     await page.locator(".block-handles").getByRole("button", { name: "Block actions", exact: true }).click();
     await page.locator(".block-move-menu").getByRole("menuitem", { name: "Insert below…", exact: true }).click();
@@ -70,7 +70,7 @@ test("block actions insert below and convert through desktop handles or mobile t
   await page.keyboard.type("New section");
   await expect.poll(disk).toContain("Body\n\n#### New section\n\nAfter");
   await expect(editor.locator("h4")).toHaveText("New section");
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     await editor.getByText("New section", { exact: true }).hover();
     await expect(page.locator(".block-handles")).toBeVisible();
     await page.locator(".block-handles").getByRole("button", { name: "Block actions", exact: true }).click();
@@ -91,11 +91,13 @@ test("catalogue routes note links through the existing authorized document choos
   const menu = page.getByRole("dialog", { name: "Block menu", exact: true });
   await menu.getByRole("searchbox", { name: "Filter blocks" }).fill("note");
   await menu.getByRole("menuitem", { name: "Link to note", exact: true }).click();
-  await page.keyboard.type("road");
+  // This project's own target, not `Projects/Roadmap.md`: see `E2E_NOTES`.
+  const target = `Linkable-${info.project.name}`;
+  await page.keyboard.type(target);
   const suggestions = page.getByRole("listbox", { name: "Document suggestions" });
   await expect(suggestions).toBeVisible();
-  await suggestions.getByRole("option").filter({ hasText: "Projects/Roadmap.md" }).click();
-  await expect.poll(disk).toContain("[Roadmap](Projects/Roadmap.md)");
+  await suggestions.getByRole("option").filter({ hasText: `Targets/${target}.md` }).click();
+  await expect.poll(disk).toContain(`[${target}](Targets/${target}.md)`);
 });
 
 test("slash insertion consumes its trigger and Escape stays dismissed", async ({ page }, info) => {

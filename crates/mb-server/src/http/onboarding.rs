@@ -18,14 +18,24 @@ impl AppState {
     ///
     /// First-account setup must only be enabled for a loopback-bound listener.
     /// Existing registered vaults and their policies are never changed.
-    pub fn with_vault_management(
-        mut self,
-        config: PathBuf,
-        allow_setup: bool,
-    ) -> Result<Self, Error> {
+    pub fn with_vault_management(self, config: PathBuf, allow_setup: bool) -> Result<Self, Error> {
         let config = std::path::absolute(config).map_err(management_error)?;
         let parent = config.parent().ok_or(Error::NotFound)?;
         let root = parent.join("vaults");
+        self.with_vault_management_root(config, root, allow_setup)
+    }
+
+    /// Enables UI vault creation, registering in `config` and creating vaults under `root`.
+    ///
+    /// The desktop app keeps its configuration out of sight and its vaults where the user
+    /// can open them in a text editor (§7.6.2), so the two directories differ there.
+    pub fn with_vault_management_root(
+        mut self,
+        config: PathBuf,
+        root: PathBuf,
+        allow_setup: bool,
+    ) -> Result<Self, Error> {
+        let config = std::path::absolute(config).map_err(management_error)?;
         std::fs::create_dir_all(&root).map_err(management_error)?;
         self.management = Some(VaultManagement {
             root: root.canonicalize().map_err(management_error)?,
@@ -171,6 +181,7 @@ pub(super) async fn setup(
                 Form(LoginForm {
                     username: form.username.trim().to_string(),
                     password: form.password,
+                    next: String::new(),
                 }),
             )
             .await
@@ -340,6 +351,27 @@ fn register_vault(
     raw_slug: &str,
 ) -> Result<(), Error> {
     let management = state.management.as_ref().ok_or(Error::NotFound)?;
+    register_vault_at(
+        state,
+        actor,
+        name,
+        raw_slug,
+        &management.root.join(raw_slug),
+    )
+}
+
+/// Creates an empty vault at `root`, which must not exist yet, owned by `actor`, and
+/// registers it live and in the configuration file. A desktop replica (§7.6.9) is created
+/// this way at `~/Memberberry/<server-host>/<vault>`; the New vault form under the
+/// managed root.
+pub(super) fn register_vault_at(
+    state: &AppState,
+    actor: &Username,
+    name: &str,
+    raw_slug: &str,
+    root: &Path,
+) -> Result<(), Error> {
+    let management = state.management.as_ref().ok_or(Error::NotFound)?;
     let _writer = management.writer.lock().map_err(management_error)?;
     let mut registered = state.vaults.write().map_err(management_error)?;
     let mut policies = state.security.access.write().map_err(management_error)?;
@@ -348,7 +380,10 @@ fn register_vault(
     if registered.contains_key(&slug) || config.vaults.iter().any(|entry| entry.slug == raw_slug) {
         return Err(Error::NotFound);
     }
-    let root = management.root.join(raw_slug);
+    let root = root.to_path_buf();
+    if let Some(parent) = root.parent() {
+        std::fs::create_dir_all(parent).map_err(management_error)?;
+    }
     std::fs::create_dir(&root).map_err(management_error)?;
     let prepared = (|| {
         std::fs::create_dir(root.join("notes")).map_err(management_error)?;
@@ -396,6 +431,29 @@ fn register_vault(
     drop(registered);
     state.audit_note(AuditAction::VaultCreated, actor, &vault, raw_slug)?;
     Ok(())
+}
+
+/// Removes the vault at `raw_slug` from the running server and its configuration file,
+/// returning its root. Its folder is left alone; deleting it is the caller's decision.
+pub(super) fn unregister_vault(state: &AppState, raw_slug: &str) -> Result<PathBuf, Error> {
+    let management = state.management.as_ref().ok_or(Error::NotFound)?;
+    let _writer = management.writer.lock().map_err(management_error)?;
+    let mut registered = state.vaults.write().map_err(management_error)?;
+    let mut policies = state.security.access.write().map_err(management_error)?;
+    let slug = Slug::parse(raw_slug)?;
+    let vault = registered.get(&slug).cloned().ok_or(Error::NotFound)?;
+    let mut config = crate::ServerConfig::load(&management.config)?;
+    config.vaults.retain(|entry| entry.slug != raw_slug);
+    save_config(&management.config, &config)?;
+    registered.remove(&slug);
+    policies.remove(&slug);
+    drop(policies);
+    drop(registered);
+    // why: a vault registered later at the same address must not see this one's titles.
+    if let Ok(mut titles) = state.security.titles.write() {
+        titles.remove(&slug);
+    }
+    Ok(vault.root().to_path_buf())
 }
 
 fn save_config(path: &Path, config: &crate::ServerConfig) -> Result<(), Error> {

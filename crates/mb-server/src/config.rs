@@ -47,6 +47,69 @@ pub struct ServerConfig {
     /// Directory containing Vite's production build. Relative paths resolve from the server.
     #[serde(default)]
     pub web_root: Option<String>,
+    /// Sign-in through an OpenID Connect provider (`SPEC.md` §6.8.2). Absent: passwords only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc: Option<OidcConfig>,
+}
+
+/// The `[oidc]` table of `server.toml` (§6.8.2, E38).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OidcConfig {
+    /// The provider's issuer, exactly as its discovery document states it.
+    pub issuer: String,
+    /// This server's client id at the provider.
+    pub client_id: String,
+    /// This server's client secret. Never logged, never shown (AGENTS.md §3.3).
+    pub client_secret: String,
+    /// This server's `…/oidc/callback`, exactly as registered at the provider. Configured,
+    /// never derived from a request's `Host`, which the client controls.
+    pub redirect_url: String,
+    /// The sign-in button's provider name: "Sign in with <name>".
+    #[serde(default = "default_oidc_name")]
+    pub name: String,
+    /// Scopes requested.
+    #[serde(default = "default_oidc_scopes")]
+    pub scopes: String,
+    /// The ID-token claim holding the person's groups (M20b).
+    #[serde(default = "default_groups_claim")]
+    pub groups_claim: String,
+    /// Whether the password form stays available beside the provider's button.
+    #[serde(default = "default_true")]
+    pub password_login: bool,
+}
+
+// why: by hand, so `{:?}` of a config — in an error, a log line, a panic — never prints the
+// client secret.
+impl std::fmt::Debug for OidcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcConfig")
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .field("redirect_url", &self.redirect_url)
+            .field("name", &self.name)
+            .field("scopes", &self.scopes)
+            .field("groups_claim", &self.groups_claim)
+            .field("password_login", &self.password_login)
+            .finish()
+    }
+}
+
+fn default_oidc_name() -> String {
+    "your identity provider".to_string()
+}
+
+fn default_oidc_scopes() -> String {
+    "openid profile email".to_string()
+}
+
+fn default_groups_claim() -> String {
+    "groups".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn deserialize_locations<'de, D>(deserializer: D) -> Result<Vec<VaultLocation>, D::Error>

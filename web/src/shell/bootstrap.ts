@@ -29,19 +29,25 @@ export interface NoteBootstrap {
    * settings route re-checks it on the server; this flag authorizes nothing.
    */
   readonly owner?: boolean;
+  /**
+   * Served by the desktop app (§7.6.8). Its window is signed in by the app itself, so the
+   * account footer offers the app's server page instead of a log-out that would do nothing.
+   */
+  readonly desktop?: boolean;
 }
 
 /** An authenticated vault home, with no note selected by the route. */
-export type HomeBootstrap = Pick<NoteBootstrap, "vault" | "user" | "theme" | "accent" | "owner">;
+export type HomeBootstrap = Pick<NoteBootstrap, "vault" | "user" | "theme" | "accent" | "owner" | "desktop">;
 
 /** The appearance and ownership attributes both bootstrap kinds share. */
-function vaultAttributes(element: HTMLElement): Pick<NoteBootstrap, "theme" | "accent" | "owner"> {
+function vaultAttributes(element: HTMLElement): Pick<NoteBootstrap, "theme" | "accent" | "owner" | "desktop"> {
   const theme = shippedTheme(element.dataset["vaultTheme"]);
   const accent = parseAccent(element.dataset["vaultAccent"]);
   return {
     ...(theme === undefined ? {} : { theme }),
     ...(accent === undefined ? {} : { accent }),
     ...(element.dataset["vaultOwner"] === "true" ? { owner: true } : {}),
+    ...(element.dataset["desktop"] === "true" ? { desktop: true } : {}),
   };
 }
 

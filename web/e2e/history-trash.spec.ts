@@ -28,8 +28,11 @@ async function showContext(page: import("@playwright/test").Page): Promise<void>
 
 async function hideMobileContext(page: import("@playwright/test").Page): Promise<void> {
   if ((page.viewportSize()?.width ?? 0) > 640) return;
-  const toggle = page.getByRole("button", { name: /^Hide Context$/ });
-  await openSidebar(page, "Context");
+  // why: on a phone the context sheet covers the note. This used to *open* it instead, and
+  // only passed while the sheet was short enough to leave the text it clicks reachable.
+  const toggle = page.getByRole("button", { name: "Hide Context", exact: true });
+  if (await toggle.isVisible()) await toggle.click();
+  await expect(page.getByRole("button", { name: "Show Context", exact: true })).toBeVisible();
 }
 
 test("restores a saved version, then trashes and restores the Markdown note", async ({ page, isMobile }, info) => {

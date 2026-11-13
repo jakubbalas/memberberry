@@ -36,6 +36,10 @@ object_store = { version = "0.12", features = ["aws"] }
 reqwest.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
+# why: a desktop replica's upstream sync socket (SPEC §7.6.9). Already this crate's test
+# client; the feature uses the rustls + ring + webpki-roots stack reqwest already builds,
+# so the public roots and the crypto backend are the ones the device sign-in trusts.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 zstd = "0.13"
 yrs.workspace = true
 
@@ -43,7 +47,6 @@ yrs.workspace = true
 proptest = "1"
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "macros", "time", "sync"] }
-tokio-tungstenite = "0.29"
 tempfile = "3"
 
 [lints]

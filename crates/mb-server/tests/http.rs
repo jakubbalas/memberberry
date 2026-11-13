@@ -1161,6 +1161,8 @@ fn editor_route_injects_trusted_bootstrap_and_assets_stay_contained() {
     assert!(body.contains("data-note=\"One.md\""), "{body}");
     assert!(body.contains("data-user=\"alice\""), "{body}");
     assert!(body.contains("data-media-max-dimension=\"2560\""), "{body}");
+    // Only the desktop app's own server marks its pages as the app (§7.6.8).
+    assert!(!body.contains("data-desktop"), "{body}");
     assert!(
         body.contains("data-vault-theme=\"memberberry-dark\""),
         "{body}"

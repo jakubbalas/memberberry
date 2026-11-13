@@ -90,6 +90,7 @@ async function start(): Promise<void> {
       vaultTheme: session.theme,
       vaultAccent: session.accent,
       owner: session.owner === true,
+      desktop: session.desktop === true,
       home: homeBootstrap !== undefined,
       onresume: async () => { refresh.refresh(); },
       onupdate: async (): Promise<boolean> => {

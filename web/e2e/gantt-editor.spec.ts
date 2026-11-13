@@ -371,7 +371,7 @@ test("the thin row at the end of a phase adds a task to that phase", async ({ pa
   await diagram.getByRole("button", { name: "Edit chart" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit Gantt chart" });
   const add = dialog.getByRole("button", { name: "Add a task to Design" });
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     const rows = await dialog.locator(".ge-table tbody tr").evaluateAll((nodes) => nodes.map((node) => [node.className, Math.round(node.getBoundingClientRect().height)]));
     expect(rows.find(([name]) => name === "ge-add-row")?.[1], "the add row is thinner than a task row").toBeLessThan(40);
   }

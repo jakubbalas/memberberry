@@ -153,8 +153,10 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     control.disabled = true;
     control.hidden = true;
     options.panel.append(control);
+    let imageEditorUnavailable = false;
     const onImageClick = (event: MouseEvent): void => {
       if (!(event.target instanceof HTMLImageElement) || event.target.classList.contains("custom-emoji-image")) return;
+      if (imageEditorUnavailable) return;
       const position = options.editor.view.posAtDOM(event.target, 0);
       options.editor.view.dispatch(
         options.editor.state.tr.setSelection(NodeSelection.create(options.editor.state.doc, position)),
@@ -163,9 +165,19 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
       control.hidden = false;
     };
     options.editor.view.dom.addEventListener("click", onImageClick);
-    const imageEditorImport = import("./image-editor.js");
-    void imageEditorImport.then(({ mountImageEditor }) => {
+    // why: the image editor is its own chunk. If it cannot load — offline without it
+    // cached, or a navigation cancelling the load — this editor goes without image editing
+    // rather than leaving an unhandled rejection and an "Edit image" button that does nothing.
+    const imageEditorImport = import("./image-editor.js").catch(() => undefined);
+    void imageEditorImport.then((module) => {
       if (shellDestroyed) return;
+      if (module === undefined) {
+        imageEditorUnavailable = true;
+        control.disabled = true;
+        control.hidden = true;
+        return;
+      }
+      const { mountImageEditor } = module;
       imageEditor = mountImageEditor({
         editor: options.editor,
         panel: options.panel,
@@ -177,7 +189,9 @@ export function mountEditorShell(options: MountEditorShellOptions): EditorShell 
     });
     control.addEventListener("click", () => {
       if (imageEditor !== undefined || shellDestroyed) return;
-      void imageEditorImport.then(() => control.click());
+      void imageEditorImport.then((module) => {
+        if (module !== undefined) control.click();
+      });
     });
     imageClickCleanup = (): void => {
       options.editor.view.dom.removeEventListener("click", onImageClick);

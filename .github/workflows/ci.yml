@@ -32,6 +32,9 @@ jobs:
       - name: Manual E2E workflow regression
         run: python3 scripts/e2e-workflow-test.py
 
+      - name: Desktop package workflow regression
+        run: python3 scripts/desktop-workflow-test.py
+
       - name: Lints
         run: cargo clippy --workspace --all-targets -- -D warnings
 

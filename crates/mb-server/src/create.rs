@@ -29,6 +29,8 @@
 use std::io::Write as _;
 use std::sync::Mutex;
 
+use yrs::{ReadTxn as _, Transact as _};
+
 use mb_core::{Access, NotePath, Role, Username};
 use mb_index::Index;
 
@@ -56,6 +58,9 @@ pub enum CreateError {
     /// A note is already there.
     #[error("`{0}` already exists")]
     Exists(String),
+    /// The supplied CRDT history is not a valid note (§7.6.9).
+    #[error("that note history is not a valid note")]
+    InvalidHistory,
     /// The write itself failed.
     #[error("creating the note failed: {0}")]
     Failed(String),
@@ -134,6 +139,46 @@ impl<'a> CreateNote<'a> {
         }
     }
 
+    /// Creates a note whose CRDT history is `state`, a lib0 v1 update (§7.6.9).
+    ///
+    /// why: a desktop replica uploading a note it created must not let this server build a
+    /// second, unrelated history from the Markdown, or merging the replica's history in
+    /// afterwards duplicates every block. The note's sidecar *is* the uploaded history, and
+    /// its Markdown is that history materialized.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::note_with_body`], plus [`CreateError::InvalidHistory`] for a state that
+    /// does not decode to a schema-valid note. Every variant means nothing was written.
+    pub fn note_with_state(&self, path: &str, state: &[u8]) -> Result<Created, CreateError> {
+        if !crate::vault::valid_note_path(path) {
+            return Err(CreateError::InvalidName(path.to_string()));
+        }
+        if !self.may_write(path) {
+            return Err(CreateError::Denied);
+        }
+        let doc =
+            mb_crdt::document_from_update_v1(state).map_err(|_| CreateError::InvalidHistory)?;
+        if doc.transact().has_missing_updates() {
+            return Err(CreateError::InvalidHistory);
+        }
+        let document = mb_crdt::document_from_yrs(&doc).map_err(|_| CreateError::InvalidHistory)?;
+        let markdown = mb_core::to_markdown(&document);
+        self.write_new(path, &markdown)?;
+        let identity = path.to_string();
+        if let Err(error) = crate::sync::seed_note(self.vault.root(), &identity, &doc, &markdown) {
+            // The file is written and is the truth (C2); without its sidecar the next open
+            // rebuilds one from it, which is today's behaviour for any created note.
+            eprintln!("memberberry: seeding the history of {path} failed: {error}");
+        }
+        if let Err(error) = self.sweep() {
+            eprintln!("memberberry: reindexing after creating a note failed: {error}");
+        }
+        Ok(Created {
+            path: path.to_string(),
+        })
+    }
+
     /// Creates a note with caller-provided Markdown content.
     pub fn note_with_body(&self, path: &str, body: &str) -> Result<Created, CreateError> {
         if !crate::vault::valid_note_path(path) {
@@ -142,6 +187,21 @@ impl<'a> CreateNote<'a> {
         if !self.may_write(path) {
             return Err(CreateError::Denied);
         }
+        self.write_new(path, body)?;
+
+        // The note exists on disk whatever happens next, which is what C2 asks of us. An
+        // index that has not caught up yet only means the note is missing from the tree
+        // until the next sweep, so this reports rather than unwinding a good write.
+        if let Err(error) = self.sweep() {
+            eprintln!("memberberry: reindexing after creating a note failed: {error}");
+        }
+        Ok(Created {
+            path: path.to_string(),
+        })
+    }
+
+    /// Writes a new file at an authorized `path`, failing if anything is already there.
+    fn write_new(&self, path: &str, body: &str) -> Result<(), CreateError> {
         let destination = self
             .vault
             .reserve(path)
@@ -172,16 +232,7 @@ impl<'a> CreateNote<'a> {
         file.sync_all()
             .map_err(|error| CreateError::Failed(error.to_string()))?;
         drop(file);
-
-        // The note exists on disk whatever happens next, which is what C2 asks of us. An
-        // index that has not caught up yet only means the note is missing from the tree
-        // until the next sweep, so this reports rather than unwinding a good write.
-        if let Err(error) = self.sweep() {
-            eprintln!("memberberry: reindexing after creating a note failed: {error}");
-        }
-        Ok(Created {
-            path: path.to_string(),
-        })
+        Ok(())
     }
 
     fn may_write(&self, path: &str) -> bool {

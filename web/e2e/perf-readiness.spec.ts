@@ -2,14 +2,21 @@ import { expect, signIn, test } from "./fixtures.js";
 
 import { timeSwitch, timeToEditor } from "../perf/measure.ts";
 
+// why: these tests intercept the page's own requests. Under WebKit, Playwright does not route
+// a request the service worker makes, and the PWA worker is what makes them here; neither test
+// is about the worker, so it is kept out of the way in every engine.
+test.use({ serviceWorkers: "block" });
+
 test("cold-start failure identifies the hidden editor gate and connection status", async ({ page }) => {
   test.setTimeout(45_000);
+  // why: `&mdash;`, not the character. WebKit's driver decodes a fulfilled body as Latin-1
+  // whatever its charset, and the dash came back as "â€”".
   await page.route("**/perf-blocked", (route) => route.fulfill({
     contentType: "text/html; charset=utf-8",
     body: `<style>[data-body="waiting"] { visibility: hidden; }</style>
       <section class="editor-panel" data-body="waiting">
         <div class="editor-surface"><div class="tiptap" contenteditable="true">Note</div></div>
-      </section><p class="offline-status" role="status">Offline — reconnecting</p>`,
+      </section><p class="offline-status" role="status">Offline &mdash; reconnecting</p>`,
   }));
   // why: a short deadline. The harness's default (90 s, for a throttled phone's cold start) is
   // longer than this test's timeout, so the diagnostic it asserts on could never arrive.

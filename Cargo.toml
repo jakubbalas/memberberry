@@ -12,7 +12,8 @@ members = [
     "crates/mb-cli",
 ]
 # `fuzz/` needs a nightly toolchain for libFuzzer, so it builds on its own (see `make fuzz`).
-exclude = ["fuzz"]
+# `desktop/` is the Tauri app (SPEC §7.6), its own workspace: see its Cargo.toml for why.
+exclude = ["fuzz", "desktop"]
 
 [workspace.package]
 version = "0.1.0"

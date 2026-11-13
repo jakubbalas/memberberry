@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
 
 test.use({ locale: "en-US", timezoneId: "Europe/Berlin" });
 
@@ -58,7 +58,7 @@ test("typed @now and @today confirm through keyboard and touch choices", async (
   await page.goto(`/v/personal/${encodeURIComponent(path)}`);
   const editor = page.locator(".editor-surface .tiptap");
   await editor.locator(":scope > p").click();
-  await page.keyboard.press("Home"); await page.keyboard.press("Shift+End");
+  await lineKey(page, "Home"); await lineKey(page, "Shift+End");
   await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("Type here");
   await page.keyboard.type("@now");
   await expect(page.getByRole("listbox", { name: "Date mentions" })).toBeVisible();
@@ -110,7 +110,7 @@ test("date mentions inside typed numbered lists retain editing and Enter continu
   await page.goto(`/v/personal/${encodeURIComponent(path)}`);
   const editor = page.locator(".editor-surface .tiptap");
   await editor.locator(":scope > p").click();
-  await page.keyboard.press("Home"); await page.keyboard.press("Shift+End");
+  await lineKey(page, "Home"); await lineKey(page, "Shift+End");
   await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("Type here");
   await page.keyboard.type("1. @today"); await page.keyboard.press("Enter");
   const list = editor.locator("ol");

@@ -176,18 +176,16 @@ impl crate::Reader<'_> {
 }
 
 fn compute(access: &Access) -> Vec<Zone> {
-    let mut users: BTreeSet<Username> = access.members().map(|(user, _)| user.clone()).collect();
-    for rule in access.rules() {
-        users.extend(rule.grants.keys().cloned());
-    }
+    // Everyone the policy can grant to, group members included (M20b).
+    let users: BTreeSet<Username> = access.principals();
 
-    let root_permissions = access
-        .members()
+    let root_permissions = users
+        .iter()
+        .map(|user| (user.clone(), access.vault_role(user)))
         .filter(|(_, role)| *role != Role::None)
-        .map(|(user, role)| (user.clone(), role))
         .collect();
     let mut zones = vec![zone(String::new(), root_permissions)];
-    let mut paths: Vec<_> = access.rules().map(|rule| rule.path.clone()).collect();
+    let mut paths: Vec<_> = access.rule_paths().into_iter().collect();
     paths.sort_by(|left, right| {
         left.as_str()
             .split('/')
@@ -230,10 +228,7 @@ pub(crate) fn permitted(
 
 fn role_at(access: &Access, user: &Username, path_prefix: &str) -> Role {
     if path_prefix.is_empty() {
-        return access
-            .members()
-            .find_map(|(candidate, role)| (candidate == user).then_some(role))
-            .unwrap_or(Role::None);
+        return access.vault_role(user);
     }
     NotePath::parse(path_prefix)
         .map(|path| access.effective_role(user, &path))

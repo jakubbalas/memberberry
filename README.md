@@ -137,6 +137,31 @@ On macOS, an “Operation not permitted” error for Documents may require grant
 terminal app access in **System Settings → Privacy & Security → Files and Folders**,
 then restarting the server.
 
+## Desktop app
+
+Installable packages keep your notes on the computer as Markdown files and sync them with a
+server. They are not code-signed (SPEC.md §7.6.1, A49), so each system asks once before
+trusting them:
+
+- **macOS** (`Memberberry_<version>_universal.dmg`, macOS 11 or later): open the DMG and drag
+  Memberberry to Applications. On first launch macOS says it cannot verify the developer:
+  choose **Done**, then open System Settings → Privacy & Security, choose **Open Anyway**
+  next to the Memberberry message, and confirm. This is needed once per version.
+  - **Keychain prompts: choose "Always Allow".** The app keeps each server's sign-in token
+    in your keychain. After installing a **new version**, macOS asks twice for it — "wants
+    to use your confidential information" and then "wants to access key". Enter your login
+    password and choose **Always Allow** both times; you will not be asked again until the
+    next version. Choosing **Allow** grants a single read, so both prompts return on every
+    launch. A first install that you then sign in with does not ask at all.
+- **Linux** (`.deb` or `.AppImage`): install the `.deb` with your package manager, or make
+  the AppImage executable and run it. Signing in to a server needs a running keyring (GNOME
+  Keyring or KWallet).
+- **Windows** (`.msi`): SmartScreen warns about an unknown publisher; choose **More info** →
+  **Run anyway**.
+
+Packages are built with `make desktop-build` (this system's only) or the manually dispatched
+**Desktop packages** workflow (all three).
+
 ## Development
 
 The backend is Rust; the frontend uses Svelte and Tiptap/ProseMirror. The browser and

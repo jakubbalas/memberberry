@@ -582,6 +582,72 @@ fn password_reset_rejects_a_wrong_administrator_password_and_audits_the_denial()
     assert!(audit.contains("\"result\":\"denied\""), "{audit}");
 }
 
+#[test]
+fn an_administrator_sets_the_email_a_provider_sign_in_links_to() {
+    let dir = TempDir::new("user-set-email");
+    let config = config_of(&dir);
+    let setup = ["user", "setup", "--username", "alice", "--config", &config];
+    let (code, _) = run_with_stdin(&setup, "correct horse battery staple\n");
+    assert!(is_success(code));
+    let (code, out) = run_with_stdin(
+        &[
+            "user",
+            "set-email",
+            "--username",
+            "alice",
+            "--email",
+            "alice@example.com",
+            "--actor",
+            "alice",
+            "--config",
+            &config,
+        ],
+        "correct horse battery staple\n",
+    );
+    assert!(is_success(code), "{out}");
+    let db = mb_auth::AuthDb::open(&dir.path().join("auth.db")).expect("db");
+    let alice = db
+        .user_by_username("alice")
+        .expect("lookup")
+        .expect("alice");
+    assert_eq!(
+        db.email_of(alice.id).expect("email").as_deref(),
+        Some("alice@example.com")
+    );
+    assert!(
+        dir.read("audit.log")
+            .contains("\"action\":\"account_email\"")
+    );
+}
+
+#[test]
+fn setting_an_email_needs_the_administrators_password() {
+    let dir = TempDir::new("user-set-email-denied");
+    let config = config_of(&dir);
+    let setup = ["user", "setup", "--username", "alice", "--config", &config];
+    let (code, _) = run_with_stdin(&setup, "correct horse battery staple\n");
+    assert!(is_success(code));
+    let message = run_err_with_stdin(
+        &[
+            "user",
+            "set-email",
+            "--username",
+            "alice",
+            "--email",
+            "alice@example.com",
+            "--actor",
+            "alice",
+            "--config",
+            &config,
+        ],
+        "wrong password\n",
+    );
+    assert!(
+        message.contains("administrator authentication failed"),
+        "{message}"
+    );
+}
+
 // ---------------------------------------------------------------- normalize
 
 #[test]
@@ -1308,6 +1374,7 @@ fn vault_create_and_remove_preserve_configured_locations_and_existing_media_sett
     .expect("location");
     let config = mb_server::ServerConfig {
         bind: Some("127.0.0.1:9010".into()),
+        oidc: None,
         web_root: Some("web/dist".into()),
         vault_locations: vec![location],
         vaults: vec![mb_server::config::VaultEntry {
@@ -1874,4 +1941,105 @@ fn reindex_reports_an_empty_registry() {
     let config = dir.write("server.toml", "");
     let message = run_err(&["reindex", "--config", config.to_str().unwrap()]);
     assert!(message.contains("no vaults registered"), "{message}");
+}
+
+/// Gives alice a connected device straight through `mb-auth`, as the approval flow would.
+fn connect_device(dir: &TempDir) -> (i64, String) {
+    let mut auth = mb_auth::AuthDb::open(&dir.path().join("auth.db")).expect("auth db");
+    let alice = auth
+        .user_by_username("alice")
+        .expect("lookup")
+        .expect("alice");
+    let verifier = "v".repeat(43);
+    let redirect = "http://127.0.0.1:4000/desktop/connect/callback";
+    let code = auth
+        .approve_device(mb_auth::DeviceApproval {
+            user_id: alice.id,
+            device_name: "Alice's laptop",
+            redirect_uri: redirect,
+            code_challenge: &mb_auth::pkce_challenge(&verifier),
+        })
+        .expect("approve");
+    let grant = auth
+        .exchange_device_code(&code, &verifier, redirect)
+        .expect("exchange")
+        .expect("grant");
+    (
+        grant.device_id.get(),
+        grant.token.expose_secret().to_string(),
+    )
+}
+
+#[test]
+fn device_list_shows_a_users_connected_devices() {
+    let dir = TempDir::new("device-list");
+    let config = config_of(&dir);
+    let setup = ["user", "setup", "--username", "alice", "--config", &config];
+    assert!(is_success(
+        run_with_stdin(&setup, "correct horse battery staple\n").0
+    ));
+    let (id, _) = connect_device(&dir);
+    let (code, out) = run(&["device", "list", "--username", "alice", "--config", &config]);
+    assert!(is_success(code));
+    assert!(
+        out.contains(&format!("{id}\tAlice's laptop\tnever used")),
+        "{out}"
+    );
+}
+
+#[test]
+fn device_revoke_disconnects_the_device_and_audits_it() {
+    let dir = TempDir::new("device-revoke");
+    let config = config_of(&dir);
+    let setup = ["user", "setup", "--username", "alice", "--config", &config];
+    assert!(is_success(
+        run_with_stdin(&setup, "correct horse battery staple\n").0
+    ));
+    let (id, token) = connect_device(&dir);
+    let id_text = id.to_string();
+    let (code, out) = run_with_stdin(
+        &[
+            "device", "revoke", "--id", &id_text, "--actor", "alice", "--config", &config,
+        ],
+        "correct horse battery staple\n",
+    );
+    assert!(is_success(code));
+    assert!(out.contains("disconnected"), "{out}");
+    let auth = mb_auth::AuthDb::open(&dir.path().join("auth.db")).expect("auth db");
+    let token = mb_auth::DeviceToken::from_secret(&token).expect("token");
+    assert!(
+        auth.authenticate_device_token(&token)
+            .expect("auth")
+            .is_none()
+    );
+    assert!(dir.read("audit.log").contains("\"action\":\"device\""));
+}
+
+#[test]
+fn device_revoke_refuses_a_wrong_administrator_password() {
+    let dir = TempDir::new("device-revoke-denied");
+    let config = config_of(&dir);
+    let setup = ["user", "setup", "--username", "alice", "--config", &config];
+    assert!(is_success(
+        run_with_stdin(&setup, "correct horse battery staple\n").0
+    ));
+    let (id, token) = connect_device(&dir);
+    let id_text = id.to_string();
+    let message = run_err_with_stdin(
+        &[
+            "device", "revoke", "--id", &id_text, "--actor", "alice", "--config", &config,
+        ],
+        "wrong password\n",
+    );
+    assert!(
+        message.contains("administrator authentication failed"),
+        "{message}"
+    );
+    let auth = mb_auth::AuthDb::open(&dir.path().join("auth.db")).expect("auth db");
+    let token = mb_auth::DeviceToken::from_secret(&token).expect("token");
+    assert!(
+        auth.authenticate_device_token(&token)
+            .expect("auth")
+            .is_some()
+    );
 }

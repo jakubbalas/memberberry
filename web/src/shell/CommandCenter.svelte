@@ -44,6 +44,7 @@
     renameTag as renameTagRequest,
     renamedMessage,
   } from "./rename.js";
+  import { noteCommand, type OfflineAction, type OfflineSnapshot } from "./device-offline.js";
   import type { PinnedNotes } from "./pins.svelte.js";
   import type { TagView } from "./tags.svelte.js";
   import type { WorkspaceStore } from "./workspace-store.svelte.js";
@@ -92,6 +93,13 @@
      * which is the palette's own convention for a command that cannot run right now.
      */
     readonly pins?: PinnedNotes | undefined;
+    /**
+     * A server vault in the desktop app (§7.6.10): which notes this computer keeps on disk.
+     * When present, the offline command acts on these rather than on {@link pins}.
+     */
+    readonly offline?: OfflineSnapshot | undefined;
+    /** Applies the offline command's action in the desktop app. */
+    readonly onoffline?: ((action: OfflineAction) => void) | undefined;
     readonly daily?: DailyView | undefined;
     readonly user?: string | undefined;
   }
@@ -113,6 +121,8 @@
     createNote = createNoteRequest,
     oncreated,
     pins,
+    offline,
+    onoffline,
     daily,
     user,
   }: Props = $props();
@@ -137,6 +147,10 @@
   // the pin does; reading `store.activeTab.note` inside the title expression would work too,
   // but this is the value the title is actually about.
   const activeNote = $derived(store.activeTab?.note);
+  // The desktop app's own offline action for the open note, when this is a server vault there.
+  const deviceCommand = $derived(
+    offline === undefined || activeNote === undefined ? undefined : noteCommand(offline, activeNote),
+  );
 
   let mode = $state<Mode | undefined>(undefined);
   let query = $state("");
@@ -458,12 +472,22 @@
       // §7.2's pinned tier, worded as what it does rather than as what it is called: "pin"
       // means something else in every other notes application (pin to the top of a list).
       title:
-        activeNote !== undefined && pins?.has(activeNote) === true
+        deviceCommand?.label ??
+        (offline === undefined && activeNote !== undefined && pins?.has(activeNote) === true
           ? "Stop keeping this note offline"
-          : "Keep this note available offline",
+          : "Keep this note available offline"),
       group: "Note",
-      enabled: () => pins?.available === true && store.activeTab !== undefined,
+      // why: in the desktop app a note a folder or the whole vault keeps offline has no
+      // command of its own — releasing it alone is refused — so it is listed and refuses.
+      enabled: () =>
+        offline !== undefined
+          ? deviceCommand !== undefined
+          : pins?.available === true && store.activeTab !== undefined,
       run: () => {
+        if (offline !== undefined) {
+          if (deviceCommand !== undefined) onoffline?.(deviceCommand);
+          return;
+        }
         const active = store.activeTab;
         if (active !== undefined) void pins?.toggle(active.note);
       },

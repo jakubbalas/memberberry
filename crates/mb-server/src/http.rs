@@ -73,7 +73,34 @@ pub struct AppState {
     clip_budgets: Mutex<HashMap<(Slug, mb_core::Username), ClipBudget>>,
     share_budgets: Mutex<HashMap<String, ClipBudget>>,
     share_ip_budgets: Mutex<HashMap<IpAddr, ClipBudget>>,
+    /// Device-code exchanges per client address (§6.8.1).
+    device_budgets: Mutex<HashMap<IpAddr, ClipBudget>>,
     security: Security,
+    /// Present only inside the desktop app: E34's admission and automatic sign-in (§7.6.2).
+    desktop: Option<desktop::DesktopAccess>,
+    /// Sign-in through the operator's identity provider (§6.8.2), when configured.
+    oidc: Option<oidc::Oidc>,
+    /// Each account's provider groups from its latest sign-in (M20b), attached to a vault's
+    /// policy whenever it is read.
+    user_groups: RwLock<UserGroups>,
+}
+
+/// Provider groups by account.
+type UserGroups = BTreeMap<Username, std::collections::BTreeSet<mb_core::GroupName>>;
+
+/// Turns stored group names into validated ones, dropping any that are not.
+fn parse_groups(stored: BTreeMap<String, std::collections::BTreeSet<String>>) -> UserGroups {
+    stored
+        .into_iter()
+        .filter_map(|(user, groups)| {
+            let user = Username::parse(&user).ok()?;
+            let groups = groups
+                .iter()
+                .filter_map(|group| mb_core::GroupName::parse(group).ok())
+                .collect();
+            Some((user, groups))
+        })
+        .collect()
 }
 
 /// One bundle asset, already compressed.
@@ -176,8 +203,15 @@ impl FileStamp {
     }
 }
 
+pub mod desktop;
+mod desktop_connect;
+mod desktop_forward;
+mod desktop_sync;
+mod devices;
 mod folder_ui;
+mod oidc;
 mod onboarding;
+mod replica_local;
 #[cfg(target_os = "linux")]
 mod shallow_directory;
 mod vault_discovery;
@@ -467,6 +501,8 @@ impl AppState {
             clip_budgets: Mutex::new(HashMap::new()),
             share_budgets: Mutex::new(HashMap::new()),
             share_ip_budgets: Mutex::new(HashMap::new()),
+            device_budgets: Mutex::new(HashMap::new()),
+            user_groups: RwLock::new(parse_groups(auth.all_groups().unwrap_or_default())),
             security: Security {
                 auth: Mutex::new(auth),
                 access: RwLock::new(access),
@@ -474,7 +510,17 @@ impl AppState {
                 sync: SyncRegistry::default(),
                 titles: RwLock::new(BTreeMap::new()),
             },
+            desktop: None,
+            oidc: None,
         })
+    }
+
+    /// Puts this server behind the desktop app's guard (E34): only the window holding the
+    /// launch code is admitted, and it is signed in as the local user.
+    #[must_use]
+    pub fn with_desktop(mut self, access: desktop::DesktopAccess) -> Self {
+        self.desktop = Some(access);
+        self
     }
 
     /// This vault's title cache, created on first use.
@@ -557,11 +603,59 @@ impl AppState {
 
 /// Builds the router.
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let guarded = state.desktop.is_some().then(|| Arc::clone(&state));
+    let desktop_routes = if guarded.is_some() {
+        Router::new()
+            .route(
+                "/desktop/connect",
+                get(desktop_connect::page_handler)
+                    .post(desktop_connect::start)
+                    .layer(DefaultBodyLimit::max(8 * 1024)),
+            )
+            .route("/desktop/connect/cancel", post(desktop_connect::cancel))
+            .route("/desktop/connect/open", post(desktop_connect::open))
+            .route(
+                "/api/v1/vaults/{slug}/offline",
+                get(desktop_sync::offline_get)
+                    .post(desktop_sync::offline_set)
+                    .layer(DefaultBodyLimit::max(8 * 1024)),
+            )
+            .route(
+                "/api/v1/vaults/{slug}/recovered",
+                post(desktop_sync::recovered_place).layer(DefaultBodyLimit::max(8 * 1024)),
+            )
+            .route("/desktop/connect/new", get(desktop_connect::new_server))
+            .route(
+                "/desktop/disconnect",
+                get(desktop_connect::sign_out_page)
+                    .post(desktop_connect::disconnect)
+                    .layer(DefaultBodyLimit::max(8 * 1024)),
+            )
+    } else {
+        Router::new()
+    };
+    let router = Router::new()
+        .merge(desktop_routes)
         .merge(project_registration_routes())
         .route("/", get(index))
         .route("/login", post(login))
+        .route(
+            "/devices/authorize",
+            get(devices::authorize_page)
+                .post(devices::authorize)
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
+        .route(
+            "/api/v1/devices/token",
+            post(devices::token).layer(DefaultBodyLimit::max(8 * 1024)),
+        )
+        .route(
+            "/api/v1/devices/self",
+            get(devices::whoami).delete(devices::revoke_self),
+        )
         .route("/logout", get(logout))
+        .route("/oidc/start", get(oidc::start))
+        .route("/oidc/callback", get(oidc::callback))
         .route(
             "/setup",
             get(onboarding::setup_page)
@@ -747,7 +841,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         // critical path in gzip and this is what makes the wire agree with the budget;
         // `compress.rs` documents what it will and will not touch, and why the WebSocket
         // upgrade passes through it untouched.
-        .layer(axum::middleware::from_fn(crate::compress::gzip))
+        .layer(axum::middleware::from_fn(crate::compress::gzip));
+    // why: outside compression and routing, so a refused request reaches no handler, no
+    // fallback and no asset read. Only the desktop app's state carries a guard.
+    match guarded {
+        // E37's forwarding sits inside the guard: only the admitted window reaches it.
+        Some(state) => router
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                desktop_forward::forward,
+            ))
+            .layer(axum::middleware::from_fn_with_state(state, desktop::guard)),
+        None => router,
+    }
 }
 
 /// The largest sync frame the server will read.
@@ -769,6 +875,8 @@ const MAX_SYNC_FRAMES_PER_SECOND: u32 = 240;
 enum WebsocketAuth {
     Session(Username),
     ApiToken(mb_auth::ApiToken),
+    /// A desktop replica (§6.8.1, §7.6.9), acting as its user in every vault that user reads.
+    Device(mb_auth::DeviceToken),
 }
 
 async fn websocket(
@@ -780,10 +888,16 @@ async fn websocket(
     // per-frame question, because the answer changes while the socket is open.
     let auth = match state.authenticated_user(&headers) {
         Some(user) => WebsocketAuth::Session(user),
-        None => match bearer_token(&headers).and_then(mb_auth::ApiToken::from_secret) {
-            Some(token) => WebsocketAuth::ApiToken(token),
-            None => return StatusCode::UNAUTHORIZED.into_response(),
-        },
+        None => {
+            let bearer = bearer_token(&headers);
+            if let Some(token) = bearer.and_then(mb_auth::DeviceToken::from_secret) {
+                WebsocketAuth::Device(token)
+            } else if let Some(token) = bearer.and_then(mb_auth::ApiToken::from_secret) {
+                WebsocketAuth::ApiToken(token)
+            } else {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+        }
     };
     websocket
         .max_message_size(MAX_SYNC_FRAME_BYTES)
@@ -798,6 +912,10 @@ async fn sync_socket(socket: WebSocket, state: Arc<AppState>, auth: WebsocketAut
     let (outbound, mut incoming) = tokio::sync::mpsc::unbounded_channel::<ServerFrame>();
     let write_task = tokio::spawn(async move {
         while let Some(frame) = incoming.recv().await {
+            if matches!(frame, ServerFrame::Close) {
+                drop(writer.send(Message::Close(None)).await);
+                break;
+            }
             let Some(encoded) = frame.to_wire() else {
                 continue;
             };
@@ -811,6 +929,8 @@ async fn sync_socket(socket: WebSocket, state: Arc<AppState>, auth: WebsocketAut
         }
     });
     let mut budget = FrameBudget::new();
+    // A desktop app's server vaults are relayed upstream while online (§7.6.10, E37).
+    let mut relays = desktop_forward::Relays::default();
     while let Some(Ok(message)) = reader.next().await {
         let parsed = match &message {
             Message::Text(text) => serde_json::from_str::<ClientFrame>(text).ok(),
@@ -830,6 +950,9 @@ async fn sync_socket(socket: WebSocket, state: Arc<AppState>, auth: WebsocketAut
             }));
             continue;
         };
+        if state.desktop.is_some() && relays.relay(&state, &frame, &outbound).await {
+            continue;
+        }
         // why: every sync frame touches the filesystem — opening a sidecar, appending an
         // update, materializing Markdown — under a registry-wide lock. Run inline, one slow
         // note stalls the whole runtime. Awaited one at a time so a connection's updates
@@ -1027,11 +1150,12 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
         return axum::response::Redirect::to("/setup").into_response();
     }
     if state.authenticated_user(&headers).is_none() {
-        return login_page().into_response();
+        return login_page(&state.sign_in_options()).into_response();
     }
-    let mut body = String::from(
-        "<p class=\"mb-empty\">A space for every part of your life. Open a vault and pick up where you left off.</p><ul class=\"mb-vault-list\">",
-    );
+    // A card per vault, grouped by where it lives: on this device, or on each known server
+    // (§7.6.10, §7.6.11). In a browser there is one group and no heading.
+    let mut local_cards = String::new();
+    let mut server_cards: BTreeMap<String, String> = BTreeMap::new();
     let mut visible = 0;
     for vault in &state.vault_snapshot() {
         let Some(access) = state.access_for(vault.slug()) else {
@@ -1044,37 +1168,119 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
             continue;
         }
         visible += 1;
-        // The same row the library lists notes with: a mark, a name, where it lives, and an
-        // arrow. One shape for "somewhere to go", so the two listings do not drift apart.
-        body.push_str("<li><a href=\"/v/");
-        push_escaped_attr(&mut body, vault.slug().as_str());
-        body.push_str("\"><span class=\"mb-note-icon\" aria-hidden=\"true\">");
-        body.push_str(VAULT_MARK);
-        body.push_str("</span><span class=\"mb-note-info\"><span class=\"mb-note-name\">");
-        push_escaped_text(&mut body, vault.name());
-        body.push_str("</span><span class=\"mb-note-folder\">/v/");
-        push_escaped_text(&mut body, vault.slug().as_str());
-        body.push_str(
-            "</span></span><span class=\"mb-note-arrow\" aria-hidden=\"true\">→</span></a></li>",
-        );
+        let server = state.server_vault_summary(vault.slug().as_str());
+        // why: counted through the authorized view, so a vault never says how many notes
+        // exist that this reader cannot see (§6.5).
+        let readable = view.notes().map_or(0, |notes| notes.len());
+        let meta = match &server {
+            Some(summary) => summary.describe(),
+            None => count_notes(readable),
+        };
+        let out = match state.server_vault(vault.slug().as_str()) {
+            Some(config) => server_cards.entry(config.origin).or_default(),
+            None => &mut local_cards,
+        };
+        push_vault_card(out, vault, &meta);
     }
-    body.push_str("</ul>");
-    if visible == 0 {
+    let mut body = String::from(
+        "<div class=\"mb-vaults-head\"><p>Open a vault and pick up where you left off.</p><div class=\"mb-actions\">",
+    );
+    if state.is_server_admin(&headers) {
+        body.push_str("<a class=\"mb-button mb-action\" href=\"/vaults/new\">New vault</a>");
+    }
+    // why: in the desktop app there is no one to log out — its guard signs the window
+    // straight back in (§7.6.8) — so the button that did nothing becomes the way to a server.
+    if state.desktop.is_some() {
+        body.push_str(
+            "<a class=\"mb-button mb-quiet mb-action\" href=\"/desktop/connect\">Servers</a>",
+        );
+    } else {
+        body.push_str("<a class=\"mb-button mb-quiet mb-action\" href=\"/logout\">Log out</a>");
+    }
+    body.push_str("</div></div>");
+    if state.desktop.is_some() {
+        let groups = state.server_groups();
+        for (origin, heading) in &groups {
+            body.push_str(heading);
+            let cards = server_cards.get(origin).map_or("", String::as_str);
+            push_vault_grid(
+                &mut body,
+                cards,
+                "Your vaults on this server will appear here in a moment.",
+            );
+            body.push_str("</section>");
+        }
+        body.push_str("<section class=\"mb-vault-group\"><h2 class=\"mb-vault-group-head\">On this device</h2>");
+        push_vault_grid(
+            &mut body,
+            &local_cards,
+            "Vaults you create here live in your Memberberry folder.",
+        );
+        body.push_str("</section>");
+        if groups.is_empty() {
+            body.push_str(
+                "<a class=\"mb-vault-connect\" href=\"/desktop/connect\"><strong>Connect your server</strong>\
+                 <span>Work on your server's vaults here, online or with notes kept offline.</span></a>",
+            );
+        }
+    } else if visible == 0 {
         body.push_str(if state.is_server_admin(&headers) {
             "<p class=\"mb-empty\">Create your first vault to get started.</p>"
         } else {
             "<p class=\"mb-empty\">No vaults are shared with you yet. Ask your administrator for an invitation.</p>"
         });
+    } else {
+        push_vault_grid(&mut body, &local_cards, "");
     }
-    // why: one primary and one quiet, in a row with a gap. Both used to be `mb-button`, so
-    // the page offered "New vault" and "Log out" as equally likely next steps — with no space
-    // between them, because neither carried a horizontal margin.
-    body.push_str("<div class=\"mb-actions\">");
-    if state.is_server_admin(&headers) {
-        body.push_str("<a class=\"mb-button mb-action\" href=\"/vaults/new\">New vault</a>");
-    }
-    body.push_str("<a class=\"mb-button mb-quiet mb-action\" href=\"/logout\">Log out</a></div>");
     page("Your vaults", &body).into_response()
+}
+
+/// "3 notes", "1 note", "No notes yet".
+fn count_notes(count: usize) -> String {
+    match count {
+        0 => "No notes yet".to_string(),
+        1 => "1 note".to_string(),
+        n => format!("{n} notes"),
+    }
+}
+
+fn push_vault_card(out: &mut String, vault: &Vault, meta: &str) {
+    out.push_str("<li><a class=\"mb-vault-card\" href=\"/v/");
+    push_escaped_attr(out, vault.slug().as_str());
+    out.push('"');
+    if let Some(accent) = vault.accent() {
+        // A vault's own accent (§20.4), already validated as `#rrggbb`.
+        out.push_str(" style=\"--accent-primary:");
+        push_escaped_attr(out, accent.as_str());
+        out.push('"');
+    }
+    out.push_str("><span class=\"mb-vault-mono\" aria-hidden=\"true\">");
+    let initial: String = vault
+        .name()
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    push_escaped_text(out, &initial);
+    out.push_str("</span><span class=\"mb-vault-text\"><span class=\"mb-vault-name\">");
+    push_escaped_text(out, vault.name());
+    out.push_str("</span><span class=\"mb-vault-meta\">");
+    push_escaped_text(out, meta);
+    out.push_str("</span></span></a></li>");
+}
+
+fn push_vault_grid(out: &mut String, cards: &str, empty: &str) {
+    if cards.is_empty() {
+        if !empty.is_empty() {
+            out.push_str("<p class=\"mb-empty\">");
+            push_escaped_text(out, empty);
+            out.push_str("</p>");
+        }
+        return;
+    }
+    out.push_str("<ul class=\"mb-vault-grid\">");
+    out.push_str(cards);
+    out.push_str("</ul>");
 }
 
 async fn vault_index(
@@ -1217,7 +1423,7 @@ async fn create_note_from_form(
     Form(form): Form<NewNoteForm>,
 ) -> Response {
     let path = note_path_for(&form.name);
-    match create_in_vault(&state, &slug, &path, None, &headers).await {
+    match create_in_vault(&state, &slug, &path, Initial::Default, &headers).await {
         Ok(created) => (
             StatusCode::SEE_OTHER,
             [(
@@ -1281,9 +1487,7 @@ fn authorize_workspace(
     if !view.has_any_access().unwrap_or(false) {
         return None;
     }
-    let user = state
-        .authenticated_user(headers)
-        .or_else(|| state.api_token_user(vault.slug(), headers))?;
+    let user = state.vault_user(vault.slug(), headers)?;
     let device = DeviceId::parse(device).ok()?;
     Some((user, device, WorkspaceStore::new(vault.root())))
 }
@@ -1680,6 +1884,30 @@ async fn note_index(
     });
 
     let mut notes = notes;
+    for note in &mut notes {
+        note.editable = view.may_edit(&note.path);
+    }
+    // A desktop server vault answered here is offline (online it is forwarded, E37): list
+    // the server's notes from the last pass too, so online-only ones stay visible, greyed
+    // by the client (§7.6.10). That list was the server's own answer for this same user.
+    if state.server_vault(vault.slug().as_str()).is_some() {
+        let present: std::collections::HashSet<String> =
+            notes.iter().map(|note| note.path.clone()).collect();
+        for listed in crate::replica::load_listing(vault.root()) {
+            if !present.contains(&listed.path) {
+                notes.push(NoteSummary {
+                    path: listed.path,
+                    title: listed.title,
+                    icon: None,
+                    conflicts: 0,
+                    tasks: Vec::new(),
+                    id: None,
+                    version: String::new(),
+                    editable: false,
+                });
+            }
+        }
+    }
     if let Some(index) = state.indexes.get(&vault)
         && let Some(user) = state.vault_user(vault.slug(), &headers)
         && let Ok(mut index) = index.lock()
@@ -2009,7 +2237,11 @@ fn share_manager(
     slug: &str,
     headers: &HeaderMap,
 ) -> Option<(Username, mb_auth::UserId, Arc<Vault>, Arc<mb_core::Access>)> {
-    let user = state.authenticated_user(headers)?;
+    // why: a person manages their links, from their browser or from their desktop app
+    // (E36), but a vault's API token does not — a link outlives the script that made it.
+    let user = state
+        .authenticated_user(headers)
+        .or_else(|| state.device_user(headers))?;
     let vault = state.vault(slug)?;
     let access = state.access_for(vault.slug())?;
     let view = AuthorizedVault::new(&vault, &access, user.clone());
@@ -2925,6 +3157,10 @@ struct TaggedNote {
     title: Option<String>,
 }
 
+fn rewrite_links_by_default() -> bool {
+    true
+}
+
 /// What the client asks a rename to do. `kind` decides which of §6.6's two mechanisms runs.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -2939,6 +3175,9 @@ enum RenameRequest {
         to: String,
         #[serde(default)]
         title: Option<String>,
+        /// `false` moves the file only: no link or title is rewritten (§7.6.9).
+        #[serde(default = "rewrite_links_by_default")]
+        links: bool,
     },
     /// `from` is a tag or a tag prefix; every tag nested under it moves with it (§9.3).
     Tag {
@@ -3009,9 +3248,15 @@ async fn rename(
             worker.audit_log(),
         );
         match request {
-            RenameRequest::Note { from, to, title } => {
-                rename.note_with_title(&from, &to, title.as_deref())
-            }
+            RenameRequest::Note {
+                from,
+                to,
+                links: false,
+                ..
+            } => rename.move_only(&from, &to),
+            RenameRequest::Note {
+                from, to, title, ..
+            } => rename.note_with_title(&from, &to, title.as_deref()),
             RenameRequest::Tag { from, to } => rename.tag(&from, &to),
             RenameRequest::Emoji { from, to } => {
                 rename.emoji(&from, &to, shared_emoji_root(&worker).as_deref())
@@ -3050,6 +3295,10 @@ struct CreateNoteRequest {
     path: String,
     #[serde(default)]
     content: Option<String>,
+    /// A lib0 v1 CRDT history, base64, that the note starts from instead of `content`
+    /// (§7.6.9). Sent by desktop replicas uploading a note they created.
+    #[serde(default)]
+    state: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -3202,25 +3451,49 @@ async fn create_note(
     headers: HeaderMap,
     Json(request): Json<CreateNoteRequest>,
 ) -> Response {
-    match create_in_vault(
-        &state,
-        &slug,
-        &request.path,
-        request.content.as_deref(),
-        &headers,
-    )
-    .await
-    {
+    let initial = match (request.content, request.state) {
+        (Some(_), Some(_)) => {
+            return rename_refused(StatusCode::BAD_REQUEST, "send content or state, not both");
+        }
+        (_, Some(encoded)) => {
+            use base64::Engine as _;
+            match base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()) {
+                Ok(bytes) => Initial::State(bytes),
+                Err(_) => {
+                    return rename_refused(
+                        StatusCode::BAD_REQUEST,
+                        &CreateError::InvalidHistory.to_string(),
+                    );
+                }
+            }
+        }
+        (Some(body), None) => Initial::Body(body),
+        (None, None) => Initial::Default,
+    };
+    match create_in_vault(&state, &slug, &request.path, initial, &headers).await {
         Ok(created) => json_no_store(&CreateNoteResponse { path: created.path }),
         Err(CreateError::Denied) => workspace_denied(),
         // Both of these name a string the caller sent us, so echoing it reveals nothing they
         // did not already know — and `Exists` is only reachable once they have proved they
         // may write there, which for `Owner`/`Editor` also means they may read it.
-        Err(error @ (CreateError::InvalidName(_) | CreateError::Exists(_))) => {
-            rename_refused(StatusCode::BAD_REQUEST, &error.to_string())
-        }
+        Err(
+            error @ (CreateError::InvalidName(_)
+            | CreateError::Exists(_)
+            | CreateError::InvalidHistory),
+        ) => rename_refused(StatusCode::BAD_REQUEST, &error.to_string()),
         Err(error) => server_error(&Error::Config(error.to_string())),
     }
+}
+
+/// What a new note starts as.
+#[derive(Debug)]
+enum Initial {
+    /// The vault's usual new-note body.
+    Default,
+    /// Caller-provided Markdown.
+    Body(String),
+    /// A caller-provided CRDT history (§7.6.9).
+    State(Vec<u8>),
 }
 
 #[derive(serde::Serialize)]
@@ -3413,7 +3686,9 @@ async fn clip_note(
         }),
         Err(CreateError::Denied) => workspace_denied(),
         Err(CreateError::InvalidName(_) | CreateError::Exists(_)) => clip_denied(),
-        Err(CreateError::Failed(_)) => {
+        // A clip is created from Markdown, never from a history, so `InvalidHistory` cannot
+        // arise; it is a save failure if it ever does.
+        Err(CreateError::Failed(_) | CreateError::InvalidHistory) => {
             server_error(&Error::Config("clip could not be saved".to_string()))
         }
     }
@@ -3474,7 +3749,15 @@ async fn create_clip_in_vault(
             let stem = path.strip_suffix(".md").unwrap_or(path);
             format!("{stem}-{ordinal}.md")
         };
-        match create_in_vault(state, slug, &candidate, Some(body), headers).await {
+        match create_in_vault(
+            state,
+            slug,
+            &candidate,
+            Initial::Body(body.to_string()),
+            headers,
+        )
+        .await
+        {
             Err(CreateError::Exists(_)) if generated => continue,
             result => return result,
         }
@@ -3511,7 +3794,7 @@ async fn create_in_vault(
     state: &Arc<AppState>,
     slug: &str,
     path: &str,
-    content: Option<&str>,
+    initial: Initial,
     headers: &HeaderMap,
 ) -> Result<crate::create::Created, CreateError> {
     let Some(vault) = state.vault(slug) else {
@@ -3529,18 +3812,17 @@ async fn create_in_vault(
     let worker = Arc::clone(state);
     let slug = vault.slug().clone();
     let path = path.to_string();
-    let content = content.map(str::to_owned);
     // why: `spawn_blocking`, as `rename` does. This writes a file and then reconciles the
     // index, and doing either on the async runtime's thread stalls every other request.
     let outcome = tokio::task::spawn_blocking(move || {
         let Some(vault) = worker.vault(slug.as_str()) else {
             return Err(CreateError::Denied);
         };
-        match content.as_deref() {
-            Some(body) => {
-                CreateNote::new(&vault, &access, user, &index).note_with_body(&path, body)
-            }
-            None => CreateNote::new(&vault, &access, user, &index).note(&path),
+        let create = CreateNote::new(&vault, &access, user, &index);
+        match &initial {
+            Initial::Default => create.note(&path),
+            Initial::Body(body) => create.note_with_body(&path, body),
+            Initial::State(state) => create.note_with_state(&path, state),
         }
     })
     .await;
@@ -4092,9 +4374,7 @@ fn authorize_bookmarks<'a>(
     if !view.has_any_access().unwrap_or(false) {
         return None;
     }
-    let user = state
-        .authenticated_user(headers)
-        .or_else(|| state.api_token_user(vault.slug(), headers))?;
+    let user = state.vault_user(vault.slug(), headers)?;
     Some(BookmarkAccess {
         user,
         vault,
@@ -4154,6 +4434,15 @@ async fn workspace_save(
     }
 }
 
+/// A note URL's path with the `.md` a short URL leaves off (`Hello` → `Hello.md`).
+fn with_note_extension(note: &str) -> String {
+    if note.ends_with(".md") {
+        note.to_owned()
+    } else {
+        format!("{note}.md")
+    }
+}
+
 async fn note(
     State(state): State<Arc<AppState>>,
     AxumPath((slug, note)): AxumPath<(String, String)>,
@@ -4168,6 +4457,20 @@ async fn note(
     let Some(view) = state.authorized_vault(&vault, &access, &headers) else {
         return not_found().await;
     };
+    // A server vault's notes are mostly not on this device (§7.6.10): the workspace opens
+    // the note over the forwarded routes, or says it is online only.
+    if state.server_vault(vault.slug().as_str()).is_some() {
+        // why: the client opens the note's sync room by the name the page gives it, and the
+        // server admits only a note's path (`Hello.md`), not the URL's short spelling
+        // (`Hello`). A downloaded note resolves on disk; otherwise the URL names a note by
+        // its path without the extension.
+        let path = view
+            .identity(&note)
+            .unwrap_or_else(|_| with_note_extension(&note));
+        if let Some(response) = workspace_page(&state, &vault, &headers, &path) {
+            return response;
+        }
+    }
     let Ok(source) = view.read(&note) else {
         return not_found().await;
     };
@@ -5292,6 +5595,7 @@ fn workspace_page(
             theme: vault.theme(),
             accent: accent.as_ref(),
             owner,
+            desktop: state.desktop.is_some(),
         },
     ) else {
         return Some(server_error(&Error::Config(format!(
@@ -5314,6 +5618,9 @@ struct Bootstrap<'a> {
     theme: &'a str,
     accent: Option<&'a crate::settings::Accent>,
     owner: bool,
+    /// Served by the desktop app's embedded server (§7.6.8), where there is no one to log
+    /// out: the guard signs the window straight back in.
+    desktop: bool,
 }
 
 fn inject_bootstrap(index: &str, bootstrap: &Bootstrap<'_>) -> Option<String> {
@@ -5325,6 +5632,7 @@ fn inject_bootstrap(index: &str, bootstrap: &Bootstrap<'_>) -> Option<String> {
         theme,
         accent,
         owner,
+        desktop,
     } = *bootstrap;
     if !index.contains(BOOTSTRAP_MARKER) {
         return None;
@@ -5349,6 +5657,9 @@ fn inject_bootstrap(index: &str, bootstrap: &Bootstrap<'_>) -> Option<String> {
     }
     if owner {
         element.push_str("\" data-vault-owner=\"true");
+    }
+    if desktop {
+        element.push_str("\" data-desktop=\"true");
     }
     if note.is_empty() {
         element.push_str("\" data-home=\"true");
@@ -5580,9 +5891,30 @@ fn content_type(path: &str) -> &'static str {
 struct LoginForm {
     username: String,
     password: String,
+    /// Where to go after signing in. Only a device approval (§6.8.1) is honoured.
+    #[serde(default)]
+    next: String,
 }
 
 async fn login(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) -> Response {
+    // E38: with password sign-in switched off, a posted password is refused before it is
+    // checked, so the form being hidden is not the only thing keeping it off.
+    if !state.sign_in_options().passwords {
+        return (
+            StatusCode::FORBIDDEN,
+            page_with(
+                PagePolicy::SignIn,
+                "Sign in",
+                &login_form_returning(
+                    &state.sign_in_options(),
+                    Some("Sign in with your identity provider."),
+                    "",
+                    "",
+                ),
+            ),
+        )
+            .into_response();
+    }
     let Ok(auth) = state.security.auth.lock() else {
         return server_error(&Error::Auth("authentication lock poisoned".to_string()));
     };
@@ -5595,7 +5927,12 @@ async fn login(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) 
             page_with(
                 PagePolicy::SignIn,
                 "Sign in",
-                &login_form(Some("Invalid username or password."), &form.username),
+                &login_form_returning(
+                    &state.sign_in_options(),
+                    Some("Invalid username or password."),
+                    &form.username,
+                    &form.next,
+                ),
             ),
         )
             .into_response();
@@ -5616,10 +5953,15 @@ async fn login(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) 
         "mb_session={signed}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
         30 * 24 * 60 * 60
     );
+    let location = if devices::valid_login_next(&form.next) {
+        form.next.as_str()
+    } else {
+        "/"
+    };
     (
         StatusCode::SEE_OTHER,
         [
-            (header::LOCATION, "/"),
+            (header::LOCATION, location),
             (header::SET_COOKIE, cookie.as_str()),
         ],
     )
@@ -5786,7 +6128,29 @@ impl AppState {
     /// The vault's current policy. Cloned out of the lock so no caller pins a stale one.
     fn access_for(&self, slug: &Slug) -> Option<Arc<mb_core::Access>> {
         let access = self.security.access.read().ok()?;
-        access.get(slug).map(|vault| Arc::clone(&vault.policy))
+        let policy = access.get(slug).map(|vault| Arc::clone(&vault.policy))?;
+        // why: here, the one place every permission check reads a policy from, so a group
+        // grant applies at every enforcement point without any of them knowing (M20b). A
+        // policy that names no group is returned as it is.
+        if !policy.has_group_grants() {
+            return Some(policy);
+        }
+        let groups = self.user_groups.read().ok()?;
+        Some(Arc::new(policy.with_user_groups(&groups)))
+    }
+
+    /// Reloads every account's provider groups from the auth database.
+    pub(super) fn reload_groups(&self) {
+        let stored = self
+            .security
+            .auth
+            .lock()
+            .ok()
+            .and_then(|auth| auth.all_groups().ok())
+            .unwrap_or_default();
+        if let Ok(mut groups) = self.user_groups.write() {
+            *groups = parse_groups(stored);
+        }
     }
 
     fn authorized_vault<'a>(
@@ -5799,13 +6163,14 @@ impl AppState {
         Some(AuthorizedVault::new(vault, access, user))
     }
 
-    /// The authenticated caller, by session cookie or by this vault's API token.
+    /// The authenticated caller, by session cookie, this vault's API token or a device token.
     ///
     /// Separate from [`AppState::authorized_vault`] for callers that need the name as well
     /// as the view — the index reader is constructed from a user, not from a vault.
     fn vault_user(&self, slug: &Slug, headers: &HeaderMap) -> Option<Username> {
         self.authenticated_user(headers)
             .or_else(|| self.api_token_user(slug, headers))
+            .or_else(|| self.device_user(headers))
     }
 
     fn clip_actor(&self, slug: &Slug, headers: &HeaderMap) -> Option<ClipActor> {
@@ -5878,6 +6243,21 @@ impl AppState {
 
     /// Revokes an API token. Test-only seam for driving revocation against a live server.
     #[doc(hidden)]
+    /// Writes every open note's pending Markdown now. For tests that read files after
+    /// sync traffic, without waiting out the write debounce.
+    pub fn sync_flush_for_test(&self) {
+        drop(self.security.sync.flush_all());
+    }
+
+    /// Revokes every device token. For tests of what a revoked desktop replica does.
+    pub fn revoke_all_devices_for_test(&self) {
+        if let Ok(auth) = self.security.auth.lock() {
+            for id in 1..=1_000 {
+                drop(auth.revoke_device_by_id(mb_auth::DeviceId::new(id)));
+            }
+        }
+    }
+
     pub fn revoke_api_token_for_test(&self, token: &mb_auth::ApiToken) {
         if let Ok(auth) = self.security.auth.lock() {
             drop(auth.revoke_api_token(token));
@@ -5904,6 +6284,13 @@ impl AppState {
                 }
                 let user = auth.user_by_id(scope.user_id).ok()??;
                 Username::parse(&user.username).ok()
+            }
+            // why: re-authenticated per frame like an API token (E3), so revoking the device
+            // or disabling its user denies the next frame on an already-open socket.
+            WebsocketAuth::Device(token) => {
+                let auth = self.security.auth.lock().ok()?;
+                let identity = auth.authenticate_device_token(token).ok()??;
+                Username::parse(&identity.user.username).ok()
             }
         }
     }
@@ -6007,8 +6394,12 @@ fn unix_seconds() -> i64 {
         .unwrap_or(0)
 }
 
-fn login_page() -> Html<String> {
-    page_with(PagePolicy::SignIn, "Sign in", &login_form(None, ""))
+fn login_page(options: &oidc::SignInOptions<'_>) -> Html<String> {
+    page_with(
+        PagePolicy::SignIn,
+        "Sign in",
+        &login_form_returning(options, None, "", ""),
+    )
 }
 
 /// The sign-in form, optionally above the reason a previous attempt failed.
@@ -6019,9 +6410,43 @@ fn login_page() -> Html<String> {
 /// Carrying `username` forward means a mistyped password does not also cost the username.
 /// Both the initial page and this one are `PagePolicy::SignIn`, because a page that carries
 /// a form and forbids submitting it is the M5 outage all over again.
-fn login_form(error: Option<&str>, username: &str) -> String {
+/// Returns to `next` after signing in when it is a device approval. Offers the configured
+/// provider's button (§6.8.2) and, unless switched off, the password form.
+fn login_form_returning(
+    options: &oidc::SignInOptions<'_>,
+    error: Option<&str>,
+    username: &str,
+    next: &str,
+) -> String {
     let mut out = String::with_capacity(768);
+    if let Some(provider) = options.provider {
+        out.push_str("<div class=\"mb-form mb-provider\">");
+        if !options.passwords
+            && let Some(message) = error
+        {
+            out.push_str("<p class=\"mb-form-error\" role=\"alert\">");
+            push_escaped_text(&mut out, message);
+            out.push_str("</p>");
+        }
+        out.push_str("<a class=\"mb-button\" href=\"/oidc/start");
+        if devices::valid_login_next(next) {
+            out.push_str("?next=");
+            push_escaped_attr(&mut out, &encode_query_value(next));
+        }
+        out.push_str("\">Sign in with ");
+        push_escaped_text(&mut out, provider);
+        out.push_str("</a></div>");
+        if !options.passwords {
+            return out;
+        }
+        out.push_str("<p class=\"mb-empty mb-or\">or with a password</p>");
+    }
     out.push_str("<form class=\"mb-form\" method=\"post\" action=\"/login\">");
+    if devices::valid_login_next(next) {
+        out.push_str("<input type=\"hidden\" name=\"next\" value=\"");
+        push_escaped_attr(&mut out, next);
+        out.push_str("\" />");
+    }
     if let Some(message) = error {
         // role="alert" so a screen reader hears the refusal rather than only sighted users
         // seeing it (AGENTS.md §4.4: no mouse-only, and no eyes-only, feature ships).
@@ -6050,7 +6475,12 @@ fn login_form(error: Option<&str>, username: &str) -> String {
         out.push_str("autofocus ");
     }
     out.push_str("/></div>");
-    out.push_str("<button class=\"mb-button\" type=\"submit\">Sign in</button></form>");
+    // The provider's button leads when there is one; the password form follows it quietly.
+    out.push_str(if options.provider.is_some() {
+        "<button class=\"mb-button mb-quiet\" type=\"submit\">Sign in with password</button></form>"
+    } else {
+        "<button class=\"mb-button\" type=\"submit\">Sign in</button></form>"
+    });
     out
 }
 
@@ -6091,6 +6521,9 @@ enum PagePolicy {
     PublicContent,
     /// The public link password form, which posts back to its current URL.
     PublicPassword,
+    /// The device approval form (§6.8.1). It posts to this origin, and that post redirects
+    /// to the device's loopback callback, which `form-action` also governs.
+    DeviceApproval,
 }
 
 impl PagePolicy {
@@ -6101,6 +6534,10 @@ impl PagePolicy {
             // could log in with a browser at all. Only this page has a form, and it posts
             // to its own origin; the note pages keep the stricter rule they need.
             Self::SignIn | Self::VaultIndex | Self::PublicPassword => "'self'",
+            // why: a browser applies `form-action` to the redirect after a submit, so with
+            // `'self'` alone the approval would be blocked on its way back to the device.
+            // Loopback on any port is exactly the set `valid_redirect_uri` accepts.
+            Self::DeviceApproval => "'self' http://127.0.0.1:*",
             Self::Content | Self::PublicContent => "'none'",
         }
     }
@@ -6155,7 +6592,9 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
     // the same document shell, so the difference is one attribute.
     match policy {
         PagePolicy::VaultIndex => out.push_str(" class=\"mb-library\""),
-        PagePolicy::SignIn => out.push_str(" class=\"mb-auth\""),
+        PagePolicy::SignIn | PagePolicy::DeviceApproval => {
+            out.push_str(" class=\"mb-auth\"");
+        }
         PagePolicy::Content | PagePolicy::PublicContent | PagePolicy::PublicPassword => {}
     }
     out.push_str(">\n<header>");
@@ -6181,6 +6620,19 @@ fn push_escaped_text(out: &mut String, text: &str) {
 
 fn push_escaped_attr(out: &mut String, text: &str) {
     mb_core::html::escape_attr(text, out);
+}
+
+/// Percent-encodes a whole query value, `/`, `?`, `&` and `=` included.
+fn encode_query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// Percent-encodes a note path for a URL, keeping `/` as a separator.
@@ -6260,6 +6712,22 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
         .await
         .map_err(|source| Error::Bind { addr, source })?;
     serve_listener(state, listener, shutdown()).await
+}
+
+/// Serves on an already-bound listener until `stop` resolves, then flushes and returns.
+///
+/// For the desktop app, which binds first so it knows its port before building the state,
+/// and stops when its window closes rather than on a signal.
+///
+/// # Errors
+///
+/// Fails if the listener is unusable or the server stops unexpectedly.
+pub async fn serve_until(
+    state: Arc<AppState>,
+    listener: tokio::net::TcpListener,
+    stop: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), Error> {
+    serve_listener(state, listener, stop).await
 }
 
 // why: the same running lifecycle is exercised with an ephemeral listener and a scoped
@@ -6466,9 +6934,6 @@ const BRAND: &str = "<a class=\"mb-brand\" href=\"/\"><svg class=\"mb-brand-mark
 /// character standing in for a document, at whatever size the platform font gives it.
 const NOTE_MARK: &str = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\" /><path d=\"M14 3v5h5\" /><path d=\"M9 13h6\" /><path d=\"M9 17h4\" /></svg>";
 
-/// The mark on a vault row.
-const VAULT_MARK: &str = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.5 5.5A2.5 2.5 0 0 1 8 3h10.5v18H8a2.5 2.5 0 0 1-2.5-2.5z\" /><path d=\"M9.5 3v18\" /></svg>";
-
 /// Rules for the server-rendered pages. Colour, type, spacing and radii come from `TOKENS`;
 /// `scripts/token-check.py` fails the build on a literal colour or an undeclared token.
 const STYLE: &str = "\
@@ -6488,10 +6953,33 @@ a{color:var(--accent-primary)}\
 .mb-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-4);margin:var(--space-8) 0 0}\
 .mb-action{display:inline-flex;align-items:center;text-decoration:none}\
 .mb-empty code{overflow-wrap:anywhere}\
-.mb-note-list,.mb-vault-list{margin:var(--space-6) 0 0;padding:0;list-style:none}\
-.mb-note-list li,.mb-vault-list li{padding:0;border:0}\
-.mb-note-list a,.mb-vault-list a{display:flex;align-items:center;gap:var(--space-5);min-height:var(--touch-target-min);padding:var(--space-4) var(--space-5);border-radius:var(--radius-md);color:var(--text-primary);text-decoration:none}\
-.mb-note-list a:hover,.mb-vault-list a:hover,.mb-menu nav a:hover{background:var(--surface-hover)}\
+.mb-vaults-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--space-5);margin:0 0 var(--space-8)}\
+.mb-vaults-head p{margin:0;color:var(--text-muted);font:var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-vaults-head .mb-actions{margin:0}\
+.mb-vault-group{margin:0 0 var(--space-8)}\
+.mb-vault-group-head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-4);margin:0 0 var(--space-5);color:var(--text-muted);font:var(--weight-bold) var(--text-2xs)/var(--leading-flat) var(--font-ui);letter-spacing:var(--tracking-wide);text-transform:uppercase}\
+.mb-vault-group-head a{margin-left:auto;color:var(--text-muted);font:var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui);letter-spacing:normal;text-transform:none;text-decoration:none}\
+.mb-vault-group-head a:hover{color:var(--accent-primary)}\
+.mb-badge{display:inline-flex;align-items:center;gap:var(--space-2);padding:var(--space-1) var(--space-3);border-radius:var(--radius-round);background:var(--surface-raised);font:var(--weight-medium) var(--text-2xs)/var(--leading-flat) var(--font-ui);letter-spacing:normal;text-transform:none}\
+.mb-badge::before{content:'';width:.5rem;height:.5rem;border-radius:var(--radius-round);background:currentColor}\
+.mb-badge[data-state=online]{color:var(--accent-primary)}\
+.mb-badge[data-state=offline]{color:var(--state-warning)}\
+.mb-vault-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(15rem,1fr));gap:var(--space-5);margin:0;padding:0;list-style:none}\
+.mb-vault-grid li{display:flex}\
+.mb-vault-card{display:flex;flex:1;align-items:center;gap:var(--space-5);min-height:var(--touch-target-min);padding:var(--space-5) var(--space-6);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);color:var(--text-primary);background:var(--surface-note);text-decoration:none;box-shadow:var(--shadow-sm)}\
+.mb-vault-card:hover{border-color:var(--accent-primary);background:var(--surface-raised)}\
+.mb-vault-card:focus-visible,.mb-vault-connect:focus-visible{outline:var(--focus-ring-width) solid var(--focus-ring);outline-offset:var(--focus-ring-offset)}\
+.mb-vault-mono{display:grid;place-items:center;flex:0 0 auto;width:var(--space-9);height:var(--space-9);border-radius:var(--radius-md);color:var(--accent-primary);background:color-mix(in srgb,var(--accent-primary) 16%,var(--surface-raised));font:var(--weight-bold) var(--text-lg)/var(--leading-flat) var(--font-title)}\
+.mb-vault-text{display:flex;flex-direction:column;gap:var(--space-1);min-width:0}\
+.mb-vault-name{font:var(--weight-medium) var(--text-md)/var(--leading-snug) var(--font-ui);overflow-wrap:anywhere}\
+.mb-vault-meta{color:var(--text-muted);font:var(--text-xs)/var(--leading-snug) var(--font-ui)}\
+.mb-vault-connect{display:flex;flex-direction:column;gap:var(--space-2);padding:var(--space-6);border:1px dashed var(--border-subtle);border-radius:var(--radius-lg);color:var(--text-primary);text-decoration:none}\
+.mb-vault-connect span{color:var(--text-muted);font:var(--text-sm)/var(--leading-snug) var(--font-ui)}\
+.mb-vault-connect:hover{border-color:var(--accent-primary)}\
+.mb-note-list{margin:var(--space-6) 0 0;padding:0;list-style:none}\
+.mb-note-list li{padding:0;border:0}\
+.mb-note-list a{display:flex;align-items:center;gap:var(--space-5);min-height:var(--touch-target-min);padding:var(--space-4) var(--space-5);border-radius:var(--radius-md);color:var(--text-primary);text-decoration:none}\
+.mb-note-list a:hover,.mb-menu nav a:hover{background:var(--surface-hover)}\
 .mb-note-icon{display:grid;place-items:center;flex-shrink:0;width:var(--space-8);height:var(--space-8);border-radius:var(--radius-sm);color:var(--accent-primary);background:var(--surface-raised)}\
 .mb-note-icon svg{width:var(--icon-size);height:var(--icon-size)}\
 .mb-note-info{display:flex;flex-direction:column;gap:var(--space-1);min-width:0;overflow-wrap:anywhere}\
@@ -6501,6 +6989,8 @@ a{color:var(--accent-primary)}\
 .mb-auth main{display:grid;align-content:center;gap:var(--space-6);width:min(26rem,100%);min-height:calc(100dvh - var(--topbar-height) - var(--space-9))}\
 .mb-auth .mb-page-title{text-align:center}\
 .mb-auth .mb-form{width:100%;max-width:none;margin:0}\
+.mb-provider .mb-button{width:100%}\
+.mb-or{margin:0;text-align:center}\
 .mb-auth .mb-count,.mb-auth .mb-empty{text-align:center}\
 .mb-form{display:flex;flex-direction:column;gap:var(--space-6);max-width:26rem;margin:var(--space-7) 0;padding:var(--space-7);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);background:var(--surface-note);box-shadow:var(--shadow-md)}\
 .mb-field{display:flex;flex-direction:column;gap:var(--space-3)}\
@@ -6532,7 +7022,7 @@ a{color:var(--accent-primary)}\
 .mb-create input{width:100%;min-width:0}\
 .mb-count,.mb-breadcrumb,.mb-empty{color:var(--text-muted);font:var(--text-xs)/var(--leading-snug) var(--font-ui)}\
 .mb-breadcrumb{display:block;margin-bottom:var(--space-5)}\
-code{padding:.1em .35em;border-radius:var(--radius-sm);background:var(--surface-sunken);font-family:var(--font-mono);font-size:.9em}\
+code{padding:.1em .35em;border-radius:var(--radius-sm);background:var(--surface-sunken);font-family:var(--font-mono);font-size:.9em;overflow-wrap:anywhere}\
 pre{padding:var(--space-6);border-radius:var(--radius-md);background:var(--surface-sunken);overflow-x:auto;font:var(--text-sm)/var(--leading-body) var(--font-mono)}\
 pre code{padding:0;background:none;font-size:inherit}\
 blockquote{margin:var(--space-6) 0;padding:var(--space-2) 0 var(--space-2) var(--space-6);border-left:3px solid var(--border-subtle);color:var(--text-muted)}\

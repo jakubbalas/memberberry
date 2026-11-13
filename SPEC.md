@@ -620,9 +620,12 @@ crates/
                   media, sync coordinator, history, sharing.
   mb-cli/         memberberry {serve, vault, user, normalize, reindex,
                   import-obsidian, export, doctor, gen-vault, inspect}
-  mb-replica/     (M19, §7.6) Desktop sync client: upstream link over the §7.1
-                  protocol, availability rules, residency manifest, release sweep.
-desktop/          (M19, §7.6) Tauri 2 host: embeds mb-server on loopback, loads web/
+                  `mb_server::replica` (M19, §7.6.9) is the desktop sync client: the
+                  upstream link over §7.1, the three-way sync plan and its record. Planned
+                  as a crate `mb-replica`; a module, because it needs the embedded
+                  server's registry in-process and the server's desktop pages start it.
+desktop/          (M19, §7.6) Tauri 2 host, its own cargo workspace: embeds mb-server
+                  (`mb_server::desktop`) on loopback and opens web/dist in a window
 web/
   src/editor/     Tiptap schema (generated from schema.json) + y-prosemirror
   src/shell/      Svelte 5 workspace: panes, tabs, sidebars, adaptive layout
@@ -1361,8 +1364,11 @@ ships.
 | E31 | **Immediate configured-location folder creation** (§6.1; backend reviewed, t-006 UI implementation active) | Strict enabled signed-session-admin and same-origin/header authority precedes config/filesystem work; repeat after waits and at mkdir/publication. One exact child under a pinned allowed parent, no-follow beneath configured root, current registry/identity checks and no collisions/overlaps. No content grant, ACL/registry creation or registration receipt. Owned-only cleanup; post-create ambiguity never implies rollback or safe replay. Readback verifies the exact child identity before success. |
 | E32 | **Folder deletion** (§8.2) | `DELETE /api/v1/vaults/{slug}/folders` takes `{path, confirmation?}` with an 8 KiB body limit. `AuthorizedVault::delete_folder` requires editor/owner on the folder and every descendant before disclosing confirmation requirements or mutating. Unknown, denied, unsupported, hidden, symlinked and excluded trees receive the same neutral 404; server admin grants no bypass. Full preflight is bounded to 100,000 entries. Any actual note/subfolder requires the exact basename (409 otherwise); empty folders need no confirmation. Every sync room closes before note files move to the existing Markdown trash, followed by nonrecursive directory removal, index reconciliation and deletion auditing. I/O errors can leave partial deletion and return a generic no-store refusal; the client refreshes before retry. |
 | E33 | **Vault settings and emoji management** (§20.4, §11.2) | `GET`/`PUT …/settings`, `DELETE …/emoji-entries/…` and emoji renames require vault-wide `owner`, checked per request from the live ACL. Editors, viewers, non-members and server admins who are not owners get the same 404 as an unknown vault, with no setting or emoji name in the body and nothing written. Shared server emoji answer as missing on the vault routes. Emoji renames are E14 privileged rewrites, and the reply counts only notes the owner can read. The `data-vault-owner` bootstrap flag only controls whether the dialog is offered. |
-| E34 | **Desktop embedded server** (§7.6.2; specified, M19) | Binds loopback only on an OS-assigned port. Every HTTP request and WebSocket upgrade carries a per-launch 256-bit CSPRNG token handed to the webview through Tauri, never in a URL, compared in constant time; `Host` and `Origin` must match the loopback origin, so a DNS-rebinding page and any other local process are refused. The token is never written to disk or logged. |
-| E35 | **Replica revocation purge** (§7.6.6; specified, M19) | On every upstream reconcile, a note no longer in the readable set loses its file, CRDT sidecar, media, metadata row, search postings and pins, whatever its pin. Until reconcile succeeds nothing new is fetched for it. Unsent edits to such a note are first written out as a local recovered note holding only this device's changes, never uploaded without the user's choice (§7.6.7). |
+| E34 | **Desktop embedded server** (§7.6.2, §7.6.8; built, M19 slice 1) | Binds `127.0.0.1` only, on a port remembered per installation. The host opens the window at `/desktop/launch?code=<256-bit CSPRNG code>`; the code is compared in constant time and **works once**, then the window holds an `HttpOnly; SameSite=Strict` `mb_desktop` cookie (a second 256-bit secret) that every HTTP request and WebSocket upgrade must carry. `Host` must equal `127.0.0.1:<port>` and `Origin`, when present, `http://127.0.0.1:<port>`, so another local process and a DNS-rebinding page are refused. Every refusal is one identical `403`, except that a callback matching no pending attempt (§6.8.1) is told to connect again. The guard is outermost, so a refused request reaches no handler, asset or fallback. Neither secret is written to disk or logged. Only then does the guard sign the window in as the local user (S11). Tested in `tests/desktop.rs` and the leak suite. |
+| E36 | **Device authorization and device tokens** (§6.8.1; built, M19 slice 2a) | The approval page and its POST require a signed session (POST also same-origin). `redirect_uri` is exactly `http://127.0.0.1:<port>/desktop/connect/callback`, checked before rendering and again on POST. Codes are stored hashed, single-use (spent by the first exchange attempt), bound to user, redirect URI and S256 challenge, valid 60 s; every exchange failure is one `400 invalid_grant`, rate-limited per address. A device token authenticates only through the content filter as its user and never as a server administrator; a disabled user's tokens fail; revoked tokens fail on the next request. As its user, a device token keeps that user's bookmarks and saved layout and manages that user's share links, behind the same membership and role checks as a browser session; a vault API token still cannot manage share links. Leak suite: a device reads exactly what its user reads, a device token on an administration route is refused, a code replayed or exchanged with the wrong verifier or redirect URI yields nothing. Leak suite `e36_a_devices_bookmarks_layout_and_shares_are_its_users_and_filtered_like_them`: none of these reaches a vault its user is not in, a view-only user's device shares nothing, and one user's layout is not another's. **On the sync socket** (built, slice 2b): a device token opens it as its user, is re-authenticated on every frame like an API token (E3), may write only where its user edits, and a revocation denies the next frame on an already-open socket — leak suite `e36_a_device_syncs_only_what_its_user_reads_and_dies_with_its_revocation`. |
+| E37 | **Desktop forwarding of server vaults** (§7.6.10; built, M19 slice 2c) | The embedded server forwards only paths under a registered server vault (`/api/v1/vaults/{slug}/…`) and that vault's sync frames, only to the origin that vault was registered from and only while this device is signed in there (§7.6.11), with that origin's device token as the only credential. The request's `Cookie`, `Authorization`, `Origin` and `Host` are never forwarded; upstream's `Set-Cookie` is never returned. Local vaults, administration, desktop and device routes are never forwarded. Leak suite: a forwarded request reaches upstream without this app's cookies; a local vault's route is never forwarded; a non-registered slug is never forwarded; upstream's denial reaches the window unchanged; with two servers, each vault's requests reach only its own server with only its own token; a signed-out server's vault is never forwarded; a kept copy is never synced under another account. |
+| E38 | **OIDC sign-in** (§6.8.2; built, M20a) | `state` is 256-bit, single-use, bound to a cookie, valid 10 minutes; PKCE S256 and `nonce` are required. The ID token's `iss`, `aud`/`azp`, `exp` and `nonce` are all checked, and the token only ever comes from the configured token endpoint over TLS. An account is linked only by (`iss`, `sub`) or, the first time, by an `email_verified` email equal to exactly one account's email; never by username, never by an unverified email. A provider sign-in never makes an administrator. `redirect_url` comes from configuration, not the request. With `password_login = false`, `POST /login` is refused. Leak suite: a forged or replayed `state`, a wrong `nonce`, a wrong audience, an expired token and an unverified email each yield no session; a linked account keeps its access; a new account has none. |
+| E35 | **Replica revocation purge** (§7.6.6, §7.6.7; built, M19) | On every pass with a complete upstream list, a note no longer in the readable set — deleted, moved out of reach, access removed — loses its file, CRDT sidecar, metadata row, search postings, its own pin and any media no remaining note here shows, and the local index is then scrubbed (`secure_delete`, a WAL checkpoint and a search-segment merge) so no bytes of it remain. It is purged, never sent to the local trash. A note changed here first becomes a recovered note (§7.6.7) holding the whole note as this device had it, minus its frontmatter `id`; it is never uploaded without the user's choice, and its own sync frames and listing are answered by the app, never forwarded. A vault the user can no longer read at all (gone from upstream's vault list) is settled the same way note by note, then stops being a server vault: kept as a vault on this device if anything was recovered, removed with its folder if not; its record, pins and upstream listing are deleted. A note that left an incomplete list is left alone; a note created here that upstream refused is still held, not recovered. Leak suite: `e35_a_revoked_note_leaves_no_trace_and_offline_edits_stay_on_this_device`, `e35_media_follows_the_readable_set_and_its_address_grants_nothing` (a revoked note's image leaves; an image address typed into a note here fetches nothing the user cannot already see), `e35_a_vault_the_user_was_removed_from_leaves_only_their_recovered_notes` (every file in the replica scanned for the note's title and body). |
 
 **Every sync-frame denial is one reply.** An unknown vault, a path that does not resolve,
 a missing ACL and a role of `none` all return the same `not_found` error frame. Sending
@@ -1514,6 +1520,11 @@ Stated plainly so no one assumes more than is delivered:
 - **Git history leaks.** If the vault is in git, a note's earlier content survives in
   history even after an ACL tightens. Note it in the docs.
 
+- **Provider groups lag the provider (M20b).** Group memberships are those of a person's latest
+  sign-in. Removing them from a group at the provider removes the group's access at their next
+  sign-in through it; until then, existing sessions keep it. When that cannot wait, an
+  administrator disables the account (a disabled account has no groups and cannot sign in).
+
 ### 6.8 Authentication
 
 - Users in `auth.db`: id, username, display name, argon2id hash, created, disabled,
@@ -1562,6 +1573,157 @@ Stated plainly so no one assumes more than is delivered:
 - No password reset by email (there is no mail server) — an owner resets via
   `memberberry user reset-password`.
 - Optional TOTP 2FA is post-v1.
+
+### 6.8.1 Device sign-in (A44)
+
+**Status: built (M19 slice 2a).** How the desktop app (§7.6) gets a
+credential for a user's server **without ever seeing their password**. It is the loopback
+authorization-code flow with PKCE that desktop apps use against an identity provider
+(RFC 8252), served by Memberberry itself. The user approves the device on their own server,
+in their own browser, signed in however that server signs people in. That is why it was
+built before OIDC (A44): when OIDC arrives, only the server's sign-in page changes, and the
+device flow keeps working unchanged.
+
+```
+desktop app                         user's browser                    user's server
+POST /desktop/connect  ──opens──▶  GET /devices/authorize ?redirect_uri&state
+  (server URL; makes state,           &code_challenge&name  (signed session; sign in first
+   PKCE verifier)                     if needed) ── Approve ──▶ one-time code, 60 s
+GET /desktop/connect/callback ◀──303── redirect_uri?code&state
+  ── POST /api/v1/devices/token {code, code_verifier, redirect_uri} ──▶ device token
+```
+
+**The server side (E36).**
+- **`GET /devices/authorize`** needs a signed browser session. Without one it shows the
+  sign-in form, and signing in returns to the same authorization request (the form's `next`
+  accepts only a `/devices/authorize?…` path, so it cannot become an open redirect). The page
+  names the device, the account and the consequence — the device can read and edit
+  everything this account can, until it is revoked — with **Approve** and **Deny**.
+- **`redirect_uri` must be exactly `http://127.0.0.1:<port>/desktop/connect/callback`**: the
+  numeric loopback address, a port from 1 to 65535, that path, no query, no fragment.
+  Anything else is refused before the page renders, because a code sent anywhere else is a
+  credential handed to whoever runs that address. `code_challenge_method` must be `S256`;
+  `state` and `code_challenge` are 43–128 URL-safe characters; the device name is 1–64
+  characters with no control characters.
+- **`POST /devices/authorize`** requires the signed session and same origin, and repeats every
+  check. Approve stores a one-time code (its SHA-256, never the code), bound to the user, the
+  redirect URI and the challenge, valid for 60 s, and answers `303` to
+  `redirect_uri?code=…&state=…`. Deny answers `303` with `error=access_denied`.
+- **`POST /api/v1/devices/token`** takes `{code, code_verifier, redirect_uri}` and needs no
+  cookie. The code must exist, be unused and unexpired, its redirect URI must match, and
+  `BASE64URL(SHA-256(code_verifier))` must equal the stored challenge, compared in constant
+  time. The code is spent by the first attempt, success or not. Every failure is the same
+  `400 {"error":"invalid_grant"}`. It is rate-limited per client address. Success returns a
+  **device token** and the account's username and display name.
+- **A device token** is `mbd_` plus 64 hex characters from the CSPRNG, stored as its SHA-256
+  with the user, device name, creation and last-use times. Sent as `Authorization: Bearer`,
+  it **acts as its user on content routes** — every vault the user can read, with the role
+  they have there, through the same `AuthorizedVault` filter as a session. It is **never a
+  server-administration credential**: administration authenticates only signed sessions
+  (E26, E29), so a device token on an administration route is refused. A disabled user's
+  devices stop working at once.
+- **Revocation.** `DELETE /api/v1/devices/self` revokes the presenting token (the app's
+  Disconnect). `memberberry device list <username>` and `memberberry device revoke <id>`
+  revoke one from the server, for a lost device. Resetting a user's password revokes all
+  their devices, as it should if the account may have been compromised. Approval and
+  revocation are audited (§6.9).
+
+**The desktop side** is §7.6.8's local server, reached from the home page's and the workspace footer's **Servers** (several servers, §7.6.11):
+- `GET /desktop/connect` shows the address form, the waiting page, or the Servers page.
+  The waiting page re-checks every 3 s with a `Refresh` header, since its CSP forbids
+  script. Its **Open the sign-in page** button posts to `POST /desktop/connect/open`, which
+  hands the live attempt's approval URL to the host's `Browser` (the default browser) and
+  returns to the waiting page; it opens nothing once the attempt has expired. The window
+  never navigates off its origin for this: the host cancels such a navigation, and a
+  cancelled navigation also cancels the refresh, which once left the window showing an
+  attempt that had long expired. `POST /desktop/connect` starts an attempt: a fresh 256-bit
+  `state` and PKCE verifier, valid 10 minutes, one at a time. `POST /desktop/connect/cancel`
+  abandons it; signing out of a server (§7.6.11) revokes the token on the server first, then
+  forgets it, and says so plainly when the server could not be reached.
+- `GET /desktop/connect/callback` is the one path E34's guard admits without the desktop
+  cookie, because the user's browser arrives there, not the window. The pending attempt's
+  `state`, compared in constant time and spent on first use, admits it instead. Any other
+  callback, such as an approval given after the attempt expired, gets a `403` telling the
+  user to connect again from the app; the text is the same whether or not an attempt is
+  pending, so it reveals nothing. It exchanges the code and keeps the token in the OS
+  keychain under the server's origin (`SecretStore`), read once per run and then held in memory (`CachedSecrets`: macOS asks the user to allow every keychain read by an unsigned or development build, and the sync loop needs the token every few seconds), and the server, account and device id
+  in `desktop.toml`.
+- The server address must be `https`, or `http` to a loopback address; a device token never
+  crosses a network unencrypted. TLS uses the bundled public roots, so a server behind a
+  self-signed certificate cannot be connected to yet.
+- **Not yet:** `memberberry device revoke` asks for an administrator's password, which an
+  OIDC-only administrator will not have (M20). (The sync WebSocket accepts a device token
+  since slice 2b; see E36.)
+
+### 6.8.2 Sign-in through an identity provider — OIDC (A47; M20a and M20b built)
+
+The server can delegate "who are you" to the user's own OpenID Connect provider — authentik,
+Keycloak — and through it to Google and the like. C1 holds because the server only ever
+talks to the provider the operator configured; it never calls Google itself.
+
+- **Configuration** is a `[oidc]` table in `server.toml`: `issuer`, `client_id`,
+  `client_secret`, `redirect_url` (this server's public `…/oidc/callback`, exactly as
+  registered at the provider — never derived from the request's `Host`, which a client
+  controls), `name` (the button's label, "Sign in with authentik"), `scopes` (default
+  `openid profile email`), `groups_claim` (default `groups`, M20b) and `password_login`
+  (default `true`). The client secret lives in `server.toml`, outside every vault
+  (AGENTS.md §3.3), and is never logged or echoed.
+- **The flow** is the authorization-code flow with PKCE (S256), a 256-bit `state` bound to an
+  `HttpOnly; SameSite=Lax` cookie, and a `nonce`; attempts are valid 10 minutes and single
+  use. The provider's endpoints come from `<issuer>/.well-known/openid-configuration`, whose
+  `issuer` must equal the configured one exactly. The code is exchanged at the token
+  endpoint over TLS with the client secret.
+- **The ID token is validated by its claims, not its signature**: `iss` equals the issuer,
+  `aud` contains the client id (and `azp`, when present, equals it), `exp` is in the future,
+  `nonce` matches. OIDC Core §3.1.3.7 allows TLS server validation of the token endpoint in
+  place of the signature for a token received directly from it, which is the only way this
+  server receives one; this keeps a JWT and JWKS implementation out of the auth path. The
+  token endpoint must therefore be `https`, except to a loopback provider in development.
+- **Who the person is** — the identity is the pair (`iss`, `sub`), stored as a link on the
+  account. A returning person is found by that pair alone; email and username changes at
+  the provider never move them to a different account.
+- **Linking existing accounts (A47: by verified email).** A first sign-in with no link is
+  matched to an existing account when the token carries `email_verified: true` and that
+  email equals the account's **email** (case-insensitively, exactly one account). Accounts
+  gain an optional `email`, set by an administrator (`memberberry user
+  set-email`); an account without one is never linked to anything. Matched, the account is
+  linked and keeps its vault access. Otherwise a new account is created: username from
+  `preferred_username` (or the email's local part), reduced to `[a-z0-9_-]` (a `.` becomes `-`), made unique
+  with a number; display name from `name`; no password (it cannot sign in with one); not an
+  administrator; no vault access until someone grants it.
+- **The first administrator** is still created by the setup form or `memberberry user
+  setup` (A47); OIDC is switched on afterwards. A provider sign-in never creates or
+  promotes an administrator.
+- **Password sign-in** stays beside the provider's button unless `password_login = false`,
+  which hides the form and refuses `POST /login` for everyone. `memberberry user
+  reset-password` and the CLI keep working, so an administrator is never locked out.
+- **Disabled accounts and sessions** behave as for passwords: a disabled account's provider
+  sign-in is refused; the session issued is the same signed cookie (§6.8).
+- **Device sign-in** (§6.8.1) is unchanged: its approval page's sign-in offers the provider
+  too and returns to the approval afterwards.
+- **As built (M20a):** `/oidc/start` and `/oidc/callback`; the sign-in page leads with
+  "Sign in with <name>" and keeps the password form below it, quieter ("Sign in with
+  password"), unless `password_login = false`. Discovery is fetched per sign-in, not cached.
+  The callback is not separately rate-limited (each attempt costs the person a round trip
+  through the provider, and a state is single-use); add one if a provider is ever exposed
+  to abuse. Provider sign-ins are audited as `login` with `oidc:created` / `oidc:linked`.
+- **M20b — provider groups as vault roles (A47).** `access.toml` may name a group wherever it
+  names a user, as `group:<name>`. A user's groups are the `groups_claim` values from their
+  latest provider sign-in, stored on the account and replaced at each sign-in; a user who
+  never signed in through the provider has none. A group grant counts exactly like a grant to
+  the user, and the most specific rule still wins (§6.3). Removing someone from a group at
+  the provider takes effect at their next sign-in, not before (§6.7).
+  **As built:** `mb_core::Access` carries group grants beside user grants and, from the
+  server, each account's latest groups; `effective_role` combines them, so every enforcement
+  point honours groups without naming them. The server attaches the groups in its one policy
+  read (`access_for`), so a group change applies to the account's existing sessions as well
+  as new ones. `vault_role` (own membership plus groups) replaces the scans of the member
+  list that discovery, write access, ownership and the search zones used; zones count group
+  members as principals. Saving `access.toml` (an accepted invite) keeps group grants. Only
+  valid group names from the configured claim are kept, at most 256; a disabled account has
+  none. Group names are compared exactly (Keycloak's `/family` is not `family`).
+- **Audited:** provider sign-ins (success, refusal and why), links, account creation from a
+  provider (§6.9).
 
 ### 6.9 Audit log (A23)
 
@@ -1837,6 +1999,10 @@ per-vault, per-device local layouts. Authoritative layout refusal never replays 
 Returning to the visible app reconciles the current vault's permissions/catalog, search
 segments and pinned note text, coalescing focus/visibility/network events. Current editors
 retain their selection and workspace; this data refresh does not reload the application.
+The same reconcile runs once after every load. It reconnects an editor's sync socket only
+if the page has been hidden since that socket opened: only a suspended page can leave a
+socket that claims to be open but carries nothing. Reconnecting a live socket would drop the
+connection under the editor and lose the selection this paragraph promises to keep.
 Opened/pinned note text and offline search are the offline scope of this delivery.
 Offline images/attachments and periodic refresh while the app is closed are deferred.
 
@@ -2010,7 +2176,10 @@ A20 says to surface it properly, so it is designed rather than left as an accide
 
 ### 7.6 Desktop client and the local replica (A42)
 
-**Status: specified, not built.** Milestone M19 (§23).
+**Status: slices 1, 2a and 2b built** (Tauri host, E34, local-only vaults, device sign-in,
+whole-vault sync; §7.6.8, §7.6.9). The rest of replication (§7.6.3–§7.6.7: on-demand
+residency and the release sweep) is specified, not built; E35's purge and recovered notes are
+built (§7.6.7). Milestone M19 (§23).
 
 An installable desktop application for macOS, Windows and Linux whose point is that notes
 live **on this machine as Markdown files**, so C2 holds on the laptop as well as the
@@ -2029,8 +2198,27 @@ server. A desktop build that only wrapped the server's URL would add nothing ove
   ProseMirror; SwiftUI, Qt, egui or Flutter would each mean exactly that.
 - **No updater, no crash reporter, no telemetry (C1).** Tauri's updater plugin is not
   included. A new version is installed by the user.
-- **The cost, stated:** three webview engines instead of one. The E2E suite (§22.6) is
-  Chromium today; M19 adds a WebKit project, because macOS and Linux render with WebKit.
+- **Unsigned packages (A49).** Builds are not code-signed or notarized and are not
+  distributed through an app store; people install the packages directly:
+  - **macOS:** a DMG (drag to Applications), universal (Apple silicon and Intel), macOS 11 or
+    later. The bundle is *ad-hoc* signed (`signingIdentity: "-"`), which names no developer
+    and needs no certificate: Apple silicon refuses to launch a bundle with no valid
+    signature and calls it "damaged", while an ad-hoc one gets the ordinary approval —
+    Gatekeeper refuses the first launch until the user chooses Open Anyway in System Settings →
+    Privacy & Security (the context-menu Open route ended with macOS 15). The keychain checks two lists per item (trusted applications, then
+    partition), both keyed to the exact build, so each **new version** asks twice for a
+    server's token — once per version if the user chooses **Always Allow** on both, on every
+    launch if they choose **Allow** (the token is read once per launch, `CachedSecrets`).
+    A fresh install that signs in creates the item itself and is not asked. The README tells
+    users to choose Always Allow. Only a Developer ID identity removes the prompts.
+  - **Linux:** a `.deb` and an AppImage, built on Ubuntu 22.04 so they need only its glibc.
+    The device token needs a running Secret Service (GNOME Keyring, KWallet) (§6.8.1).
+  - **Windows:** an MSI. SmartScreen warns about an unknown publisher on first run.
+  Each OS builds only its own packages (`make desktop-build`, per-OS `tauri.<os>.conf.json`);
+  the manually dispatched "Desktop packages" workflow builds all three from one frontend
+  build and uploads them. It reads no secrets, and a CI test keeps it that way.
+- **The cost, stated:** three webview engines instead of one. The E2E suite (§22.6) runs
+  Chromium and, since M19, a WebKit project, because macOS and Linux render with WebKit.
   WebKitGTK is the slowest of the three, so the §21 budgets are measured on Linux
   separately rather than assumed from macOS.
 
@@ -2041,7 +2229,7 @@ Tauri webview (the existing Svelte UI)
         │  HTTP + WebSocket, loopback only (E34)
         ▼
 embedded mb-server ── serves ──▶ <replica>/notes/**/*.md + .memberberry/   (Layers 1–3, §3.1)
-        │  sync client: the existing §7.1 protocol + scoped API token
+        │  sync client: the existing §7.1 protocol + device token (§6.8.1)
         ▼
 remote mb-server (the user's own; absent for a local-only vault)
 ```
@@ -2052,18 +2240,18 @@ remote mb-server (the user's own; absent for a local-only vault)
   external-change path in the embedded server, then syncs upstream.
 - **The embedded server is `mb-server`,** not a second implementation. The webview talks to
   it exactly as the browser talks to a remote one, so the UI carries no desktop branch. The
-  upstream link is a new crate, `mb-replica`: a sync *client* speaking the §7.1 protocol and
+  upstream link is `mb_server::replica` (a module, not the crate first planned; §5.3): a sync *client* speaking the §7.1 protocol and
   the existing metadata and index endpoints. Upstream sees one more client, so E1–E4 apply
   to it unchanged and the server needs no replica-specific read path.
 - **Replica bookkeeping lives in `<replica>/.memberberry/replica/`.** It holds the upstream
   URL, device id, availability rules and the residency manifest (§7.6.4). **The upstream
-  API token is in the OS keychain**, never in the replica folder (AGENTS.md §3.3).
+  device token (§6.8.1) is in the OS keychain**, never in the replica folder (AGENTS.md §3.3).
 - **A local-only vault is a replica with no upstream:** an ordinary vault with a one-user
   `access.toml`, served by the same embedded server. It is the default way to try the app.
   Connecting a local-only vault to a server later (uploading it) is out of scope for M19.
-- **Per-device settings live in `<OS config dir>/memberberry/settings.toml`.** This is the
-  home §7.2 says the client caps lacked; the desktop's release limits are configurable from
-  it and from a settings panel.
+- **Per-device settings live in `<app data>/desktop.toml`,** beside the rest of the app's
+  private state (§7.6.8). Today it holds the remembered port; the release limits of §7.6.5
+  join it. This is the home §7.2 says the client caps lacked.
 
 #### 7.6.3 Availability — one rule model for "open", "download" and "everything"
 
@@ -2145,8 +2333,9 @@ The desktop has room the phone does not, so its limits are generous and time-bas
   the editor's read-only mode as an affordance, never as the boundary.
 - **Revocation purges on reconcile (E35).** When a note leaves the readable set, its file,
   sidecar, media, metadata row and search postings are deleted on the next reconnect, pins
-  included. This is §6.7's documented limit (a revoked user keeps the replica until they
-  reconnect) made precise, not removed.
+  included, and the local index is scrubbed so nothing of the note survives in its database,
+  log or search segments. This is §6.7's documented limit (a revoked user keeps the replica
+  until they reconnect) made precise, not removed.
 - **What a replica does not protect against, stated in the UI:** anyone with access to this
   machine's disk reads the files (A6; ACLs are not encryption), and an unreachable server
   means a revocation has not happened yet.
@@ -2173,11 +2362,12 @@ choosing to, and nothing is sent upstream without the user choosing where.**
   "not uploaded" and never syncs on its own. The original file, sidecar and media are then
   purged as E35 requires. The only state outside `notes/` is the bookkeeping that says which
   recovered notes are awaiting a choice.
-- **What it contains is the user's own unsent changes**, not the note: the blocks this device
-  inserted or modified since the last upstream-acknowledged state, each with the minimum
-  surrounding block needed to read it (the paragraph an insertion landed in). Blocks the
-  device never changed are not carried. This is what keeps case 1 from becoming a copy of a
-  note the owner revoked.
+- **What it contains is the whole note as this device had it** (A43, 2026-11-12), the user's
+  own changes in context — including text others wrote. A revocation therefore does not
+  remove a note this device changed: it moves it out of sync and into the user's hands.
+  Its frontmatter `id` is dropped, so the copy is a new note rather than a second claim to
+  the original's identity (§4.3), and its history starts fresh rather than carrying the
+  original sidecar's.
 - **A banner flags it.** A workspace-level banner says how many recovered notes await a
   choice and opens the first. Opening a recovered note shows a banner at its top, worded the
   same for all four causes ("This note is no longer available on the server. Your offline
@@ -2195,12 +2385,246 @@ choosing to, and nothing is sent upstream without the user choosing where.**
 - **The original path is known only to this device.** It is the path the user could read when
   the edits were made, so showing it reveals nothing new. The server is never asked why the
   note left the readable set.
+- **As built (desktop).** The recovered note is `Recovered/<name> (offline edits).md`,
+  numbered when that is taken; the bookkeeping is
+  `<replica>/.memberberry/replica/recovered.json` (path, original path, whether creating it
+  again was refused). Losing it fails towards keeping (I1): a note named like a recovered note
+  that neither upstream nor the record knows is still treated as one and never uploaded.
+  While the server is online, the app answers a recovered note's sync frames itself and adds
+  it to the forwarded note list, so it opens and shows in the tree. The workspace line ("1 note
+  was kept from your offline edits and needs a choice.") offers **Open** and **Later**;
+  **Later** lasts until the app is started again. **Make a new note** asks for a name in the
+  banner itself — a path, so a folder can be given — rather than opening §6.10's create
+  prompt. A choice and a pass never run at once. Deleting a recovered note ends its entry.
+  For a whole vault (case 4), what was recovered stays in that vault, which becomes a vault on
+  this device; its banner is not shown there, since there is no server to create a note on.
 - **Not desktop-only.** The web client's IndexedDB replica (§7.2) has the same gap today:
   its dirty body is exempt from eviction, but nothing defines what reconcile does with it.
   The web client adopts this rule, with the recovered note held in its local store until a
   choice is made, since it cannot write a file.
 
+#### 7.6.8 Slice 1 as built — the app, its sign-in and local-only vaults
+
+`desktop/` is the Tauri host; `mb_server::desktop` holds every decision in it, so the
+workspace's tests reach them without a webview. The host finds the platform directories,
+starts the server, opens one window at the launch URL and stops the server on exit.
+
+- **Where things live.** Private state is in the OS app-data directory
+  (`~/Library/Application Support/app.memberberry.desktop` on macOS): `server.toml`,
+  `auth.db`, `desktop.toml` and the audit log. Vaults are created in **`~/Memberberry/<vault
+  address>/`**, so their notes are where the user looks for them; the New vault flow is
+  §6.1's, with its managed-vault root moved there. `MEMBERBERRY_DESKTOP_DATA` and
+  `MEMBERBERRY_NOTES_HOME` override both, for development and tests.
+- **Automatic sign-in (S11).** First run creates the server administrator `me`, named after
+  the OS account, with a random password that is never stored or shown. E34's guard signs
+  the window in as that user, so no setup form or password prompt ever appears. A data
+  directory whose users were created by a person is refused rather than adopted. There is
+  no one to log out, so the home page and the workspace's account footer show **Your
+  server** (§6.8.1) where a browser shows Log out. The server marks the app's workspace
+  pages with `data-desktop="true"` for that; a normal server never does.
+- **The port is remembered**, chosen by the OS on first run and reused while it is free,
+  because the window's origin includes it and the webview keys its storage by origin: a new
+  port per launch would forget every per-device layout and cached replica. A taken port
+  falls back to a fresh one, and that launch starts with empty browser storage. Notes are
+  unaffected; they are files.
+- **The window stays on its origin.** A navigation anywhere else opens in the user's
+  default browser (http, https and mailto only) and the window does not move. A link that
+  asks for a new window (`target="_blank"`, as a note's external links do, or
+  `window.open`) is decided the same way: a web or mail address goes to the browser, one
+  of the app's own pages opens in the app's window, and no second window is created. Any
+  other scheme goes nowhere. The rule is `mb_server::desktop::link_target`, where it is
+  tested; the host applies it to both.
+- **Opening an existing folder as a vault is Linux-only**, because §6.1's folder
+  registration (E29) is compiled only there. On macOS and Windows the app creates new
+  vaults; it cannot yet adopt an existing Obsidian or Markdown folder.
+- **Measured on the development Mac:** the window shows the vault list about 3 s after
+  launch. Nearly all of it is the macOS file watcher's start (`notify`'s FSEvents `watch`
+  call, ~2.7 s per root, measured outside the tool sandbox); the server serves no page until
+  the watcher and index are up. The regular server pays the same at start.
+
 ---
+
+#### 7.6.9 Slice 2b — whole-vault sync (A45; built, superseded in its UI by §7.6.10)
+
+What the first sync version does, and the rules it follows. §7.6.3–§7.6.7 remain the
+target; this is the subset with a full-vault pin and nothing released.
+
+- **Choosing vaults.** The connected page (§6.8.1) lists the upstream vaults the device's
+  user can read, from `GET /api/v1/vaults` with the device token. **Download** creates the
+  replica at `~/Memberberry/<server-host>/<vault-slug>/` (the host's `:` becomes `-`),
+  registers it in the embedded server, and starts syncing. **Stop syncing** leaves the
+  folder and its notes where they are, as an ordinary local vault.
+- **The replica speaks §7.1 upstream** over one WebSocket carrying the device token (E36 on
+  the sync path, authorized per frame like an API token). Locally it is an in-process peer
+  of the embedded server's sync registry, so local edits, the webview and the external-edit
+  path (§3.4) all reach it the way they reach any client.
+- **A note's history starts from upstream's.** A note downloaded for the first time is
+  written from the server's full update: its sidecar is that state, its Markdown is that
+  state materialized, its last-write marker that Markdown's hash. Rebuilding it from the
+  downloaded Markdown instead would give the two sides unrelated histories, and merging
+  them would duplicate every block. When the histories have nonetheless diverged — the
+  replica's `state vector` shares no client with upstream's, as after `rm -rf .memberberry/`
+  on either side or a note renamed in a file manager — the two are never merged; S14 says
+  what happens instead.
+- **Edits.** Every note, open or not, is caught up by a pass every 5 s (S12); a note open in
+  the app receives the pass's changes through the embedded server's room, so its editor
+  updates in place. A live relay for open notes — no 5 s wait — is not built yet. A pass
+  compares each note's upstream `version` and its local file's (size and modification time)
+  with the sync record, and for each changed note subscribes upstream once, applies what
+  upstream has that this device lacks, sends what this device has that upstream lacks, and
+  waits for upstream's echo — §7.1's acknowledgement — before counting it sent. A note that
+  fails keeps its old record entry and is planned again next pass.
+- **Structure** — create, rename, delete — is a three-way comparison of upstream's list, the
+  local folder and the **sync record** of what both held after the last pass, in
+  `<replica>/.memberberry/replica/record.json`. A note is matched across a rename by its frontmatter
+  `id` (§4.3); without one, a rename is a delete and a create, which loses no content.
+  Changes on one side are applied to the other through the same routes a person uses
+  (create, rename, delete-to-trash; E17 applies upstream). Conflicts keep both (S13):
+  - changed here, deleted upstream: recovered (§7.6.7) — never uploaded on its own; unchanged
+    here, deleted upstream: purged (E35);
+  - deleted here, changed upstream: restored here;
+  - created on both sides at one path: upstream keeps the path; this device's note is
+    renamed `<name> (this device).md` and uploaded;
+  - renamed on both sides: upstream's path wins, content merges.
+- **What upstream had to grow for this,** all through the ordinary routes and their checks:
+  the note list carries each note's frontmatter `id`, an opaque `version` that changes with
+  its file, and `editable`; `POST …/notes` takes `state`, a base64 lib0 v1 history the note
+  starts from (validated as a note, then written as both its sidecar and its Markdown), so
+  an uploaded note does not get a second, unrelated history; `POST …/rename` takes
+  `links: false` to move a note without rewriting any link or title, because the side the
+  user renamed on already rewrote them and those edits sync as content. Doing either
+  rewrite on both sides would merge two copies of the same insertion.
+- **The app's side:** `desktop.toml` lists the replicas (local vault, upstream vault, name,
+  server). 2b's Download and Stop syncing routes are gone in 2c: every server vault is
+  registered automatically (§7.6.10). The connected page shows each vault's state and any
+  held notes.
+- **Without the sync record** (I1), nothing is treated as deleted: every local file is
+  uploaded or merged, every upstream note downloaded, then the record is rebuilt.
+- **View-only notes** are not yet written read-only (0444 is §7.6.4's target). An edit to one
+  is never sent; upstream's changes still merge in around it, and the note is listed as
+  held like the delete conflict above.
+- **Not in 2b:** a live relay for open notes; read-only files for view-only notes; on-demand
+  residency and release (§7.6.5); pins narrower than the vault; E35's purge and recovered
+  notes (§7.6.7); media and attachments (only `.md` notes sync); presence upstream; a way to
+  resolve a held note other than editing or deleting it by hand. A pass runs its local file
+  work on the async runtime rather than a blocking thread, which a very large first
+  download will feel.
+
+#### 7.6.10 Slice 2c — server vaults online, notes offline one by one (A46; built)
+
+§7.6.9's engine stays; what it syncs and how the app reaches a server vault change.
+
+- **Every readable server vault appears** in the app's vault list once connected, with no
+  download step. Each gets a local vault and folder, `~/Memberberry/<server-host>/<vault>/`,
+  which holds only the notes made available offline. New upstream vaults appear on the next
+  pass; the list is the server's `GET /api/v1/vaults` for the device's user.
+- **Online, the app is the browser.** For a server vault, the embedded server forwards the
+  vault's routes — `/api/v1/vaults/{slug}/…` and its frames on the sync socket — to the
+  user's server with the device token, and renders the workspace shell itself. Upstream
+  decides every permission (E36); the app adds none and filters nothing. **E37** governs the
+  forwarding: only a registered server vault's routes, only to the connected origin, never
+  this app's cookies or session upstream, never upstream's `Set-Cookie` back. A local slug
+  that differs from upstream's (a local vault already had the address) is rewritten in the
+  path and in sync frames, nowhere else.
+- **Available offline** is a pin (§7.6.3) on a note, a folder or the vault root, set from the
+  tree's context menu, the note palette ("Keep this note available offline") and the vault
+  menu. Pins live in `<replica>/.memberberry/replica/pins.json`. The pass of §7.6.9 runs over
+  the pinned notes only: a pinned note is downloaded, then kept in step both ways. A note
+  created while offline is on disk, so it is uploaded and stays available offline.
+- **Online only** removes a pin. The note's unsent changes are sent first; if they cannot be
+  (offline, refused), it stays and says so. Then its file and sidecar are removed and its
+  record entry dropped — a release, which is not a deletion and never reaches upstream's
+  trash. A note under a folder or vault pin cannot be released alone; the menu says which pin
+  holds it.
+- **Opening a note does not keep it** (A46). On-demand residency and §7.6.5's release sweep
+  are not used for server vaults.
+- **Offline** — the server unreachable, decided per vault by the last pass and by a failed
+  forward — the embedded server serves the vault from its folder. The note list is the last
+  upstream list (kept in `<replica>/.memberberry/replica/listing.json`, titles and paths only)
+  joined with the files present; a note without a file is listed with `available: false`,
+  shown greyed and opening to "This note is online only. Connect to your server to open it."
+  Downloaded notes edit normally against their local history, which descends from
+  upstream's, so reconnecting merges without duplication (§7.6.9).
+- **Indicators.** A downloaded note carries a small mark in the tree. The vault picker
+  groups vaults by where they live — the connected server (with an Online/Offline badge and
+  a Manage link) and "On this device" — as cards whose one line says how many notes there
+  are and what is on this device ("12 notes · 3 available offline", "Offline · 2 notes on
+  this device"). Counts come from the reader's authorized view, never the raw folder (§6.5).
+  In a browser there is one group and no heading. While the server cannot be reached, the
+  workspace says so above the note tree, for the vault as a whole: "Offline. Notes on this
+  computer still open and save, and sync when your server is back." (or, with nothing
+  downloaded, that no notes from the vault are on this computer). The editor's own
+  connection line speaks only for the note open in it.
+- **The note palette** acts on these pins in the app: "Keep this note available offline" /
+  "Stop keeping this note offline" pin or release the open note, and the command is listed
+  and refuses for a note a folder or the whole vault keeps offline. The browser's own §7.2
+  store is not used in the app at all — its local vaults are already on disk.
+- **What a person keeps per vault works through the app.** Bookmarks, the saved workspace
+  layout and share links are forwarded like any vault route, and the server accepts the
+  device token for them as its user (E36). A new share link's address comes back relative
+  (`/s/<token>`); the app makes it absolute on the vault's own server, so the link copied is
+  one other people can open, never the app's loopback address.
+- **Media follows its note** (§7.6.3; built 2026-11-12). Media is content-addressed
+  (`media/ab/cd/<sha256>.<ext>`, §12.1), so an object has one path on both sides. A pass:
+  - **uploads** the media a note shows just before that note is uploaded or its local changes
+    sent, so upstream never holds a note showing an image it lacks — and only for those
+    notes, so an image in a note that left the readable set never leaves this device on its
+    way out (E35). "Create the note again" (§7.6.7) uploads the note's media first;
+  - **downloads**, after the notes, every object a note on this device shows and the disk
+    lacks, through upstream's ordinary media route — which serves an object only when a note
+    the device's user can read references it (E11) — and writes it only if its bytes match
+    its address;
+  - **removes** every local object no note here references any more (a released, purged or
+    edited-away note's images), sparing objects uploaded in the last few minutes that a note
+    may not have saved a reference to yet. A recovered note's media stays with it.
+  Offline, the embedded server serves media from the folder like any local vault. What both
+  sides are known to hold is kept in `<replica>/.memberberry/replica/media.json`; losing it
+  (I1) costs one re-upload, which stores nothing new. Only display objects travel: a
+  retained full-resolution original (§12.2) stays on the server, so "view original" offline
+  shows the display copy.
+- **A note URL without `.md`** (`/v/work/Hello`) opens the note: the workspace page names the
+  note by its path (`Hello.md`), which is what the sync socket admits.
+- **As built, and not yet:** held notes are listed on the connected page only, not marked in
+  the tree. Forwarding reuses one HTTP client per server; each window socket opens its own
+  upstream socket per server vault. Offline is decided by the last pass (every 5 s) or a
+  failed forward. A short URL naming a note by title alone, in another folder, resolves only
+  if the note is downloaded; otherwise it is taken as a path at the vault root.
+
+#### 7.6.11 Several servers, and signing out of one (A48)
+
+- **A list, not one server.** `desktop.toml` holds `[[servers]]`, each with its origin, the
+  account, the device id and whether this device is signed in there. Each signed-in server's
+  device token is in the keychain under its origin, as before. An installation written with
+  the single `[server]` table of §7.6.8 is read as a one-entry list. Every replica already
+  names its origin, so server vaults from two servers live side by side: their folders are
+  `~/Memberberry/<server-host>/<vault>/`, and a local address taken by another server's vault
+  gets a suffix (`work-2`), as §7.6.10 already does for a local one.
+- **Every pass and every forward is per server.** The sync loop runs each signed-in server's
+  vaults with that server's token; a forward (E37) goes only to the origin its vault names,
+  with only that origin's token. A vault whose server is not signed in is never forwarded and
+  behaves as offline.
+- **The Servers page** (`/desktop/connect`; the vault picker's and workspace footer's
+  **Servers** link) lists every server with its account, vaults and state, a **Sign out**
+  button for each, and **Connect another server**. Connecting to an origin that is already
+  signed in is refused with a message; the picker groups vaults under each server.
+- **Signing out asks each time** (A48) what to do with that server's notes on this computer,
+  on a confirmation page that says how many notes are downloaded and which have changes the
+  server has not accepted (held notes, or the server unreachable):
+  - **Remove them** — the server's vaults leave the app, their folders under
+    `~/Memberberry/<server-host>/` are deleted, and the server is forgotten. Only folders
+    inside the notes home are ever deleted.
+  - **Keep them on this computer** — the vaults stay, working as offline (§7.6.10: downloaded
+    notes open and edit, the rest are greyed), and the server stays listed as signed out with
+    **Sign in again** and **Remove notes**. Signing in again as the same account resumes
+    syncing, and edits made meanwhile merge as after any offline period.
+  - Either way the device token is revoked on the server first (`DELETE
+    /api/v1/devices/self`); when the server cannot be reached the page says so and how to
+    revoke it there, and the token is forgotten here regardless. A server with nothing
+    downloaded is signed out without the question.
+- **A kept copy belongs to one account.** Signing in to a server whose kept notes belong to
+  another account is refused: the new device token is revoked at once and the page says to
+  remove the kept notes first. Otherwise one person's offline notes would be uploaded with
+  another person's token.
 
 ## 8. Workspace and navigation shell (A10 — adaptive)
 
@@ -5611,6 +6035,22 @@ zero retries and retained failure diagnostics. Check, web, perf and fuzz-build r
 automatic. A green automatic CI run is not evidence that full E2E passed; known browser
 crashes remain open even when the manual workflow has not been run.
 
+**WebKit (M19, 2026-11-12).** A third project, `webkit`, runs the suite in Playwright's WebKit
+at the desktop size — the desktop app's engine (§7.6.1); no phone runs the app, so there is no
+mobile WebKit project. `make e2e` installs and runs it with the two Chromium projects;
+`make e2e-webkit` runs it alone. The harness provisions every project its own scratch notes,
+empty vaults and fixtures, and a spec that means "the desktop layout" asks for a project that
+is not `mobile`. WebKit reports a load cut off by navigation in its own words — a request
+"cancelled", a same-origin fetch "…due to access control checks", a sync socket closed while
+connecting — and the failure fixture excuses exactly those, as it excuses Chromium's
+`net::ERR_ABORTED`; an uncaught failed `import()` is still a failure, since the app handles a
+chunk that cannot load. Line-start and line-end keys go through `lineKey`, because macOS
+WebKit, like WKWebView, moves by line with Cmd+←/→ and lets `Home`/`End` scroll. **Not run in
+WebKit, by design:** the browser PWA's offline mode and offline upload queue (the app's
+offline mode is the embedded server, §7.6.10) and the clipboard specs (Playwright cannot
+grant WebKit clipboard access). WebKitGTK on Linux is what the manual workflow runs; the §21
+budgets on WebKitGTK are not yet measured.
+
 `make full-test` is the explicit combined validation command: build WASM, run `make check`,
 then run `make e2e`, sequentially and stopping at the first failure. WASM setup precedes
 frontend checks on fresh checkouts. Soak, fuzzing and performance runs remain separate.
@@ -6060,15 +6500,32 @@ browser. Nothing will be opening a browser here.
 - [x] Backup job; docker-compose with MinIO; deployment and security docs
 
 ### M19 — Desktop client and local replica (A42, §7.6)
-- [ ] Tauri 2 host embedding `mb-server` on loopback, with E34's per-launch token
-- [ ] Local-only vaults: create and open a vault folder with no upstream
-- [ ] `mb-replica`: upstream sync over §7.1 with a keychain-held scoped API token
+- [x] Tauri 2 host embedding `mb-server` on loopback, with E34's launch code and cookie (§7.6.8)
+- [x] Local-only vaults: create in `~/Memberberry` with automatic sign-in. **Opening an
+      existing folder is Linux-only** until E29's folder registration builds elsewhere
+- [x] Device sign-in through the browser: approval page, token exchange, keychain (§6.8.1, E36)
+- [x] Upstream sync over §7.1 with the keychain-held device token: whole-vault replicas,
+      edits, creates, renames and deletes both ways (§7.6.9, `mb_server::replica`). Live
+      relay for open notes not yet built (S12)
+- [x] Server vaults online in the app with no download step; Available offline / Online only
+      per note, folder or vault from the context menu; offline, downloaded notes work and the
+      rest are greyed (§7.6.10, A46, E37)
+- [x] Several servers at once; sign out of one, removing or keeping its notes (§7.6.11, A48)
 - [ ] Availability rules: on demand, note pin, folder pin, vault-root pin; pinned media
+- [x] Media follows the notes kept offline: download, upload, removal (§7.6.10)
 - [ ] Residency manifest; external delete/create propagation; I1 fails towards "keep"
 - [ ] Release sweep: 30 days unopened, 1 GB cap, per-device `settings.toml`
-- [ ] E35 revocation purge, with recovered notes and their banner (§7.6.7)
-- [ ] Playwright WebKit project (§22.6); §21 budgets measured on WebKitGTK
-- [ ] Leak suite: E34 and E35; I1 over a partial replica
+- [x] E35 revocation purge, with recovered notes and their banner (§7.6.7)
+- [x] Playwright WebKit project (§22.6)
+- [ ] §21 budgets measured on WebKitGTK
+- [x] Leak suite: E34 and E35
+- [ ] Leak suite: I1 over a partial replica
+
+### M20 — OIDC sign-in (A44, A47; §6.8.2, E38)
+- [x] M20a: sign in with the configured provider (code + PKCE + nonce, claim-validated ID
+      token), link by `(iss, sub)` or a verified email, new accounts without access,
+      account email (`user set-email`), `password_login` switch, audit, leak-suite E38
+- [x] M20b: `group:<name>` in `access.toml`, groups from the latest sign-in, leak suite
 
 ### Post-v1 candidates
 - gonnadoit integration over the HTTP/WS API
@@ -6128,7 +6585,13 @@ to replace a product comparison with a description. Do not reverse these without
 | A39 | Visual Gantt editor | *"for both Confluence AND memberberry, I want to have some nice UI with awesome UX way how to build gantt charts"*; then: *"Full drag-and-drop now"*, *"Inside memberberry repo"*, *"Memberberry first"* | A shared drag-and-drop editor over Mermaid `gantt` text, in `web/src/gantt/`. Memberberry first; a Confluence Forge macro reuses it later (§13.3). Storage stays the §13.2 fence. |
 | A41 | Gantt "no colour" and chart style | *"it should also be possible to select "no color" (even for tasks). Then we might want to have some overall chart config where we can select "style" - one of it will be if the whole section has background color or only the section name row. another if it should be more "zoomed in" or fixed height"*; then: *"we might want to have also possibility and separated config for if we want to have phase shown as a row or a column like we have now and based on that we would have only a header row or a column with color. If it is a color, there should be some "border" colored"*, and *"Row height"* | `none` as a task or phase colour; `%% option phases column\|row`, `phase-fill whole\|name`, `rows fixed\|zoomed` lines, set from the editor toolbar (§13.3). |
 | A42 | Installable desktop app with local notes | *"I want to have an app I can install on my devices"*; then: *"Lets start with already thinking about running things locally. We should support both "lazy loading" where we load only things that we open locally (can have some special rules for releasing older notes) and / or we decide deliberatly to "download this note" And / or to have a support for "full local vault""*; then, on the proposed defaults: *"Yes, write the spec"* | Tauri 2 desktop client whose replica is a Markdown vault folder served by an embedded `mb-server`. On demand, note/folder pins and full vault are one rule model (§7.6). Removes "native desktop apps" from the v1 exclusions; native mobile apps stay excluded. |
-| A43 | Unsent edits to a note that left the readable set | *"When there is a problem, that should be flagged with some banner and user should have the option to select if it should create that note again or make a new  note"* | Edits are kept as a local recovered note holding only this device's changes; a banner offers "Create the note again" (E17 at the original path) or "Make a new note". Same rule for permission change, move, delete and vault removal, and for the web client (§7.6.7). |
+| A49 | Signing and notarizing the desktop app | *"I don't need it now on stores, people can install my packages"* | Not now. Desktop packages (DMG, .deb, AppImage, MSI) ship unsigned and unnotarized, the macOS bundle ad-hoc signed only; no Apple Developer ID, Authenticode or store distribution. macOS asks the user to approve the app the first time (§7.6.1). Reversible: signing can be added to the bundle step later without changing the app. Asked again after the keychain double prompt: *"add the always allow and if needed I will do that Apple developer ID"* — install notes tell users to choose Always Allow; Developer ID is the user's later call. |
+| A48 | Several servers in the desktop app; signing out of one | *"I still want to be able to "log out" from a server and be able to connect to another server from that local app if I have multiple servers"*; then, asked what happens to downloaded notes on sign-out: *"Ask each time"*, and where it lives: *"A Servers page (Recommended)"* | §7.6.11. `desktop.toml` lists servers; each vault syncs and forwards only with its own server's token. A Servers page lists them with **Sign out** and **Connect another server**. Signing out asks whether to remove that server's notes from this computer or keep them (offline, resumed on signing in again as the same account). |
+| A47 | OIDC: link by verified email, setup form for the first admin, passwords optional, groups as roles | Asked about linking, the first administrator, password sign-in and provider groups: *"Link by verified email"*, *"Setup form as today"*, *"Both, admin can turn off"*, *"Yes, map groups to roles"* | §6.8.2. Accounts gain an optional email for the link; an administrator is never created by a provider sign-in; `password_login` hides the password form; `access.toml` accepts `group:<name>` (M20b). |
+| A46 | Server vaults work online in the app; notes are downloaded or released one by one | *"When I log into my server - I don't want to have to download my vault, I want to be able to select it - but also have the option to download it - and see it and use it like I have now in the browser. Then I should be able to work on items online like in the browser, ability to download a note on right click - or release a note with Online only"*; then, asked about opened notes: *"No, stays online only"*, and about offline: *"All notes, others greyed"* | Supersedes A45's Download-a-vault flow (§7.6.10). Every vault the device's user can read appears in the app once connected and works online as in the browser. Right-click offers **Make available offline** (note, folder, or the whole vault) and **Online only**. Opening a note never keeps it. Offline, downloaded notes work and the rest are listed greyed. |
+| A45 | Whole-vault sync before OIDC; the user picks vaults; everything syncs both ways | Shown the connected page's *"Syncing its vaults comes next"*: *"lets go"*; then, asked which vaults: *"I pick each"*, and how much the first version covers: *"Everything, both ways"* | Slice 2b (§7.6.9) comes before M20. The connected page lists the server's vaults, each with **Download**; a downloaded vault is a full-vault replica (§7.6.3's vault-root pin). Edits, creates, renames and deletes travel in both directions from the first version, so nothing done in the app silently stays local. On-demand residency and release (§7.6.5) follow later. |
+| A44 | Device sign-in before OIDC | *"we will bring next also OIDC to the memberberry - should we do it before we continue here ? It is so I can hook it with authentik or KeyCloak and have things like login with google and similar"*; then, on approving devices in the browser first: *"Device sign-in, then OIDC"* | The desktop app signs in through the user's browser with a loopback code and PKCE (§6.8.1), so it never handles a password and keeps working when OIDC arrives. OIDC (authentik, Keycloak) is the next milestone after device sign-in and is not yet specified; Google is expected behind the identity provider, since a direct call to Google would breach C1. |
+| A43 | Unsent edits to a note that left the readable set | *"When there is a problem, that should be flagged with some banner and user should have the option to select if it should create that note again or make a new  note"* | Edits are kept as a local recovered note; on what it holds the user chose, when asked on 2026-11-12, *"The whole note"* — the note as this device had it, not only this device's changes; a banner offers "Create the note again" (E17 at the original path) or "Make a new note". Same rule for permission change, move, delete and vault removal, and for the web client (§7.6.7). |
 | A40 | Gantt task colours | *"Next up - I want to be able to set colours for tasks"*; then: *"lets recognise both. If the color starts with # and is hex - use any color. otherwise lets have preselected note colors and then a picker"* | `%% color <id> <value>` comment lines. A value is a note colour name or `#rgb`/`#rrggbb` hex; the editor offers the note colours and a custom picker (§13.3). |
 
 ---
@@ -6154,6 +6617,10 @@ it is visible rather than buried:
 | S8 | Pinning a note downloads its media | §7.6.3 | A pinned note with broken images is not available offline. |
 | S9 | Local-only vaults ship in the first desktop build; vault default is `on-demand` for server replicas and `full` for local-only | §7.6.2, §7.6.3 | Same code with no upstream, and the simplest way to try the app. |
 | S10 | Desktop release limits: 30 days unopened, 1 GB cap, configurable per device | §7.6.5 | The desktop has room the phone's 500-note / 50 MB cap was sized against. |
+| S11 | The desktop app signs in automatically as a local user `me` with a random, never-stored password | §7.6.8 | E34 already admits only the app's own window; a password would protect nothing more. |
+| S12 | A replica learns of remote changes by polling the note list every 5 s, not by holding a sync room open per note | §7.6.9 | A room holds its document in server memory; one per note for a 10k-note vault would cost the server more than polling a list it already serves. Since 2c (§7.6.10) a note open in the app is edited live on the server while online, through forwarding; the pass only keeps downloaded copies in step, so a downloaded file trails an online edit by up to one pass. |
+| S13 | Structural conflicts resolve towards keeping both: a locally changed note deleted upstream is kept and flagged; a locally deleted note changed upstream comes back; two different notes at one path keep the server's at that path and rename this device's | §7.6.9 | No resolution may lose writing (A43's rule). Which side "wins" a path is a tie-break, not a judgment. |
+| S14 | A note whose two histories share no origin is never merged. If this device's file matches upstream or is unchanged, it takes upstream's history; if only this device changed it, it takes upstream's history and re-applies the file as an external edit; if both changed, both are kept | §7.6.9 | Merging two independently rebuilt histories duplicates every block. Re-applying the file is exact only when upstream still holds the last-synced text; with both changed there is no base to merge from, so keeping both is the only answer that loses nothing. |
 
 If any of these is wrong, say so — none is load-bearing enough to be expensive to change
 before the milestone that implements it.

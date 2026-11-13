@@ -928,6 +928,43 @@ describe("coming back online (SPEC §7.4)", () => {
     }
   });
 
+  it("does not open a second socket while one is still connecting", () => {
+    // The backoff's retry has just opened a socket that is not open yet when the browser says
+    // the network is back. A second socket alongside it sends the same offline edits twice,
+    // and the server merges them twice: duplicated text and a doubled conflict (§3.5). Seen
+    // in WebKit, whose timing put the two within one connection attempt.
+    vi.useFakeTimers();
+    try {
+      const network = fakeNetwork();
+      const sockets: FakeSocket[] = [];
+      const sync = createSyncProvider({
+        admission: transportAdmission,
+        endpoint: "ws://localhost/api/v1/sync",
+        vault: "personal",
+        note: "One.md",
+        document: new Doc(),
+        network: network.target,
+        connect: () => {
+          const next = new FakeSocket();
+          sockets.push(next);
+          return next as unknown as WebSocket;
+        },
+      });
+      sockets.at(-1)?.emit("open", {});
+      network.fire("offline");
+      vi.advanceTimersByTime(60_000);
+      expect(sockets).toHaveLength(2);
+      expect(sockets.at(-1)?.readyState).toBe(WebSocket.CONNECTING);
+
+      network.fire("online");
+
+      expect(sockets).toHaveLength(2);
+      sync.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does nothing when it is already connected", () => {
     const network = fakeNetwork();
     let opened = 0;
@@ -983,6 +1020,102 @@ describe("coming back online (SPEC §7.4)", () => {
       network.dispatchEvent(new CustomEvent(RESUME_SYNC, { detail: { vault: "personal" } }));
       expect(sockets).toHaveLength(2);
     } finally { sync.destroy(); document.destroy(); }
+  });
+
+  describe("resuming with a page that says whether it is showing", () => {
+    function fakePage(initial: DocumentVisibilityState) {
+      const target = new EventTarget();
+      let listening = 0;
+      const page = {
+        visibilityState: initial,
+        addEventListener: (type: string, listener: EventListener) => { listening += 1; target.addEventListener(type, listener); },
+        removeEventListener: (type: string, listener: EventListener) => { listening -= 1; target.removeEventListener(type, listener); },
+      };
+      return {
+        page,
+        listening: () => listening,
+        show(state: DocumentVisibilityState): void { page.visibilityState = state; target.dispatchEvent(new Event("visibilitychange")); },
+      };
+    }
+    function provider(page: ReturnType<typeof fakePage>["page"]) {
+      const network = new EventTarget();
+      const document = new Doc();
+      const sockets: FakeSocket[] = [];
+      const sync = createSyncProvider({
+        admission: transportAdmission,
+        endpoint: "ws://localhost/api/v1/sync",
+        vault: "personal",
+        note: "One.md",
+        document,
+        network,
+        page,
+        connect: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket as unknown as WebSocket;
+        },
+      });
+      const resume = (): void => { network.dispatchEvent(new CustomEvent(RESUME_SYNC, { detail: { vault: "personal" } })); };
+      return { sync, sockets, resume, done: () => { sync.destroy(); document.destroy(); } };
+    }
+
+    it("keeps a socket that has stayed on a visible page since it opened", () => {
+      // The load and window-focus reconcile (§7.4): reconnecting here dropped the connection
+      // under the editor and cleared the user's block selection.
+      const { page } = fakePage("visible");
+      const { sync, sockets, resume, done } = provider(page);
+      try {
+        sockets[0]?.emit("open", {});
+        resume();
+        expect({ opened: sockets.length, closed: sockets[0]?.closed, connected: sync.connected }).toEqual({ opened: 1, closed: 0, connected: true });
+      } finally { done(); }
+    });
+
+    it("reopens a socket that lived through a hidden page", () => {
+      const visibility = fakePage("visible");
+      const { sockets, resume, done } = provider(visibility.page);
+      try {
+        sockets[0]?.emit("open", {});
+        visibility.show("hidden");
+        visibility.show("visible");
+        resume();
+        expect({ opened: sockets.length, closed: sockets[0]?.closed }).toEqual({ opened: 2, closed: 1 });
+      } finally { done(); }
+    });
+
+    it("reopens a socket opened while the page was hidden", () => {
+      const visibility = fakePage("hidden");
+      const { sockets, resume, done } = provider(visibility.page);
+      try {
+        sockets[0]?.emit("open", {});
+        visibility.page.visibilityState = "visible";
+        resume();
+        expect(sockets).toHaveLength(2);
+      } finally { done(); }
+    });
+
+    it("judges each socket by its own time on the page", () => {
+      // The reconnect it caused opened a socket on a visible page; that one is live.
+      const visibility = fakePage("visible");
+      const { sockets, resume, done } = provider(visibility.page);
+      try {
+        sockets[0]?.emit("open", {});
+        visibility.show("hidden");
+        visibility.show("visible");
+        resume();
+        sockets[1]?.emit("open", {});
+        resume();
+        expect(sockets).toHaveLength(2);
+      } finally { done(); }
+    });
+
+    it("stops watching the page when the pane closes", () => {
+      const visibility = fakePage("visible");
+      const { done } = provider(visibility.page);
+      expect(visibility.listening()).toBe(1);
+      done();
+      expect(visibility.listening()).toBe(0);
+    });
   });
 
   it("stops listening when the pane closes", () => {

@@ -82,3 +82,57 @@ fn saving_then_loading_preserves_the_validated_policy() {
     let loaded = AccessFile::load(vault.path()).expect("load ACL");
     assert_eq!(loaded, original);
 }
+
+/// `group:<name>` in `access.toml` (§6.8.2, M20b).
+mod groups {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use mb_core::{GroupName, NotePath, Role, Username};
+    use mb_server::AccessFile;
+
+    const POLICY: &str = "[[members]]\nuser = \"alice\"\nrole = \"owner\"\n\n\
+        [[members]]\nuser = \"group:family\"\nrole = \"viewer\"\n\n\
+        [[rules]]\npath = \"Shared\"\ngrant = { \"group:family\" = \"editor\", bob = \"viewer\" }\n";
+
+    fn bob_in_family() -> BTreeMap<Username, BTreeSet<GroupName>> {
+        BTreeMap::from([(
+            Username::parse("bob").unwrap(),
+            BTreeSet::from([GroupName::parse("family").unwrap()]),
+        )])
+    }
+
+    #[test]
+    fn a_group_member_and_a_group_grant_are_read() {
+        let access = AccessFile::parse(POLICY)
+            .expect("parses")
+            .policy()
+            .with_user_groups(&bob_in_family());
+        let bob = Username::parse("bob").unwrap();
+        assert_eq!(
+            (
+                access.effective_role(&bob, &NotePath::parse("Home.md").unwrap()),
+                access.effective_role(&bob, &NotePath::parse("Shared/List.md").unwrap()),
+            ),
+            (Role::Viewer, Role::Editor)
+        );
+    }
+
+    #[test]
+    fn group_grants_survive_a_save_and_reload() {
+        let parsed = AccessFile::parse(POLICY).expect("parses");
+        let saved = parsed.to_toml().expect("serializes");
+        assert_eq!(
+            AccessFile::parse(&saved).expect("reparses"),
+            parsed,
+            "{saved}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_group_name_denies_the_whole_file() {
+        assert!(
+            AccessFile::parse("[[members]]\nuser = \"group: spaced\"\nrole = \"viewer\"\n")
+                .is_err()
+        );
+    }
+}

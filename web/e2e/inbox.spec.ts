@@ -24,6 +24,13 @@ async function openWithNavigation(page: import("@playwright/test").Page): Promis
 
 test("groups open tasks and opens the source note from a row", async ({ page }) => {
   await openWithNavigation(page);
+  // why: the Inbox fixtures only. Other tests add tasks to this shared vault while the suite
+  // runs, and a group draws 50 rows before "Show more" (§10.3), so in a busy run the fixture
+  // row could sit behind it. Grouping and opening are what this test is about.
+  await page.getByRole("button", { name: /^Filters$/ }).click();
+  const folder = page.getByLabel("Filter by folder");
+  await folder.fill("Inbox");
+  await folder.blur();
 
   const overdue = page.locator('.inbox-group[data-group="overdue"]');
   const later = page.locator('.inbox-group[data-group="later"]');

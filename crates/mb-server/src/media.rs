@@ -469,7 +469,7 @@ impl<'a> LocalStore<'a> {
         Ok(())
     }
 
-    fn write_exact(&self, relative: &str, bytes: &[u8]) -> Result<bool, Error> {
+    pub(crate) fn write_exact(&self, relative: &str, bytes: &[u8]) -> Result<bool, Error> {
         let extension = relative.rsplit('.').next().ok_or(Error::NotFound)?;
         if Self::object_path(bytes, extension).as_deref() != Some(relative) {
             return Err(Error::MediaStore(format!(

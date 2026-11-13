@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E_VAULT } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
 
 test("formatting shortcuts toggle selections, format new typing, open links and survive reload", async ({ page }, info) => {
   await signIn(page);
@@ -16,8 +16,8 @@ test("formatting shortcuts toggle selections, format new typing, open links and 
   const disk = () => readFileSync(join(E2E_VAULT, path), "utf8");
   await expect(editor).toBeFocused();
   await paragraph.click();
-  await page.keyboard.press("Home");
-  await page.keyboard.press("Shift+End");
+  await lineKey(page, "Home");
+  await lineKey(page, "Shift+End");
   await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("Body words");
   for (const [key, selector] of [["b", "strong"], ["i", "em"], ["u", ".mb-underline"], ["e", "code"], ["Shift+x", "s"], ["Shift+h", "mark"]] as const) {
     await page.keyboard.press(`ControlOrMeta+${key}`);
@@ -37,7 +37,7 @@ test("formatting shortcuts toggle selections, format new typing, open links and 
   await page.keyboard.press("ControlOrMeta+Shift+z");
   await expect(paragraph.locator("a")).toHaveCount(1);
   await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("End");
+  await lineKey(page, "End");
   await page.keyboard.type(" ");
   await page.keyboard.press("ControlOrMeta+b");
   await page.keyboard.type("Bold");

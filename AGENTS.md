@@ -284,7 +284,8 @@ address should ask the OS for an ephemeral port instead of consuming this range.
 make check        # full gate — explicit request only; log in local/debug/make-check-latest.log
 make check-gate   # the same gate without saving a log
 make full-test    # WASM setup, then make check, then make e2e; explicit full-run entry point
-make e2e          # Playwright in a real browser, desktop and mobile (SPEC §22.6)
+make e2e          # Playwright in a real browser: Chromium desktop and mobile, WebKit desktop (SPEC §22.6)
+make e2e-webkit   # the WebKit project only — the desktop app's engine (SPEC §7.6.1)
 make test         # all tests
 make test-fast    # behavioural only, the inner loop
 make test-release # tests ignored in debug builds (too slow there), run optimized; in `make check`

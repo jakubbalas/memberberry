@@ -111,10 +111,22 @@
       view.resize(width, height);
     };
     measure();
-    const observer = new ResizeObserver(measure);
+    // why: measured in the next frame, not in the observer's callback. Resizing the canvas
+    // there changes the layout the observer is watching within the same delivery, which
+    // WebKit reports as an error ("ResizeObserver loop completed with undelivered
+    // notifications") and Chromium silently defers. Several resizes in one frame cost one
+    // measure.
+    let pending = 0;
+    const observer = new ResizeObserver(() => {
+      if (pending === 0) pending = requestAnimationFrame(() => {
+        pending = 0;
+        measure();
+      });
+    });
     observer.observe(element);
     return () => {
       observer.disconnect();
+      if (pending !== 0) cancelAnimationFrame(pending);
     };
   });
 

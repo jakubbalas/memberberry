@@ -178,6 +178,24 @@ impl Index {
         })
     }
 
+    /// Removes what deleted notes left on disk: their documents in the search segments and
+    /// earlier versions of their rows in the SQLite log.
+    ///
+    /// `secure_delete` zeroes a deleted row on its page, but the log keeps every earlier
+    /// version of that page until a checkpoint, and a search segment keeps a deleted
+    /// document until it is merged. A caller that removed notes which must leave no trace
+    /// (E35) calls this after publishing.
+    ///
+    /// # Errors
+    ///
+    /// Fails if SQLite cannot checkpoint, as when another connection holds a read open.
+    pub fn scrub(&mut self) -> Result<(), Error> {
+        self.search.scrub()?;
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
+    }
+
     /// An index that exists only for the lifetime of the process.
     ///
     /// For tests, and for a vault whose `.memberberry/` is not writable — a read-only mount

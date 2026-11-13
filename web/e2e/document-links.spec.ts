@@ -16,12 +16,12 @@ test("same-note heading and block links scroll without replacing the mounted edi
   await signIn(page);
   const source = `DocumentLinks/Anchors-${info.project.name}.md`;
   const filler = Array.from({ length: 60 }, (_, index) => `Long section ${index}.`).join("\n\n");
-  await create(page, source, `# Anchor source\n\n[Goals](#Review%20Plan)\n\n${filler}\n\n## Review [[Projects/Roadmap|Plan]]\n\n[Pinned block](#^pinned)\n\n${filler}\n\nPinned destination. ^pinned\n`);
+  await create(page, source, `# Anchor source\n\n[Goals](#Review%20Plan)\n\n${filler}\n\n## Review [[Targets/Linkable-${info.project.name}|Plan]]\n\n[Pinned block](#^pinned)\n\n${filler}\n\nPinned destination. ^pinned\n`);
   await page.goto(`/v/personal/${source}`);
   await expect(page.locator(EDITOR)).toBeVisible();
   const original = await page.locator(EDITOR).elementHandle();
   await activate(page, "Goals", info.project.name === "mobile");
-  await expect(page.locator(EDITOR).locator("h2").filter({ has: page.locator('[data-wikilink][data-target="Projects/Roadmap"]') })).toBeInViewport();
+  await expect(page.locator(EDITOR).locator("h2").filter({ has: page.locator(`[data-wikilink][data-target="Targets/Linkable-${info.project.name}"]`) })).toBeInViewport();
   await activate(page, "Pinned block", info.project.name === "mobile");
   await expect(page.locator(EDITOR).getByText("Pinned destination.", { exact: true })).toBeInViewport();
   expect(await original?.evaluate((element) => element.isConnected)).toBe(true);
@@ -108,10 +108,12 @@ test("[[ lookup shows title and path and accepts keyboard or touch selection", a
   const line = await paragraph.boundingBox();
   if (line === null) throw new Error("body is not laid out");
   await paragraph.click({ position: { x: line.width - 2, y: line.height - 2 } });
-  await page.keyboard.type(" [[road");
+  // This project's own target, not `Projects/Roadmap.md`: see `E2E_NOTES`.
+  const target = `Linkable-${info.project.name}`;
+  await page.keyboard.type(` [[${target}`);
   const suggestions = page.getByRole("listbox", { name: "Document suggestions" });
   await expect(suggestions).toBeVisible();
-  const option = suggestions.getByRole("option").filter({ hasText: "Projects/Roadmap.md" });
+  const option = suggestions.getByRole("option").filter({ hasText: `Targets/${target}.md` });
   await expect(option).toBeVisible();
   const box = await suggestions.boundingBox();
   expect(box).not.toBeNull();
@@ -120,15 +122,15 @@ test("[[ lookup shows title and path and accepts keyboard or touch selection", a
   if (info.project.name === "mobile") await option.tap();
   else await page.keyboard.press("Enter");
   await expect(suggestions).toBeHidden();
-  const inserted = editor.getByRole("link", { name: "Roadmap", exact: true });
+  const inserted = editor.getByRole("link", { name: target, exact: true });
   await expect(inserted).toBeVisible();
-  await expect(inserted).toHaveAttribute("href", "Projects/Roadmap.md");
+  await expect(inserted).toHaveAttribute("href", `Targets/${target}.md`);
   await expect.poll(() => readFileSync(join(E2E_VAULT, source), "utf8"), { timeout: 15_000 })
-    .toContain("[Roadmap](Projects/Roadmap.md)");
+    .toContain(`[${target}](Targets/${target}.md)`);
   await page.reload();
-  await expect(inserted).toHaveAttribute("href", "Projects/Roadmap.md");
+  await expect(inserted).toHaveAttribute("href", `Targets/${target}.md`);
   await inserted.click();
-  await expect(page.locator(EDITOR).getByRole("heading", { name: "Roadmap", exact: true })).toBeVisible();
+  await expect(page.locator(EDITOR).getByRole("heading", { name: target, exact: true })).toBeVisible();
 });
 
 test("safe external links open without replacing the editor and unsafe schemes stay inert", async ({ page }, info) => {

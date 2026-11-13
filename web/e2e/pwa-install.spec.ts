@@ -5,6 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { E2E_ORIGIN } from "./environment.js";
 
+// why: the browser PWA's service worker — install, update and refresh with the network off.
+// The desktop app has no service worker (its offline mode is the embedded server, SPEC
+// §7.6.10), and Playwright's WebKit fails a navigation made with the network off ("internal
+// error") before the worker can answer.
+test.skip(({ browserName }) => browserName === "webkit", "the browser PWA's service worker; the app has none");
+
 test("Chrome can discover the manifest and raster installation icons", async ({}, info) => {
   // Installability is deliberately disabled in incognito contexts. Use a disposable real
   // browser profile, keeping the exact installability assertion instead of filtering it.

@@ -346,7 +346,7 @@ proptest! {
             mb_server::MediaBackendConfig::S3 { bucket: "fixture-bucket".into(), region: "fixture-region".into(), endpoint: Some("http://127.0.0.1:9000".into()), access_key_id: "fixture-key".into(), secret_access_key: "fixture-secret".into(), allow_http: true, virtual_hosted_style: true }
         } else { mb_server::MediaBackendConfig::Local };
         let original = ServerConfig {
-            bind: Some("127.0.0.1:9010".into()), web_root: Some("web/dist".into()), vault_locations: vec![location],
+            bind: Some("127.0.0.1:9010".into()), oidc: None, web_root: Some("web/dist".into()), vault_locations: vec![location],
             vaults: vec![mb_server::config::VaultEntry { slug: "existing".into(), name: Some("Existing".into()), path: "~/Existing".into(), media, notes_layout: mb_server::config::NotesLayout::Auto, ignore_non_writable_folders: false }],
         };
         let restored = ServerConfig::parse(&original.to_toml().expect("serialize")).expect("reparse");

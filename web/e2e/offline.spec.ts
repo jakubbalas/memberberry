@@ -16,7 +16,13 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { E2E_VAULT, scratchNote } from "./environment.js";
-import { expect, signIn, test } from "./fixtures.js";
+import { expect, lineKey, signIn, test } from "./fixtures.js";
+
+// why: these are the browser PWA's offline mode — a service worker answering with the network
+// switched off. The desktop app has no service worker; its offline mode is the embedded server
+// (SPEC §7.6.10), covered by the Rust suites. And Playwright's WebKit fails a navigation made
+// with the network off ("internal error") before the page can answer at all.
+test.skip(({ browserName }) => browserName === "webkit", "the browser PWA's offline mode; the app's is the embedded server");
 
 /** Resolves once a service worker is installed, activated and controlling this page. */
 async function serviceWorkerReady(page: Page): Promise<void> {
@@ -181,7 +187,7 @@ test("an edit made offline reaches the server when the network comes back", asyn
   // The middle paragraph rather than the last line: on a phone the editor's control strip is
   // pinned to the bottom of the viewport and overlays it (`HANDOFF.md`).
   await editor.getByText("A note this test may edit").click();
-  await page.keyboard.press("End");
+  await lineKey(page, "End");
   await page.keyboard.type(" Written on a train.");
 
   // §7.4's count: the difference between "nothing is happening" and "four changes exist only

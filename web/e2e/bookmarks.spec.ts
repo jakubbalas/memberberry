@@ -29,7 +29,7 @@ test("removes a bookmark from its section and keeps the note after reload", asyn
   await expect(remove).toBeVisible();
   if (info.project.name === "mobile") expect((await remove.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   await page.screenshot({ path: info.outputPath("bookmark-remove.png") });
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     await remove.focus();
     await page.keyboard.press("Enter");
   } else {

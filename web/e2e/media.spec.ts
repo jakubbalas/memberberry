@@ -93,7 +93,11 @@ test("inserts an image dragged from the desktop", async ({ page }, testInfo) => 
   await expect(page.locator(`${EDITOR} img`).last()).toBeVisible();
 });
 
-test("queues an offline image and swaps its blob URL after reconnection", async ({ page, failures }, testInfo) => {
+test("queues an offline image and swaps its blob URL after reconnection", async ({ page, failures, browserName }, testInfo) => {
+  // why: the browser PWA's offline upload queue; the desktop app uploads offline images
+  // through the embedded server instead (SPEC §7.6.10), and Playwright's WebKit does not take
+  // `setOffline` the way this queue needs.
+  test.skip(browserName === "webkit", "the browser PWA's offline queue; the app's is the embedded server");
   failures.allow(/request failed: POST .*\/api\/v1\/vaults\/personal\/media/);
   failures.allow(/console error: Failed to load resource: net::ERR_INTERNET_DISCONNECTED/);
   await signIn(page);

@@ -1,0 +1,41 @@
+[package]
+name = "memberberry-desktop"
+description = "Memberberry desktop app: the web UI in a native window over an embedded server (SPEC §7.6)"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "AGPL-3.0-or-later"
+publish = false
+
+# why: its own workspace, not a member of the root one. Tauri needs a system webview to
+# compile (WebKitGTK on Linux), so as a member it would make `make check` and CI fail on any
+# machine without those libraries. It depends on mb-server by path, so the server it embeds
+# is always this checkout's.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+mb-server = { path = "../crates/mb-server" }
+tauri = { version = "2", features = [] }
+# why: the device token (SPEC §6.8.1) lives in the OS keychain, never in a file. Native
+# backends only: Keychain on macOS, Credential Manager on Windows, Secret Service on Linux.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+url = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# AGENTS.md 4.2, as in the root workspace. `expect` is allowed in `main` at startup only.
+unwrap_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

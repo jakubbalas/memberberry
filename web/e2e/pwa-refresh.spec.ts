@@ -4,6 +4,12 @@ import { E2E_VAULT, REPO, scratchNote } from "./environment.js";
 import { expect, signIn, test, openSidebar } from "./fixtures.js";
 import type { Page } from "@playwright/test";
 
+// why: the browser PWA's service worker — install, update and refresh with the network off.
+// The desktop app has no service worker (its offline mode is the embedded server, SPEC
+// §7.6.10), and Playwright's WebKit fails a navigation made with the network off ("internal
+// error") before the worker can answer.
+test.skip(({ browserName }) => browserName === "webkit", "the browser PWA's service worker; the app has none");
+
 const schema: unknown = JSON.parse(readFileSync(join(REPO, "crates/mb-core/schema.json"), "utf8"));
 if (typeof schema !== "object" || schema === null || !("version" in schema) || typeof schema.version !== "number") throw new Error("missing editor schema version");
 const SCHEMA_VERSION = schema.version;

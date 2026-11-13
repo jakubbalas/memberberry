@@ -32,11 +32,13 @@
     readonly controls?: Snippet;
     /** The authenticated username shown in the account footer. Left panel only. */
     readonly user?: string | undefined;
+    /** In the desktop app the footer links to its server page; there is no log-out. */
+    readonly desktop?: boolean | undefined;
     /** Named for the reader: which milestone fills this, per SPEC §23. */
     readonly awaiting?: string;
   }
 
-  const { side, label, collapsed, width, maximum, onresize, children, controls, awaiting, user }: Props = $props();
+  const { side, label, collapsed, width, maximum, onresize, children, controls, awaiting, user, desktop = false }: Props = $props();
 
   const id = $derived(`sidebar-${side}`);
   /** One letter, as a stand-in for a portrait this application will never fetch (C1). */
@@ -65,7 +67,11 @@
       <div class="sidebar-account">
         <span class="sidebar-monogram" aria-hidden="true">{monogram}</span>
         <span class="account-user">{user}</span>
-        <a class="account-logout" href="/logout">Log out</a>
+        {#if desktop}
+          <a class="account-logout" href="/desktop/connect">Servers</a>
+        {:else}
+          <a class="account-logout" href="/logout">Log out</a>
+        {/if}
       </div>
     {/if}
   </aside>

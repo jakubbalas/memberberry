@@ -30,7 +30,7 @@ test("quick find alignment follows the editor through sidebar resizing and colla
   const check = async () => {
     const [search, main] = await Promise.all([find.boundingBox(), page.locator(".workspace-main").boundingBox()]);
     if (!search || !main) throw new Error("missing quick find or editor panel");
-    if (info.project.name === "desktop") {
+    if (info.project.name !== "mobile") {
       expect(Math.abs(search.x + search.width / 2 - (main.x + main.width / 2)), "Quick find is centered over the editor panel").toBeLessThanOrEqual(1);
     }
     for (const selector of [".topbar-brand", ".topbar-vault", ".topbar-end", '.sidebar-toggle[data-side="left"]']) {
@@ -43,7 +43,7 @@ test("quick find alignment follows the editor through sidebar resizing and colla
   };
   await check();
   await page.screenshot({ path: info.outputPath("quick-find-aligned.png") });
-  if (info.project.name === "desktop") {
+  if (info.project.name !== "mobile") {
     for (const width of [1280, 1024]) {
       await page.setViewportSize({ width, height: 800 });
       for (const side of ["Context", "Navigation"]) {
@@ -148,6 +148,9 @@ test("quick find opens the switcher and lands on the note it chooses", async ({ 
   const palette = page.getByRole("dialog", { name: "Open a note" });
   await expect(palette).toBeVisible();
   await page.getByRole("combobox", { name: "Open a note" }).fill("roadmap");
+  // why: Enter takes the top result, so wait until there is one and it is the note. Pressed
+  // at once, a busy run found the list still empty, and Enter opened nothing.
+  await expect(palette.getByRole("option").first()).toContainText("Roadmap");
   await page.keyboard.press("Enter");
 
   await expect(page.locator(EDITOR).first()).toContainText("Roadmap");

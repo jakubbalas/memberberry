@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4b31ffe8056619bfe9c19b6e5d2e54a1fc4694a2a79a5f1256ac754adedeea58 # shrinks to (ups, locals, records) = ([UpstreamNote { path: "D.md", id: Some("n2"), version: "1", editable: false }], [LocalNote { path: "D.md", id: None, version: "2" }], [RecordEntry { path: "A.md", id: Some("n2"), upstream_version: "1", local_version: "2", held: None }])
