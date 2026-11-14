@@ -78,6 +78,8 @@ const SCRATCH_PURPOSES: readonly string[] = [
   "conflict",
   "conflict-resolve",
   "history-trash",
+  // Deleted from the tree's context menu while open in the editor (§4.3, §8.2).
+  "tree-delete",
   // Types two letters into a note to prove a bare key does not reach the shell (§8.4).
   "shortcut-typing",
   "theme-memberberry-light",
@@ -146,6 +148,8 @@ const OUTLINE_BODY = [
 function scratchBody(purpose: string, project: string): string {
   if (purpose === "emoji-import") return `# Scratch :3d-printer-${project}:\n\nA note this test may edit.\n\nLegacy \\:3d-printer-${project}:\n`;
   if (purpose === "outline") return OUTLINE_BODY;
+  // why: scratch notes all share the heading "Scratch", which the tree shows as the title.
+  if (purpose === "tree-delete") return `# Tree delete ${project}\n\nA note this test may edit.\n`;
   if (purpose.startsWith("theme-")) return NOTEBOOK_BODY;
   if (purpose === "rename") {
     return "# Rename scratch\n\nA note this test may rename.\n";

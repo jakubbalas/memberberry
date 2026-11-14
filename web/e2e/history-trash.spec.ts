@@ -78,8 +78,9 @@ test("restores a saved version, then trashes and restores the Markdown note", as
 
   await page.locator(".notebook-section > summary").filter({ hasText: "Deleted notes" }).click();
   const trash = page.getByRole("region", { name: "Trash", exact: true });
-  page.once("dialog", (dialog) => void dialog.accept());
   await trash.getByRole("button", { name: "Move current note to trash" }).click();
+  await page.getByRole("dialog", { name: "Move note to trash?", exact: true })
+    .getByRole("button", { name: "Move to trash", exact: true }).click();
   await expect(trash.getByRole("status")).toContainText("Note moved to trash.");
   const trashRow = trash.locator(".trash-row", { hasText: note });
   await expect(trashRow).toContainText(note);

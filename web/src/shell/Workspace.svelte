@@ -29,6 +29,7 @@
   import { FolderBrowser } from "./folder-browser.svelte.js";
   import "./navigation.css";
   import { clampSidebarWidths, MIN_SIDEBAR_WIDTH, readSidebarPreferences, sidebarMaximum, writeSidebarPreferences, type SidebarPreferences } from "./sidebar-preferences.js";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import NamePrompt from "./NamePrompt.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
   import { deleteFolder, createFolder, fetchFolders } from "./folders.js";
@@ -576,9 +577,29 @@
     }
   }
 
-  async function deleteFromTree(path: string): Promise<void> {
-    if (!globalThis.confirm(`Move ${path} to trash?`)) return;
-    if (!await trash.delete(path)) return;
+  /** The note the tree asked to delete, while the in-app confirmation is open. */
+  let pendingDelete = $state<string | undefined>(undefined);
+  let deleteBusy = $state(false);
+  let deleteError = $state<string | undefined>(undefined);
+
+  function deleteFromTree(path: string): void {
+    deleteError = undefined;
+    pendingDelete = path;
+  }
+
+  async function confirmDelete(): Promise<void> {
+    const path = pendingDelete;
+    if (path === undefined || deleteBusy) return;
+    deleteBusy = true;
+    try {
+      if (!await trash.delete(path)) {
+        deleteError = "Could not move the note to trash.";
+        return;
+      }
+    } finally {
+      deleteBusy = false;
+    }
+    pendingDelete = undefined;
     for (const tab of [...store.tabs]) {
       if (tab.note === path) store.close(tab.id);
     }
@@ -842,7 +863,7 @@
         onopen={openFromTree}
         offline={deviceOffline.snapshot}
         onoffline={applyOffline}
-        ondelete={(path) => void deleteFromTree(path)}
+        ondelete={deleteFromTree}
         ondeletefolder={deleteFolderFromTree}
         onmove={moveFromTree}
         oncreate={(from) => requestPalette({ kind: "create", from }, target ?? window)}
@@ -937,6 +958,9 @@
   />
 {/if}
 
+{#if pendingDelete !== undefined}
+  <ConfirmDialog open={true} title="Move note to trash?" subject={pendingDelete} busy={deleteBusy} error={deleteError} confirm="Move to trash" confirming="Moving…" onconfirm={() => void confirmDelete()} ondismiss={() => { if (!deleteBusy) pendingDelete = undefined; }} />
+{/if}
 {#if folderPrompt}
   <NamePrompt open={folderPrompt} title="New folder" subject="At the vault root. Use / for nested folders." label="Folder name" initial="" busy={folderBusy} error={folderError} confirm="Create folder" confirming="Creating…" onsubmit={(name) => void submitFolder(name)} ondismiss={() => { if (!folderBusy) folderPrompt = false; }} />
 {/if}

@@ -2223,6 +2223,14 @@ server. A desktop build that only wrapped the server's URL would add nothing ove
   Chromium and, since M19, a WebKit project, because macOS and Linux render with WebKit.
   WebKitGTK is the slowest of the three, so the §21 budgets are measured on Linux
   separately rather than assumed from macOS.
+- **No native JavaScript dialogs.** wry's macOS webview implements no JavaScript panel
+  delegate, so `window.confirm()` returns false, and `alert()` and `prompt()` return
+  without showing anything. The user sees nothing. Before this was known, Delete on a
+  note did nothing in the app. The web client asks through its own `<dialog>` (`ConfirmDialog`,
+  `NamePrompt`), never `window.confirm`, `alert` or `prompt`. Playwright dismisses an
+  unhandled dialog the same way, so `e2e/tree-delete.spec.ts` fails if a native one comes back.
+  Known exception: the emoji picker's rename still uses `prompt`/`alert`, and so cannot
+  rename in the app.
 
 #### 7.6.2 Architecture — a replica is a vault
 

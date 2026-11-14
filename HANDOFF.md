@@ -1,8 +1,29 @@
 # Handoff
 
-## Latest (2026-11-13): disconnecting a desktop server, and the picker as the server hub (A50, SPEC §7.6.11)
+## Latest (2026-11-14): deleting a note did nothing in the desktop app (SPEC §7.6.1, §4.3)
 
-Not committed. The user asked for disconnect to check sync first and to delete only
+Not committed. Reported from the installed app at `dbd6963`: right-click a note → Delete, and the note
+stayed, its row still highlighted and its content still open. The bug was older than the
+desktop work. Both note-delete paths (`Workspace.deleteFromTree` and `TrashPane`'s "Move
+current note to trash") asked with `window.confirm`. wry's macOS WKWebView has no JavaScript
+panel delegate, so `confirm()` returned false without showing anything, and nothing was
+sent to the server. The browser was never affected. Both paths now use
+`web/src/shell/ConfirmDialog.svelte`, which reuses `NamePrompt`'s styles.
+
+- Regression: `web/e2e/tree-delete.spec.ts` (new scratch purpose `tree-delete`) dismisses
+  native dialogs, as the app does, and fails if one appears. It failed against the old bundle
+  and passes on desktop, mobile and webkit. `history-trash.spec.ts` now clicks the in-app
+  dialog. `TrashPane.dom.test.ts` has a confirm test, which fails on the old component, and a cancel test.
+- On disk the body moves to `<notes-root>/.trash/<id>.md`, with metadata in
+  `.memberberry/trash/`. This was checked in the E2E vault.
+- Open: `web/src/editor/emoji-picker.ts` (rename shortcode) still uses `window.prompt`/`alert`
+  and so does nothing in the app. Not fixed here because it is out of scope.
+- Not done: the installed `/Applications/Memberberry.app` has not been rebuilt
+  (`make desktop-build`). The fix has not been checked in the real app, only in Playwright WebKit.
+
+## Previous (2026-11-13): disconnecting a desktop server, and the picker as the server hub (A50, SPEC §7.6.11)
+
+Committed and pushed as `74800d5`/`dbd6963`. The user asked for disconnect to check sync first and to delete only
 with a typed "yes" when changes are unsent, and for the start page to be the place for
 servers and local vaults, made to look good. Details are in the desktop bullet below
 (**Disconnecting a server**).

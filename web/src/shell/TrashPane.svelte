@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import type { TrashEntry, TrashView } from "./trash.js";
 
   interface Props {
@@ -13,6 +14,8 @@
   let loading = $state(true);
   let busy = $state(false);
   let message = $state<string | undefined>(undefined);
+  /** The note awaiting the in-app confirmation; `window.confirm` is a no-op in the app (§7.6). */
+  let confirming = $state<string | undefined>(undefined);
 
   $effect(() => {
     void load();
@@ -32,15 +35,20 @@
   }
 
   async function moveToTrash(): Promise<void> {
-    if (note === undefined || busy || !globalThis.confirm(`Move ${note} to trash?`)) return;
+    const target = confirming;
+    if (target === undefined || busy) return;
     busy = true;
     message = undefined;
     try {
-      if (await view.delete(note)) {
+      if (await view.delete(target)) {
+        confirming = undefined;
         message = "Note moved to trash.";
         ondeleted?.();
         await load();
-      } else message = "Could not move the note to trash.";
+      } else {
+        confirming = undefined;
+        message = "Could not move the note to trash.";
+      }
     } finally {
       busy = false;
     }
@@ -65,9 +73,12 @@
 <section class="trash-pane" aria-labelledby="trash-heading" data-revision={revision} aria-busy={loading}>
   <h3 class="tree-heading" id="trash-heading">Trash</h3>
   {#if note !== undefined}
-    <button type="button" class="trash-delete" disabled={busy} onclick={() => void moveToTrash()}>
+    <button type="button" class="trash-delete" disabled={busy} onclick={() => { message = undefined; confirming = note; }}>
       Move current note to trash
     </button>
+  {/if}
+  {#if confirming !== undefined}
+    <ConfirmDialog open={true} title="Move note to trash?" subject={confirming} {busy} confirm="Move to trash" confirming="Moving…" onconfirm={() => void moveToTrash()} ondismiss={() => { if (!busy) confirming = undefined; }} />
   {/if}
   {#if message}<p class="tree-empty" role="status" aria-live="polite">{message}</p>{/if}
   {#if loading}<p class="tree-empty">Loading trash…</p>
