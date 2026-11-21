@@ -14,7 +14,14 @@
     clippy::indexing_slicing
 )]
 
+#[path = "support/mcp_cases.rs"]
+mod mcp_cases;
 mod support;
+
+#[tokio::test]
+async fn e39_mcp_grants_change_on_an_existing_client_and_credentials_cannot_cross_surfaces() {
+    mcp_cases::live_grants_and_tokens().await;
+}
 
 #[cfg(target_os = "linux")]
 #[allow(dead_code)] // why: the leak target uses a subset of these shared test helpers.

@@ -437,7 +437,9 @@ fn doctor_reports_an_index_that_fell_behind_the_markdown_files() {
     fs::create_dir_all(&vault).unwrap();
     fs::write(vault.join("A.md"), "---\nid: one\n---\n\n# A\n").unwrap();
     let config = config_for(&dir, &vault);
-    run(&["reindex", "--config", config.to_str().unwrap()]);
+    assert!(is_success(
+        run(&["reindex", "--config", config.to_str().unwrap()]).0
+    ));
     fs::write(vault.join("A.md"), "---\nid: one\n---\n\n# Changed\n").unwrap();
 
     let (code, out) = run(&["doctor", "--config", config.to_str().unwrap()]);
@@ -760,7 +762,9 @@ fn normalize_leaves_no_temporary_file_behind() {
     // vault and, worse, in their git status.
     let dir = TempDir::new("atomic");
     dir.write("note.md", "* item\n");
-    run(&["normalize", dir.path().to_str().unwrap()]);
+    assert!(is_success(
+        run(&["normalize", dir.path().to_str().unwrap()]).0
+    ));
     let leftovers: Vec<_> = fs::read_dir(dir.path())
         .expect("listing")
         .filter_map(Result::ok)
@@ -774,7 +778,9 @@ fn normalize_leaves_no_temporary_file_behind() {
 fn normalize_is_idempotent_over_a_directory() {
     let dir = TempDir::new("idempotent");
     dir.write("note.md", "* item\n_em_\n\n1) first\n2) second\n");
-    run(&["normalize", dir.path().to_str().unwrap()]);
+    assert!(is_success(
+        run(&["normalize", dir.path().to_str().unwrap()]).0
+    ));
     let once = dir.read("note.md");
     let (_, out) = run(&["normalize", dir.path().to_str().unwrap()]);
     assert_eq!(
@@ -1011,13 +1017,16 @@ fn a_generated_vault_is_already_canonical() {
     // why: otherwise every performance run would measure a normalisation pass that a real
     // vault would only pay once, and `--check` on the corpus would be noise.
     let dir = TempDir::new("gen-canonical");
-    run(&[
-        "gen-vault",
-        "--out",
-        dir.path().to_str().unwrap(),
-        "--notes",
-        "5",
-    ]);
+    assert!(is_success(
+        run(&[
+            "gen-vault",
+            "--out",
+            dir.path().to_str().unwrap(),
+            "--notes",
+            "5",
+        ])
+        .0
+    ));
     let (code, out) = run(&["normalize", "--check", dir.path().to_str().unwrap()]);
     assert!(
         is_success(code),
@@ -1031,13 +1040,16 @@ fn a_generated_vault_is_deterministic() {
     let a = TempDir::new("gen-det-a");
     let b = TempDir::new("gen-det-b");
     for dir in [&a, &b] {
-        run(&[
-            "gen-vault",
-            "--out",
-            dir.path().to_str().unwrap(),
-            "--notes",
-            "3",
-        ]);
+        assert!(is_success(
+            run(&[
+                "gen-vault",
+                "--out",
+                dir.path().to_str().unwrap(),
+                "--notes",
+                "3",
+            ])
+            .0
+        ));
     }
     for rel in [
         "notes/folder-00/note-00000.md",
@@ -1375,6 +1387,7 @@ fn vault_create_and_remove_preserve_configured_locations_and_existing_media_sett
     let config = mb_server::ServerConfig {
         bind: Some("127.0.0.1:9010".into()),
         oidc: None,
+        mcp: None,
         web_root: Some("web/dist".into()),
         vault_locations: vec![location],
         vaults: vec![mb_server::config::VaultEntry {
@@ -1504,21 +1517,24 @@ fn vault_create_defaults_the_name_to_the_slug() {
     setup_admin(&dir);
     let vault = TempDir::new("vault-noname-root");
     let path = vault.path().to_string_lossy().into_owned();
-    run_with_stdin(
-        &[
-            "vault",
-            "create",
-            "--slug",
-            "work",
-            "--path",
-            &path,
-            "--config",
-            &config_of(&dir),
-            "--actor",
-            "alice",
-        ],
-        "correct horse battery staple\n",
-    );
+    assert!(is_success(
+        run_with_stdin(
+            &[
+                "vault",
+                "create",
+                "--slug",
+                "work",
+                "--path",
+                &path,
+                "--config",
+                &config_of(&dir),
+                "--actor",
+                "alice",
+            ],
+            "correct horse battery staple\n",
+        )
+        .0
+    ));
     let (_, listed) = run(&["vault", "list", "--config", &config_of(&dir)]);
     assert!(listed.contains("work"), "{listed}");
 }
@@ -1572,21 +1588,24 @@ fn vault_create_refuses_a_duplicate_slug() {
     setup_admin(&dir);
     let vault = TempDir::new("vault-dupe-root");
     let path = vault.path().to_string_lossy().into_owned();
-    run_with_stdin(
-        &[
-            "vault",
-            "create",
-            "--slug",
-            "a",
-            "--path",
-            &path,
-            "--config",
-            &config_of(&dir),
-            "--actor",
-            "alice",
-        ],
-        "correct horse battery staple\n",
-    );
+    assert!(is_success(
+        run_with_stdin(
+            &[
+                "vault",
+                "create",
+                "--slug",
+                "a",
+                "--path",
+                &path,
+                "--config",
+                &config_of(&dir),
+                "--actor",
+                "alice",
+            ],
+            "correct horse battery staple\n",
+        )
+        .0
+    ));
     let message = run_err(&[
         "vault",
         "create",
@@ -1625,21 +1644,24 @@ fn vault_remove_unregisters_without_touching_the_notes() {
     let vault = TempDir::new("vault-remove-root");
     let note = vault.write("keep.md", "# Keep\n");
     let path = vault.path().to_string_lossy().into_owned();
-    run_with_stdin(
-        &[
-            "vault",
-            "create",
-            "--slug",
-            "gone",
-            "--path",
-            &path,
-            "--config",
-            &config_of(&dir),
-            "--actor",
-            "alice",
-        ],
-        "correct horse battery staple\n",
-    );
+    assert!(is_success(
+        run_with_stdin(
+            &[
+                "vault",
+                "create",
+                "--slug",
+                "gone",
+                "--path",
+                &path,
+                "--config",
+                &config_of(&dir),
+                "--actor",
+                "alice",
+            ],
+            "correct horse battery staple\n",
+        )
+        .0
+    ));
 
     let (code, out) = run_with_stdin(
         &[
@@ -1864,7 +1886,9 @@ fn reindex_starts_from_nothing_rather_than_from_the_last_run() {
     fs::create_dir_all(&vault).unwrap();
     fs::write(vault.join("A.md"), "# A\n").unwrap();
     let config = config_for(&dir, &vault);
-    run(&["reindex", "--config", config.to_str().unwrap()]);
+    assert!(is_success(
+        run(&["reindex", "--config", config.to_str().unwrap()]).0
+    ));
     let first = fs::metadata(vault.join(".memberberry/index/graph.sqlite"))
         .unwrap()
         .len();

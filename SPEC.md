@@ -1369,6 +1369,7 @@ ships.
 | E37 | **Desktop forwarding of server vaults** (§7.6.10; built, M19 slice 2c) | The embedded server forwards only paths under a registered server vault (`/api/v1/vaults/{slug}/…`) and that vault's sync frames, only to the origin that vault was registered from and only while this device is signed in there (§7.6.11), with that origin's device token as the only credential. The request's `Cookie`, `Authorization`, `Origin` and `Host` are never forwarded; upstream's `Set-Cookie` is never returned. Local vaults, administration, desktop and device routes are never forwarded. Leak suite: a forwarded request reaches upstream without this app's cookies; a local vault's route is never forwarded; a non-registered slug is never forwarded; upstream's denial reaches the window unchanged; with two servers, each vault's requests reach only its own server with only its own token; a signed-out server's vault is never forwarded; a kept copy is never synced under another account. |
 | E38 | **OIDC sign-in** (§6.8.2; built, M20a) | `state` is 256-bit, single-use, bound to a cookie, valid 10 minutes; PKCE S256 and `nonce` are required. The ID token's `iss`, `aud`/`azp`, `exp` and `nonce` are all checked, and the token only ever comes from the configured token endpoint over TLS. An account is linked only by (`iss`, `sub`) or, the first time, by an `email_verified` email equal to exactly one account's email; never by username, never by an unverified email. A provider sign-in never makes an administrator. `redirect_url` comes from configuration, not the request. With `password_login = false`, `POST /login` is refused. Leak suite: a forged or replayed `state`, a wrong `nonce`, a wrong audience, an expired token and an unverified email each yield no session; a linked account keeps its access; a new account has none. |
 | E35 | **Replica revocation purge** (§7.6.6, §7.6.7; built, M19) | On every pass with a complete upstream list, a note no longer in the readable set — deleted, moved out of reach, access removed — loses its file, CRDT sidecar, metadata row, search postings, its own pin and any media no remaining note here shows, and the local index is then scrubbed (`secure_delete`, a WAL checkpoint and a search-segment merge) so no bytes of it remain. It is purged, never sent to the local trash. A note changed here first becomes a recovered note (§7.6.7) holding the whole note as this device had it, minus its frontmatter `id`; it is never uploaded without the user's choice, and its own sync frames and listing are answered by the app, never forwarded. A vault the user can no longer read at all (gone from upstream's vault list) is settled the same way note by note, then stops being a server vault: kept as a vault on this device if anything was recovered, removed with its folder if not; its record, pins and upstream listing are deleted. A note that left an incomplete list is left alone; a note created here that upstream refused is still held, not recovered. Leak suite: `e35_a_revoked_note_leaves_no_trace_and_offline_edits_stay_on_this_device`, `e35_media_follows_the_readable_set_and_its_address_grants_nothing` (a revoked note's image leaves; an image address typed into a note here fetches nothing the user cannot already see), `e35_a_vault_the_user_was_removed_from_leaves_only_their_recovered_notes` (every file in the replica scanned for the note's title and body). |
+| E39 | **MCP access** (§6.8.3) | Management uses an enabled signed-session administrator and same-origin writes. Each token requires one or more discoverable vaults and its vault assignments can be edited live with revision checks. Each tool call reads committed service and token grants and uses the issuer’s current note ACL through the filtered index and repository. The server rechecks before sending results. Unknown, excluded and denied notes have the same response. MCP tokens are digest-only, returned once, and accepted only on the dedicated listener. The leak suite edits a token’s vaults and revokes a token on an initialized client. |
 
 **Every sync-frame denial is one reply.** An unknown vault, a path that does not resolve,
 a missing ACL and a role of `none` all return the same `not_found` error frame. Sending
@@ -1726,6 +1727,42 @@ talks to the provider the operator configured; it never calls Google itself.
   none. Group names are compared exactly (Keycloak's `/family` is not `family`).
 - **Audited:** provider sign-ins (success, refusal and why), links, account creation from a
   provider (§6.9).
+
+### 6.8.3 MCP access
+
+The web server offers **Settings → MCP access** to signed-in server administrators. Service
+enablement, personal tokens and each token’s vault assignments live in the server `auth.db`. A new
+installation starts disabled with no tokens. An administrator can issue, list, edit and revoke
+their own tokens. Creating a token requires a name and one or more registered vaults the
+administrator can discover under existing vault permissions, shown by display name. Editing a
+token’s assigned vaults or toggling MCP access commits in a revision-checked transaction and takes
+effect on the next tool call for every client, including already-connected clients. Vault grants
+bind to the registered slug and directory identity; registrations absent at startup lose their
+stored grants. Creation alone returns the full secret in a no-store response, and the browser drops
+it after closing the dialog or leaving the page.
+
+The operator can provision the local transport with the following `server.toml` section. A separate
+listener confines MCP to loopback and exposes only `/mcp`. Ordinary web ingress has no MCP tool route.
+The optional `endpoint` is the full advertised private HTTPS URL if an authorized proxy forwards
+the route. The default is the loopback listener’s URL. `note_origin` is the normal web application
+origin, used for protected source links. Without this section, the server binds no MCP listener.
+
+```toml
+[mcp]
+listen = "127.0.0.1:9014"
+note_origin = "https://notes.example.net"
+# endpoint = "https://mcp.notes.example.net/mcp"
+```
+
+The listener uses stateless Streamable HTTP and explicit bearer authentication. It checks any supplied
+`Origin` against the configured MCP URL and accepts no credentials from cookies or URLs.
+`search_notes` returns up to 25 distinct readable notes from a bounded window of matching Tantivy
+blocks, with note IDs, vault names, snippets and source URLs. `fetch_note` reads up to 64 KiB of
+saved UTF-8 Markdown via the authorized vault repository. It returns the protected source URL, modification time when available
+and any truncation. Search reflects the indexed files. Fetch reflects the saved checkout, which may
+have newer edits than the index. For GitHub-backed vaults, publishing and syncing remain the existing
+repository workflow’s responsibility. The MCP endpoint reports local freshness without claiming a
+published revision it cannot verify. It offers no write, sync or administrative tools.
 
 ### 6.9 Audit log (A23)
 

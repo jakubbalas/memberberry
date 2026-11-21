@@ -248,6 +248,7 @@ fn serve(args: &[String], out: &mut dyn Write) -> Result<ExitCode, String> {
     .map_err(|error| error.to_string())?
     .with_data_dir(data_dir.to_path_buf())
     .with_vault_management(path, addr.ip().is_loopback())
+    .and_then(|state| state.with_mcp(config.mcp))
     .map_err(|error| error.to_string())?;
     let state = std::sync::Arc::new(match oidc {
         Some(oidc) => state.with_oidc(oidc).map_err(|error| error.to_string())?,

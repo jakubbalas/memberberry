@@ -50,6 +50,20 @@ pub struct ServerConfig {
     /// Sign-in through an OpenID Connect provider (`SPEC.md` §6.8.2). Absent: passwords only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc: Option<OidcConfig>,
+    /// Private, separate loopback listener for MCP. Absent: no transport is bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpConfig>,
+}
+
+/// Operator-provisioned addresses for MCP and human-readable source links.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpConfig {
+    pub listen: std::net::SocketAddr,
+    /// Absolute client URL for a private TLS proxy. Defaults to `<listen>/mcp`.
+    pub endpoint: Option<String>,
+    /// Absolute origin of the signed-in Memberberry web app.
+    pub note_origin: String,
 }
 
 /// The `[oidc]` table of `server.toml` (§6.8.2, E38).

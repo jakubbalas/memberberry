@@ -17,6 +17,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 use sha2::{Digest, Sha256};
 
 mod devices;
+pub mod mcp;
 mod oidc;
 pub use devices::{
     DEVICE_CODE_SECONDS, DeviceApproval, DeviceCode, DeviceGrant, DeviceId, DeviceIdentity,
@@ -1270,6 +1271,7 @@ impl AuthDb {
         self.make_share_expiry_nullable()?;
         self.migrate_devices()?;
         self.migrate_oidc()?;
+        self.migrate_mcp()?;
         self.ensure_cookie_signing_key()
     }
 
@@ -1668,4 +1670,7 @@ pub enum Error {
     /// A device approval named an invalid device, redirect URI or PKCE challenge.
     #[error("device approval is invalid")]
     InvalidDeviceApproval,
+    /// An MCP token must be assigned to at least one vault.
+    #[error("MCP token must be assigned to at least one vault")]
+    EmptyMcpVaults,
 }
