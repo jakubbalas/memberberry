@@ -240,6 +240,38 @@ impl<'a> AuthorizedVault<'a> {
         std::fs::read_to_string(path).map_err(|_| Error::NotFound)
     }
 
+    /// Reads an exact authorized path with a UTF-8 byte budget. Returns saved Markdown,
+    /// the file modification time in Unix seconds when available, and a truncation flag.
+    pub(crate) fn read_bounded(
+        &self,
+        relative: &str,
+        limit: usize,
+    ) -> Result<(String, Option<u64>, bool), Error> {
+        use std::io::Read;
+        let file = std::fs::File::open(self.resolve(relative)?).map_err(|_| Error::NotFound)?;
+        let modified = file
+            .metadata()
+            .ok()
+            .and_then(|entry| entry.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs());
+        let mut bytes = Vec::new();
+        file.take(limit.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::NotFound)?;
+        let truncated = bytes.len() > limit;
+        bytes.truncate(limit);
+        let source = match std::str::from_utf8(&bytes) {
+            Ok(source) => source,
+            Err(error) if truncated && error.error_len().is_none() => {
+                let prefix = bytes.get(..error.valid_up_to()).ok_or(Error::NotFound)?;
+                std::str::from_utf8(prefix).map_err(|_| Error::NotFound)?
+            }
+            Err(_) => return Err(Error::NotFound),
+        };
+        Ok((source.to_owned(), modified, truncated))
+    }
+
     /// Resolves a path when this user may edit it.
     pub fn write_path(&self, relative: &str) -> Result<PathBuf, Error> {
         let note = NotePath::parse(relative).map_err(|_| Error::NotFound)?;

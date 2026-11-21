@@ -1,6 +1,34 @@
 # Handoff
 
-## Latest (2026-11-14): deleting a note did nothing in the desktop app (SPEC §7.6.1, §4.3)
+## Latest (2026-11-21): native read-only MCP server and Settings UI (SPEC §6.8.3, E39)
+
+Adds an optional, loopback-confined read-only Streamable HTTP MCP listener (`search_notes`,
+`fetch_note`) with an administrator **Settings → MCP access** panel (`/settings/mcp`).
+
+- **MCP access (`mb-auth/src/mcp.rs`, `mb-server/src/http/mcp.rs`, `mcp_settings.rs`, `web/src/admin/mcp-settings.{html,js}`)**:
+  - Dedicated `[mcp]` config (`listen`, `note_origin`, optional `endpoint`) keeps `/mcp` off the
+    ordinary web listener. Starts disabled with no tokens.
+  - Each token (`mbm_` + 64 hex chars, digest-only in `auth.db`) requires one or more discoverable
+    vaults on creation and supports live vault editing (`PATCH /api/v1/settings/mcp/tokens/{id}`)
+    with optimistic revision checks. Changes take effect immediately on the next tool call for
+    already-connected clients.
+  - One-time secret display clears on close/cancel/`pagehide`/404; clipboard copy works via the
+    Clipboard API with a synchronous `execCommand("copy")` fallback for plain-HTTP local/LAN hosts.
+  - Every tool call re-checks the service toggle, token revocation, disabled issuer, registration
+    identity, and the issuer's live `access.toml` ACL before and after reading through the filtered
+    index and `AuthorizedVault`.
+  - Fixed `.mb-badge` capsule pill shape (`border-radius: 999px` instead of `50%`).
+- **Verification**:
+  - `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings` (with
+    `RUSTFLAGS="-D warnings"`, including updating 9 pre-existing `cli.rs` test setup calls for
+    Rust 1.100's tuple `#[must_use]` lint and updating `scripts/full-test-test.py` for `webkit`),
+    `mb-auth` (50/50), `mb-cli` (79/79), `shallow_repository` (11/11), `leak_suite` (71/71,
+    including E39), `scripts/token-check.py` (114/114), `web` typecheck, and Playwright
+    desktop/mobile `e2e/mcp-settings.spec.ts` (2/2).
+  - Full `make check`, local coverage measurement, and full manual `make e2e` are deferred locally
+    (GitHub CI runs workspace tests, clippy, coverage gates, wasm32, and web checks on the PR).
+
+## Previous (2026-11-14): deleting a note did nothing in the desktop app (SPEC §7.6.1, §4.3)
 
 Not committed. Reported from the installed app at `dbd6963`: right-click a note → Delete, and the note
 stayed, its row still highlighted and its content still open. The bug was older than the

@@ -23,7 +23,7 @@ use axum::extract::{
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -80,6 +80,7 @@ pub struct AppState {
     desktop: Option<desktop::DesktopAccess>,
     /// Sign-in through the operator's identity provider (§6.8.2), when configured.
     oidc: Option<oidc::Oidc>,
+    mcp: Option<mcp::Listener>,
     /// Each account's provider groups from its latest sign-in (M20b), attached to a vault's
     /// policy whenever it is read.
     user_groups: RwLock<UserGroups>,
@@ -210,6 +211,8 @@ mod desktop_forward;
 mod desktop_sync;
 mod devices;
 mod folder_ui;
+mod mcp;
+mod mcp_settings;
 mod oidc;
 mod onboarding;
 mod replica_local;
@@ -513,6 +516,7 @@ impl AppState {
             },
             desktop: None,
             oidc: None,
+            mcp: None,
         })
     }
 
@@ -639,6 +643,24 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(desktop_routes)
         .merge(project_registration_routes())
         .route("/", get(index))
+        .route("/settings/mcp", get(mcp_settings::page))
+        .route("/settings/mcp.js", get(mcp_settings::script))
+        .route(
+            "/api/v1/settings/mcp",
+            get(mcp_settings::load)
+                .patch(mcp_settings::change)
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
+        .route(
+            "/api/v1/settings/mcp/tokens",
+            post(mcp_settings::create).layer(DefaultBodyLimit::max(8 * 1024)),
+        )
+        .route(
+            "/api/v1/settings/mcp/tokens/{id}",
+            patch(mcp_settings::update_token)
+                .delete(mcp_settings::revoke)
+                .layer(DefaultBodyLimit::max(8 * 1024)),
+        )
         .route("/login", post(login))
         .route(
             "/devices/authorize",
@@ -1229,6 +1251,9 @@ fn vaults_home(state: &AppState, headers: &HeaderMap) -> String {
         "<div class=\"mb-vaults-head\"><p>Open a vault and pick up where you left off.</p><div class=\"mb-actions\">",
     );
     if state.is_server_admin(headers) {
+        body.push_str(
+            "<a class=\"mb-button mb-quiet mb-action\" href=\"/settings/mcp\">Settings</a>",
+        );
         body.push_str("<a class=\"mb-button mb-action\" href=\"/vaults/new\">New vault</a>");
     }
     // why: in the desktop app there is no one to log out — its guard signs the window
@@ -6590,6 +6615,8 @@ enum PagePolicy {
     /// the Disconnect dialogs (§7.6.11), which post to this origin. It shows vault names and
     /// counts, never note content.
     Picker,
+    /// The trusted MCP management page uses a same-origin script and JSON API.
+    McpSettings,
 }
 
 impl PagePolicy {
@@ -6604,7 +6631,7 @@ impl PagePolicy {
             // `'self'` alone the approval would be blocked on its way back to the device.
             // Loopback on any port is exactly the set `valid_redirect_uri` accepts.
             Self::DeviceApproval => "'self' http://127.0.0.1:*",
-            Self::Content | Self::PublicContent => "'none'",
+            Self::Content | Self::PublicContent | Self::McpSettings => "'none'",
         }
     }
 
@@ -6641,6 +6668,9 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
          img-src 'self' data:; manifest-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action ",
     );
     out.push_str(policy.form_action());
+    if policy == PagePolicy::McpSettings {
+        out.push_str("; script-src 'self'; connect-src 'self'");
+    }
     out.push_str("\" />\n");
     out.push_str("<link rel=\"icon\" href=\"data:image/svg+xml,");
     out.push_str(&encode_path(include_str!("../../../web/public/icon.svg")));
@@ -6663,6 +6693,7 @@ fn page_with(policy: PagePolicy, title: &str, body: &str) -> Html<String> {
         }
         PagePolicy::Content
         | PagePolicy::Picker
+        | PagePolicy::McpSettings
         | PagePolicy::PublicContent
         | PagePolicy::PublicPassword => {}
     }
@@ -6780,7 +6811,7 @@ pub async fn serve(state: Arc<AppState>, addr: std::net::SocketAddr) -> Result<(
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| Error::Bind { addr, source })?;
-    serve_listener(state, listener, shutdown()).await
+    serve_until(state, listener, shutdown()).await
 }
 
 /// Serves on an already-bound listener until `stop` resolves, then flushes and returns.
@@ -6807,6 +6838,16 @@ async fn serve_listener(
     stop: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), Error> {
     let bound = listener.local_addr().map_err(Error::Serve)?;
+    let mcp_listener = if let Some(config) = &state.mcp {
+        let addr = config.addr;
+        Some(
+            tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|source| Error::Bind { addr, source })?,
+        )
+    } else {
+        None
+    };
     println!("memberberry: listening on http://{bound}");
     let signal = Arc::new(WatchSignal::default());
     let watch_state = state.clone();
@@ -6918,12 +6959,19 @@ async fn serve_listener(
             }
         }
     });
-    let served = axum::serve(
+    let stop = futures_util::FutureExt::shared(stop);
+    let web = axum::serve(
         listener,
         router(Arc::clone(&state)).into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(stop)
-    .await;
+    .with_graceful_shutdown(stop.clone());
+    let served = if let Some(listener) = mcp_listener {
+        let mcp =
+            axum::serve(listener, mcp::router(Arc::clone(&state))).with_graceful_shutdown(stop);
+        tokio::try_join!(web, mcp).map(|_| ())
+    } else {
+        web.await
+    };
     // why: finish the in-flight blocking maintenance job before final flush/teardown.
     // Aborting its async waiter would detach that job and permit a concurrent note writer.
     let _ = stop_maintenance.send(());
@@ -7060,8 +7108,8 @@ a{color:var(--accent-primary)}\
 .mb-confirm input{min-height:var(--touch-target-min);padding:var(--space-4) var(--space-5);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-primary);background:var(--surface-sunken);font:var(--text-md)/var(--leading-flat) var(--font-ui)}\
 .mb-confirm input:focus-visible,.mb-modal .mb-button:focus-visible{outline:var(--focus-ring-width) solid var(--focus-ring);outline-offset:var(--focus-ring-offset)}\
 .mb-under{min-height:100%}\
-.mb-badge{display:inline-flex;align-items:center;gap:var(--space-2);padding:var(--space-1) var(--space-3);border-radius:var(--radius-round);background:var(--surface-raised);font:var(--weight-medium) var(--text-2xs)/var(--leading-flat) var(--font-ui);letter-spacing:normal;text-transform:none}\
-.mb-badge::before{content:'';width:.5rem;height:.5rem;border-radius:var(--radius-round);background:currentColor}\
+.mb-badge{display:inline-flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);border-radius:999px;background:var(--surface-raised);font:var(--weight-medium) var(--text-2xs)/var(--leading-flat) var(--font-ui);letter-spacing:normal;text-transform:none}\
+.mb-badge::before{content:'';flex:none;width:.45rem;height:.45rem;border-radius:var(--radius-round);background:currentColor}\
 .mb-badge[data-state=online]{color:var(--accent-primary)}\
 .mb-badge[data-state=offline]{color:var(--state-warning)}\
 .mb-vault-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(15rem,1fr));gap:var(--space-5);margin:0;padding:0;list-style:none}\

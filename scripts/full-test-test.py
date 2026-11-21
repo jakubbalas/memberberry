@@ -52,7 +52,7 @@ class FullTestTests(unittest.TestCase):
         installers = [shlex.split(line) for line in commands.splitlines()
                       if "playwright install" in line]
         self.assertEqual(installers, [
-            ["npm", "--prefix", "web", "exec", "--", "playwright", "install", "chromium"]
+            ["npm", "--prefix", "web", "exec", "--", "playwright", "install", "chromium", "webkit"]
         ])
 
 

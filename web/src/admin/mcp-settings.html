@@ -1,0 +1,261 @@
+<style>
+  main { max-width: 44rem; }
+  .mcp-settings { font-family: var(--font-ui); }
+  .mcp-settings [hidden] { display: none; }
+  .mcp-settings section { padding-block: var(--space-7); border-bottom: 1px solid var(--border-subtle); }
+  .mcp-settings section:last-of-type { border-bottom: 0; padding-bottom: 0; }
+  .mcp-settings h2 { margin: 0; font: var(--weight-medium) var(--text-lg)/var(--leading-snug) var(--font-ui); }
+  .mcp-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
+  .mcp-row > *, .mcp-settings dialog form { margin: 0; }
+  .mcp-section-head { margin-bottom: var(--space-5); }
+  .mcp-endpoint-row { margin: 0 0 var(--space-4); }
+  .mcp-value {
+    flex: 1 1 14rem;
+    min-width: 0;
+    min-height: var(--touch-target-min);
+    padding: var(--space-4) var(--space-5);
+    color: var(--text-primary);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font: var(--text-sm)/var(--leading-flat) var(--font-mono);
+    cursor: pointer;
+  }
+  .mcp-input {
+    width: 100%;
+    min-width: 0;
+    min-height: var(--touch-target-min);
+    padding: var(--space-4) var(--space-5);
+    color: var(--text-primary);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font: var(--text-md)/var(--leading-flat) var(--font-ui);
+  }
+  .mcp-value:focus-visible,
+  .mcp-input:focus-visible,
+  .mcp-settings input[type="checkbox"]:focus-visible,
+  .mcp-link-button:focus-visible,
+  .mcp-settings button:focus-visible {
+    outline: var(--focus-ring-width) solid var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+  .mcp-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-height: var(--touch-target-min);
+    font: var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui);
+    cursor: pointer;
+  }
+  .mcp-settings input[type="checkbox"] {
+    width: 1.05rem;
+    height: 1.05rem;
+    margin: 0;
+    accent-color: var(--accent-primary);
+    flex: none;
+    cursor: pointer;
+  }
+  .mcp-hint {
+    margin: var(--space-2) 0 0;
+    color: var(--text-muted);
+    font: var(--text-xs)/var(--leading-snug) var(--font-ui);
+  }
+  .mcp-token-list { list-style: none; padding: 0; margin: var(--space-4) 0 0; }
+  .mcp-token-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    flex-wrap: wrap;
+    padding-block: var(--space-5);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .mcp-token-row:first-child { border-top: 0; padding-top: var(--space-2); }
+  .mcp-token-info { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; flex: 1 1 14rem; overflow-wrap: anywhere; }
+  .mcp-token-name { font: var(--weight-medium) var(--text-md)/var(--leading-snug) var(--font-ui); color: var(--text-primary); }
+  .mcp-token-meta { display: block; color: var(--text-muted); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+  .mcp-token-vaults { color: var(--text-primary); font: var(--text-xs)/var(--leading-snug) var(--font-ui); }
+  .mcp-token-revoked .mcp-token-name,
+  .mcp-token-revoked .mcp-token-vaults { color: var(--text-muted); }
+  .mcp-token-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+  .mcp-status-row { margin-top: var(--space-4); min-height: 1.25rem; }
+  .mcp-recovery { margin-top: var(--space-4); }
+
+  .mcp-settings dialog {
+    width: min(28rem, calc(100% - var(--space-7)));
+    padding: var(--space-7);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    color: var(--text-primary);
+    background: var(--surface-note);
+    box-shadow: var(--shadow-lg);
+  }
+  .mcp-settings dialog::backdrop {
+    background: color-mix(in srgb, var(--text-primary) 32%, transparent);
+  }
+  .mcp-settings dialog h2 {
+    margin: 0;
+    font: var(--weight-medium) var(--text-xl)/var(--leading-snug) var(--font-title);
+  }
+  .mcp-dialog-form { display: flex; flex-direction: column; gap: var(--space-5); }
+  .mcp-dialog-body { display: flex; flex-direction: column; gap: var(--space-5); }
+  .mcp-dialog-copy { margin: 0; color: var(--text-muted); font: var(--text-sm)/var(--leading-body) var(--font-ui); }
+  .mcp-field-label { color: var(--text-muted); font: var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-ui); }
+  .mcp-picker-section { display: flex; flex-direction: column; gap: var(--space-2); }
+  .mcp-picker-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+  .mcp-link-button {
+    padding: var(--space-1) var(--space-2);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--accent-primary);
+    font: var(--weight-medium) var(--text-xs)/var(--leading-flat) var(--font-ui);
+    cursor: pointer;
+  }
+  .mcp-link-button:hover { background: var(--surface-hover); }
+  .mcp-vault-picker {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    max-height: 14rem;
+    overflow-y: auto;
+    margin: var(--space-1) 0 0;
+    padding: var(--space-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-sunken);
+  }
+  .mcp-vault-option {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-height: var(--touch-target-min);
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font: var(--text-sm)/var(--leading-snug) var(--font-ui);
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+  .mcp-vault-option:hover { background: var(--surface-hover); }
+  .mcp-dialog-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    margin-top: var(--space-2);
+  }
+  .mcp-settings :disabled { cursor: default; opacity: .6; }
+  .mcp-settings button { flex: none; }
+</style>
+
+<div class="mcp-settings">
+  <a class="mb-library-back" href="/">← Your vaults</a>
+
+  <section aria-labelledby="mcp-endpoint-title">
+    <div class="mcp-row mcp-section-head">
+      <h2 id="mcp-endpoint-title">Endpoint</h2>
+      <span class="mb-badge" id="mcp-state" data-state="offline" hidden>Off</span>
+    </div>
+    <p class="mcp-row mcp-endpoint-row">
+      <input class="mcp-value" id="mcp-endpoint" type="url" aria-label="Endpoint URL" readonly />
+      <button class="mb-button mb-quiet" id="mcp-copy-url" type="button" disabled>Copy URL</button>
+    </p>
+    <label class="mcp-toggle">
+      <input id="mcp-enabled" type="checkbox" disabled />
+      <span>Enable MCP access</span>
+    </label>
+    <p class="mcp-hint" id="mcp-endpoint-note" hidden></p>
+  </section>
+
+  <section aria-labelledby="mcp-tokens-title">
+    <div class="mcp-row mcp-section-head">
+      <h2 id="mcp-tokens-title">Access tokens</h2>
+      <button class="mb-button" id="mcp-new-token" type="button" disabled>Create token</button>
+    </div>
+    <p class="mcp-hint" id="mcp-tokens-note" hidden></p>
+    <ul id="mcp-tokens" class="mcp-token-list"></ul>
+    <p id="mcp-status" class="mcp-hint mcp-status-row" role="status"></p>
+    <div class="mcp-row mcp-recovery" id="mcp-recovery" hidden>
+      <p class="mb-form-error" id="mcp-error" role="alert"></p>
+      <button class="mb-button mb-quiet" id="mcp-retry" type="button">Retry</button>
+    </div>
+  </section>
+
+  <dialog id="mcp-create" aria-labelledby="mcp-create-title">
+    <form id="mcp-create-form" class="mcp-dialog-form" autocomplete="off">
+      <h2 id="mcp-create-title">Create token</h2>
+      <div class="mb-field">
+        <label for="mcp-name">Name</label>
+        <input class="mcp-input" id="mcp-name" name="name" required maxlength="80" placeholder="Nod, Codex…" />
+      </div>
+      <div class="mcp-picker-section">
+        <div class="mcp-picker-head">
+          <span class="mcp-field-label" id="mcp-create-vaults-label">Vaults</span>
+          <button class="mcp-link-button" id="mcp-create-toggle-all" type="button" hidden>Select all</button>
+        </div>
+        <p class="mcp-hint">Choose which vaults this token can read.</p>
+        <fieldset id="mcp-create-vaults" class="mcp-vault-picker" aria-labelledby="mcp-create-vaults-label"></fieldset>
+        <p class="mcp-hint" id="mcp-create-hint" aria-live="polite"></p>
+      </div>
+      <p id="mcp-create-error" class="mb-form-error" role="alert" hidden></p>
+      <div class="mcp-dialog-actions">
+        <button class="mb-button mb-quiet" id="mcp-cancel-create" type="button">Cancel</button>
+        <button class="mb-button" id="mcp-create-submit" type="submit" disabled>Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="mcp-edit" aria-labelledby="mcp-edit-title">
+    <form id="mcp-edit-form" class="mcp-dialog-form" autocomplete="off">
+      <div>
+        <h2 id="mcp-edit-title">Edit vaults</h2>
+        <p class="mcp-hint" id="mcp-edit-token"></p>
+      </div>
+      <div class="mcp-picker-section">
+        <div class="mcp-picker-head">
+          <span class="mcp-field-label" id="mcp-edit-vaults-label">Vaults</span>
+          <button class="mcp-link-button" id="mcp-edit-toggle-all" type="button" hidden>Select all</button>
+        </div>
+        <p class="mcp-hint">Changes apply on the next MCP request.</p>
+        <fieldset id="mcp-edit-vaults" class="mcp-vault-picker" aria-labelledby="mcp-edit-vaults-label"></fieldset>
+        <p class="mcp-hint" id="mcp-edit-hint" aria-live="polite"></p>
+      </div>
+      <p id="mcp-edit-error" class="mb-form-error" role="alert" hidden></p>
+      <div class="mcp-dialog-actions">
+        <button class="mb-button mb-quiet" id="mcp-cancel-edit" type="button">Cancel</button>
+        <button class="mb-button" id="mcp-edit-submit" type="submit" disabled>Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="mcp-created" aria-labelledby="mcp-created-title">
+    <div class="mcp-dialog-body">
+      <h2 id="mcp-created-title">Token created</h2>
+      <p class="mcp-dialog-copy">Copy the token now. It’s shown only once.</p>
+      <div class="mcp-row">
+        <input class="mcp-value" id="mcp-secret" type="text" aria-label="Access token" readonly autocomplete="off" spellcheck="false" />
+        <button class="mb-button" id="mcp-copy-token" type="button">Copy token</button>
+      </div>
+      <p class="mcp-hint" id="mcp-copy-status" role="status"></p>
+      <div class="mcp-dialog-actions">
+        <button class="mb-button mb-quiet" id="mcp-done" type="button">Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="mcp-revoke" aria-labelledby="mcp-revoke-title">
+    <div class="mcp-dialog-body">
+      <h2 id="mcp-revoke-title">Revoke token?</h2>
+      <p class="mcp-dialog-copy"><strong id="mcp-revoke-name"></strong> will immediately lose MCP access.</p>
+      <form method="dialog" class="mcp-dialog-actions">
+        <button class="mb-button mb-quiet" value="cancel" autofocus>Cancel</button>
+        <button class="mb-button mb-danger" value="revoke">Revoke</button>
+      </form>
+    </div>
+  </dialog>
+</div>
+<script type="module" src="/settings/mcp.js"></script>
